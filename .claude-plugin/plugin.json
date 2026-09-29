@@ -1,0 +1,6 @@
+{
+  "name": "harness-kit",
+  "version": "0.1.0",
+  "description": "Inventories an existing repository against the harness runbook and proposes only what is missing.",
+  "author": "Ang Koon Hian"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "harness-kit-local",
+  "owner": { "name": "Ang Koon Hian" },
+  "plugins": [
+    { "name": "harness-kit", "source": "./", "description": "Harness bootstrapping for existing repositories." }
+  ]
+}
