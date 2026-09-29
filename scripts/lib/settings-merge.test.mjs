@@ -152,3 +152,35 @@ test('adding no new rules yields no patch', () => {
   assert.deepEqual(added, []);
   assert.equal(patch, null, 'nothing was added, so there is nothing to record or revert');
 });
+
+test('dedupes identical globs within a single call', () => {
+  const before = {};
+  const { settings, added } = addDenyRules(before, ['Edit(x)', 'Edit(x)']);
+  assert.deepEqual(added, ['Edit(x)'], 'only one rule is genuinely new');
+  assert.equal(settings.permissions.deny.filter(r => r === 'Edit(x)').length, 1, 'no duplicate in settings');
+});
+
+test('dedupes a glob that is both a duplicate within the call and already in settings', () => {
+  const before = { permissions: { deny: ['Edit(x)'] } };
+  const { settings, added } = addDenyRules(before, ['Edit(x)', 'Edit(x)', 'Edit(y)']);
+  assert.deepEqual(added, ['Edit(y)'], 'only the genuinely new rule is reported');
+  assert.equal(settings.permissions.deny.length, 2, 'exactly two rules total');
+  assert.deepEqual(settings.permissions.deny, ['Edit(x)', 'Edit(y)']);
+});
+
+test('reverting the last deny rule prunes the permissions object itself when it holds nothing else', () => {
+  const { settings: s1, patch } = addDenyRules({}, ['Edit(migrations/**)']);
+  const { settings: s2 } = revertPatch(s1, patch);
+  assert.equal(s2.permissions, undefined, 'permissions object must be pruned, not left as {}');
+});
+
+test('reverting the last deny rule leaves sibling keys like allow and defaultMode intact', () => {
+  const before = { permissions: { deny: ['Edit(x)'], allow: ['Read(*)'], defaultMode: 'allow' } };
+  const { settings: s1, patch } = addDenyRules(before, ['Edit(y)']);
+  const { settings: s2 } = revertPatch(s1, patch);
+  assert.ok(s2.permissions, 'permissions object must be preserved');
+  assert.equal(s2.permissions.deny.length, 1);
+  assert.deepEqual(s2.permissions.deny, ['Edit(x)']);
+  assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow key must survive');
+  assert.equal(s2.permissions.defaultMode, 'allow', 'defaultMode must survive');
+});

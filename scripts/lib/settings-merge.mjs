@@ -37,9 +37,16 @@ export function addDenyRules(settings, globs) {
   next.permissions ??= {};
   next.permissions.deny ??= [];
 
-  // Identify which globs are genuinely new
+  // Dedupe globs against themselves (preserving first-seen order) and against existing rules
   const existingSet = new Set(next.permissions.deny);
-  const newRules = globs.filter(g => !existingSet.has(g));
+  const seen = new Set(existingSet);
+  const newRules = [];
+  for (const g of globs) {
+    if (!seen.has(g)) {
+      newRules.push(g);
+      seen.add(g);
+    }
+  }
 
   // Append only the new rules
   newRules.forEach(rule => {
@@ -94,6 +101,7 @@ export function revertPatch(settings, patch) {
       return { settings: next, reverted: false };
     }
 
+    // patch.rules is authoritative for identity; entrySha256 is retained for schema consistency
     // Check if all rules we added are still present
     const rulesToRemove = new Set(patch.rules);
     for (const rule of patch.rules) {
