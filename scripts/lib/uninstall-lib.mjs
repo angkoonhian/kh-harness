@@ -135,6 +135,7 @@ export function runUninstall({ root, manifest, plan }) {
     if (validated.valid) {
       let settings = validated.object;
       let settingsChanged = false;
+      const revertedInMemory = [];
 
       // The revertable set is re-derived from the manifest here, exactly as
       // planUninstall derives it — the file path already works this way, and
@@ -149,6 +150,7 @@ export function runUninstall({ root, manifest, plan }) {
         if (r.reverted) {
           settings = r.settings;
           settingsChanged = true;
+          revertedInMemory.push(p);
         } else {
           // Patch exists but could not be reverted (user edited it).
           patchesNotReverted.push({ ...p, why: 'patch-modified' });
@@ -159,13 +161,18 @@ export function runUninstall({ root, manifest, plan }) {
       if (settingsChanged) {
         try {
           fs.writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
-        } catch (e) {
+        } catch {
           settingsWriteFailed = true;
-          // Track any patches that couldn't be written
-          for (const p of plan.revert) {
-            if (!patchesNotReverted.some(pr => pr.container === p.container)) {
-              patchesNotReverted.push({ ...p, why: 'settings-write-failed' });
-            }
+          // Nothing reached disk, so every patch reverted in memory is still
+          // registered in the user's settings.json. Each is recorded by
+          // identity — NOT deduped by `container`, because two patches under
+          // one event share a container (`/hooks/SessionStart`), and
+          // container-dedupe skips the second: dropped from the manifest,
+          // left registered, with no record of it anywhere. A permanent
+          // orphan. Patches that did not revert are already recorded above
+          // with their own reason, so this list cannot double-count them.
+          for (const p of revertedInMemory) {
+            patchesNotReverted.push({ ...p, why: 'settings-write-failed' });
           }
         }
       }
@@ -197,10 +204,12 @@ export function runUninstall({ root, manifest, plan }) {
   // revert. Not plan.keepPatches — that list was computed before the run and
   // the run re-derives the revertable set from the manifest, so merging the
   // two records a patch as left behind that this run actually removed.
-  const keptPatches = patchesNotReverted.map(p => ({
-    ...p,
-    why: settingsReadFailed ? 'settings-unreadable' : 'settings-write-failed'
-  }));
+  // Each patch carries the reason computed for *it*, at the moment it was
+  // decided: 'patch-modified' for a hook the user edited, whether or not
+  // some other patch later hit a write failure. Overwriting that with a
+  // run-level flag made the durable record disagree with the truth the
+  // caller is handed — and the record is the half that survives the process.
+  const keptPatches = patchesNotReverted.map(p => ({ ...p }));
 
   // 4. Persist the manifest once, from actual outcomes
   // Guard both write and delete so the outcome is always returned

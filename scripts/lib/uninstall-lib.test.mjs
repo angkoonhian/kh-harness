@@ -206,36 +206,147 @@ test('settings deleted between plan and run records patches as kept (C1a)', () =
   // Verify manifest records the patch with reason
   const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
   assert.equal(manifestAfter.settingsPatches.length, 1);
-  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-unreadable');
+  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-missing',
+    'an absent file and an unparseable one no longer share a label');
 });
 
-test('settings write fails after file removal records file as removed (C1c)', () => {
+// --- I6: the three failure flags that had no assertion anywhere ----------
+//
+// `settingsWriteFailed`, `manifestWriteFailed` and `manifestDeleteFailed`
+// were all reported and none was ever exercised. Two separate defects lived
+// inside the settingsWriteFailed branch for exactly that reason.
+
+/**
+ * Makes `path` readable but not writable, and proves it. Read-only is the
+ * one mechanism that lets the read at the top of the revert block succeed
+ * and the write at the bottom of it fail on the same file. If the OS ever
+ * stops honouring it (running as root, say), the assertion below fails the
+ * test rather than letting it pass without entering the branch at all.
+ */
+function makeUnwritable(path) {
+  chmodSync(path, 0o444);
+  assert.throws(
+    () => writeFileSync(path, 'probe'),
+    /EPERM|EACCES/,
+    'precondition: the OS must actually refuse this write, or the test proves nothing',
+  );
+}
+
+test('I6/C1c: a settings WRITE failure is reported, leaves the file untouched, and keeps the patch', () => {
   const d = repo();
   mkdirSync(join(d, '.claude'), { recursive: true });
-  const fileProposal = { kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r' };
-  const hookProposal = { kind: 'settings-hook', event: 'SessionStart', step: 16, entry: { type: 'command', command: 'node x.mjs' }, checkId: 'P4.sessionbrief', reason: 'r' };
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
 
-  const { manifest } = applyProposals({ root: d, proposals: [fileProposal, hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const { manifest } = applyProposals({ root: d, proposals: [fileProposal(), hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
 
   const plan = planUninstall({ root: d, manifest });
-  assert.equal(plan.remove.length, 1, 'has file to remove');
-  assert.equal(plan.revert.length, 1, 'has patch to revert');
+  assert.equal(plan.remove.length, 1, 'has a file to remove');
+  assert.equal(plan.revert.length, 1, 'has a patch to revert');
 
-  // Delete .claude directory to cause read/write failure
-  // This verifies file removal succeeds even when settings failure occurs
-  rmSync(join(d, '.claude'), { recursive: true });
+  const settingsPath = join(d, '.claude/settings.json');
+  const before = readFileSync(settingsPath, 'utf8');
+  makeUnwritable(settingsPath);
 
   const result = runUninstall({ root: d, manifest, plan });
 
-  assert.equal(result.removed.length, 1, 'file was removed');
-  assert.equal(result.settingsReadFailed, true, 'settings read failed (directory was deleted)');
-  assert.equal(result.patchesNotReverted.length, 1, 'patch recorded as not reverted');
+  assert.equal(result.settingsWriteFailed, true, 'the write path — not the read path — is what failed');
+  assert.equal(result.settingsReadFailed, false, 'the file was perfectly readable');
+  assert.equal(readFileSync(settingsPath, 'utf8'), before, 'nothing reached disk, so the hook is still registered');
 
-  // Verify manifest records that the file was removed
-  const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
-  assert.equal(manifestAfter.files.length, 0, 'file not in manifest (was successfully removed)');
-  assert.equal(manifestAfter.settingsPatches.length, 1, 'patch in manifest (couldn\'t be reverted)');
-  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-unreadable');
+  // The file removal is independent of the settings failure and must still
+  // have happened.
+  assert.deepEqual(result.removed, ['HANDOFF.md']);
+  assert.equal(existsSync(join(d, 'HANDOFF.md')), false);
+
+  assert.equal(result.patchesNotReverted.length, 1, 'the still-registered patch must be recorded');
+  assert.equal(result.patchesNotReverted[0].why, 'settings-write-failed');
+
+  const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.equal(after.files.length, 0, 'the removed file is gone from the manifest');
+  assert.equal(after.settingsPatches.length, 1, 'the un-reverted patch is still tracked');
+  assert.equal(after.settingsPatches[0].why, 'settings-write-failed');
+});
+
+test('I2: a patch kept because the user edited it is recorded as edited, not as a write failure', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), '{}');
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
+
+  // The user edits our hook. Nothing reverts, so no write is even attempted.
+  const s = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+  s.hooks.SessionStart[0].hooks[0].command = 'node edited.mjs';
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s));
+
+  const plan = planUninstall({ root: d, manifest });
+  const result = runUninstall({ root: d, manifest, plan });
+
+  assert.equal(result.settingsWriteFailed, false, 'no write was attempted, let alone failed');
+  assert.equal(result.settingsReadFailed, false);
+  assert.equal(result.patchesNotReverted[0].why, 'patch-modified', 'the returned object tells the truth');
+
+  const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.equal(after.settingsPatches[0].why, 'patch-modified',
+    'and so must the durable record — a run-level flag must not overwrite a per-patch reason');
+});
+
+test('I4: two patches under one event are both recorded when the settings write fails', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), '{}');
+
+  // Two hooks under the SAME event: they share the container
+  // `/hooks/SessionStart` and differ only by entrySha256.
+  const second = { ...hookProposal, entry: { type: 'command', command: 'node second.mjs' }, checkId: 'P4.second' };
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal, second], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
+  assert.equal(manifest.settingsPatches.length, 2);
+  assert.equal(new Set(manifest.settingsPatches.map(p => p.container)).size, 1, 'one container, two patches');
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.revert.length, 2);
+
+  makeUnwritable(join(d, '.claude/settings.json'));
+  const result = runUninstall({ root: d, manifest, plan });
+
+  assert.equal(result.settingsWriteFailed, true);
+  assert.equal(result.patchesNotReverted.length, 2,
+    'deduping by container drops the second patch, leaving it registered with no record anywhere');
+  assert.deepEqual(
+    result.patchesNotReverted.map(p => p.entrySha256).sort(),
+    manifest.settingsPatches.map(p => p.entrySha256).sort(),
+  );
+
+  const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.equal(after.settingsPatches.length, 2, 'both survive into the manifest, or one is a permanent orphan');
+});
+
+test('I6: a manifest that cannot be written is reported, not swallowed', () => {
+  const { d, manifest } = installed();
+  writeFileSync(join(d, 'HANDOFF.md'), 'edited, so something is kept\n');
+  // The manifest path is a directory: writeFileSync cannot write it.
+  mkdirSync(join(d, MANIFEST_PATH), { recursive: true });
+
+  const plan = planUninstall({ root: d, manifest });
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.manifestWriteFailed, true);
+  assert.equal(result.manifestDeleteFailed, false);
+});
+
+test('I6: a manifest that cannot be removed is reported, not swallowed', () => {
+  const { d, manifest } = installed();
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.remove.length, 1, 'nothing will be kept, so the manifest is due for deletion');
+  // The manifest path is a non-empty directory: rmSync (no recursive) refuses.
+  mkdirSync(join(d, MANIFEST_PATH), { recursive: true });
+  writeFileSync(join(d, MANIFEST_PATH, 'blocker'), 'x');
+
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.deepEqual(result.removed, ['HANDOFF.md']);
+  assert.equal(result.manifestDeleteFailed, true);
+  assert.equal(result.manifestWriteFailed, false);
 });
 
 test('settings parse to null (falsy value) are treated as unreadable', () => {
