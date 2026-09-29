@@ -23,7 +23,6 @@ function detectNestedRepositories(root) {
     }
 
     // Detect nested independent repositories: untracked directories containing .git
-    // Single call: git emits trailing-slash entries for directory boundaries it won't descend
     try {
       const lsOut = execFileSync('git', ['-C', root, 'ls-files', '-o', '--exclude-standard'], {
         encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
@@ -34,8 +33,8 @@ function detectNestedRepositories(root) {
 
         // Entries ending in / are nested repository boundaries
         if (entry.endsWith('/')) {
-          const path = entry.slice(0, -1); // Remove trailing slash
-          // Confirm with .git child check
+          const path = entry.slice(0, -1);
+          // Confirm with .git child check (file or directory)
           if (existsSync(join(root, path, '.git'))) {
             nested.push({ path, kind: 'nested-repo' });
           }
@@ -44,14 +43,85 @@ function detectNestedRepositories(root) {
     } catch {
       // If git ls-files fails, continue without nested-repo detection
     }
+
+    // Detect nested repositories in gitignored directories
+    try {
+      const lsOut = execFileSync('git', ['-C', root, 'ls-files', '-o', '-i', '--exclude-standard', '--directory'], {
+        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      for (const line of lsOut.split('\n')) {
+        const entry = line.trim();
+        if (!entry || entry.endsWith('/node_modules/')) continue;
+
+        // Entries ending in / are ignored directory boundaries
+        if (entry.endsWith('/')) {
+          const path = entry.slice(0, -1);
+          const fullPath = join(root, path);
+
+          // Check for .git in this directory
+          if (existsSync(join(fullPath, '.git'))) {
+            // Avoid duplicates
+            if (!nested.some(n => n.path === path)) {
+              nested.push({ path, kind: 'nested-repo' });
+            }
+          } else {
+            // Check immediate children only (depth 1, no recursion)
+            try {
+              const entries = readdirSync(fullPath);
+              for (const entry of entries) {
+                if (entry === '.git') continue;
+                const subPath = join(fullPath, entry);
+                if (existsSync(join(subPath, '.git'))) {
+                  const resultPath = `${path}/${entry}`;
+                  if (!nested.some(n => n.path === resultPath)) {
+                    nested.push({ path: resultPath, kind: 'nested-repo' });
+                  }
+                }
+              }
+            } catch {
+              // Skip if readdirSync fails
+            }
+          }
+        }
+      }
+    } catch {
+      // If git ls-files fails, continue without gitignored nested-repo detection
+    }
+
+    // Detect bare repositories (have HEAD file and objects directory)
+    try {
+      const lsOut = execFileSync('git', ['-C', root, 'ls-files', '-o', '--exclude-standard'], {
+        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const entries = new Set();
+      for (const line of lsOut.split('\n')) {
+        const entry = line.trim();
+        if (!entry) continue;
+        const topLevelDir = entry.split(/[/\\]/)[0];
+        if (topLevelDir) entries.add(topLevelDir);
+      }
+
+      for (const dir of entries) {
+        const fullPath = join(root, dir);
+        // Bare repo: has HEAD file and objects directory
+        if (existsSync(join(fullPath, 'HEAD')) && existsSync(join(fullPath, 'objects'))) {
+          if (!nested.some(n => n.path === dir)) {
+            nested.push({ path: dir, kind: 'nested-repo' });
+          }
+        }
+      }
+    } catch {
+      // If detection fails, continue
+    }
   } catch {
     // If any git operation fails entirely, return empty
     return [];
   }
 
-  // Sort for stable output
-  nested.sort((a, b) => a.path.localeCompare(b.path));
-  return nested;
+  // Sort for stable output and deduplicate
+  const uniqueNested = Array.from(new Map(nested.map(n => [n.path, n])).values());
+  uniqueNested.sort((a, b) => a.path.localeCompare(b.path));
+  return uniqueNested;
 }
 
 /**
@@ -64,8 +134,14 @@ export function listFiles(root) {
     const out = execFileSync('git', ['-C', root, 'ls-files', '-co', '--exclude-standard'], {
       encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
     });
-    const files = out.split('\n').map(s => s.trim()).filter(Boolean)
+    let files = out.split('\n').map(s => s.trim()).filter(Boolean)
       .filter(f => !f.startsWith('node_modules/') && !f.includes('/node_modules/') && !f.endsWith('/'));
+
+    // Filter out files beneath nested repositories
+    if (nested.length > 0) {
+      files = files.filter(f => !nested.some(n => f.startsWith(`${n.path}/`)));
+    }
+
     return { files, source: 'git', nested };
   } catch {
     // Fallback: recursive directory walk using stable readdirSync (Node 20.1+)

@@ -132,3 +132,48 @@ test('files array contains no trailing-slash entries when nested repositories ar
   const { files } = listFiles(d);
   assert.equal(files.some(f => f.endsWith('/')), false);
 });
+
+test('gitignored directory containing a nested repository is reported', () => {
+  const d = fixture();
+  const ignored = join(d, 'backend-old');
+  mkdirSync(ignored);
+  writeFileSync(join(d, '.gitignore'), 'backend-old\n');
+  try {
+    execFileSync('git', ['init', ignored], { stdio: 'ignore' });
+  } catch {
+    return;
+  }
+  const { nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'backend-old'));
+});
+
+test('nested repository inside a gitignored parent one level down is reported', () => {
+  const d = fixture();
+  const ignored = join(d, 'vendor');
+  const nested = join(ignored, 'toolA');
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(d, '.gitignore'), 'vendor\n');
+  try {
+    execFileSync('git', ['init', nested], { stdio: 'ignore' });
+  } catch {
+    return;
+  }
+  const { nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'vendor/toolA'));
+});
+
+test('bare repository is reported and its plumbing files do not appear in files array', () => {
+  const d = fixture();
+  const bare = join(d, 'bare-repo');
+  mkdirSync(bare);
+  // Create bare repo structure: HEAD, objects, refs
+  writeFileSync(join(bare, 'HEAD'), 'ref: refs/heads/main\n');
+  mkdirSync(join(bare, 'objects'));
+  mkdirSync(join(bare, 'refs'));
+
+  const { files, nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'bare-repo'));
+  // Verify no bare-repo files leaked into files array
+  assert.equal(files.some(f => f.startsWith('bare-repo/')), false);
+});
+
