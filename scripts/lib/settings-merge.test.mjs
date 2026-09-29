@@ -174,13 +174,25 @@ test('reverting the last deny rule prunes the permissions object itself when it 
   assert.equal(s2.permissions, undefined, 'permissions object must be pruned, not left as {}');
 });
 
-test('reverting the last deny rule leaves sibling keys like allow and defaultMode intact', () => {
+test('reverting the last deny rule leaves the user\'s other deny rules intact', () => {
   const before = { permissions: { deny: ['Edit(x)'], allow: ['Read(*)'], defaultMode: 'allow' } };
   const { settings: s1, patch } = addDenyRules(before, ['Edit(y)']);
   const { settings: s2 } = revertPatch(s1, patch);
   assert.ok(s2.permissions, 'permissions object must be preserved');
   assert.equal(s2.permissions.deny.length, 1);
   assert.deepEqual(s2.permissions.deny, ['Edit(x)']);
+  assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow key must survive');
+  assert.equal(s2.permissions.defaultMode, 'allow', 'defaultMode must survive');
+});
+
+test('reverting the last deny rule when sibling keys exist leaves those keys intact', () => {
+  const before = { permissions: { deny: ['UserRule'], allow: ['Read(*)'], defaultMode: 'allow' } };
+  const { settings: s1, patch } = addDenyRules(before, ['Edit(y)']);
+  // s1 now has deny: ['UserRule', 'Edit(y)'], allow: ['Read(*)'], defaultMode: 'allow'
+  const { settings: s2 } = revertPatch(s1, patch);
+  // After revert, our rule is removed, leaving user's rule
+  assert.ok(s2.permissions, 'permissions object must be preserved');
+  assert.deepEqual(s2.permissions.deny, ['UserRule'], 'user deny rule must survive when our rule is reverted');
   assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow key must survive');
   assert.equal(s2.permissions.defaultMode, 'allow', 'defaultMode must survive');
 });
