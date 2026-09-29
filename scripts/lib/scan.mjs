@@ -30,6 +30,16 @@ function isExcludedPath(entry) {
 // Note that the blind spot is not confined to worktrees: a project created with
 // `git init --separate-git-dir` and then nested as a subfolder is a genuinely
 // independent repository, and it sits on this same silent path.
+//
+// Second known blind spot, platform-dependent: a nested repository reachable only
+// through a symlinked directory is not detected on POSIX, because git does not
+// follow symlinks — `git ls-files -o` lists the symlink itself as a file, never
+// descending into what it points at, so the repository behind it is invisible.
+// On Windows the equivalent construct is a junction, which git cannot distinguish
+// from an ordinary directory, so it is walked and the nested repository is found.
+// The tool does not follow symlinks itself to close this gap — that would mean
+// walking outside the index into cycle-prone territory on a hot path — so this
+// is accepted as a rare, disclosed limitation rather than fixed.
 function detectNestedRepositories(root) {
   const nested = [];
   try {
