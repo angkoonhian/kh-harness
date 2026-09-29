@@ -1,4 +1,4 @@
-import { rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import * as fs from 'node:fs';
 import { join } from 'node:path';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
@@ -7,10 +7,10 @@ const SETTINGS = '.claude/settings.json';
 
 /** Validate settings structure — must be a plain object, not null/array/primitive. */
 function validateSettings(content) {
-  if (!existsSync(content)) return { valid: false, object: null, reason: 'settings-missing' };
+  if (!fs.existsSync(content)) return { valid: false, object: null, reason: 'settings-missing' };
 
   try {
-    const parsed = JSON.parse(readFileSync(content, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(content, 'utf8'));
     const isPlain = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
     if (isPlain) return { valid: true, object: parsed, reason: null };
     return { valid: false, object: null, reason: 'settings-unreadable' };
@@ -57,7 +57,7 @@ export function runUninstall({ root, manifest, plan }) {
     const currentState = classify(root, manifest, r.path);
     if (currentState === 'ours-unmodified') {
       try {
-        rmSync(join(root, r.path));
+        fs.rmSync(join(root, r.path));
         removed.push(r.path);
       } catch (e) {
         failed.push({ path: r.path, reason: e?.message ?? 'unknown error' });
@@ -69,8 +69,9 @@ export function runUninstall({ root, manifest, plan }) {
   }
 
   // 2. Attempt to revert settings patches, tracking what could not be reverted
-  // Only validate settings when there are patches to revert (defect 2: don't false-fail file-only uninstall)
-  if (plan.revert.length) {
+  // Validate settings whenever the manifest has patches (defect 2: avoid false-fail with no patches)
+  const hasSettingsPatches = (manifest?.settingsPatches?.length ?? 0) > 0;
+  if (hasSettingsPatches) {
     const validated = validateSettings(join(root, SETTINGS));
 
     if (validated.valid) {
@@ -91,7 +92,7 @@ export function runUninstall({ root, manifest, plan }) {
       // Write reverted settings only if something changed
       if (settingsChanged) {
         try {
-          writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
+          fs.writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
         } catch (e) {
           settingsWriteFailed = true;
           // Track any patches that couldn't be written
@@ -136,7 +137,7 @@ export function runUninstall({ root, manifest, plan }) {
 
   if (!hasKept && !hasFailures) {
     try {
-      rmSync(join(root, MANIFEST_PATH));
+      fs.rmSync(join(root, MANIFEST_PATH));
     } catch (e) {
       manifestDeleteFailed = true;
     }

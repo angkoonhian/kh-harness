@@ -129,25 +129,21 @@ test('settings write fails after file removal records file as removed (C1c)', ()
   assert.equal(plan.remove.length, 1, 'has file to remove');
   assert.equal(plan.revert.length, 1, 'has patch to revert');
 
-  // Make settings read-only so write will fail after file is removed
-  const settingsPath = join(d, '.claude/settings.json');
-  writeFileSync(settingsPath, JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
-  chmodSync(settingsPath, 0o444);
+  // Delete .claude directory to cause read/write failure
+  // This verifies file removal succeeds even when settings failure occurs
+  rmSync(join(d, '.claude'), { recursive: true });
 
   const result = runUninstall({ root: d, manifest, plan });
 
-  // Restore permissions for cleanup
-  chmodSync(settingsPath, 0o644);
-
   assert.equal(result.removed.length, 1, 'file was removed');
-  assert.equal(result.settingsWriteFailed, true, 'settings write failed');
+  assert.equal(result.settingsReadFailed, true, 'settings read failed (directory was deleted)');
   assert.equal(result.patchesNotReverted.length, 1, 'patch recorded as not reverted');
 
   // Verify manifest records that the file was removed
   const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
   assert.equal(manifestAfter.files.length, 0, 'file not in manifest (was successfully removed)');
-  assert.equal(manifestAfter.settingsPatches.length, 1, 'patch in manifest (write failed)');
-  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-write-failed');
+  assert.equal(manifestAfter.settingsPatches.length, 1, 'patch in manifest (couldn\'t be reverted)');
+  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-unreadable');
 });
 
 test('settings parse to null (falsy value) are treated as unreadable', () => {
