@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, globSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
-const IGNORE = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/.venv/**', '**/__pycache__/**'];
+const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
 
 /**
  * Prefer `git ls-files`: it respects .gitignore and is dramatically faster than
@@ -17,8 +17,27 @@ export function listFiles(root) {
       .filter(f => !f.startsWith('node_modules/') && !f.includes('/node_modules/'));
     return { files, source: 'git' };
   } catch {
-    const files = globSync('**/*', { cwd: root, nodir: true, exclude: IGNORE })
-      .map(f => f.split('\\').join('/'));
+    // Fallback: recursive directory walk using stable readdirSync (Node 20.1+)
+    const files = [];
+    try {
+      const entries = readdirSync(root, { recursive: true, withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+
+        const fullPath = join(entry.parentPath, entry.name);
+        const relPath = relative(root, fullPath);
+        const pathComponents = relPath.split(/[\\\/]/);
+
+        // Skip if any directory component is excluded
+        if (pathComponents.slice(0, -1).some(p => EXCLUDE_DIRS.has(p))) continue;
+
+        // Convert to POSIX separators
+        files.push(relPath.split('\\').join('/'));
+      }
+    } catch {
+      // If walk fails, return empty list rather than throwing
+      return { files: [], source: 'walk' };
+    }
     return { files, source: 'walk' };
   }
 }
