@@ -489,3 +489,30 @@ test('I1: a settings file repaired between plan and run still gets its hook reve
   assert.equal(result.settingsReadFailed, false);
   assert.equal(existsSync(join(d, MANIFEST_PATH)), false, 'and the manifest is cleared, so the repo is genuinely clean');
 });
+
+// --- I5: the guard that stops an empty run from rewriting their file -----
+
+test('I5: a run that reverts nothing leaves settings.json byte-identical', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), '{}');
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
+
+  const settingsPath = join(d, '.claude/settings.json');
+  const s = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  s.hooks.SessionStart[0].hooks[0].command = 'node edited.mjs';
+  // Deliberately in the user's own formatting — compact, no trailing
+  // newline — so that a rewrite is visible even when the *content* is
+  // unchanged. Re-indenting someone's settings.json is still touching it.
+  const theirs = JSON.stringify(s);
+  writeFileSync(settingsPath, theirs);
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.revert, [], 'nothing is revertible, so no write may be attempted');
+
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.settingsWriteFailed, false);
+  assert.equal(readFileSync(settingsPath, 'utf8'), theirs,
+    'a run that reverts nothing has no business rewriting or re-indenting the user\'s file');
+});

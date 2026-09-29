@@ -172,7 +172,10 @@ export function runUninstall({ root, manifest, plan }) {
         }
       }
 
-      // Write reverted settings only if something changed
+      // Write reverted settings only if something changed. Without this
+      // guard an uninstall that reverts nothing still rewrites and
+      // re-indents the user's settings.json — a file this run had no
+      // business touching at all.
       if (settingsChanged) {
         try {
           fs.writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
