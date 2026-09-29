@@ -159,3 +159,32 @@ test('scans uppercase file extensions', () => {
   const hasExposure = found.some(e => e.location === 'README.MD');
   assert.ok(hasExposure, 'Should scan .MD file');
 });
+
+// Fix Round 2: Remaining issues
+test('finds PEM key in .ssh/id_rsa (extensionless under dotted directory)', () => {
+  const d = repo();
+  write(d, '.ssh/id_rsa', '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n');
+  const found = run(d);
+  const hasExposure = found.some(e => e.location === '.ssh/id_rsa' && e.kind === 'token-in-tracked-file');
+  assert.ok(hasExposure, 'Should find PEM key in .ssh/id_rsa');
+});
+
+test('reports both token and password in gitignored .env', () => {
+  const d = repo();
+  try {
+    execSync('git init', { cwd: d, stdio: 'ignore' });
+    execSync('git config user.email "test@example.com"', { cwd: d, stdio: 'ignore' });
+    execSync('git config user.name "Test"', { cwd: d, stdio: 'ignore' });
+  } catch {}
+  write(d, '.gitignore', '.env\n');
+  write(d, '.env', `TOKEN=sk_test_${'F'.repeat(15)}\nDB_PASSWORD=secretpass123456\n`);
+  write(d, 'README.md', '# test');
+  execSync('git add .gitignore README.md', { cwd: d, stdio: 'ignore' });
+  execSync('git commit -m "init"', { cwd: d, stdio: 'ignore' });
+  const found = run(d);
+  const hasToken = found.some(e => e.location === '.env' && e.kind === 'token-in-tracked-file');
+  const hasPassword = found.some(e => e.location === '.env' && e.kind === 'credentials-in-doc');
+  assert.ok(hasToken, 'Should find token in .env');
+  assert.ok(hasPassword, 'Should find password in .env');
+  assert.ok(found.filter(e => e.location === '.env').length === 2, 'Should report both findings for .env');
+});

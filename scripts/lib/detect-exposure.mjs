@@ -1,6 +1,6 @@
 // scripts/lib/detect-exposure.mjs
 import { statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { readIfPresent } from './scan.mjs';
 
 const MAX_BYTES = 512 * 1024;
@@ -38,20 +38,60 @@ const SCAN_EXT = [
 ];
 const SKIP_DIRS = ['node_modules/', '.git/', 'dist/', 'build/'];
 
+function hasScannableExtension(base) {
+  const lower = base.toLowerCase();
+  // Dotfiles with no extension (like .env, .npmrc) are always scanned
+  if (lower.startsWith('.')) {
+    const afterDot = lower.slice(1);
+    // If there's no dot in the remainder, it's a dotfile with no extension
+    if (!afterDot.includes('.')) return true;
+    // Otherwise, check if the extension matches SCAN_EXT
+  }
+  return SCAN_EXT.some(e => lower.endsWith(e));
+}
+
 function scannable(root, rel) {
   if (SKIP_DIRS.some(p => rel.startsWith(p) || rel.includes('/' + p))) return false;
-  const lower = rel.toLowerCase();
-  const dotted = lower.includes('.env');
-  // Allow: .env files, files with SCAN_EXT extensions, or extensionless files
-  if (!dotted && !SCAN_EXT.some(e => lower.endsWith(e))) {
+  const base = basename(rel);
+  // Allow: files with SCAN_EXT extensions, or extensionless files
+  if (!hasScannableExtension(base)) {
     // Reject files with extensions that don't match SCAN_EXT
-    if (lower.includes('.')) return false;
+    if (base.includes('.')) return false;
   }
   try { return statSync(join(root, rel)).size <= MAX_BYTES; } catch { return false; }
 }
 
 function isPlaceholder(value) {
   return PLACEHOLDER.test(value);
+}
+
+function scanFile(root, rel, isLocalSettings) {
+  const findings = [];
+
+  // Check size
+  try {
+    if (statSync(join(root, rel)).size > MAX_BYTES) return findings;
+  } catch {
+    return findings;
+  }
+
+  const text = readIfPresent(root, rel);
+  if (!text) return findings;
+
+  const hasToken = TOKEN_PATTERNS.some(re => re.test(text)) || PEM_PATTERN.test(text);
+  if (hasToken) {
+    const kind = isLocalSettings ? 'token-in-local-settings' : 'token-in-tracked-file';
+    findings.push({ kind, location: rel, severity: 'high' });
+  }
+
+  if (DB_CRED.test(text)) {
+    const match = text.match(DB_CRED);
+    if (match && !isPlaceholder(match[0])) {
+      findings.push({ kind: 'credentials-in-doc', location: rel, severity: 'medium' });
+    }
+  }
+
+  return findings;
 }
 
 export function detectExposures(root, files, harness) {
@@ -64,42 +104,15 @@ export function detectExposures(root, files, harness) {
 
   for (const rel of files) {
     if (!scannable(root, rel)) continue;
-    const text = readIfPresent(root, rel);
-    if (!text) continue;
-
-    const hasToken = TOKEN_PATTERNS.some(re => re.test(text)) || PEM_PATTERN.test(text);
-    if (hasToken) {
-      const kind = rel.startsWith('.claude/') ? 'token-in-local-settings' : 'token-in-tracked-file';
-      out.push({ kind, location: rel, severity: 'high' });
-    }
-
-    if (DB_CRED.test(text)) {
-      const match = text.match(DB_CRED);
-      if (match && !isPlaceholder(match[0])) {
-        out.push({ kind: 'credentials-in-doc', location: rel, severity: 'medium' });
-      }
-    }
+    const isLocalSettings = rel.startsWith('.claude/');
+    out.push(...scanFile(root, rel, isLocalSettings));
   }
 
   // Scan always-probed paths, deduplicating against files already checked
   for (const rel of ALWAYS_PROBE) {
     if (seen.has(rel)) continue;
-    const text = readIfPresent(root, rel);
-    if (!text) continue;
-
-    const hasToken = TOKEN_PATTERNS.some(re => re.test(text)) || PEM_PATTERN.test(text);
-    if (hasToken) {
-      const kind = rel.startsWith('.claude/') ? 'token-in-local-settings' : 'token-in-tracked-file';
-      out.push({ kind, location: rel, severity: 'high' });
-      continue;
-    }
-
-    if (DB_CRED.test(text)) {
-      const match = text.match(DB_CRED);
-      if (match && !isPlaceholder(match[0])) {
-        out.push({ kind: 'credentials-in-doc', location: rel, severity: 'medium' });
-      }
-    }
+    const isLocalSettings = rel.startsWith('.claude/');
+    out.push(...scanFile(root, rel, isLocalSettings));
   }
 
   return out;
