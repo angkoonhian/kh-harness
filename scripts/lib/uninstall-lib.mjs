@@ -30,9 +30,13 @@ export function planUninstall({ root, manifest }) {
 }
 
 export function runUninstall({ root, manifest, plan }) {
+  // Collect all outcomes before persisting anything.
+  // Compute, then write manifest, unconditionally — no throw between action and bookkeeping.
   const removed = [], failed = [];
+  let settingsReadFailed = false, settingsWriteFailed = false;
+  const patchesNotReverted = [];
 
-  // Track actual outcomes of each removal attempt
+  // 1. Track actual outcomes of each removal attempt
   for (const r of plan.remove) {
     try {
       rmSync(join(root, r.path));
@@ -42,35 +46,69 @@ export function runUninstall({ root, manifest, plan }) {
     }
   }
 
-  // Guard settings read/parse like planUninstall does
-  let settingsReadFailed = false;
+  // 2. Attempt to revert settings patches, tracking what could not be reverted
   if (plan.revert.length) {
     let settings = null;
-    try { settings = JSON.parse(readFileSync(join(root, SETTINGS), 'utf8')); } catch { settingsReadFailed = true; }
+    try {
+      settings = JSON.parse(readFileSync(join(root, SETTINGS), 'utf8'));
+    } catch {
+      settingsReadFailed = true;
+    }
+
     if (settings) {
+      // Settings readable; apply reverts
       for (const p of plan.revert) settings = revertPatch(settings, p).settings;
-      writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
+
+      // Try to write reverted settings; guard the write (C1c)
+      try {
+        writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
+      } catch (e) {
+        settingsWriteFailed = true;
+        patchesNotReverted.push(...plan.revert);
+      }
+    } else {
+      // Settings not readable; patches cannot be reverted
+      patchesNotReverted.push(...plan.revert);
     }
   }
 
-  // The manifest records what we still have in the tree. It goes only when
-  // there is nothing left to record AND no removals failed.
-  const hasKept = plan.keep.length > 0 || plan.keepPatches.length > 0 || settingsReadFailed;
+  // 3. Build manifest from actual outcomes, not from plan (C1a, C1c)
+  const keptPaths = new Set(plan.keep.map(k => k.path));
+  const failedPaths = new Set(failed.map(f => f.path));
+
+  // Files to keep in manifest: kept files and files that failed to remove
+  const keptFiles = manifest.files.filter(f => keptPaths.has(f.path) || failedPaths.has(f.path));
+
+  // Patches to keep in manifest: user-edited patches + patches we couldn't revert
+  const keptPatches = [
+    ...plan.keepPatches,
+    ...patchesNotReverted.map(p => ({
+      ...p,
+      why: settingsReadFailed ? 'settings-unreadable' : (settingsWriteFailed ? 'settings-write-failed' : 'unknown')
+    }))
+  ];
+
+  // 4. Persist the manifest once, from actual outcomes (C1c)
+  // No throw path between actions and bookkeeping — this is always reachable
+  const hasKept = keptFiles.length > 0 || keptPatches.length > 0;
   const hasFailures = failed.length > 0;
 
   if (!hasKept && !hasFailures) {
     try { rmSync(join(root, MANIFEST_PATH)); } catch { /* fine */ }
   } else {
-    // Update manifest to track what we kept and what failed to remove
-    const keptPaths = new Set(plan.keep.map(k => k.path));
-    const failedPaths = new Set(failed.map(f => f.path));
     const updatedManifest = {
       ...manifest,
-      files: manifest.files.filter(f => keptPaths.has(f.path) || failedPaths.has(f.path)),
-      settingsPatches: plan.keepPatches
+      files: keptFiles,
+      settingsPatches: keptPatches
     };
     writeManifest(root, updatedManifest);
   }
 
-  return { removed, failed, settingsReadFailed };
+  return {
+    removed,
+    failed,
+    settingsReadFailed,
+    settingsWriteFailed,
+    patchesNotReverted
+  };
 }

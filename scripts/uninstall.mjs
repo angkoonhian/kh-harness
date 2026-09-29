@@ -85,24 +85,38 @@ if (result.failed.length > 0) {
   }
 }
 
-if (plan.keep.length > 0 || plan.keepPatches.length > 0 || result.settingsReadFailed) {
-  console.log('Kept:');
+// Report settings failures and patches that couldn't be reverted (C1a, C1b)
+if (result.settingsReadFailed) {
+  console.log('Settings file could not be read: hooks remain registered');
+}
+
+if (result.settingsWriteFailed) {
+  console.log('Settings file could not be written: hooks not reverted');
+}
+
+if (result.patchesNotReverted.length > 0) {
+  console.log('Could not revert:');
+  for (const p of result.patchesNotReverted) {
+    console.log(`  ${p.container}`);
+  }
+}
+
+if (plan.keep.length > 0 || plan.keepPatches.length > 0) {
+  console.log('Kept (user-modified):');
   for (const k of plan.keep) {
     console.log(`  ${k.path}`);
   }
   for (const p of plan.keepPatches) {
     console.log(`  ${p.container}`);
   }
-  if (result.settingsReadFailed) {
-    console.log(`  .claude/settings.json (settings-unreadable)`);
-  }
 }
 
-if (result.removed.length === 0 && result.failed.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed) {
+if (result.removed.length === 0 && result.failed.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && result.patchesNotReverted.length === 0) {
   console.log('nothing was left behind');
 }
 
-if (result.failed.length > 0) {
+// Exit 2 if any removal failed, or if settings couldn't be handled (C1b)
+if (result.failed.length > 0 || result.settingsReadFailed || result.settingsWriteFailed) {
   process.exit(2);
 }
 

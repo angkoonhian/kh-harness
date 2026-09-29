@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, MANIFEST_PATH } from './manifest.mjs';
@@ -92,4 +92,60 @@ test('planUninstall writes nothing', () => {
   assert.equal(existsSync(join(d, 'HANDOFF.md')), true, 'file still exists');
   assert.equal(readFileSync(join(d, 'HANDOFF.md'), 'utf8'), contentBefore, 'file content unchanged');
   assert.equal(existsSync(join(d, MANIFEST_PATH)), false, 'manifest untouched (was never written by applyProposals)');
+});
+
+test('settings deleted between plan and run records patches as kept (C1a)', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  const hookProposal = { kind: 'settings-hook', event: 'SessionStart', step: 16, entry: { type: 'command', command: 'node x.mjs' }, checkId: 'P4.sessionbrief', reason: 'r' };
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.revert.length, 1, 'has a patch to revert');
+
+  // Delete settings file between plan and run
+  rmSync(join(d, '.claude/settings.json'));
+
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.settingsReadFailed, true);
+  assert.equal(result.patchesNotReverted.length, 1, 'patch recorded as not reverted');
+
+  // Verify manifest records the patch with reason
+  const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.equal(manifestAfter.settingsPatches.length, 1);
+  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-unreadable');
+});
+
+test('settings write fails after file removal records file as removed (C1c)', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const fileProposal = { kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r' };
+  const hookProposal = { kind: 'settings-hook', event: 'SessionStart', step: 16, entry: { type: 'command', command: 'node x.mjs' }, checkId: 'P4.sessionbrief', reason: 'r' };
+
+  const { manifest } = applyProposals({ root: d, proposals: [fileProposal, hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.remove.length, 1, 'has file to remove');
+  assert.equal(plan.revert.length, 1, 'has patch to revert');
+
+  // Make settings read-only so write will fail after file is removed
+  const settingsPath = join(d, '.claude/settings.json');
+  writeFileSync(settingsPath, JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  chmodSync(settingsPath, 0o444);
+
+  const result = runUninstall({ root: d, manifest, plan });
+
+  // Restore permissions for cleanup
+  chmodSync(settingsPath, 0o644);
+
+  assert.equal(result.removed.length, 1, 'file was removed');
+  assert.equal(result.settingsWriteFailed, true, 'settings write failed');
+  assert.equal(result.patchesNotReverted.length, 1, 'patch recorded as not reverted');
+
+  // Verify manifest records that the file was removed
+  const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.equal(manifestAfter.files.length, 0, 'file not in manifest (was successfully removed)');
+  assert.equal(manifestAfter.settingsPatches.length, 1, 'patch in manifest (write failed)');
+  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-write-failed');
 });
