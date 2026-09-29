@@ -67,7 +67,7 @@ test('revertPatch returns reverted:false when patch missing container without th
 });
 
 test('revertPatch returns reverted:false when container does not start with /hooks/', () => {
-  const patch = { container: '/permissions/deny', entrySha256: 'abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1' };
+  const patch = { container: '/unknown/container', entrySha256: 'abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1' };
   const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
   const { reverted } = revertPatch(settings, patch);
   assert.equal(reverted, false);
@@ -181,18 +181,6 @@ test('reverting the last deny rule leaves the user\'s other deny rules intact', 
   assert.ok(s2.permissions, 'permissions object must be preserved');
   assert.equal(s2.permissions.deny.length, 1);
   assert.deepEqual(s2.permissions.deny, ['Edit(x)']);
-  assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow key must survive');
-  assert.equal(s2.permissions.defaultMode, 'allow', 'defaultMode must survive');
-});
-
-test('reverting the last deny rule when sibling keys exist leaves those keys intact', () => {
-  const before = { permissions: { deny: ['UserRule'], allow: ['Read(*)'], defaultMode: 'allow' } };
-  const { settings: s1, patch } = addDenyRules(before, ['Edit(y)']);
-  // s1 now has deny: ['UserRule', 'Edit(y)'], allow: ['Read(*)'], defaultMode: 'allow'
-  const { settings: s2 } = revertPatch(s1, patch);
-  // After revert, our rule is removed, leaving user's rule
-  assert.ok(s2.permissions, 'permissions object must be preserved');
-  assert.deepEqual(s2.permissions.deny, ['UserRule'], 'user deny rule must survive when our rule is reverted');
   assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow key must survive');
   assert.equal(s2.permissions.defaultMode, 'allow', 'defaultMode must survive');
 });
