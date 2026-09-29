@@ -119,3 +119,16 @@ test('nested repository three levels down is found', () => {
   const { nested: detected } = listFiles(d);
   assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'a/b/c/repo'));
 });
+
+test('files array contains no trailing-slash entries when nested repositories are present', () => {
+  const d = fixture();
+  const nested = join(d, 'nested-repo');
+  mkdirSync(nested);
+  try {
+    execFileSync('git', ['init', nested], { stdio: 'ignore' });
+  } catch {
+    return;
+  }
+  const { files } = listFiles(d);
+  assert.equal(files.some(f => f.endsWith('/')), false);
+});
