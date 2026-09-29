@@ -5,7 +5,10 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   const out = [];
   if (nested.length) {
     const paths = nested.map(n => n.path).join(', ');
-    out.push(`This repository contains ${nested.length} nested repositor${nested.length === 1 ? 'y' : 'ies'} (${paths}). Stack detection and credential scanning covered this repository only; each nested repository must be assessed separately.`);
+    // "detected", not "contains": a repository whose .git is a file
+    // (separate-git-dir layout) is a known blind spot, so this list is what was
+    // found, not a guarantee of completeness.
+    out.push(`${nested.length} nested repositor${nested.length === 1 ? 'y was' : 'ies were'} detected (${paths}). Stack detection and credential scanning covered this repository only; each nested repository must be assessed separately.`);
   }
   if (profile.id === 'generic') {
     out.push('Stack detection did not reach a decision (confidence below 0.5). What is this project\'s primary stack? Stack-specific steps were skipped as a result.');
@@ -59,7 +62,7 @@ export function renderSummary(report) {
   }
 
   if (report.nested && report.nested.length) {
-    lines.push(`Nested repositories (${report.nested.length}) — not scanned:`);
+    lines.push(`Nested repositories detected (${report.nested.length}) — not scanned:`);
     for (const n of report.nested) lines.push(`  • ${n.path} (${n.kind})`);
     lines.push('');
   }

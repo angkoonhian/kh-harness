@@ -18,8 +18,10 @@ function fixture() {
     execFileSync('git', ['init', d], { stdio: 'ignore' });
     execFileSync('git', ['-C', d, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
     execFileSync('git', ['-C', d, 'config', 'user.name', 'Test'], { stdio: 'ignore' });
-  } catch {
-    // If git init fails, continue anyway
+  } catch (e) {
+    // Continue anyway — the walk fallback still lists files — but say so, so a
+    // git-less environment does not look like a passing nested-detection run.
+    console.log(`  (fixture: git init failed, falling back to the directory walk: ${e.message})`);
   }
   return d;
 }
@@ -61,8 +63,10 @@ test('a fixture with a nested repository is reported as nested-repo', () => {
   // Create a git repo inside
   try {
     execFileSync('git', ['init', nested], { stdio: 'ignore' });
-  } catch {
-    // git init may fail in test env; skip this test gracefully
+  } catch (e) {
+    // An honest skip: say why, or roughly ten nested-detection tests
+    // would report green having asserted nothing.
+    console.log(`  (skipped: git init failed: ${e.message})`);
     return;
   }
   const { nested: detected } = listFiles(d);
@@ -83,7 +87,10 @@ test('nested repository under fully-untracked parent is found (no tracked siblin
   // Create a git repo inside with no tracked sibling under vendor/
   try {
     execFileSync('git', ['init', toolA], { stdio: 'ignore' });
-  } catch {
+  } catch (e) {
+    // An honest skip: say why, or roughly ten nested-detection tests
+    // would report green having asserted nothing.
+    console.log(`  (skipped: git init failed: ${e.message})`);
     return;
   }
   const { nested: detected } = listFiles(d);
@@ -100,7 +107,10 @@ test('nested repository with tracked sibling under parent is found (regression)'
   // Create a git repo inside
   try {
     execFileSync('git', ['init', toolA], { stdio: 'ignore' });
-  } catch {
+  } catch (e) {
+    // An honest skip: say why, or roughly ten nested-detection tests
+    // would report green having asserted nothing.
+    console.log(`  (skipped: git init failed: ${e.message})`);
     return;
   }
   const { nested: detected } = listFiles(d);
@@ -113,7 +123,10 @@ test('nested repository three levels down is found', () => {
   mkdirSync(deep, { recursive: true });
   try {
     execFileSync('git', ['init', deep], { stdio: 'ignore' });
-  } catch {
+  } catch (e) {
+    // An honest skip: say why, or roughly ten nested-detection tests
+    // would report green having asserted nothing.
+    console.log(`  (skipped: git init failed: ${e.message})`);
     return;
   }
   const { nested: detected } = listFiles(d);
@@ -126,7 +139,10 @@ test('files array contains no trailing-slash entries when nested repositories ar
   mkdirSync(nested);
   try {
     execFileSync('git', ['init', nested], { stdio: 'ignore' });
-  } catch {
+  } catch (e) {
+    // An honest skip: say why, or roughly ten nested-detection tests
+    // would report green having asserted nothing.
+    console.log(`  (skipped: git init failed: ${e.message})`);
     return;
   }
   const { files } = listFiles(d);
@@ -140,7 +156,10 @@ test('gitignored directory containing a nested repository is reported', () => {
   writeFileSync(join(d, '.gitignore'), 'backend-old\n');
   try {
     execFileSync('git', ['init', ignored], { stdio: 'ignore' });
-  } catch {
+  } catch (e) {
+    // An honest skip: say why, or roughly ten nested-detection tests
+    // would report green having asserted nothing.
+    console.log(`  (skipped: git init failed: ${e.message})`);
     return;
   }
   const { nested: detected } = listFiles(d);
@@ -155,7 +174,10 @@ test('nested repository inside a gitignored parent one level down is reported', 
   writeFileSync(join(d, '.gitignore'), 'vendor\n');
   try {
     execFileSync('git', ['init', nested], { stdio: 'ignore' });
-  } catch {
+  } catch (e) {
+    // An honest skip: say why, or roughly ten nested-detection tests
+    // would report green having asserted nothing.
+    console.log(`  (skipped: git init failed: ${e.message})`);
     return;
   }
   const { nested: detected } = listFiles(d);
@@ -190,6 +212,26 @@ test('.git-as-file (worktree layout) is a known blind spot — not reported', ()
   assert.equal(detected.some(n => n.path === 'worktree'), false);
 });
 
+// `npm install git+https://…` leaves a real .git inside an installed package.
+// A top-level node_modules/ does not end with '/node_modules/', so it used to
+// reach the depth-1 scan and produce a false entry in a disclosure block that
+// claims completeness — plus one existsSync per installed package on every scan.
+test('a vendored .git under a top-level node_modules is not reported as a nested repository', () => {
+  const d = fixture();
+  writeFileSync(join(d, '.gitignore'), 'node_modules\n');
+  const pkg = join(d, 'node_modules', 'somepkg');
+  mkdirSync(pkg, { recursive: true });
+  try {
+    execFileSync('git', ['init', pkg], { stdio: 'ignore' });
+  } catch (e) {
+    console.log(`  (skipped: git init failed: ${e.message})`);
+    return;
+  }
+  const { nested } = listFiles(d);
+  assert.equal(nested.some(n => n.path.split('/')[0] === 'node_modules'), false,
+    `node_modules must not appear in the nested disclosure; got ${JSON.stringify(nested)}`);
+});
+
 test('symlinked directory pointing at nested repository is recognized', () => {
   const d = fixture();
   const realRepo = join(d, 'real-nested-repo');
@@ -198,7 +240,10 @@ test('symlinked directory pointing at nested repository is recognized', () => {
   mkdirSync(realRepo);
   try {
     execFileSync('git', ['init', realRepo], { stdio: 'ignore' });
-  } catch {
+  } catch (e) {
+    // An honest skip: say why, or roughly ten nested-detection tests
+    // would report green having asserted nothing.
+    console.log(`  (skipped: git init failed: ${e.message})`);
     return;
   }
   

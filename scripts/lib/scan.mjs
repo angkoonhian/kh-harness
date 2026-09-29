@@ -4,57 +4,65 @@ import { join, relative } from 'node:path';
 
 const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
 
+/**
+ * Run a git command and return its output as trimmed, non-empty lines.
+ * Returns null — not [] — when git fails, so callers can tell "nothing found"
+ * from "could not look".
+ */
+function gitLines(root, args) {
+  try {
+    return execFileSync('git', ['-C', root, ...args], {
+      encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+    }).split('\n').map(s => s.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/** True if any path component of an entry is a directory we never descend into. */
+function isExcludedPath(entry) {
+  return entry.split('/').filter(Boolean).some(part => EXCLUDE_DIRS.has(part));
+}
+
 // Known blind spot: a repository whose .git is a file (separate-git-dir, worktree layout)
 // is not detected — git does not enumerate it in ls-files output. Submodules are detected
 // via mode 160000; worktrees are views of the same repository, not separate projects.
+// Note that the blind spot is not confined to worktrees: a project created with
+// `git init --separate-git-dir` and then nested as a subfolder is a genuinely
+// independent repository, and it sits on this same silent path.
 function detectNestedRepositories(root) {
   const nested = [];
   try {
+    // Untracked entries. Used twice below; git is asked once.
+    const untracked = gitLines(root, ['ls-files', '-o', '--exclude-standard']);
+
     // Detect submodules: entries with mode 160000 in git ls-files -s
-    try {
-      const lsOut = execFileSync('git', ['-C', root, 'ls-files', '-s'], {
-        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      for (const line of lsOut.split('\n')) {
-        const parts = line.split(/\s+/);
-        if (parts[0] === '160000' && parts[3]) {
-          nested.push({ path: parts[3], kind: 'submodule' });
-        }
+    for (const line of gitLines(root, ['ls-files', '-s']) ?? []) {
+      const parts = line.split(/\s+/);
+      if (parts[0] === '160000' && parts[3]) {
+        nested.push({ path: parts[3], kind: 'submodule' });
       }
-    } catch {
-      // If git ls-files -s fails, continue without submodule detection
     }
 
     // Detect nested independent repositories: untracked directories containing .git
-    try {
-      const lsOut = execFileSync('git', ['-C', root, 'ls-files', '-o', '--exclude-standard'], {
-        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      for (const line of lsOut.split('\n')) {
-        const entry = line.trim();
-        if (!entry) continue;
-
-        // Entries ending in / are nested repository boundaries
-        if (entry.endsWith('/')) {
-          const path = entry.slice(0, -1);
-          // Confirm with .git child check (file or directory)
-          if (existsSync(join(root, path, '.git'))) {
-            nested.push({ path, kind: 'nested-repo' });
-          }
+    for (const entry of untracked ?? []) {
+      // Entries ending in / are nested repository boundaries
+      if (entry.endsWith('/')) {
+        const path = entry.slice(0, -1);
+        // Confirm with .git child check (file or directory)
+        if (existsSync(join(root, path, '.git'))) {
+          nested.push({ path, kind: 'nested-repo' });
         }
       }
-    } catch {
-      // If git ls-files fails, continue without nested-repo detection
     }
 
     // Detect nested repositories in gitignored directories
     try {
-      const lsOut = execFileSync('git', ['-C', root, 'ls-files', '-o', '-i', '--exclude-standard', '--directory'], {
-        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      for (const line of lsOut.split('\n')) {
-        const entry = line.trim();
-        if (!entry || entry.endsWith('/node_modules/')) continue;
+      for (const entry of gitLines(root, ['ls-files', '-o', '-i', '--exclude-standard', '--directory']) ?? []) {
+        // node_modules and friends are never nested projects: `npm install
+        // git+https://…` leaves a real .git inside an installed package, and
+        // reporting it is both wrong and one existsSync per installed package.
+        if (isExcludedPath(entry)) continue;
 
         // Entries ending in / are ignored directory boundaries
         if (entry.endsWith('/')) {
@@ -88,33 +96,23 @@ function detectNestedRepositories(root) {
         }
       }
     } catch {
-      // If git ls-files fails, continue without gitignored nested-repo detection
+      // If the gitignored sweep fails, continue without it
     }
 
     // Detect bare repositories (have HEAD file and objects directory)
-    try {
-      const lsOut = execFileSync('git', ['-C', root, 'ls-files', '-o', '--exclude-standard'], {
-        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      const entries = new Set();
-      for (const line of lsOut.split('\n')) {
-        const entry = line.trim();
-        if (!entry) continue;
-        const topLevelDir = entry.split(/[/\\]/)[0];
-        if (topLevelDir) entries.add(topLevelDir);
-      }
-
-      for (const dir of entries) {
-        const fullPath = join(root, dir);
-        // Bare repo: has HEAD file and objects directory
-        if (existsSync(join(fullPath, 'HEAD')) && existsSync(join(fullPath, 'objects'))) {
-          if (!nested.some(n => n.path === dir)) {
-            nested.push({ path: dir, kind: 'nested-repo' });
-          }
+    const topLevelDirs = new Set();
+    for (const entry of untracked ?? []) {
+      const topLevelDir = entry.split(/[/\\]/)[0];
+      if (topLevelDir && !EXCLUDE_DIRS.has(topLevelDir)) topLevelDirs.add(topLevelDir);
+    }
+    for (const dir of topLevelDirs) {
+      const fullPath = join(root, dir);
+      // Bare repo: has HEAD file and objects directory
+      if (existsSync(join(fullPath, 'HEAD')) && existsSync(join(fullPath, 'objects'))) {
+        if (!nested.some(n => n.path === dir)) {
+          nested.push({ path: dir, kind: 'nested-repo' });
         }
       }
-    } catch {
-      // If detection fails, continue
     }
   } catch {
     // If any git operation fails entirely, return empty
