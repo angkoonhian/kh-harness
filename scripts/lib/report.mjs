@@ -19,6 +19,9 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   if (checks.some(c => c.id === 'P1.instructions' && c.state === 'declared')) {
     out.push('An instruction file already exists. Which of its rules are decisions that cannot be re-derived from source? Those must survive any regeneration.');
   }
+  // Questions routed by buildGaps from checks that could not decide. These are
+  // the `absent` results that may not propose: asking is what they do instead.
+  for (const c of checks) if (c.question) out.push(c.question);
   return out;
 }
 

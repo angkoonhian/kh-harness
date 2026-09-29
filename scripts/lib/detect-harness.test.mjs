@@ -166,6 +166,66 @@ test('hookEvents is empty for a missing, malformed or hook-less settings file', 
   assert.deepEqual(run(shapeless).claudeDir.hookEvents, {});
 });
 
+// --- docPointers: the repository's own pointer at its documentation ---
+//
+// The set of names people give an architecture document is unbounded; the set
+// of ways a repository points at its own documentation is small and readable.
+// Every candidate is resolved against the file list, so anything that is not a
+// real path simply vanishes — no guessing, no content sniffing.
+
+test('docPointers resolves an @path import in the instruction file', () => {
+  const d = repo();
+  write(d, 'CLAUDE.md', 'See @docs/agent-context/CONVENTIONS.md for the rules.\n');
+  write(d, 'docs/agent-context/CONVENTIONS.md', '# conventions\n');
+  assert.deepEqual(run(d).docPointers, ['docs/agent-context/CONVENTIONS.md']);
+});
+
+test('docPointers resolves a markdown link and an inline-code directory', () => {
+  const d = repo();
+  write(d, 'CLAUDE.md', 'Project structure lives in `docs/wiki/`, see also [the map](docs/map.md).\n');
+  write(d, 'docs/wiki/README.md', '# wiki\n');
+  write(d, 'docs/wiki/services.md', '# services\n');
+  write(d, 'docs/map.md', '# map\n');
+  assert.deepEqual(run(d).docPointers, ['docs/map.md', 'docs/wiki/README.md', 'docs/wiki/services.md']);
+});
+
+test('docPointers ignores URLs, anchors and paths that do not exist', () => {
+  const d = repo();
+  write(d, 'CLAUDE.md', [
+    'See [upstream](https://example.invalid/docs/ARCHITECTURE.md).',
+    'And [a section](#design).',
+    'And [a ghost](docs/NOT-THERE.md).',
+    'Run `npm test` before pushing.',
+    'Mail @someone about it.',
+  ].join('\n'));
+  write(d, 'docs/real.md', '# real\n');
+  assert.deepEqual(run(d).docPointers, []);
+});
+
+test('docPointers excludes the kit\'s own outputs — the harness pointing at itself is not evidence', () => {
+  const d = repo();
+  write(d, 'CLAUDE.md', 'See [handoff](HANDOFF.md), [inventory](docs/harness/recon.md) and @AGENTS.md.\n');
+  write(d, 'HANDOFF.md', '# handoff\n');
+  write(d, 'AGENTS.md', '# agents\n');
+  write(d, 'docs/harness/recon.md', '# recon\n');
+  assert.deepEqual(run(d).docPointers, []);
+});
+
+test('docPointers is empty when there is no instruction file', () => {
+  const d = repo();
+  write(d, 'docs/wiki/README.md', '# wiki\n');
+  assert.deepEqual(run(d).docPointers, []);
+});
+
+test('projectDocs lists docs/ markdown that is not the kit\'s own output', () => {
+  const d = repo();
+  write(d, 'docs/wiki/README.md', '# wiki\n');
+  write(d, 'docs/wiki/services.md', '# services\n');
+  write(d, 'docs/harness/recon.md', '# recon\n');
+  write(d, 'docs/diagram.png', 'x');
+  assert.deepEqual(run(d).projectDocs, ['docs/wiki/README.md', 'docs/wiki/services.md']);
+});
+
 test('a hook command carrying a credential is redacted before it reaches the report', () => {
   const d = repo();
   const SECRET = 'glpat-' + 'Q'.repeat(20);

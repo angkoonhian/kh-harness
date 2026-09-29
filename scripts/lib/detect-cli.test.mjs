@@ -173,6 +173,54 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
   assert.match(cli(d), /no proposals/i);
 });
 
+// D1: a real repository keeps 456 lines under docs/wiki/ and names it in
+// CLAUDE.md as "project structure, the source of truth". Judged by three
+// filenames it has no architecture document.
+test('a repository whose instruction file points at its documentation is credited', () => {
+  const d = bare();
+  write(d, 'CLAUDE.md', 'Project structure, the source of truth: `docs/wiki/`.\nConventions: @docs/agent-context/CONVENTIONS.md\n');
+  write(d, 'docs/wiki/README.md', '# wiki\n');
+  write(d, 'docs/wiki/services.md', '# services\n');
+  write(d, 'docs/agent-context/CONVENTIONS.md', '# conventions\n');
+
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.harness.architecture, null, 'fixture assumes no canonical path exists');
+  const c = r.checks.find(x => x.id === 'P1.architecture');
+  assert.equal(c.state, 'declared');
+  assert.equal(c.proposal, null, 'must not propose writing a document the repository already has');
+  assert.ok(c.evidence.some(e => e.includes('docs/wiki/README.md')));
+  assert.equal(/architecture prompt/.test(cli(d)), false, 'the summary must not propose one either');
+});
+
+test('an undecidable architecture check proposes nothing and asks instead', () => {
+  const d = bare();
+  // Documentation exists, but nothing in the repository points at it and no
+  // canonical name matches. Three filenames is not an enumeration of the space.
+  write(d, 'docs/wiki/README.md', '# wiki\n');
+  write(d, 'docs/wiki/services.md', '# services\n');
+
+  const r = JSON.parse(cli(d, '--json'));
+  const c = r.checks.find(x => x.id === 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null, 'an undecidable absent must never propose');
+  assert.ok(r.couldNotDerive.some(q => /architecture document/.test(q) && /docs\/wiki\/README\.md/.test(q)),
+    `the question must be routed to couldNotDerive; got ${JSON.stringify(r.couldNotDerive)}`);
+
+  const summary = cli(d);
+  assert.equal(/run the architecture prompt/.test(summary), false);
+  assert.match(summary, /Could not derive/);
+  assert.match(summary, /Is one of these the architecture document\?/);
+});
+
+test('a repository with no documentation at all is still proposed one', () => {
+  const r = JSON.parse(cli(bare(), '--json'));
+  const c = r.checks.find(x => x.id === 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true, 'the space really is empty here');
+  assert.ok(c.proposal);
+});
+
 test('a missing target exits 2', () => {
   assert.throws(
     () => execFileSync(process.execPath, [CLI, join(tmpdir(), 'does-not-exist-hk')], { encoding: 'utf8', stdio: 'pipe' }),

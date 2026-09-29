@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildGaps, STATES } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
+import { deriveCouldNotDerive } from './report.mjs';
 
 const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
@@ -112,6 +113,45 @@ test('a missing git remote is absent', () => {
   assert.equal(byId(gaps(fullStack, richHarness), 'P4.remote').state, 'declared');
 });
 
+// --- P1.architecture: the repository's own pointer, and decidability ---
+
+test('P1.architecture is declared when the instruction file points at documentation', () => {
+  const h = { ...bareHarness, instructions: { path: 'CLAUDE.md', lines: 16 },
+    architecture: null, docPointers: ['docs/wiki/README.md', 'docs/wiki/services.md'], projectDocs: ['docs/wiki/README.md', 'docs/wiki/services.md'] };
+  const c = byId(gaps(fullStack, h), 'P1.architecture');
+  assert.equal(c.state, 'declared');
+  assert.equal(c.proposal, null);
+  assert.ok(c.evidence.some(e => e.includes('docs/wiki/README.md')), `evidence must name what was credited; got ${JSON.stringify(c.evidence)}`);
+});
+
+test('P1.architecture yields no proposal but a question when docs/ holds markdown nothing points at', () => {
+  const h = { ...bareHarness, instructions: { path: 'CLAUDE.md', lines: 16 },
+    architecture: null, docPointers: [], projectDocs: ['docs/wiki/README.md', 'docs/wiki/services.md', 'docs/ops.md', 'docs/api.md'] };
+  const c = byId(gaps(fullStack, h), 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false, 'three filenames is not an enumeration of the space');
+  assert.equal(c.proposal, null, 'an undecidable absent must not propose');
+  assert.ok(c.question, 'it must ask instead');
+  assert.match(c.question, /4 markdown files/, 'the question must say how many were found');
+  assert.match(c.question, /docs\/wiki\/README\.md/, 'and name them');
+  assert.match(c.question, /…/, 'eliding the tail of a long list');
+});
+
+test('P1.architecture proposes when there is genuinely no documentation at all', () => {
+  const h = { ...bareHarness, architecture: null, docPointers: [], projectDocs: [] };
+  const c = byId(gaps(fullStack, h), 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true);
+  assert.ok(c.proposal, 'nothing to be uncertain about — the space is empty');
+  assert.equal(c.question, null);
+});
+
+test('a canonical architecture path still wins outright', () => {
+  const c = byId(gaps(fullStack, richHarness), 'P1.architecture');
+  assert.equal(c.state, 'declared');
+  assert.ok(c.evidence.includes('docs/ARCHITECTURE.md'));
+});
+
 // --- Hook checks read the registry, not the filenames ---
 //
 // .claude/settings.json records what is actually wired up. A hook script may
@@ -214,5 +254,39 @@ test('the guard keeps a proposal when the rogue check\'s state genuinely is "abs
   }]);
   const c = byId(cs, 'ROGUE.absent');
   assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true, 'decidability defaults to true, so existing checks are unaffected');
   assert.equal(c.proposal, 'this must survive', 'a genuinely absent state must keep its proposal — the guard must not null everything');
+});
+
+// The same hole, one axis over. `absent` means two incompatible things: "I
+// enumerated the complete space and it is not there" and "I checked a handful
+// of names I happen to know". Only the first may propose. The check declares
+// which it is; the wrapper — not the check — does the dropping, exactly as it
+// does for the proposal guard.
+
+test('the guard strips a proposal a rogue check attaches to an UNDECIDABLE "absent", and routes its question', () => {
+  const cs = buildRogueGaps([{
+    id: 'ROGUE.undecidable', step: ROGUE_STEP, phase: 9,
+    lookedFor: ['a rogue check that cannot enumerate its space'],
+    check: () => ({ state: 'absent', evidence: ['rogue'], decidable: false,
+      proposal: 'this must never survive', question: 'this must be routed instead' }),
+  }]);
+  const c = byId(cs, 'ROGUE.undecidable');
+  assert.equal(c.state, 'absent', 'the guard must not rewrite the state');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null, 'an undecidable absent must never propose');
+  assert.equal(c.question, 'this must be routed instead');
+  assert.ok(deriveCouldNotDerive({ stack: genericStack, checks: cs }).includes('this must be routed instead'),
+    'the question must reach couldNotDerive, not vanish');
+});
+
+test('a question from a DECIDABLE check is not routed — the axis is what carries questions', () => {
+  const cs = buildRogueGaps([{
+    id: 'ROGUE.chatty', step: ROGUE_STEP, phase: 9,
+    lookedFor: ['a rogue check that asks without admitting uncertainty'],
+    check: () => ({ state: 'absent', evidence: ['rogue'], proposal: 'kept', question: 'this must not be routed' }),
+  }]);
+  const c = byId(cs, 'ROGUE.chatty');
+  assert.equal(c.proposal, 'kept');
+  assert.equal(c.question, null);
 });

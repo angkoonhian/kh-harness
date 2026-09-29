@@ -75,6 +75,73 @@ function hookEvents(root) {
   return out;
 }
 
+const DOC_EXTENSIONS = ['.md', '.markdown'];
+
+// Paths this kit itself writes or scaffolds. A pointer at one of these is the
+// harness pointing at itself, not the repository pointing at its own docs.
+const KIT_OUTPUT_PREFIXES = ['docs/harness/', '.claude/'];
+const KIT_OUTPUT_FILES = new Set(['CLAUDE.md', 'AGENTS.md', 'HANDOFF.md', 'docs/HANDOFF.md']);
+
+const isDoc = f => DOC_EXTENSIONS.some(e => f.toLowerCase().endsWith(e));
+const isKitOutput = f => KIT_OUTPUT_FILES.has(f) || KIT_OUTPUT_PREFIXES.some(p => f.startsWith(p));
+
+/**
+ * Every path-shaped string the instruction file mentions, before resolution.
+ * Three syntaxes, all of them things a repository writes deliberately:
+ *   - `@path/to/file` — Claude Code's native import syntax
+ *   - `[text](path)`  — a markdown link
+ *   - `` `path` ``    — an inline-code path
+ *
+ * No attempt is made to tell a path from prose here. Resolution against the
+ * real file list does that: `npm test` and `@someone` are not files, so they
+ * disappear. URLs, anchors, absolute paths and parent escapes are dropped
+ * outright because they can never name something inside this repository.
+ */
+function mentionedPaths(text) {
+  if (!text) return [];
+  const out = new Set();
+  const add = raw => {
+    let p = String(raw).trim().replace(/^<|>$/g, '').split('#')[0].split('?')[0];
+    p = p.replace(/^\.\//, '').replace(/\/+$/, '');
+    if (!p) return;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(p)) return;          // https:, mailto:, …
+    if (p.startsWith('/') || p.startsWith('..')) return; // outside the repository
+    out.add(p);
+  };
+  for (const m of text.matchAll(/(?:^|[\s(<])@([^\s`'"()<>\[\],;]+)/gm)) add(m[1]);
+  for (const m of text.matchAll(/\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g)) add(m[1]);
+  for (const m of text.matchAll(/`([^`\n]+)`/g)) add(m[1]);
+  return [...out];
+}
+
+/**
+ * Documentation the repository points at, resolved against the file list.
+ *
+ * This is (a) of finding D1: read the repository's own pointer instead of
+ * guessing filenames. A directory pointer (`docs/wiki/`) credits the markdown
+ * it contains. Nothing is content-sniffed and no candidate name list is
+ * consulted — the set of names people give an architecture document is
+ * unbounded, the set of ways a repository points at its own docs is not.
+ */
+function docPointers(text, files) {
+  const present = new Set(files);
+  const out = new Set();
+  for (const p of mentionedPaths(text)) {
+    if (present.has(p)) {
+      if (isDoc(p) && !isKitOutput(p)) out.add(p);
+      continue;
+    }
+    const prefix = p + '/';
+    for (const f of files) if (f.startsWith(prefix) && isDoc(f) && !isKitOutput(f)) out.add(f);
+  }
+  return [...out].sort();
+}
+
+/** Markdown under docs/ that this kit did not write. */
+function projectDocs(files) {
+  return files.filter(f => f.startsWith('docs/') && isDoc(f) && !isKitOutput(f)).sort();
+}
+
 /** Remote URLs may embed credentials. We record only whether one is present. */
 function remotes(root) {
   try {
@@ -114,6 +181,11 @@ export function detectHarness(root, files) {
     },
     otherEditors: files.filter(f => OTHER_EDITOR_PREFIXES.some(p => f === p || f.startsWith(p + '/'))).sort(),
     architecture: existsAny(root, ['docs/ARCHITECTURE.md', 'ARCHITECTURE.md', 'docs/architecture.md']),
+    // What the repository itself points at, and what documentation exists at
+    // all — so P1.architecture can tell "there is none" from "I only know
+    // three filenames". See gap-model.mjs.
+    docPointers: docPointers(claudeMd ?? agentsMd, files),
+    projectDocs: projectDocs(files),
     handoff: existsAny(root, ['HANDOFF.md', 'docs/HANDOFF.md']),
     bootstrap: existsAny(root, BOOTSTRAP_CANDIDATES),
     gitattributes: files.includes('.gitattributes'),

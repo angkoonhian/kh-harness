@@ -70,10 +70,36 @@ const CHECKS = [
   },
   {
     id: 'P1.architecture', step: 7, phase: 1,
-    lookedFor: ['docs/ARCHITECTURE.md'],
-    check: ({ harness }) => harness.architecture
-      ? { state: 'declared', evidence: [harness.architecture] }
-      : { state: 'absent', proposal: 'run the architecture prompt to write docs/ARCHITECTURE.md' },
+    lookedFor: ['docs/ARCHITECTURE.md', 'documentation the instruction file points at'],
+    // Three sources, in order of how directly they answer the question:
+    //   1. a canonical path — decided;
+    //   2. a path the repository's own instruction file points at — decided;
+    //   3. nothing pointed at, but docs/ holds markdown — NOT decided. Three
+    //      filenames is not an enumeration of the space, so this may not
+    //      propose; it asks instead. Extending the candidate list or sniffing
+    //      markdown for architecture-ish prose would only move the same error.
+    check: ({ harness }) => {
+      if (harness.architecture) return { state: 'declared', evidence: [harness.architecture] };
+
+      const pointed = harness.docPointers ?? [];
+      if (pointed.length) {
+        const from = harness.instructions?.path ?? 'the instruction file';
+        return { state: 'declared', evidence: pointed.map(p => `${from} points at ${p}`) };
+      }
+
+      const docs = harness.projectDocs ?? [];
+      if (docs.length) {
+        const shown = docs.slice(0, 3).join(', ') + (docs.length > 3 ? ', …' : '');
+        return {
+          state: 'absent',
+          decidable: false,
+          evidence: [`no canonical architecture path, and the instruction file points at none`],
+          question: `No docs/ARCHITECTURE.md found, but docs/ holds ${docs.length} markdown file${docs.length === 1 ? '' : 's'} (${shown}). Is one of these the architecture document?`,
+        };
+      }
+
+      return { state: 'absent', proposal: 'run the architecture prompt to write docs/ARCHITECTURE.md' };
+    },
   },
   {
     id: 'P1.pathrules', step: 7, phase: 1,
@@ -154,14 +180,25 @@ export function buildGaps({ stack, harness, exposures, profile, git, checkDefs =
   return checkDefs.map(def => {
     if (!applicable.has(def.step)) {
       return { id: def.id, step: def.step, phase: def.phase, state: 'n/a',
-        lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`], proposal: null };
+        lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
+        decidable: true, question: null, proposal: null };
     }
     const r = def.check({ stack, harness, exposures, profile, git });
+    // The second axis, enforced in the same place and for the same reason.
+    // `absent` means two incompatible things: "I enumerated the complete space
+    // and it is not there" (decidable — the bootstrap script, the deny rules,
+    // the git remote) and "I checked a handful of names I happen to know"
+    // (not decidable). Only the first may carry a proposal; the second asks a
+    // question instead. A check declares which it is, but the dropping happens
+    // here, never in the check — same as the proposal guard below.
+    const decidable = r.decidable !== false;
     return {
       id: def.id, step: def.step, phase: def.phase,
       state: r.state, lookedFor: def.lookedFor, evidence: r.evidence ?? [],
-      // The invariant, enforced centrally: only `absent` may propose.
-      proposal: r.state === 'absent' ? (r.proposal ?? null) : null,
+      decidable,
+      question: decidable ? null : (r.question ?? null),
+      // The invariant, enforced centrally: only a decidable `absent` may propose.
+      proposal: (r.state === 'absent' && decidable) ? (r.proposal ?? null) : null,
     };
   });
 }
