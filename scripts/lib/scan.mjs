@@ -4,6 +4,9 @@ import { join, relative } from 'node:path';
 
 const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
 
+// Known blind spot: a repository whose .git is a file (separate-git-dir, worktree layout)
+// is not detected — git does not enumerate it in ls-files output. Submodules are detected
+// via mode 160000; worktrees are views of the same repository, not separate projects.
 function detectNestedRepositories(root) {
   const nested = [];
   try {

@@ -133,21 +133,61 @@ test('files array contains no trailing-slash entries when nested repositories ar
   assert.equal(files.some(f => f.endsWith('/')), false);
 });
 
-test('.git as file (separate-git-dir/worktree layout) is recognized as nested repository', () => {
+test('gitignored directory containing a nested repository is reported', () => {
   const d = fixture();
-  // Regression test: ensure .git files (not just directories) are detected
+  const ignored = join(d, 'backend-old');
+  mkdirSync(ignored);
+  writeFileSync(join(d, '.gitignore'), 'backend-old\n');
+  try {
+    execFileSync('git', ['init', ignored], { stdio: 'ignore' });
+  } catch {
+    return;
+  }
+  const { nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'backend-old'));
+});
+
+test('nested repository inside a gitignored parent one level down is reported', () => {
+  const d = fixture();
+  const ignored = join(d, 'vendor');
+  const nested = join(ignored, 'toolA');
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(d, '.gitignore'), 'vendor\n');
+  try {
+    execFileSync('git', ['init', nested], { stdio: 'ignore' });
+  } catch {
+    return;
+  }
+  const { nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'vendor/toolA'));
+});
+
+test('bare repository is reported and its plumbing files do not appear in files array', () => {
+  const d = fixture();
+  const bare = join(d, 'bare-repo');
+  mkdirSync(bare);
+  writeFileSync(join(bare, 'HEAD'), 'ref: refs/heads/main\n');
+  mkdirSync(join(bare, 'objects'));
+  mkdirSync(join(bare, 'refs'));
+
+  const { files, nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'bare-repo'));
+  assert.equal(files.some(f => f.startsWith('bare-repo/')), false);
+});
+
+test('.git-as-file (worktree layout) is a known blind spot — not reported', () => {
+  // Regression test documenting a limitation: git does not enumerate directories
+  // whose .git is a file (separate-git-dir, worktree layout), so they are invisible
+  // to both git ls-files and our nested-repository detection.
+  // Submodules are covered by mode 160000; worktrees of the same repo are not separate projects.
+  const d = fixture();
   const worktree = join(d, 'worktree');
   mkdirSync(worktree);
   writeFileSync(join(worktree, '.git'), 'gitdir: /some/path/.git\n');
   
   const { nested: detected } = listFiles(d);
-  // Git may skip directories with .git files; if so, test gracefully returns
-  const found = detected.some(n => n.kind === 'nested-repo' && n.path === 'worktree');
-  if (!found) {
-    // This documents the behavior: the mechanism works, git may hide the directory
-    return;
-  }
-  assert.ok(found);
+  // Assert it is NOT detected (the truth)
+  assert.equal(detected.some(n => n.path === 'worktree'), false);
 });
 
 test('symlinked directory pointing at nested repository is recognized', () => {
@@ -163,20 +203,25 @@ test('symlinked directory pointing at nested repository is recognized', () => {
   }
   
   // Attempt to create symlink/junction
+  let symlinkCreated = false;
   try {
     if (process.platform === 'win32') {
       symlinkSync(realRepo, symlinked, 'junction');
     } else {
       symlinkSync(realRepo, symlinked, 'dir');
     }
+    symlinkCreated = true;
   } catch (e) {
     if (e.code === 'EPERM' || e.code === 'EACCES') {
-      console.log(`  (symlink test skipped: ${e.code} - requires elevation on this platform)`);
+      // Skip with reason if elevation/Developer Mode is needed
+      console.log(`  (skipped: symlink requires elevation on ${process.platform})`);
       return;
     }
     throw e;
   }
   
-  const { nested: detected } = listFiles(d);
-  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'symlink-to-nested'));
+  if (symlinkCreated) {
+    const { nested: detected } = listFiles(d);
+    assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'symlink-to-nested'));
+  }
 });
