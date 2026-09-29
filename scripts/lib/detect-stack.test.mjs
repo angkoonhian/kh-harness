@@ -80,3 +80,23 @@ test('CI configs are collected', () => {
   const s = run(d);
   assert.deepEqual(s.ci, ['.github/workflows/ci.yml']);
 });
+
+test('double-star workspace pattern finds nested packages', () => {
+  const d = repo();
+  write(d, 'package.json', JSON.stringify({ name: 'root', workspaces: ['apps/**'] }));
+  write(d, 'package-lock.json', '{}');
+  write(d, 'apps/group/one/package.json', JSON.stringify({ name: 'nested' }));
+  const s = run(d);
+  assert.equal(s.isWorkspace, true);
+  assert.ok(s.packages.some(p => p.name === 'nested'));
+});
+
+test('single-star workspace pattern does not find nested packages', () => {
+  const d = repo();
+  write(d, 'package.json', JSON.stringify({ name: 'root', workspaces: ['apps/*'] }));
+  write(d, 'package-lock.json', '{}');
+  write(d, 'apps/group/one/package.json', JSON.stringify({ name: 'nested' }));
+  const s = run(d);
+  assert.equal(s.packages.length, 1);
+  assert.ok(!s.packages.some(p => p.name === 'nested'));
+});
