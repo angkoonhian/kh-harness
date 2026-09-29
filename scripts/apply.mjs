@@ -5,7 +5,7 @@
 // diffs and writes nothing. There is no --force — git is the escape hatch.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { listFiles } from './lib/scan.mjs';
 import { detectStack } from './lib/detect-stack.mjs';
 import { detectHarness } from './lib/detect-harness.mjs';
@@ -14,7 +14,7 @@ import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
-import { readManifest, emptyManifest, writeManifest, classify } from './lib/manifest.mjs';
+import { readManifest, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, renderDiff } from './lib/apply-lib.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -133,13 +133,32 @@ try {
   result = applyProposals({ root, proposals, manifest, kitVersion: KIT_VERSION });
 } catch (err) {
   process.stderr.write(`harness-kit: apply failed: ${err && err.message ? err.message : String(err)}\n`);
+  // Nothing was written — pass 1 validates the whole batch before pass 2
+  // touches anything — but drift was already computed above and is just as
+  // true on this path as on any other. Dropping it here would contradict the
+  // reason it is reported independently of what this run proposes.
+  reportDrift();
   process.exit(2);
 }
 
 // Written even when a failure stopped the batch partway through: the
 // manifest must always describe exactly what is actually on disk, so the
 // next run (and uninstall) can act on it correctly.
-writeManifest(root, result.manifest);
+//
+// This is the one write in the whole tool that must not fail silently, and
+// it is therefore the one that must not be left unguarded. If it throws
+// (`.claude` present as a plain file, a full disk, a read-only tree) the
+// files just written are on disk with no manifest entry — which means every
+// later run classifies them `theirs` and `uninstall` can never remove them.
+// That is exactly the un-installability trap this tool exists to avoid, so
+// the failure is reported loudly, by path, and exits 2 rather than escaping
+// as a raw stack trace and exit 1.
+let manifestError = null;
+try {
+  writeManifest(root, result.manifest);
+} catch (err) {
+  manifestError = err && err.message ? err.message : String(err);
+}
 
 for (const w of result.written) process.stdout.write(`wrote      ${w.path}\n`);
 for (const p of result.patched) process.stdout.write(`patched    .claude/settings.json (${p.event})\n`);
@@ -147,6 +166,18 @@ for (const r of result.redirected) process.stdout.write(`redirected ${r.from} ->
 for (const s of result.skipped) process.stdout.write(`skipped    ${s.path} (${s.why})\n`);
 for (const f of result.failed) process.stderr.write(`failed     ${f.path}: ${f.error}\n`);
 reportDrift();
+
+if (manifestError) {
+  process.stderr.write(`harness-kit: could not record what was written in ${join(root, MANIFEST_PATH)}: ${manifestError}\n`);
+  if (result.written.length > 0) {
+    process.stderr.write(
+      `harness-kit: the following file(s) are on disk but NOT tracked, so \`uninstall\` cannot remove them — ` +
+      `delete them by hand, or fix the problem above and re-run:\n`,
+    );
+    for (const w of result.written) process.stderr.write(`  ${w.path}\n`);
+  }
+  process.exit(2);
+}
 
 if (result.failed.length > 0) {
   process.stderr.write(

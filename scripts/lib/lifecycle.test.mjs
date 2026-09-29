@@ -98,6 +98,39 @@ test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall'
   assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)'] });
 });
 
+test('C3: a manifest that cannot be written exits 2 with a readable message, never a stack trace', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  writeFileSync(join(d, 'tsconfig.json'), '{}');
+  // `.claude` as a plain file. Every write beneath it fails, including the
+  // `mkdirSync` inside writeManifest — the one write in the tool that must
+  // not fail silently, because a file on disk with no manifest entry is a
+  // file `uninstall` can never remove.
+  writeFileSync(join(d, '.claude'), 'a plain file sitting where a directory needs to go\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  let err;
+  try { run(APPLY, d, '--yes'); } catch (e) { err = e; }
+  assert.ok(err, 'apply must not report success when it could not record what it wrote');
+  assert.equal(err.status, 2, 'the CLI contract is exit 0, 2 or 3 — never 1, never a raw throw');
+
+  const out = String(err.stdout ?? '') + String(err.stderr ?? '');
+  // The cause (`EEXIST ... mkdir '<path>'`) belongs in the message. The Node
+  // frames around it do not.
+  assert.doesNotMatch(out, /node:internal\/|\bat ModuleJob\b|^Node\.js v/m, 'no stack trace may reach the user');
+  assert.match(out, /harness-kit\.manifest\.json/, 'the message must name the file it could not write');
+
+  // The proposal that landed before the failure is on disk and untracked;
+  // saying so is the difference between a recoverable repository and a trap.
+  assert.equal(existsSync(join(d, 'HANDOFF.md')), true);
+  assert.match(out, /HANDOFF\.md/, 'must name what is on disk but untracked');
+});
+
 test('apply refuses on a default branch unless told otherwise', () => {
   const d = fixture();
   git(d, 'checkout', '-q', '-b', 'master');
