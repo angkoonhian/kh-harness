@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addHookEntry, hasEquivalentHook, revertPatch } from './settings-merge.mjs';
+import { addHookEntry, hasEquivalentHook, revertPatch, addDenyRules } from './settings-merge.mjs';
 
 const ENTRY = { type: 'command', command: 'node .claude/scripts/session-brief.mjs' };
 
@@ -99,4 +99,56 @@ test('revertPatch with valid patch still reverts correctly', () => {
   assert.equal(reverted, true, 'valid patch must still revert');
   assert.equal(s2.hooks.SessionStart.length, 1);
   assert.equal(s2.hooks.SessionStart[0].hooks[0].command, 'user-added');
+});
+
+test('adds deny rules to an empty settings object without mutating the input', () => {
+  const before = {};
+  const { settings, patch, added } = addDenyRules(before, ['Edit(prisma/migrations/**)']);
+  assert.deepEqual(before, {}, 'input must not be mutated');
+  assert.deepEqual(settings.permissions.deny, ['Edit(prisma/migrations/**)']);
+  assert.deepEqual(added, ['Edit(prisma/migrations/**)']);
+  assert.equal(patch.container, '/permissions/deny');
+  assert.match(patch.entrySha256, /^[0-9a-f]{64}$/);
+});
+
+test('preserves the user\'s existing deny rules and appends after them', () => {
+  const before = { permissions: { deny: ['Bash(rm:*)'] }, env: { KEEP: '1' } };
+  const { settings } = addDenyRules(before, ['Edit(migrations/**)']);
+  assert.deepEqual(settings.permissions.deny, ['Bash(rm:*)', 'Edit(migrations/**)']);
+  assert.deepEqual(settings.env, { KEEP: '1' }, 'unrelated settings survive');
+});
+
+test('never adds a rule the user already has', () => {
+  const before = { permissions: { deny: ['Edit(migrations/**)'] } };
+  const { settings, added } = addDenyRules(before, ['Edit(migrations/**)', 'Edit(dist/**)']);
+  assert.deepEqual(added, ['Edit(dist/**)'], 'only the genuinely new rule is ours');
+  assert.equal(settings.permissions.deny.filter(r => r === 'Edit(migrations/**)').length, 1, 'no duplicate');
+});
+
+test('revertPatch removes only the rules we added', () => {
+  const before = { permissions: { deny: ['Bash(rm:*)'] } };
+  const { settings: s1, patch } = addDenyRules(before, ['Edit(migrations/**)']);
+  s1.permissions.deny.push('Read(./.env)');           // the user adds their own afterwards
+  const { settings: s2, reverted } = revertPatch(s1, patch);
+  assert.equal(reverted, true);
+  assert.deepEqual(s2.permissions.deny, ['Bash(rm:*)', 'Read(./.env)'], 'both of theirs survive');
+});
+
+test('revertPatch reports false when our rule was already removed by hand', () => {
+  const { settings: s1, patch } = addDenyRules({}, ['Edit(migrations/**)']);
+  s1.permissions.deny = [];
+  assert.equal(revertPatch(s1, patch).reverted, false);
+});
+
+test('reverting the last deny rule prunes the empty structure', () => {
+  const { settings: s1, patch } = addDenyRules({}, ['Edit(migrations/**)']);
+  const { settings: s2 } = revertPatch(s1, patch);
+  assert.equal(s2.permissions?.deny, undefined);
+});
+
+test('adding no new rules yields no patch', () => {
+  const before = { permissions: { deny: ['Edit(migrations/**)'] } };
+  const { patch, added } = addDenyRules(before, ['Edit(migrations/**)']);
+  assert.deepEqual(added, []);
+  assert.equal(patch, null, 'nothing was added, so there is nothing to record or revert');
 });

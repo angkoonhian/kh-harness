@@ -32,6 +32,36 @@ export function hasEquivalentHook(settings, event, command) {
   return matchers.some(m => Array.isArray(m?.hooks) && m.hooks.some(h => h?.command === command));
 }
 
+export function addDenyRules(settings, globs) {
+  const next = clone(settings);
+  next.permissions ??= {};
+  next.permissions.deny ??= [];
+
+  // Identify which globs are genuinely new
+  const existingSet = new Set(next.permissions.deny);
+  const newRules = globs.filter(g => !existingSet.has(g));
+
+  // Append only the new rules
+  newRules.forEach(rule => {
+    next.permissions.deny.push(rule);
+  });
+
+  // If nothing was added, return no patch
+  if (newRules.length === 0) {
+    return { settings: next, patch: null, added: [] };
+  }
+
+  // Hash the sorted list of added strings canonically
+  const sortedAdded = [...newRules].sort();
+  const entrySha256 = sha256(JSON.stringify(sortedAdded));
+
+  return {
+    settings: next,
+    patch: { container: '/permissions/deny', entrySha256, rules: sortedAdded },
+    added: newRules,
+  };
+}
+
 /**
  * Remove the entry whose hash matches. Index-based removal would take out the
  * wrong hook the moment the user adds one of their own above ours, and nothing
@@ -44,10 +74,52 @@ export function revertPatch(settings, patch) {
   if (!patch || typeof patch !== 'object') {
     return { settings: next, reverted: false };
   }
-  if (typeof patch.container !== 'string' || !patch.container.startsWith('/hooks/')) {
+
+  if (typeof patch.container !== 'string') {
     return { settings: next, reverted: false };
   }
+
   if (typeof patch.entrySha256 !== 'string' || !/^[0-9a-f]{64}$/.test(patch.entrySha256)) {
+    return { settings: next, reverted: false };
+  }
+
+  // Handle /permissions/deny container
+  if (patch.container === '/permissions/deny') {
+    if (!Array.isArray(patch.rules)) {
+      return { settings: next, reverted: false };
+    }
+
+    const denyList = next?.permissions?.deny;
+    if (!Array.isArray(denyList)) {
+      return { settings: next, reverted: false };
+    }
+
+    // Check if all rules we added are still present
+    const rulesToRemove = new Set(patch.rules);
+    for (const rule of patch.rules) {
+      if (!denyList.includes(rule)) {
+        // A rule we added is no longer present - partial hand-edit
+        return { settings: next, reverted: false };
+      }
+    }
+
+    // Remove exactly the rules we added
+    const filtered = denyList.filter(rule => !rulesToRemove.has(rule));
+    if (filtered.length === 0) {
+      // Prune empty deny array and then permissions object if empty
+      delete next.permissions.deny;
+      if (next.permissions && Object.keys(next.permissions).length === 0) {
+        delete next.permissions;
+      }
+    } else {
+      next.permissions.deny = filtered;
+    }
+
+    return { settings: next, reverted: true };
+  }
+
+  // Handle /hooks/<event> container (existing behavior)
+  if (!patch.container.startsWith('/hooks/')) {
     return { settings: next, reverted: false };
   }
 
