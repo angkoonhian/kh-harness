@@ -4,6 +4,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const MAX_LINES = 60;
+// Assumes cwd is the repository root at SessionStart; does not walk upward to find it.
 const path = join(process.cwd(), 'HANDOFF.md');
 
 if (!existsSync(path)) {

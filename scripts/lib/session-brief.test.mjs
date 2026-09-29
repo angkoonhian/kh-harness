@@ -26,4 +26,8 @@ test('truncates a very long handoff rather than flooding the session', () => {
   const out = run(d);
   assert.ok(out.split('\n').length < 80, 'a brief that floods the context defeats its own purpose');
   assert.match(out, /truncated/i);
+  // Verify actual handoff content survived truncation at the boundary
+  assert.match(out, /line 0/);
+  assert.match(out, /line 59/);
+  assert.doesNotMatch(out, /line 60\b/);
 });
