@@ -61,11 +61,31 @@ if (!doYes) {
   process.exit(0);
 }
 
-runUninstall({ root, manifest, plan });
+let result;
+try {
+  result = runUninstall({ root, manifest, plan });
+} catch (e) {
+  console.error(`error during uninstall: ${e?.message ?? 'unknown error'}`);
+  process.exit(2);
+}
 
-// After applying, always print what was kept
-if (plan.keep.length > 0 || plan.keepPatches.length > 0) {
-  console.log('');
+// After applying, always report what was kept or failed
+console.log('');
+if (result.removed.length > 0) {
+  console.log('Removed:');
+  for (const path of result.removed) {
+    console.log(`  ${path}`);
+  }
+}
+
+if (result.failed.length > 0) {
+  console.log('Failed to remove:');
+  for (const f of result.failed) {
+    console.log(`  ${f.path} (${f.reason})`);
+  }
+}
+
+if (plan.keep.length > 0 || plan.keepPatches.length > 0 || result.settingsReadFailed) {
   console.log('Kept:');
   for (const k of plan.keep) {
     console.log(`  ${k.path}`);
@@ -73,6 +93,17 @@ if (plan.keep.length > 0 || plan.keepPatches.length > 0) {
   for (const p of plan.keepPatches) {
     console.log(`  ${p.container}`);
   }
+  if (result.settingsReadFailed) {
+    console.log(`  .claude/settings.json (settings-unreadable)`);
+  }
+}
+
+if (result.removed.length === 0 && result.failed.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed) {
+  console.log('nothing was left behind');
+}
+
+if (result.failed.length > 0) {
+  process.exit(2);
 }
 
 process.exit(0);

@@ -87,6 +87,9 @@ test('removes the manifest only when nothing was kept', () => {
 
 test('planUninstall writes nothing', () => {
   const { d, manifest } = installed();
+  const contentBefore = readFileSync(join(d, 'HANDOFF.md'), 'utf8');
   planUninstall({ root: d, manifest });
-  assert.equal(existsSync(join(d, 'HANDOFF.md')), true, 'planning is read-only');
+  assert.equal(existsSync(join(d, 'HANDOFF.md')), true, 'file still exists');
+  assert.equal(readFileSync(join(d, 'HANDOFF.md'), 'utf8'), contentBefore, 'file content unchanged');
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), false, 'manifest untouched (was never written by applyProposals)');
 });
