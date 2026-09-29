@@ -1,11 +1,16 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, relative } from 'node:path';
 
 const MANIFEST_PATH = '.claude/harness-kit.manifest.json';
 
-export function sha256(text) {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
+export function sha256(input) {
+  // Handle both strings and buffers. Buffers are hashed as raw bytes (no encoding).
+  // Strings are hashed as utf-8 for backward compatibility, but file content must use buffers.
+  if (typeof input === 'string') {
+    return createHash('sha256').update(input, 'utf8').digest('hex');
+  }
+  return createHash('sha256').update(input).digest('hex');
 }
 
 export function emptyManifest(kitVersion) {
@@ -38,10 +43,24 @@ export function writeManifest(root, manifest) {
 export function classify(root, manifest, relPath) {
   const entry = manifest?.files?.find(f => f.path === relPath);
   if (!entry) return 'theirs';
+
+  // Guard against path traversal: reject absolute paths and paths that escape root
   const p = join(root, relPath);
+  const rootResolved = resolve(root);
+  const pResolved = resolve(p);
+  const rel = relative(rootResolved, pResolved);
+  if (rel.startsWith('..')) {
+    return 'theirs';
+  }
+
   if (!existsSync(p)) return 'ours-modified';
   let current;
-  try { current = readFileSync(p, 'utf8'); } catch { return 'ours-modified'; }
+  try {
+    // Read raw bytes (no encoding) to avoid lossy UTF-8 decoding
+    current = readFileSync(p);
+  } catch {
+    return 'ours-modified';
+  }
   return sha256(current) === entry.sha256 ? 'ours-unmodified' : 'ours-modified';
 }
 

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { sha256, emptyManifest, readManifest, writeManifest, classify } from './manifest.mjs';
 
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-man-')); }
@@ -66,4 +66,53 @@ test('a corrupt manifest reads as null rather than throwing', () => {
   const d = repo();
   write(d, '.claude/harness-kit.manifest.json', '{ not json');
   assert.equal(readManifest(d), null);
+});
+
+test('sha256 distinguishes files with different bytes that decode to same UTF-8', () => {
+  const buf1 = Buffer.from([0x41, 0xFF, 0x42]);
+  const buf2 = Buffer.from([0x41, 0xFE, 0x42]);
+  // Both decode to "A�B" as UTF-8, so UTF-8 decoding is lossy
+  const decoded1 = buf1.toString('utf8');
+  const decoded2 = buf2.toString('utf8');
+  assert.equal(decoded1, decoded2);
+  // But raw byte hashes must differ
+  assert.notEqual(sha256(buf1), sha256(buf2));
+});
+
+test('classify with two files of different bytes but same UTF-8 decoding', () => {
+  const d = repo();
+  const buf1 = Buffer.from([0x41, 0xFF, 0x42]);
+  const buf2 = Buffer.from([0x41, 0xFE, 0x42]);
+  // Write buf1, manifest records its hash
+  writeFileSync(join(d, 'test.dat'), buf1);
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: 'test.dat', sha256: sha256(buf1), step: 1, writtenAt: 'now' });
+  // Verify it classifies as ours-unmodified when unchanged
+  assert.equal(classify(d, m, 'test.dat'), 'ours-unmodified');
+  // Write buf2 (different bytes, same UTF-8 decoding)
+  writeFileSync(join(d, 'test.dat'), buf2);
+  // Must classify as ours-modified, not ours-unmodified
+  assert.equal(classify(d, m, 'test.dat'), 'ours-modified');
+});
+
+test('classify rejects path traversal with ../outside.txt', () => {
+  const d = repo();
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: '../outside.txt', sha256: sha256('x'), step: 1, writtenAt: 'now' });
+  assert.equal(classify(d, m, '../outside.txt'), 'theirs');
+});
+
+test('classify rejects deeper path traversal', () => {
+  const d = repo();
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: '../../outside.txt', sha256: sha256('x'), step: 1, writtenAt: 'now' });
+  assert.equal(classify(d, m, '../../outside.txt'), 'theirs');
+});
+
+test('classify allows benign .. that stays inside the root', () => {
+  const d = repo();
+  write(d, 'HANDOFF.md', 'x');
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: 'docs/../HANDOFF.md', sha256: sha256('x'), step: 16, writtenAt: 'now' });
+  assert.equal(classify(d, m, 'docs/../HANDOFF.md'), 'ours-unmodified');
 });
