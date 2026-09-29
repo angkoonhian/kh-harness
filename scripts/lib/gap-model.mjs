@@ -79,10 +79,12 @@ const CHECKS = [
     // Three sources, in order of how directly they answer the question:
     //   1. a canonical path — decided;
     //   2. a path the repository's own instruction file points at — decided;
-    //   3. nothing pointed at, but docs/ holds markdown — NOT decided. Three
-    //      filenames is not an enumeration of the space, so this may not
-    //      propose; it asks instead. Extending the candidate list or sniffing
-    //      markdown for architecture-ish prose would only move the same error.
+    //   3. nothing pointed at, but documentation exists SOMEWHERE in the
+    //      repository (harness.projectDocs — not limited to docs/*.md; see
+    //      detect-harness.mjs) — NOT decided. Decidability rests entirely on
+    //      that collection being a true enumeration, not three filenames one
+    //      happens to know; sniffing prose for architecture-ish content would
+    //      only move the same error.
     check: ({ harness }) => {
       if (harness.architecture) return { state: 'declared', evidence: [harness.architecture] };
 
@@ -99,7 +101,7 @@ const CHECKS = [
           state: 'absent',
           decidable: false,
           evidence: [`no canonical architecture path, and the instruction file points at none`],
-          question: `No docs/ARCHITECTURE.md found, but docs/ holds ${docs.length} markdown file${docs.length === 1 ? '' : 's'} (${shown}). Is one of these the architecture document?`,
+          question: `No docs/ARCHITECTURE.md found, but the repository holds ${docs.length} documentation file${docs.length === 1 ? '' : 's'} (${shown}). Is one of these the architecture document?`,
         };
       }
 

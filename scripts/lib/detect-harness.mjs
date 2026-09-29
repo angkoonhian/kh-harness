@@ -110,12 +110,22 @@ function hookEvents(root, files) {
 
 const DOC_EXTENSIONS = ['.md', '.markdown'];
 
+// Every extension a repository plausibly writes documentation in — used only
+// by projectDocs, which answers "does any documentation exist at all" for
+// P1.architecture's decidability. docPointers (below) resolves paths the
+// instruction file names explicitly, so it keeps the narrower DOC_EXTENSIONS:
+// widening it would change what counts as a *credited pointer*, not what
+// counts as *documentation existing somewhere*, which is a different question
+// with a different cost to getting wrong.
+const PROJECT_DOC_EXTENSIONS = ['.md', '.markdown', '.rst', '.adoc', '.txt'];
+
 // Paths this kit itself writes or scaffolds. A pointer at one of these is the
 // harness pointing at itself, not the repository pointing at its own docs.
 const KIT_OUTPUT_PREFIXES = ['docs/harness/', '.claude/'];
 const KIT_OUTPUT_FILES = new Set(['CLAUDE.md', 'AGENTS.md', 'HANDOFF.md', 'docs/HANDOFF.md']);
 
 const isDoc = f => DOC_EXTENSIONS.some(e => f.toLowerCase().endsWith(e));
+const isProjectDocShaped = f => PROJECT_DOC_EXTENSIONS.some(e => f.toLowerCase().endsWith(e));
 const isKitOutput = f => KIT_OUTPUT_FILES.has(f) || KIT_OUTPUT_PREFIXES.some(p => f.startsWith(p));
 
 /**
@@ -170,9 +180,22 @@ function docPointers(text, files) {
   return [...out].sort();
 }
 
-/** Markdown under docs/ that this kit did not write. */
+/**
+ * Every documentation-shaped file anywhere in the repository that this kit
+ * did not write — not only docs/*.md.
+ *
+ * This answers a narrower question than docPointers: not "what does the
+ * instruction file point at" but "does documentation exist at all", which is
+ * what P1.architecture's decidability rests on (see gap-model.mjs). `docs/` +
+ * `.md` is three filenames' worth of assumption, not an enumeration of where
+ * a repository is allowed to keep its docs — wiki/, README-style trees, and
+ * .rst/.adoc/.txt are all real. Getting this wrong in the other direction
+ * (finding docs that are not there) is not possible — it can only ever widen
+ * what is found, which can only turn a proposal into a question, never the
+ * reverse.
+ */
 function projectDocs(files) {
-  return files.filter(f => f.startsWith('docs/') && isDoc(f) && !isKitOutput(f)).sort();
+  return files.filter(f => isProjectDocShaped(f) && !isKitOutput(f)).sort();
 }
 
 /**

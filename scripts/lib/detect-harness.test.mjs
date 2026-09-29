@@ -275,6 +275,38 @@ test('projectDocs lists docs/ markdown that is not the kit\'s own output', () =>
   assert.deepEqual(run(d).projectDocs, ['docs/wiki/README.md', 'docs/wiki/services.md']);
 });
 
+// --- F1: projectDocs must find documentation-shaped files anywhere in the
+// repository, not only docs/*.md — see gap-model.mjs's P1.architecture,
+// which trusts an empty projectDocs to mean "no documentation anywhere".
+// docs/ + .md was three filenames' worth of assumption, not an enumeration.
+
+test('projectDocs finds documentation living outside docs/, e.g. under wiki/', () => {
+  const d = repo();
+  write(d, 'wiki/overview.md', '# overview\n');
+  write(d, 'wiki/api.md', '# api\n');
+  const h = run(d);
+  assert.deepEqual(h.projectDocs, ['wiki/api.md', 'wiki/overview.md']);
+});
+
+test('projectDocs recognizes non-markdown documentation shapes: .rst, .adoc, .txt', () => {
+  const d = repo();
+  write(d, 'docs/index.rst', 'index\n');
+  write(d, 'docs/guide.adoc', 'guide\n');
+  write(d, 'notes.txt', 'notes\n');
+  const h = run(d);
+  assert.deepEqual(h.projectDocs, ['docs/guide.adoc', 'docs/index.rst', 'notes.txt']);
+});
+
+test('projectDocs still excludes the kit\'s own outputs wherever they are found', () => {
+  const d = repo();
+  write(d, 'CLAUDE.md', '# instructions\n');
+  write(d, 'HANDOFF.md', '# handoff\n');
+  write(d, 'docs/harness/recon.md', '# recon\n');
+  write(d, '.claude/skills/foo/SKILL.md', '# skill\n');
+  const h = run(d);
+  assert.deepEqual(h.projectDocs, []);
+});
+
 // Never the command string, only the script it runs. Secrets live in
 // arguments, and .claude/settings.local.json — one of the two files this
 // registry is read from — is gitignored and on the credential scanner's

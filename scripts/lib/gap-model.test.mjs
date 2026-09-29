@@ -1,8 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildGaps, STATES } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
+import { listFiles } from './scan.mjs';
+import { detectHarness } from './detect-harness.mjs';
 
 const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
@@ -133,7 +138,7 @@ test('P1.architecture yields no proposal but a question when docs/ holds markdow
   assert.equal(c.decidable, false, 'three filenames is not an enumeration of the space');
   assert.equal(c.proposal, null, 'an undecidable absent must not propose');
   assert.ok(c.question, 'it must ask instead');
-  assert.match(c.question, /4 markdown files/, 'the question must say how many were found');
+  assert.match(c.question, /4 documentation files/, 'the question must say how many were found');
   assert.match(c.question, /docs\/wiki\/README\.md/, 'and name them');
   assert.match(c.question, /…/, 'eliding the tail of a long list');
 });
@@ -151,6 +156,65 @@ test('a canonical architecture path still wins outright', () => {
   const c = byId(gaps(fullStack, richHarness), 'P1.architecture');
   assert.equal(c.state, 'declared');
   assert.ok(c.evidence.includes('docs/ARCHITECTURE.md'));
+});
+
+// --- F1: decidability must follow projectDocs wherever it actually finds
+// documentation, not just docs/*.md. See detect-harness.test.mjs for the
+// widened collection itself.
+
+test('architecture is undecidable when docs live outside docs/', () => {
+  const h = { ...bareHarness, projectDocs: ['wiki/overview.md', 'wiki/api.md'] };
+  const c = byId(gaps(fullStack, h), 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.proposal, null, 'must not propose when documentation exists elsewhere');
+  assert.equal(c.decidable, false);
+});
+
+test('architecture is undecidable for non-markdown documentation', () => {
+  const h = { ...bareHarness, projectDocs: ['docs/index.rst', 'docs/api.rst'] };
+  const c = byId(gaps(fullStack, h), 'P1.architecture');
+  assert.equal(c.proposal, null);
+  assert.equal(c.decidable, false);
+});
+
+test('architecture is decidable only when the repo has no documentation at all', () => {
+  const h = { ...bareHarness, projectDocs: [] };
+  const c = byId(gaps(fullStack, h), 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true);
+  assert.ok(c.proposal, 'a repo with no docs anywhere can be told to write one');
+});
+
+// The tests above hand-build a harness fixture, which only proves gap-model's
+// OWN decidability policy is correct. The reported defect lived one layer
+// down, in detect-harness.mjs's projectDocs collection — so these two run the
+// real detector end to end, against real files, to prove the whole pipeline.
+
+function tmpRepo() { return mkdtempSync(join(tmpdir(), 'hk-gapmodel-')); }
+function writeFile(d, rel, content) {
+  const p = join(d, rel);
+  mkdirSync(join(p, '..'), { recursive: true });
+  writeFileSync(p, content);
+}
+
+test('F1 end-to-end: a repo documented under wiki/ is not proposed an architecture doc', () => {
+  const d = tmpRepo();
+  writeFile(d, 'wiki/overview.md', '# overview\n');
+  writeFile(d, 'wiki/services.md', '# services\n');
+  const harness = detectHarness(d, listFiles(d).files);
+  const c = byId(gaps(fullStack, harness), 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.proposal, null, 'documentation exists under wiki/; must not be told it has none');
+  assert.equal(c.decidable, false);
+});
+
+test('F1 end-to-end: a repo documented in .rst is not proposed an architecture doc', () => {
+  const d = tmpRepo();
+  writeFile(d, 'docs/index.rst', 'index\n');
+  const harness = detectHarness(d, listFiles(d).files);
+  const c = byId(gaps(fullStack, harness), 'P1.architecture');
+  assert.equal(c.proposal, null, 'documentation exists as .rst; must not be told it has none');
+  assert.equal(c.decidable, false);
 });
 
 // --- Hook checks read the registry, not the filenames ---
