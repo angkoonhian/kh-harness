@@ -237,7 +237,12 @@ export function runUninstall({ root, manifest, plan }) {
   // 4. Persist the manifest once, from actual outcomes
   // Guard both write and delete so the outcome is always returned
   let manifestDeleteFailed = false;
-  const hasKept = keptFiles.length > 0 || keptPatches.length > 0 || changedSincePlan.length > 0 || refused.length > 0;
+  // `refused` needs no clause of its own: every path in plan.remove comes
+  // from manifest.files, so a refused path is already in keptFiles above.
+  // A separate `|| refused.length > 0` here would be a condition no test
+  // could ever distinguish — the kind of line this project has shipped
+  // twelve of.
+  const hasKept = keptFiles.length > 0 || keptPatches.length > 0 || changedSincePlan.length > 0;
   const hasFailures = failed.length > 0;
 
   if (!hasKept && !hasFailures) {

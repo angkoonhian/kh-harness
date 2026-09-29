@@ -103,10 +103,25 @@ test('C1: a refused entry stays in the manifest rather than vanishing from the r
   mkdirSync(join(d, '.claude'), { recursive: true });
   writeFileSync(join(d, MANIFEST_PATH), JSON.stringify(manifest));
 
+  // Route 1: planUninstall refuses, so the entry arrives via plan.keep.
   const plan = planUninstall({ root: d, manifest });
   runUninstall({ root: d, manifest, plan });
   const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
   assert.deepEqual(after.files.map(f => f.path), ['src/index.ts'], 'a refusal is recorded, not forgotten');
+
+  // Route 2: the run refuses on its own, with a plan that keeps nothing.
+  // Without this case a refusal is the ONLY outcome, and treating "nothing
+  // kept" as "nothing left behind" deletes the manifest — quietly forgetting
+  // a file that is still on disk and still ours.
+  writeFileSync(join(d, MANIFEST_PATH), JSON.stringify(manifest));
+  const forced = { remove: [{ path: 'src/index.ts' }], keep: [], revert: [], keepPatches: [], gonePatches: [] };
+  const result = runUninstall({ root: d, manifest, plan: forced });
+  assert.equal(result.refused.length, 1);
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), true, 'a refusal is not "nothing left behind"');
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8')).files.map(f => f.path),
+    ['src/index.ts'],
+  );
 });
 
 test('removes a file we wrote that nobody touched', () => {
