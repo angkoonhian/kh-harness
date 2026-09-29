@@ -96,12 +96,38 @@ if (!flags.has('--yes')) {
   process.exit(0);
 }
 
-const result = applyProposals({ root, proposals, manifest, kitVersion: KIT_VERSION });
+// applyProposals itself never throws on an I/O failure encountered while
+// applying (see apply-lib.mjs) — a partial batch is returned normally, with
+// `failed` naming what stopped it, so the manifest below always reflects
+// reality. This try/catch is the backstop for anything else: a proposal
+// whose target fails the allowlist or containment check (pass 1) still
+// throws, and that must never escape as a raw stack trace and exit 1 — the
+// CLI's contract is exit 0/2/3, nothing else.
+let result;
+try {
+  result = applyProposals({ root, proposals, manifest, kitVersion: KIT_VERSION });
+} catch (err) {
+  process.stderr.write(`harness-kit: apply failed: ${err && err.message ? err.message : String(err)}\n`);
+  process.exit(2);
+}
+
+// Written even when a failure stopped the batch partway through: the
+// manifest must always describe exactly what is actually on disk, so the
+// next run (and uninstall) can act on it correctly.
 writeManifest(root, result.manifest);
 
-for (const w of result.written) process.stdout.write(`wrote     ${w.path}\n`);
-for (const p of result.patched) process.stdout.write(`patched   .claude/settings.json (${p.event})\n`);
+for (const w of result.written) process.stdout.write(`wrote      ${w.path}\n`);
+for (const p of result.patched) process.stdout.write(`patched    .claude/settings.json (${p.event})\n`);
 for (const r of result.redirected) process.stdout.write(`redirected ${r.from} -> ${r.to}\n`);
-for (const s of result.skipped) process.stdout.write(`skipped   ${s.path} (${s.why})\n`);
+for (const s of result.skipped) process.stdout.write(`skipped    ${s.path} (${s.why})\n`);
+for (const f of result.failed) process.stderr.write(`failed     ${f.path}: ${f.error}\n`);
+
+if (result.failed.length > 0) {
+  process.stderr.write(
+    `harness-kit: apply stopped after a write failure. ${result.written.length} item(s) were written and ` +
+    `recorded in the manifest before the failure; nothing after it was attempted. Fix the underlying issue and re-run.\n`,
+  );
+  process.exit(2);
+}
 
 process.exit(0);

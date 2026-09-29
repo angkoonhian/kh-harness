@@ -1,18 +1,29 @@
 // scripts/lib/apply-lib.mjs
 //
-// The only module in the kit that writes to a user's repository. Three rules
+// The only module in the kit that writes to a user's repository. Rules that
 // make "never overwrite" structural rather than aspirational:
 //   1. The write allowlist is enforced here, in code — never in settings.
-//   2. Every proposal's path is validated before any of them is written, so a
-//      bad proposal cannot leave a half-applied repository.
-//   3. There is no --force. Not a flag, not an option, not a code path.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+//   2. Every proposal's target — allowlist AND filesystem containment — is
+//      validated before any of them is written, so a bad proposal cannot
+//      leave a half-applied repository.
+//   3. A write-time failure (an I/O error pass 1 could not have predicted)
+//      stops the batch but is recorded, never thrown away and never left
+//      unrecorded — a partially applied repository that is accurately
+//      described in its manifest is recoverable; one that is not, is not.
+//   4. There is no --force. Not a flag, not an option, not a code path.
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { classify, emptyManifest, sha256 } from './manifest.mjs';
 import { addHookEntry, hasEquivalentHook } from './settings-merge.mjs';
 
 const SETTINGS_PATH = '.claude/settings.json';
 const CLAUDE_REDIRECT_PATH = 'docs/harness/CLAUDE.proposed.md';
+
+// A hand-rolled O(n·m) LCS diff is fine for the kit's own small template and
+// script files. It is not fine for an arbitrary file a future proposal might
+// target: 20k lines is already gigabytes of DP table, 40k OOMs Node. Above
+// this many lines on either side, print a summary instead of a diff.
+const DIFF_LINE_BAILOUT = 3000;
 
 // Exact paths and path prefixes the kit is ever allowed to write. Anything
 // else — however it got proposed — is refused before a single byte is
@@ -55,6 +66,59 @@ export function assertAllowed(relPath) {
   throw new Error(`not allowed: "${relPath}" is outside the write allowlist`);
 }
 
+/**
+ * The allowlist is a string check on the *proposed* relative path. This is
+ * the filesystem check: where does that path actually resolve on disk, right
+ * now? A pre-existing symlink or junction anywhere along the chain — down to
+ * and including the target itself, not just its parent — can route a write
+ * outside the repository even though the proposed path string looks fine.
+ *
+ * The walk starts at the exact target, not dirname(target): a dangling
+ * symlink sitting AT the target (e.g. HANDOFF.md itself is a broken symlink)
+ * redirects a create-on-write there, and checking only the parent directory
+ * would miss it entirely, since the parent (the repo root) is always fine.
+ */
+function assertContained(root, relPath) {
+  const abs = join(root, relPath);
+
+  let realRoot;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    throw new Error(`not allowed: could not resolve the repository root while checking "${relPath}"`);
+  }
+
+  let cur = abs;
+  for (;;) {
+    let entry;
+    try {
+      entry = lstatSync(cur); // does not follow a symlink/junction at cur itself
+    } catch {
+      entry = null;
+    }
+    if (entry) break;
+    const parent = dirname(cur);
+    if (parent === cur) break; // reached filesystem root without finding anything
+    cur = parent;
+  }
+
+  let real;
+  try {
+    real = realpathSync(cur); // fully resolves any symlink/junction chain
+  } catch {
+    // Most commonly a dangling symlink: it exists (lstat succeeded above) but
+    // cannot be resolved to a real, existing location. Refuse rather than
+    // assume it is safe.
+    throw new Error(`not allowed: "${relPath}" cannot be verified to stay inside the repository (broken symlink?)`);
+  }
+
+  const rel = relative(realRoot, real);
+  const escapes = isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`);
+  if (escapes) {
+    throw new Error(`not allowed: "${relPath}" escapes the repository root via a symlink or junction`);
+  }
+}
+
 function splitLines(content) {
   if (content === '') return [];
   return content.endsWith('\n') ? content.slice(0, -1).split('\n') : content.split('\n');
@@ -64,6 +128,7 @@ function splitLines(content) {
  * Line-based diff via a longest-common-subsequence table. Not the fastest
  * algorithm available, but this project has zero npm dependencies and these
  * are hand-authored template files, not generated multi-megabyte sources.
+ * See DIFF_LINE_BAILOUT for the point past which this stops being true.
  */
 function diffLines(a, b) {
   const n = a.length;
@@ -96,7 +161,15 @@ function diffLines(a, b) {
 }
 
 function unifiedDiff(before, after, label) {
-  const ops = diffLines(splitLines(before), splitLines(after));
+  const a = splitLines(before);
+  const b = splitLines(after);
+
+  if (a.length > DIFF_LINE_BAILOUT || b.length > DIFF_LINE_BAILOUT) {
+    return `--- a/${label}\n+++ b/${label}\n` +
+      `(diff suppressed: ${a.length} vs ${b.length} lines exceeds the ${DIFF_LINE_BAILOUT}-line preview limit)`;
+  }
+
+  const ops = diffLines(a, b);
   const lines = [`--- a/${label}`, `+++ b/${label}`];
   for (const op of ops) {
     if (op.type === 'ctx') lines.push(` ${op.line}`);
@@ -106,38 +179,95 @@ function unifiedDiff(before, after, label) {
   return lines.join('\n');
 }
 
-function readSettings(root) {
+/**
+ * Reads `.claude/settings.json`. Distinguishes "absent" (fine — treated as
+ * `{}`) from "present but unreadable as a settings object" (parse error, or
+ * valid JSON that is not a plain object — an array, a string, null, ...).
+ * The latter must never be silently replaced with `{}`: that would destroy
+ * the user's file rather than merge into it.
+ */
+function readSettingsResult(root) {
   const p = join(root, SETTINGS_PATH);
-  if (!existsSync(p)) return {};
+  if (!existsSync(p)) return { ok: true, settings: {} };
+
+  let raw;
   try {
-    return JSON.parse(readFileSync(p, 'utf8'));
+    raw = readFileSync(p, 'utf8');
   } catch {
-    return {};
+    return { ok: false };
   }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false };
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false };
+  }
+
+  return { ok: true, settings: parsed };
 }
 
 /** Preview of a settings-hook proposal: the whole file, before and after the merge. */
 function renderSettingsHookDiff(root, proposal) {
-  const before = readSettings(root);
-  const beforeText = JSON.stringify(before, null, 2) + '\n';
-  const { settings: after } = addHookEntry(before, proposal.event, proposal.entry);
+  const result = readSettingsResult(root);
+  if (!result.ok) {
+    return `--- a/${SETTINGS_PATH}\n+++ b/${SETTINGS_PATH}\n` +
+      `(${SETTINGS_PATH} could not be parsed as a JSON object — no changes will be made; fix its JSON and re-run)`;
+  }
+  const beforeText = JSON.stringify(result.settings, null, 2) + '\n';
+  const { settings: after } = addHookEntry(result.settings, proposal.event, proposal.entry);
   const afterText = JSON.stringify(after, null, 2) + '\n';
   return unifiedDiff(beforeText, afterText, SETTINGS_PATH);
 }
 
-/** Unified-style diff of a proposal against what is on disk today (or nothing). */
+/**
+ * Where a file proposal will actually land. CLAUDE.md is the file most
+ * likely to be hand-tuned and to hold decisions that cannot be re-derived
+ * from source: if it already exists — no matter who wrote it, or when — the
+ * proposal is redirected to a sibling the user can diff and merge by hand,
+ * rather than written in place.
+ */
+function resolveFileTarget(root, proposal) {
+  if (proposal.path === 'CLAUDE.md' && existsSync(join(root, 'CLAUDE.md'))) {
+    return { targetPath: CLAUDE_REDIRECT_PATH, redirectFrom: 'CLAUDE.md' };
+  }
+  return { targetPath: proposal.path, redirectFrom: null };
+}
+
+/**
+ * Unified-style diff of a proposal against what is on disk today (or
+ * nothing). For a redirected CLAUDE.md, this previews the diff against the
+ * redirect target — never against CLAUDE.md itself, which is never touched,
+ * so the preview must never present the user's own lines as being deleted.
+ */
 export function renderDiff(root, proposal) {
   if (proposal.kind === 'settings-hook') {
     return renderSettingsHookDiff(root, proposal);
   }
-  const target = join(root, proposal.path);
+
+  const { targetPath, redirectFrom } = resolveFileTarget(root, proposal);
+  const target = join(root, targetPath);
   const before = existsSync(target) ? readFileSync(target, 'utf8') : '';
-  return unifiedDiff(before, proposal.contents, proposal.path);
+  const body = unifiedDiff(before, proposal.contents, targetPath);
+
+  return redirectFrom
+    ? `(${redirectFrom} already exists and is left untouched — previewing the redirect to ${targetPath} instead)\n${body}`
+    : body;
 }
 
-function writeFileDeep(absPath, contents) {
-  mkdirSync(dirname(absPath), { recursive: true });
-  writeFileSync(absPath, contents, 'utf8');
+function writeFileDeep(absPath, contents, relPath) {
+  try {
+    mkdirSync(dirname(absPath), { recursive: true });
+    writeFileSync(absPath, contents, 'utf8');
+  } catch (err) {
+    const wrapped = new Error(`failed to write ${relPath}: ${err.message}`);
+    wrapped.path = relPath;
+    throw wrapped;
+  }
 }
 
 function upsertFileEntry(files, entry) {
@@ -147,16 +277,8 @@ function upsertFileEntry(files, entry) {
 }
 
 function applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected }) {
-  let targetPath = proposal.path;
-
-  // CLAUDE.md is the file most likely to be hand-tuned and to hold decisions
-  // that cannot be re-derived from source. If it already exists — no matter
-  // who wrote it, or when — it is never written in place: the proposal is
-  // redirected to a sibling the user can diff and merge by hand.
-  if (proposal.path === 'CLAUDE.md' && existsSync(join(root, 'CLAUDE.md'))) {
-    targetPath = CLAUDE_REDIRECT_PATH;
-    redirected.push({ from: 'CLAUDE.md', to: targetPath });
-  }
+  const { targetPath, redirectFrom } = resolveFileTarget(root, proposal);
+  if (redirectFrom) redirected.push({ from: redirectFrom, to: targetPath });
 
   const cls = classify(root, nextManifest, targetPath);
   const abs = join(root, targetPath);
@@ -164,17 +286,22 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
   if (cls === 'ours-unmodified') {
     const existingEntry = nextManifest.files.find(f => f.path === targetPath);
     const newHash = sha256(proposal.contents);
-    // Identical content already in place — nothing to do, nothing to report.
-    if (existingEntry && existingEntry.sha256 === newHash) return;
+    if (existingEntry && existingEntry.sha256 === newHash) {
+      // Identical content already in place: nothing to write, but a library
+      // caller must be able to tell "nothing needed doing" from "nothing
+      // happened" — report it rather than staying silent.
+      skipped.push({ path: targetPath, why: 'unchanged', checkId: proposal.checkId });
+      return;
+    }
 
-    writeFileDeep(abs, proposal.contents);
+    writeFileDeep(abs, proposal.contents, targetPath);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: newHash, step: proposal.step, writtenAt: new Date().toISOString() });
     written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
     return;
   }
 
   if (cls === 'theirs' && !existsSync(abs)) {
-    writeFileDeep(abs, proposal.contents);
+    writeFileDeep(abs, proposal.contents, targetPath);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: sha256(proposal.contents), step: proposal.step, writtenAt: new Date().toISOString() });
     written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
     return;
@@ -185,15 +312,27 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
   skipped.push({ path: targetPath, why: cls, checkId: proposal.checkId });
 }
 
-function applySettingsHookProposal({ root, proposal, nextManifest, patched }) {
+function applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped }) {
   const settingsPath = join(root, SETTINGS_PATH);
-  const settings = readSettings(root);
+  const result = readSettingsResult(root);
 
-  // Already wired up — reapplying would just duplicate the hook entry.
-  if (hasEquivalentHook(settings, proposal.event, proposal.entry?.command)) return;
+  if (!result.ok) {
+    // The single most security-relevant file in the repository. An
+    // unparseable settings.json (trailing commas, comments, a JSON array
+    // instead of an object, ...) must never be silently replaced with `{}` —
+    // that destroys whatever the user had. Write nothing; report it.
+    skipped.push({ path: SETTINGS_PATH, why: 'unparseable', checkId: proposal.checkId });
+    return;
+  }
+
+  const settings = result.settings;
+  if (hasEquivalentHook(settings, proposal.event, proposal.entry?.command)) {
+    skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
+    return;
+  }
 
   const { settings: next, patch } = addHookEntry(settings, proposal.event, proposal.entry);
-  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + '\n');
+  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + '\n', SETTINGS_PATH);
 
   nextManifest.settingsPatches.push({
     event: proposal.event,
@@ -209,17 +348,27 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched }) {
 /**
  * Applies proposals additively: writes only what classify() says is safe to
  * write, never mutates the manifest it was given, and validates every
- * proposal's path before writing any of them so a bad proposal cannot leave
- * a half-applied repository.
+ * proposal's target — allowlist and filesystem containment — before writing
+ * any of them, so a bad proposal cannot leave a half-applied repository.
+ *
+ * Never throws on an I/O failure encountered while applying. Such a failure
+ * stops the batch (nothing after it is attempted) but is recorded in
+ * `failed` and returned normally, with the manifest reflecting exactly what
+ * was written before the failure — so the caller can always write that
+ * manifest and know it describes reality.
  */
 export function applyProposals({ root, proposals, manifest, kitVersion }) {
   // Pass 1: validate. No write happens until every proposal in the batch has
-  // been checked against the allowlist.
+  // cleared both the allowlist and the containment check.
   for (const proposal of proposals) {
     if (proposal.kind === 'file') {
       assertAllowed(proposal.path);
+      const { targetPath } = resolveFileTarget(root, proposal);
+      assertAllowed(targetPath);
+      assertContained(root, targetPath);
     } else if (proposal.kind === 'settings-hook') {
       assertAllowed(SETTINGS_PATH);
+      assertContained(root, SETTINGS_PATH);
     } else {
       throw new Error(`apply: unknown proposal kind: ${proposal.kind}`);
     }
@@ -229,21 +378,28 @@ export function applyProposals({ root, proposals, manifest, kitVersion }) {
   const patched = [];
   const skipped = [];
   const redirected = [];
+  const failed = [];
 
   const nextManifest = structuredClone(manifest ?? emptyManifest(kitVersion));
   nextManifest.files ??= [];
   nextManifest.settingsPatches ??= [];
 
-  // Pass 2: apply. Every path in this batch already cleared the allowlist.
+  // Pass 2: apply. Every path in this batch already cleared validation; what
+  // remains is what validation cannot predict — actual I/O.
   for (const proposal of proposals) {
-    if (proposal.kind === 'file') {
-      applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected });
-    } else {
-      applySettingsHookProposal({ root, proposal, nextManifest, patched });
+    try {
+      if (proposal.kind === 'file') {
+        applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected });
+      } else {
+        applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped });
+      }
+    } catch (err) {
+      failed.push({ path: err?.path ?? proposal.path ?? SETTINGS_PATH, error: err?.message ?? String(err) });
+      break;
     }
   }
 
-  return { written, patched, skipped, redirected, manifest: nextManifest };
+  return { written, patched, skipped, redirected, failed, manifest: nextManifest };
 }
 
 export { SETTINGS_PATH, CLAUDE_REDIRECT_PATH };

@@ -27,22 +27,25 @@ const GENERATORS = {
     entry: { type: 'command', command: `node ${BRIEF_PATH}` },
     reason: 'no SessionStart hook registered in .claude/settings.json',
   }],
-  // Test-only generator to verify context passing
-  'TEST.contextcheck': ({ kitVersion, harness, root, stack, checks }) => {
-    if (typeof root !== 'string' && typeof root !== 'undefined') return [];
-    if (!Array.isArray(stack?.packages ?? [])) return [];
-    if (!Array.isArray(checks)) return [];
-    return [{ kind: 'file', path: '.context-verified', step: 99, contents: 'ok', reason: 'test' }];
-  },
 };
 
-export function buildProposals({ checks, manifest, kitVersion, harness, root, stack }) {
+/**
+ * `generators` lets a caller extend or override the production table for a
+ * single call — this exists so tests can inject a probe generator (e.g. to
+ * verify the full context is passed through) without that probe living in
+ * the production table. A generator registered there is a live proposal
+ * path: `TEST.contextcheck` used to live here and proposed `.context-verified`,
+ * a path `assertAllowed` refuses — a crash waiting for a real check to reuse
+ * that id, not just a dead test fixture.
+ */
+export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, generators = {} }) {
+  const registry = { ...GENERATORS, ...generators };
   const alreadyWritten = new Set((manifest?.files ?? []).map(f => f.path));
   const out = [];
   for (const c of checks) {
     // Both gates, read from the check — never re-derived here.
     if (c.state !== 'absent' || c.decidable === false) continue;
-    const gen = GENERATORS[c.id];
+    const gen = registry[c.id];
     if (!gen) continue;
     for (const p of gen({ kitVersion, harness, root, stack, checks })) {
       if (p.kind === 'file' && alreadyWritten.has(p.path)) continue;

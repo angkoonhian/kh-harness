@@ -55,8 +55,23 @@ test('a check with no registered generator is skipped without throwing', () => {
 });
 
 test('a generator receives the full context including stack, root, and checks', () => {
+  // TEST.contextcheck is not in the production table (it proposed a path
+  // assertAllowed refuses) — it is injected here via `generators`, which
+  // exists precisely so a probe like this never has to live in production.
+  const contextcheck = ({ kitVersion, harness, root, stack, checks }) => {
+    if (typeof root !== 'string' && typeof root !== 'undefined') return [];
+    if (!Array.isArray(stack?.packages ?? [])) return [];
+    if (!Array.isArray(checks)) return [];
+    return [{ kind: 'file', path: '.context-verified', step: 99, contents: 'ok', reason: 'test' }];
+  };
   const checks = [check({ id: 'TEST.contextcheck' })];
-  const ps = buildProposals(args(checks));
+  const ps = buildProposals(args(checks, { generators: { 'TEST.contextcheck': contextcheck } }));
   assert.equal(ps.length, 1, 'generator received full context and returned a proposal');
   assert.equal(ps[0].path, '.context-verified', 'generator verified stack, root, and checks were passed');
+});
+
+test('a generator id with no production entry and no injected override is skipped without throwing', () => {
+  const checks = [check({ id: 'TEST.contextcheck' })];
+  assert.doesNotThrow(() => buildProposals(args(checks)));
+  assert.deepEqual(buildProposals(args(checks)), [], 'the removed production entry must not silently resurface');
 });
