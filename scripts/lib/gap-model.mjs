@@ -9,13 +9,18 @@ const MAX_INSTRUCTION_LINES = 150;
  * need to be, because settings.json is an exact record of what is wired up.
  *
  * This can only widen a check to `declared`; it can never create a proposal, so
- * the central invariant is untouched. The registered command goes into the
- * evidence so the user can see what was credited.
+ * the central invariant is untouched.
+ *
+ * The evidence names the resolved SCRIPT, never the command: arguments are
+ * where secrets live, and `.claude/settings.local.json` is one of the two files
+ * this registry is read from. Where no path resolved, the event alone is
+ * named — an evidence string that says less is strictly better than one that
+ * might say a secret, and it still tells the user exactly what was credited.
  */
 function registeredHook(harness, event, proposal) {
-  const commands = harness.claudeDir.hookEvents?.[event] ?? [];
-  return commands.length
-    ? { state: 'declared', evidence: commands.map(c => `${event} hook: ${c}`) }
+  const scripts = harness.claudeDir.hookEvents?.[event] ?? [];
+  return scripts.length
+    ? { state: 'declared', evidence: scripts.map(s => (s ? `${event} hook: ${s}` : `${event} hook registered`)) }
     : { state: 'absent', proposal };
 }
 

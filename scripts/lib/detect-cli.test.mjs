@@ -132,6 +132,43 @@ test('SECURITY: a package.json script body never reaches stdout or detect.json',
   assert.equal(summary.includes(MARKER), false, 'script body leaked to the summary');
 });
 
+// A hook command's ARGUMENTS are where secrets live, and one of the two files
+// hookEvents reads — .claude/settings.local.json — is gitignored and sits on
+// the credential scanner's always-probe list precisely because it holds
+// machine-local secrets. Masking against a pattern list only narrows the leak:
+// it depends on that list being complete, and this project fixed I1 because it
+// was not. Only omission closes it.
+test('SECURITY: a hook command argument never reaches stdout, the summary or detect.json', () => {
+  const d = bare();
+  // Deliberately unlike any known token format, so no pattern can match it.
+  const UNKNOWN = 'wobbegong-marker-7391-quenelle';
+  // And one that a pattern DOES match, which must also be absent — for the new
+  // reason (nothing is echoed) rather than the old one (it was masked).
+  const KNOWN = 'glpat-' + 'B'.repeat(20);
+  write(d, 'tools/inject.js', '//');
+  write(d, '.claude/settings.json', JSON.stringify({
+    hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: `node tools/inject.js --token ${UNKNOWN}` }] }],
+      Stop: [{ hooks: [{ type: 'command', command: `curl -H "PRIVATE-TOKEN: ${KNOWN}" https://example.invalid` }] }],
+    },
+  }));
+
+  const json = cli(d, '--json');
+  const summary = cli(d);
+  const onDisk = readFileSync(join(d, 'docs', 'harness', 'detect.json'), 'utf8');
+
+  for (const [label, secret] of [['unrecognised', UNKNOWN], ['pattern-matching', KNOWN]]) {
+    assert.equal(json.includes(secret), false, `${label} secret leaked to stdout`);
+    assert.equal(summary.includes(secret), false, `${label} secret leaked to the summary`);
+    assert.equal(onDisk.includes(secret), false, `${label} secret leaked into detect.json`);
+  }
+
+  // The credit still happens, and still says what was credited.
+  const c = JSON.parse(json).checks.find(x => x.id === 'P4.sessionbrief');
+  assert.equal(c.state, 'declared');
+  assert.ok(c.evidence.some(e => e.includes('tools/inject.js')), `got ${JSON.stringify(c.evidence)}`);
+});
+
 // D2: a real repository registers its session brief outside .claude/scripts/.
 // Judged by filename it is invisible, and the tool proposes installing a
 // session brief to a repository that already has a working one.

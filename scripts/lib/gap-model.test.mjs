@@ -14,7 +14,8 @@ const bareHarness = {
 const richHarness = {
   instructions: { path: 'CLAUDE.md', lines: 153 }, agentsMd: null, reconPresent: true,
   claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs'],
-    hookEvents: { PostToolUse: ['node .claude/scripts/lint-touched.mjs'], Stop: ['node .claude/scripts/verify-touched.mjs'], SessionStart: ['node .claude/scripts/session-brief.mjs'] },
+    // hookEvents entries are RESOLVED SCRIPT PATHS, never command strings.
+    hookEvents: { PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'] },
     agents: Array.from({ length: 13 }, (_, i) => `.claude/agents/c${i}.md`), skills: [], commands: [], rules: ['.claude/rules/api.md'] },
   otherEditors: [], architecture: 'docs/ARCHITECTURE.md', handoff: 'HANDOFF.md',
   bootstrap: 'scripts/bootstrap.sh', gitattributes: true, remotes: [{ name: 'origin', hasCredential: false }],
@@ -163,9 +164,9 @@ const withHooks = (hookEvents, hooks = []) => ({ ...bareHarness,
   claudeDir: { ...bareHarness.claudeDir, hooks, hookEvents } });
 
 for (const [id, event, cmd] of [
-  ['P2.sensor', 'PostToolUse', 'node tools/format-and-lint.js'],
-  ['P2.stopgate', 'Stop', 'make verify'],
-  ['P4.sessionbrief', 'SessionStart', 'node docs/agent-context/inject.js'],
+  ['P2.sensor', 'PostToolUse', 'tools/format-and-lint.js'],
+  ['P2.stopgate', 'Stop', 'tools/verify-all.js'],
+  ['P4.sessionbrief', 'SessionStart', 'docs/agent-context/inject.js'],
 ]) {
   test(`${id} is declared by a registered ${event} hook living outside .claude/scripts/`, () => {
     const c = byId(gaps(fullStack, withHooks({ [event]: [cmd] })), id);
@@ -181,6 +182,17 @@ for (const [id, event, cmd] of [
     assert.ok(c.proposal);
   });
 }
+
+test('a registered hook whose command names no repository path is credited by event alone', () => {
+  // The command resolved to nothing — a shell one-liner, or a path built from
+  // an environment variable. It is still registered, so the capability is
+  // still there; the evidence simply names less rather than risk naming an
+  // argument.
+  const c = byId(gaps(fullStack, withHooks({ Stop: [null] })), 'P2.stopgate');
+  assert.equal(c.state, 'declared');
+  assert.equal(c.proposal, null);
+  assert.deepEqual(c.evidence, ['Stop hook registered']);
+});
 
 test('P4.handoff and P4.sessionbrief are independent — a working hook is not told to install one', () => {
   const hookOnly = { ...withHooks({ SessionStart: ['node docs/agent-context/inject.js'] }), handoff: null };

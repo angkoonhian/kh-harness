@@ -30,22 +30,7 @@ const PEM_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
 const DB_CRED = /(password|passwd|pwd)\s*[:=]\s*\S{8,}/i;
 
-/**
- * Mask anything matching the credential patterns above so a fragment of
- * repository-derived text (a registered hook command, say) can be shown to the
- * user without republishing a secret. This is a defence in depth, not a
- * licence: only text a consumer genuinely needs to see should pass through it.
- * Never throws; a non-string is returned unchanged.
- */
-export function redactSecrets(text) {
-  if (typeof text !== 'string') return text;
-  let out = text;
-  for (const re of [...TOKEN_PATTERNS, PEM_PATTERN, DB_CRED]) {
-    out = out.replace(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'), '[redacted]');
-  }
-  return out;
-}
-const PLACEHOLDER = /(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|^(password|secret|todo)$)/i;
+const PLACEHOLDER =/(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|^(password|secret|todo)$)/i;
 
 // Skip binary-ish extensions: images, archives, binaries, fonts, media, source maps
 const SKIP_EXT = [

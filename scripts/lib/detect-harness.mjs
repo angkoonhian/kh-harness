@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
 import { readIfPresent, existsAny } from './scan.mjs';
-import { redactSecrets } from './detect-exposure.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
   'scripts/bootstrap.sh', 'scripts/bootstrap.ps1', 'scripts/setup.sh', 'scripts/setup.ps1',
@@ -42,6 +41,32 @@ function denyRuleCount(root) {
 }
 
 /**
+ * The script a hook command runs, resolved against the repository's file list,
+ * or null when nothing resolves.
+ *
+ * The command string is NEVER recorded. Secrets live in a command's arguments,
+ * not in a program name, and one of the two files hookEvents reads —
+ * `.claude/settings.local.json` — is gitignored and on the credential
+ * scanner's always-probe list precisely because it holds machine-local
+ * secrets. Masking the command against a pattern list would only narrow that
+ * leak: the guarantee would depend on the list being complete, and this very
+ * wave fixed I1 because that list was missing a common credential shape.
+ * Omission does not depend on anything.
+ *
+ * A token survives only if it is already a path in this repository — the same
+ * resolution docPointers performs on instruction-file pointers — so nothing
+ * that was not already a known filename can come out of here.
+ */
+function commandScript(command, files) {
+  const present = new Set(files);
+  for (const raw of command.split(/\s+/)) {
+    const p = raw.replace(/^["']+|["']+$/g, '').split('\\').join('/').replace(/^\.\//, '');
+    if (p && present.has(p)) return p;
+  }
+  return null;
+}
+
+/**
  * The hooks a repository has actually registered, grouped by event.
  *
  * This is the repository's own registry of what is wired up. A hook's script
@@ -52,11 +77,14 @@ function denyRuleCount(root) {
  * Shape parsed (Claude Code's):
  *   { "hooks": { "<Event>": [ { "matcher": "…", "hooks": [ { "command": "…" } ] } ] } }
  *
- * Commands are redacted against the credential patterns before being recorded,
- * because everything here is embedded whole into `docs/harness/detect.json`.
+ * Each registered hook contributes ONE entry: its resolved script path, or
+ * `null` when none resolves. The command string itself is never recorded — see
+ * commandScript below. An event's entry count is therefore how many hooks are
+ * wired to it, which is what the checks read.
+ *
  * Never throws: a missing file, bad JSON or any malformed shape yields `{}`.
  */
-function hookEvents(root) {
+function hookEvents(root, files) {
   const out = {};
   for (const rel of SETTINGS_FILES) {
     const hooks = parseSettings(root, rel)?.hooks;
@@ -66,12 +94,17 @@ function hookEvents(root) {
         for (const entry of Array.isArray(matcher?.hooks) ? matcher.hooks : []) {
           const command = typeof entry?.command === 'string' ? entry.command.trim() : '';
           if (!command) continue;
-          (out[event] ??= []).push(redactSecrets(command));
+          (out[event] ??= []).push(commandScript(command, files));
         }
       }
     }
   }
-  for (const event of Object.keys(out)) out[event] = [...new Set(out[event])].sort();
+  for (const event of Object.keys(out)) {
+    const uniq = [...new Set(out[event])];
+    // Resolved paths first, in a stable order; one trailing null if any hook
+    // on this event could not be resolved to a path.
+    out[event] = [...uniq.filter(p => p !== null).sort(), ...(uniq.includes(null) ? [null] : [])];
+  }
   return out;
 }
 
@@ -186,7 +219,7 @@ export function detectHarness(root, files) {
       denyRules: denyRuleCount(root),
       // File inventory. NOT what decides whether an event is covered — see hookEvents.
       hooks: under(files, '.claude/scripts/'),
-      hookEvents: hookEvents(root),
+      hookEvents: hookEvents(root, files),
       agents: under(files, '.claude/agents/', '.md'),
       skills: under(files, '.claude/skills/', '.md'),
       commands: under(files, '.claude/commands/', '.md'),

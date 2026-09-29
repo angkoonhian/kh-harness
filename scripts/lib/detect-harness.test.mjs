@@ -121,34 +121,40 @@ test('hookEvents records a SessionStart hook whose script lives outside .claude/
   }));
   write(d, 'docs/agent-context/inject.js', '//');
   const h = run(d);
-  assert.deepEqual(h.claudeDir.hookEvents.SessionStart, ['node docs/agent-context/inject.js']);
+  assert.deepEqual(h.claudeDir.hookEvents.SessionStart, ['docs/agent-context/inject.js']);
   // The file list is inventory only; it must not be what decides coverage.
   assert.deepEqual(h.claudeDir.hooks, []);
 });
 
-test('hookEvents groups several events and several commands per event', () => {
+test('hookEvents groups several events and several hooks per event', () => {
   const d = repo();
+  write(d, 'bin/fmt.sh', '#');
+  write(d, 'bin/lint.sh', '#');
   write(d, '.claude/settings.json', JSON.stringify({
     hooks: {
       PostToolUse: [
-        { matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'bin/fmt.sh' }] },
-        { matcher: 'Edit', hooks: [{ type: 'command', command: 'bin/lint.sh' }] },
+        { matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'sh bin/fmt.sh --write' }] },
+        { matcher: 'Edit', hooks: [{ type: 'command', command: 'sh bin/lint.sh' }] },
       ],
+      // Nothing in `make verify` is a path in this repository, so no script
+      // resolves and the entry is null: registered, but unnameable.
       Stop: [{ hooks: [{ type: 'command', command: 'make verify' }] }],
     },
   }));
   const ev = run(d).claudeDir.hookEvents;
   assert.deepEqual(ev.PostToolUse, ['bin/fmt.sh', 'bin/lint.sh']);
-  assert.deepEqual(ev.Stop, ['make verify']);
+  assert.deepEqual(ev.Stop, [null]);
 });
 
 test('hookEvents also reads .claude/settings.local.json', () => {
   const d = repo();
-  write(d, '.claude/settings.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'a' }] }] } }));
-  write(d, '.claude/settings.local.json', JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'b' }] }] } }));
+  write(d, 'a.mjs', '//');
+  write(d, 'b.mjs', '//');
+  write(d, '.claude/settings.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node a.mjs' }] }] } }));
+  write(d, '.claude/settings.local.json', JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'node b.mjs' }] }] } }));
   const ev = run(d).claudeDir.hookEvents;
-  assert.deepEqual(ev.Stop, ['a']);
-  assert.deepEqual(ev.PostToolUse, ['b']);
+  assert.deepEqual(ev.Stop, ['a.mjs']);
+  assert.deepEqual(ev.PostToolUse, ['b.mjs']);
 });
 
 test('hookEvents is empty for a missing, malformed or hook-less settings file', () => {
@@ -269,13 +275,29 @@ test('projectDocs lists docs/ markdown that is not the kit\'s own output', () =>
   assert.deepEqual(run(d).projectDocs, ['docs/wiki/README.md', 'docs/wiki/services.md']);
 });
 
-test('a hook command carrying a credential is redacted before it reaches the report', () => {
+// Never the command string, only the script it runs. Secrets live in
+// arguments, and .claude/settings.local.json — one of the two files this
+// registry is read from — is gitignored and on the credential scanner's
+// always-probe list precisely because it holds machine-local secrets. Masking
+// against a pattern list would leave the guarantee dependent on that list
+// being complete; I1 in this same wave showed it was not.
+test('hookEvents records the resolved script, never the command or its arguments', () => {
   const d = repo();
-  const SECRET = 'glpat-' + 'Q'.repeat(20);
+  const UNKNOWN = 'wobbegong-marker-7391-quenelle';   // matches no token pattern
+  const KNOWN = 'glpat-' + 'Q'.repeat(20);            // matches one
+  write(d, 'tools/inject.js', '//');
   write(d, '.claude/settings.json', JSON.stringify({
-    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `curl -H "PRIVATE-TOKEN: ${SECRET}" https://example.invalid` }] }] },
+    hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: `node tools/inject.js --token ${UNKNOWN}` }] }],
+      Stop: [{ hooks: [{ type: 'command', command: `curl -H "PRIVATE-TOKEN: ${KNOWN}" https://example.invalid` }] }],
+    },
   }));
-  const serialised = JSON.stringify(run(d));
-  assert.equal(serialised.includes(SECRET), false, 'a hook command must not republish a credential');
-  assert.ok(/redacted/.test(run(d).claudeDir.hookEvents.SessionStart[0]), 'the command should still be shown, with the value masked');
+  const h = run(d);
+  assert.deepEqual(h.claudeDir.hookEvents.SessionStart, ['tools/inject.js'], 'the script, with the argument list gone');
+  assert.deepEqual(h.claudeDir.hookEvents.Stop, [null], 'no path in the command, so nothing is named');
+
+  const serialised = JSON.stringify(h);
+  assert.equal(serialised.includes(UNKNOWN), false, 'an unrecognised secret must not survive');
+  assert.equal(serialised.includes(KNOWN), false, 'nor a recognised one');
+  assert.equal(serialised.includes('example.invalid'), false, 'nor anything else from the command');
 });
