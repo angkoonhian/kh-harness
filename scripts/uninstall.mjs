@@ -85,7 +85,15 @@ if (result.failed.length > 0) {
   }
 }
 
-// Report settings failures and patches that couldn't be reverted (C1a, C1b)
+// Report files that changed since plan (defect 1)
+if (result.changedSincePlan.length > 0) {
+  console.log('Changed since plan (kept):');
+  for (const c of result.changedSincePlan) {
+    console.log(`  ${c.path} (${c.why})`);
+  }
+}
+
+// Report settings failures and patches that couldn't be reverted
 if (result.settingsReadFailed) {
   console.log('Settings file could not be read: hooks remain registered');
 }
@@ -96,6 +104,10 @@ if (result.settingsWriteFailed) {
 
 if (result.manifestWriteFailed) {
   console.log(`Manifest file could not be updated: ${join(root, '.claude/harness-kit.manifest.json')}`);
+}
+
+if (result.manifestDeleteFailed) {
+  console.log(`Manifest file could not be removed: ${join(root, '.claude/harness-kit.manifest.json')}`);
 }
 
 if (result.patchesNotReverted.length > 0) {
@@ -115,12 +127,12 @@ if (plan.keep.length > 0 || plan.keepPatches.length > 0) {
   }
 }
 
-if (result.removed.length === 0 && result.failed.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && result.patchesNotReverted.length === 0) {
+if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0) {
   console.log('nothing was left behind');
 }
 
-// Exit 2 if any removal failed, or if settings/manifest couldn't be handled (C1b)
-if (result.failed.length > 0 || result.settingsReadFailed || result.settingsWriteFailed || result.manifestWriteFailed) {
+// Exit 2 if any removal failed, file changed since plan, or if settings/manifest couldn't be handled
+if (result.failed.length > 0 || result.changedSincePlan.length > 0 || result.settingsReadFailed || result.settingsWriteFailed || result.manifestWriteFailed || result.manifestDeleteFailed) {
   process.exit(2);
 }
 

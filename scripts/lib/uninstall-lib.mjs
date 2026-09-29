@@ -5,6 +5,20 @@ import { revertPatch } from './settings-merge.mjs';
 
 const SETTINGS = '.claude/settings.json';
 
+/** Validate settings structure — must be a plain object, not null/array/primitive. */
+function validateSettings(content) {
+  if (!existsSync(content)) return { valid: false, object: null, reason: 'settings-missing' };
+
+  try {
+    const parsed = JSON.parse(readFileSync(content, 'utf8'));
+    const isPlain = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+    if (isPlain) return { valid: true, object: parsed, reason: null };
+    return { valid: false, object: null, reason: 'settings-unreadable' };
+  } catch {
+    return { valid: false, object: null, reason: 'settings-unreadable' };
+  }
+}
+
 /** Read-only. Decides what may be removed; removes nothing. */
 export function planUninstall({ root, manifest }) {
   const remove = [], keep = [], revert = [], keepPatches = [];
@@ -15,15 +29,16 @@ export function planUninstall({ root, manifest }) {
     else keep.push({ path: f.path, why: state });
   }
 
-  if (existsSync(join(root, SETTINGS))) {
-    let settings = null;
-    try { settings = JSON.parse(readFileSync(join(root, SETTINGS), 'utf8')); } catch { settings = null; }
+  const validated = validateSettings(join(root, SETTINGS));
+  if (validated.valid) {
     for (const p of manifest?.settingsPatches ?? []) {
-      if (settings && revertPatch(settings, p).reverted) revert.push(p);
-      else keepPatches.push({ ...p, why: settings ? 'patch-modified' : 'settings-unreadable' });
+      if (revertPatch(validated.object, p).reverted) revert.push(p);
+      else keepPatches.push({ ...p, why: 'patch-modified' });
     }
   } else {
-    for (const p of manifest?.settingsPatches ?? []) keepPatches.push({ ...p, why: 'settings-missing' });
+    for (const p of manifest?.settingsPatches ?? []) {
+      keepPatches.push({ ...p, why: validated.reason });
+    }
   }
 
   return { remove, keep, revert, keepPatches };
@@ -35,34 +50,35 @@ export function runUninstall({ root, manifest, plan }) {
   const removed = [], failed = [];
   let settingsReadFailed = false, settingsWriteFailed = false, manifestWriteFailed = false;
   const patchesNotReverted = [];
+  const changedSincePlan = [];
 
-  // 1. Track actual outcomes of each removal attempt
+  // 1. Re-classify and remove only if still ours-unmodified (defect 1: CRITICAL)
   for (const r of plan.remove) {
-    try {
-      rmSync(join(root, r.path));
-      removed.push(r.path);
-    } catch (e) {
-      failed.push({ path: r.path, reason: e?.message ?? 'unknown error' });
+    const currentState = classify(root, manifest, r.path);
+    if (currentState === 'ours-unmodified') {
+      try {
+        rmSync(join(root, r.path));
+        removed.push(r.path);
+      } catch (e) {
+        failed.push({ path: r.path, reason: e?.message ?? 'unknown error' });
+      }
+    } else {
+      // File changed since plan was made
+      changedSincePlan.push({ path: r.path, why: currentState });
     }
   }
 
   // 2. Attempt to revert settings patches, tracking what could not be reverted
-  if (plan.revert.length) {
-    let settings = null;
-    try {
-      const parsed = JSON.parse(readFileSync(join(root, SETTINGS), 'utf8'));
-      // Treat non-object results (null, arrays, primitives) as unreadable — consistent with apply-lib
-      settings = (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) ? parsed : null;
-      if (!settings) settingsReadFailed = true;
-    } catch {
-      settingsReadFailed = true;
-    }
+  // Always validate settings to detect runtime changes, even if nothing planned to revert
+  const validated = validateSettings(join(root, SETTINGS));
 
-    if (settings) {
+  if (plan.revert.length) {
+    if (validated.valid) {
+      let settings = validated.object;
       // Settings is a valid object; apply reverts
       for (const p of plan.revert) settings = revertPatch(settings, p).settings;
 
-      // Try to write reverted settings; guard the write (C1c)
+      // Try to write reverted settings; guard the write
       try {
         writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
       } catch (e) {
@@ -70,17 +86,24 @@ export function runUninstall({ root, manifest, plan }) {
         patchesNotReverted.push(...plan.revert);
       }
     } else {
-      // Settings not readable or not a plain object; patches cannot be reverted
+      // Settings not readable, missing, or not a plain object; patches cannot be reverted
+      if (validated.reason !== null) settingsReadFailed = true;
       patchesNotReverted.push(...plan.revert);
     }
+  } else if (!validated.valid && validated.reason === 'settings-unreadable') {
+    // No patches to revert, but settings invalid at runtime — report it
+    settingsReadFailed = true;
   }
 
-  // 3. Build manifest from actual outcomes, not from plan (C1a, C1c)
+  // 3. Build manifest from actual outcomes, not from plan
   const keptPaths = new Set(plan.keep.map(k => k.path));
+  const changedPaths = new Set(changedSincePlan.map(c => c.path));
   const failedPaths = new Set(failed.map(f => f.path));
 
-  // Files to keep in manifest: kept files and files that failed to remove
-  const keptFiles = manifest.files.filter(f => keptPaths.has(f.path) || failedPaths.has(f.path));
+  // Files to keep in manifest: kept files, files changed since plan, and files that failed to remove
+  const keptFiles = manifest.files.filter(f =>
+    keptPaths.has(f.path) || changedPaths.has(f.path) || failedPaths.has(f.path)
+  );
 
   // Patches to keep in manifest: user-edited patches + patches we couldn't revert
   const keptPatches = [
@@ -91,13 +114,18 @@ export function runUninstall({ root, manifest, plan }) {
     }))
   ];
 
-  // 4. Persist the manifest once, from actual outcomes (C1c)
-  // Guard the write so the outcome is always returned, even if persistence fails
-  const hasKept = keptFiles.length > 0 || keptPatches.length > 0;
+  // 4. Persist the manifest once, from actual outcomes
+  // Guard both write and delete so the outcome is always returned
+  let manifestDeleteFailed = false;
+  const hasKept = keptFiles.length > 0 || keptPatches.length > 0 || changedSincePlan.length > 0;
   const hasFailures = failed.length > 0;
 
   if (!hasKept && !hasFailures) {
-    try { rmSync(join(root, MANIFEST_PATH)); } catch { /* fine */ }
+    try {
+      rmSync(join(root, MANIFEST_PATH));
+    } catch (e) {
+      manifestDeleteFailed = true;
+    }
   } else {
     const updatedManifest = {
       ...manifest,
@@ -117,6 +145,8 @@ export function runUninstall({ root, manifest, plan }) {
     settingsReadFailed,
     settingsWriteFailed,
     manifestWriteFailed,
+    manifestDeleteFailed,
+    changedSincePlan,
     patchesNotReverted
   };
 }

@@ -172,27 +172,54 @@ test('settings parse to null (falsy value) are treated as unreadable', () => {
   assert.equal(manifestAfter.settingsPatches[0].why, 'settings-unreadable');
 });
 
-test('outcome object always returned, even if manifest write fails', () => {
-  const d = repo();
-  const fileProposal = { kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r' };
-  const { manifest } = applyProposals({ root: d, proposals: [fileProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
-
+test('file edited between plan and run is kept and reported', () => {
+  const { d, manifest } = installed();
   const plan = planUninstall({ root: d, manifest });
-  assert.equal(plan.remove.length, 1);
+  assert.equal(plan.remove.length, 1, 'plan to remove HANDOFF.md');
 
-  // runUninstall should not throw and should return an outcome object with all fields
-  let result;
-  assert.doesNotThrow(() => {
-    result = runUninstall({ root: d, manifest, plan });
-  });
+  // Edit the file after planning
+  writeFileSync(join(d, 'HANDOFF.md'), 'user edit\n');
 
-  // Verify the outcome object has all fields even if something fails
-  assert.equal(typeof result.removed, 'object');
-  assert.equal(typeof result.failed, 'object');
-  assert.equal(typeof result.settingsReadFailed, 'boolean');
-  assert.equal(typeof result.settingsWriteFailed, 'boolean');
-  assert.equal(typeof result.manifestWriteFailed, 'boolean');
-  assert.equal(typeof result.patchesNotReverted, 'object');
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.removed.length, 0, 'file not removed (changed)');
+  assert.equal(result.changedSincePlan.length, 1, 'file recorded as changed');
+  assert.equal(result.changedSincePlan[0].path, 'HANDOFF.md');
+  assert.equal(result.changedSincePlan[0].why, 'ours-modified');
+
+  // Verify file still exists with user's edit
+  assert.equal(readFileSync(join(d, 'HANDOFF.md'), 'utf8'), 'user edit\n');
+
+  // Verify manifest still records it
+  const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.equal(manifestAfter.files.length, 1, 'file still in manifest');
+});
+
+test('settings array from the start is treated as unreadable', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+
+  // Create manifest with patch and settings as array (no race, just malformed)
+  const manifest = {
+    schema: 1,
+    kitVersion: '0.2.0',
+    installedAt: new Date().toISOString(),
+    files: [],
+    settingsPatches: [
+      { container: '/hooks/SessionStart', entrySha256: 'test', checkId: 'P4' }
+    ]
+  };
+  writeFileSync(join(d, MANIFEST_PATH), JSON.stringify(manifest));
+  writeFileSync(join(d, '.claude/settings.json'), '["not", "an", "object"]');
+
+  // planUninstall should treat settings as unreadable and keep the patch
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.revert.length, 0, 'plan has no patches to revert (settings invalid)');
+  assert.equal(plan.keepPatches.length, 1, 'patch kept with reason');
+  assert.equal(plan.keepPatches[0].why, 'settings-unreadable');
+
+  // runUninstall should also treat it as unreadable
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.settingsReadFailed, true);
 });
 
 test('settings array (falsy-like non-object) is treated as unreadable', () => {
