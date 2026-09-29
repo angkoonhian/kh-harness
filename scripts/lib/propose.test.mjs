@@ -8,7 +8,7 @@ import { buildProposals } from './propose.mjs';
 
 const root = () => mkdtempSync(join(tmpdir(), 'hk-prop-'));
 const check = (o) => ({ id: 'P4.handoff', step: 16, phase: 4, state: 'absent', decidable: true, evidence: [], proposal: 'create HANDOFF.md', ...o });
-const args = (checks, extra = {}) => ({ root: root(), checks, manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0', harness: { claudeDir: {} }, ...extra });
+const args = (checks, extra = {}) => ({ root: root(), checks, manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0', harness: { claudeDir: {} }, stack: { packages: [] }, ...extra });
 
 test('an absent decidable check yields a proposal', () => {
   const ps = buildProposals(args([check({})]));
@@ -44,13 +44,19 @@ test('the session-brief check proposes both a script and a settings hook', () =>
   assert.equal(ps.find(p => p.kind === 'file').path, '.claude/scripts/session-brief.mjs');
 });
 
-test('the settings hook is not proposed when an equivalent command is already registered', () => {
-  const harness = { claudeDir: { hookEvents: { SessionStart: ['node .claude/scripts/session-brief.mjs'] } } };
-  const ps = buildProposals(args([check({ id: 'P4.sessionbrief' })], { harness }));
-  assert.equal(ps.some(p => p.kind === 'settings-hook'), false);
+test('a declared session-brief check yields no proposals (hook already registered)', () => {
+  const ps = buildProposals(args([check({ id: 'P4.sessionbrief', state: 'declared' })]));
+  assert.deepEqual(ps, []);
 });
 
 test('a check with no registered generator is skipped without throwing', () => {
   assert.doesNotThrow(() => buildProposals(args([check({ id: 'P9.unknown', step: 99 })])));
   assert.deepEqual(buildProposals(args([check({ id: 'P9.unknown', step: 99 })])), []);
+});
+
+test('a generator receives the full context including stack, root, and checks', () => {
+  const checks = [check({ id: 'TEST.contextcheck' })];
+  const ps = buildProposals(args(checks));
+  assert.equal(ps.length, 1, 'generator received full context and returned a proposal');
+  assert.equal(ps[0].path, '.context-verified', 'generator verified stack, root, and checks were passed');
 });
