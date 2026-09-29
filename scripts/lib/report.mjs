@@ -1,0 +1,66 @@
+const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
+const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 4: 'Continuity' };
+
+export function deriveCouldNotDerive({ stack, checks }) {
+  const out = [];
+  if (stack.packages.length > 3) {
+    out.push(`Which packages should the per-edit sensor cover? Detected ${stack.packages.length}; linting all of them on every edit may be too slow.`);
+  }
+  if (!stack.packageManager) {
+    out.push('No lockfile found, so the package manager is unknown. Confirm which one this project uses.');
+  }
+  if (checks.some(c => c.id === 'P1.instructions' && c.state === 'declared')) {
+    out.push('An instruction file already exists. Which of its rules are decisions that cannot be re-derived from source? Those must survive any regeneration.');
+  }
+  return out;
+}
+
+export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks }) {
+  return {
+    schema: 1,
+    kitVersion,
+    generatedAt: new Date().toISOString(),
+    repo: { root, vcs: git.isRepo ? 'git' : null, branch: git.branch ?? null },
+    profile: profile.id,
+    stack,
+    harness,
+    exposures,
+    checks,
+    couldNotDerive: deriveCouldNotDerive({ stack, checks }),
+  };
+}
+
+export function renderSummary(report) {
+  const lines = [];
+  lines.push(`harness-kit ${report.kitVersion} — ${report.repo.root}`);
+  lines.push(`profile: ${report.profile}   branch: ${report.repo.branch ?? '(none)'}`);
+  lines.push('');
+
+  const phases = [...new Set(report.checks.map(c => c.phase))].sort((a, b) => a - b);
+  for (const phase of phases) {
+    lines.push(`Phase ${phase} — ${PHASE_NAMES[phase] ?? ''}`.trimEnd());
+    for (const c of report.checks.filter(x => x.phase === phase)) {
+      lines.push(`  ${MARK[c.state]} ${c.id.padEnd(18)} ${c.state}`);
+      for (const e of c.evidence) lines.push(`        ${e}`);
+      if (c.proposal) lines.push(`      → ${c.proposal}`);
+    }
+    lines.push('');
+  }
+
+  if (report.exposures.length) {
+    lines.push(`Exposures (${report.exposures.length}) — values are never printed; rotate by hand:`);
+    for (const e of report.exposures) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
+    lines.push('');
+  }
+
+  const n = report.checks.filter(c => c.proposal).length;
+  lines.push(n === 0 ? 'No proposals — this repository already satisfies every applicable step.' : `${n} proposal${n === 1 ? '' : 's'}. Nothing has been written except docs/harness/detect.json.`);
+
+  if (report.couldNotDerive.length) {
+    lines.push('');
+    lines.push('Could not derive — answer these before applying:');
+    for (const q of report.couldNotDerive) lines.push(`  ? ${q}`);
+  }
+
+  return lines.join('\n');
+}
