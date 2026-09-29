@@ -69,30 +69,44 @@ export function runUninstall({ root, manifest, plan }) {
   }
 
   // 2. Attempt to revert settings patches, tracking what could not be reverted
-  // Always validate settings to detect runtime changes, even if nothing planned to revert
-  const validated = validateSettings(join(root, SETTINGS));
-
+  // Only validate settings when there are patches to revert (defect 2: don't false-fail file-only uninstall)
   if (plan.revert.length) {
+    const validated = validateSettings(join(root, SETTINGS));
+
     if (validated.valid) {
       let settings = validated.object;
-      // Settings is a valid object; apply reverts
-      for (const p of plan.revert) settings = revertPatch(settings, p).settings;
+      let settingsChanged = false;
+      // Settings is a valid object; apply reverts and track which ones actually reverted
+      for (const p of plan.revert) {
+        const r = revertPatch(settings, p);
+        if (r.reverted) {
+          settings = r.settings;
+          settingsChanged = true;
+        } else {
+          // Patch exists but could not be reverted (user edited it) — defect 1
+          patchesNotReverted.push({ ...p, why: 'patch-modified' });
+        }
+      }
 
-      // Try to write reverted settings; guard the write
-      try {
-        writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
-      } catch (e) {
-        settingsWriteFailed = true;
-        patchesNotReverted.push(...plan.revert);
+      // Write reverted settings only if something changed
+      if (settingsChanged) {
+        try {
+          writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
+        } catch (e) {
+          settingsWriteFailed = true;
+          // Track any patches that couldn't be written
+          for (const p of plan.revert) {
+            if (!patchesNotReverted.some(pr => pr.container === p.container)) {
+              patchesNotReverted.push({ ...p, why: 'settings-write-failed' });
+            }
+          }
+        }
       }
     } else {
       // Settings not readable, missing, or not a plain object; patches cannot be reverted
       if (validated.reason !== null) settingsReadFailed = true;
       patchesNotReverted.push(...plan.revert);
     }
-  } else if (!validated.valid && validated.reason === 'settings-unreadable') {
-    // No patches to revert, but settings invalid at runtime — report it
-    settingsReadFailed = true;
   }
 
   // 3. Build manifest from actual outcomes, not from plan
@@ -101,7 +115,7 @@ export function runUninstall({ root, manifest, plan }) {
   const failedPaths = new Set(failed.map(f => f.path));
 
   // Files to keep in manifest: kept files, files changed since plan, and files that failed to remove
-  const keptFiles = manifest.files.filter(f =>
+  const keptFiles = (manifest?.files ?? []).filter(f =>
     keptPaths.has(f.path) || changedPaths.has(f.path) || failedPaths.has(f.path)
   );
 
