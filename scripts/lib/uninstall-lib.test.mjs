@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { emptyManifest, MANIFEST_PATH } from './manifest.mjs';
+import { join } from 'node:path';
+import { classify, emptyManifest, sha256, MANIFEST_PATH } from './manifest.mjs';
 import { applyProposals } from './apply-lib.mjs';
 import { planUninstall, runUninstall } from './uninstall-lib.mjs';
 
@@ -16,6 +16,98 @@ function installed(proposals = [fileProposal()]) {
   const r = applyProposals({ root: d, proposals, manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
   return { d, manifest: r.manifest };
 }
+
+// --- C1: uninstall must clear both of the gates apply clears -------------
+//
+// Each of these two shapes is stopped by exactly one of the two guards, so a
+// fix that adds only one of them leaves the other hole wide open.
+
+test('C1: REFUSES to delete a manifest path outside the write allowlist', () => {
+  const d = repo();
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src/index.ts'), 'export const x = 1;\n');
+  writeFileSync(join(d, 'package.json'), '{"name":"theirs"}\n');
+
+  const manifest = {
+    schema: 1, kitVersion: '0.2.0', installedAt: 'now',
+    files: [
+      { path: 'src/index.ts', sha256: sha256(readFileSync(join(d, 'src/index.ts'))), step: 1 },
+      { path: 'package.json', sha256: sha256(readFileSync(join(d, 'package.json'))), step: 1 },
+    ],
+    settingsPatches: [],
+  };
+
+  // Both hashes match, so nothing about the file contents will save them.
+  assert.equal(classify(d, manifest, 'src/index.ts'), 'ours-unmodified');
+  assert.equal(classify(d, manifest, 'package.json'), 'ours-unmodified');
+  // Containment would pass these happily: they resolve inside the repository.
+  // Only the allowlist refuses them.
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.remove, [], 'nothing outside the allowlist may be scheduled for removal');
+  assert.deepEqual(plan.keep, [
+    { path: 'src/index.ts', why: 'outside-allowlist' },
+    { path: 'package.json', why: 'outside-allowlist' },
+  ]);
+
+  // And handed a plan that names them anyway, the run itself still refuses.
+  const forced = { remove: [{ path: 'src/index.ts' }, { path: 'package.json' }], keep: [], revert: [], keepPatches: [], gonePatches: [] };
+  const result = runUninstall({ root: d, manifest, plan: forced });
+  assert.equal(readFileSync(join(d, 'src/index.ts'), 'utf8'), 'export const x = 1;\n');
+  assert.equal(readFileSync(join(d, 'package.json'), 'utf8'), '{"name":"theirs"}\n');
+  assert.deepEqual(result.removed, []);
+  assert.deepEqual(result.refused, [
+    { path: 'src/index.ts', why: 'outside-allowlist' },
+    { path: 'package.json', why: 'outside-allowlist' },
+  ]);
+});
+
+test('C1: REFUSES to delete through a junction that escapes the repository', () => {
+  const d = repo();
+  const outside = mkdtempSync(join(tmpdir(), 'hk-uninst-outside-'));
+  writeFileSync(join(outside, 'victim.txt'), 'precious\n');
+  mkdirSync(join(d, 'docs'), { recursive: true });
+  symlinkSync(outside, join(d, 'docs/harness'), 'junction');
+
+  const manifest = {
+    schema: 1, kitVersion: '0.2.0', installedAt: 'now',
+    files: [{ path: 'docs/harness/victim.txt', sha256: sha256(readFileSync(join(outside, 'victim.txt'))), step: 1 }],
+    settingsPatches: [],
+  };
+
+  // The contents are unchanged, so the hash still matches, and
+  // `docs/harness/` is on the write allowlist. The allowlist alone would let
+  // this straight through; only containment refuses it.
+  assert.equal(classify(d, manifest, 'docs/harness/victim.txt'), 'ours-unmodified');
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.remove, [], 'an allowlisted prefix is not enough when it resolves outside the repository');
+  assert.deepEqual(plan.keep, [{ path: 'docs/harness/victim.txt', why: 'escapes-repository' }]);
+
+  const forced = { remove: [{ path: 'docs/harness/victim.txt' }], keep: [], revert: [], keepPatches: [], gonePatches: [] };
+  const result = runUninstall({ root: d, manifest, plan: forced });
+  assert.equal(existsSync(join(outside, 'victim.txt')), true, 'a file outside the repository must never be deleted');
+  assert.deepEqual(result.removed, []);
+  assert.deepEqual(result.refused, [{ path: 'docs/harness/victim.txt', why: 'escapes-repository' }]);
+});
+
+test('C1: a refused entry stays in the manifest rather than vanishing from the record', () => {
+  const d = repo();
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src/index.ts'), 'export const x = 1;\n');
+  const manifest = {
+    schema: 1, kitVersion: '0.2.0', installedAt: 'now',
+    files: [{ path: 'src/index.ts', sha256: sha256(readFileSync(join(d, 'src/index.ts'))), step: 1 }],
+    settingsPatches: [],
+  };
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, MANIFEST_PATH), JSON.stringify(manifest));
+
+  const plan = planUninstall({ root: d, manifest });
+  runUninstall({ root: d, manifest, plan });
+  const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.deepEqual(after.files.map(f => f.path), ['src/index.ts'], 'a refusal is recorded, not forgotten');
+});
 
 test('removes a file we wrote that nobody touched', () => {
   const { d, manifest } = installed();

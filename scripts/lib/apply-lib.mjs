@@ -77,8 +77,12 @@ export function assertAllowed(relPath) {
  * symlink sitting AT the target (e.g. HANDOFF.md itself is a broken symlink)
  * redirects a create-on-write there, and checking only the parent directory
  * would miss it entirely, since the parent (the repo root) is always fine.
+ *
+ * Exported because uninstall-lib.mjs needs exactly this check before every
+ * rmSync. A delete routed outside the repository by a junction is at least
+ * as bad as a write routed there, and the allowlist alone cannot see it.
  */
-function assertContained(root, relPath) {
+export function assertContained(root, relPath) {
   const abs = join(root, relPath);
 
   let realRoot;

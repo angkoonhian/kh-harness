@@ -42,7 +42,7 @@ if (plan.revert.length) {
 }
 
 if (plan.keep.length) {
-  console.log('Will keep (user-modified):');
+  console.log('Will keep:');
   for (const k of plan.keep) {
     console.log(`  ${k.path} (${k.why})`);
   }
@@ -93,6 +93,15 @@ if (result.changedSincePlan.length > 0) {
   }
 }
 
+// A manifest entry that is outside the write allowlist, or that resolves
+// outside the repository through a symlink or junction, is never deleted.
+if (result.refused.length > 0) {
+  console.log('Refused to remove (kept):');
+  for (const r of result.refused) {
+    console.log(`  ${r.path} (${r.why})`);
+  }
+}
+
 // Report settings failures and patches that couldn't be reverted
 if (result.settingsReadFailed) {
   console.log('Settings file could not be read: hooks remain registered');
@@ -118,21 +127,22 @@ if (result.patchesNotReverted.length > 0) {
 }
 
 if (plan.keep.length > 0 || plan.keepPatches.length > 0) {
-  console.log('Kept (user-modified):');
+  console.log('Kept:');
   for (const k of plan.keep) {
-    console.log(`  ${k.path}`);
+    console.log(`  ${k.path} (${k.why})`);
   }
   for (const p of plan.keepPatches) {
     console.log(`  ${p.container}`);
   }
 }
 
-if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0) {
+if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && result.refused.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0) {
   console.log('nothing was left behind');
 }
 
-// Exit 2 if any removal failed, file changed since plan, or if settings/manifest couldn't be handled
-if (result.failed.length > 0 || result.changedSincePlan.length > 0 || result.settingsReadFailed || result.settingsWriteFailed || result.manifestWriteFailed || result.manifestDeleteFailed) {
+// Exit 2 if any removal failed or was refused, a file changed since plan, or
+// if settings/manifest couldn't be handled
+if (result.failed.length > 0 || result.changedSincePlan.length > 0 || result.refused.length > 0 || result.settingsReadFailed || result.settingsWriteFailed || result.manifestWriteFailed || result.manifestDeleteFailed) {
   process.exit(2);
 }
 
