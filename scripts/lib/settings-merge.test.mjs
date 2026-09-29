@@ -58,3 +58,45 @@ test('revertPatch prunes an emptied event but leaves other events', () => {
   assert.equal(s2.hooks.SessionStart, undefined);
   assert.ok(s2.hooks.Stop);
 });
+
+test('revertPatch returns reverted:false when patch missing container without throwing', () => {
+  const patch = { entrySha256: 'abc123' };
+  const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
+  const { reverted } = revertPatch(settings, patch);
+  assert.equal(reverted, false);
+});
+
+test('revertPatch returns reverted:false when container does not start with /hooks/', () => {
+  const patch = { container: '/permissions/deny', entrySha256: 'abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1' };
+  const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
+  const { reverted } = revertPatch(settings, patch);
+  assert.equal(reverted, false);
+});
+
+test('revertPatch returns reverted:false when entrySha256 is malformed', () => {
+  const patch = { container: '/hooks/SessionStart', entrySha256: 'not-a-valid-hex' };
+  const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
+  const { reverted } = revertPatch(settings, patch);
+  assert.equal(reverted, false);
+});
+
+test('revertPatch returns reverted:false when patch is null without throwing', () => {
+  const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
+  const { reverted } = revertPatch(settings, null);
+  assert.equal(reverted, false);
+});
+
+test('revertPatch returns reverted:false when patch is undefined without throwing', () => {
+  const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
+  const { reverted } = revertPatch(settings, undefined);
+  assert.equal(reverted, false);
+});
+
+test('revertPatch with valid patch still reverts correctly', () => {
+  const { settings: s1, patch } = addHookEntry({}, 'SessionStart', ENTRY);
+  s1.hooks.SessionStart.unshift({ hooks: [{ type: 'command', command: 'user-added' }] });
+  const { settings: s2, reverted } = revertPatch(s1, patch);
+  assert.equal(reverted, true, 'valid patch must still revert');
+  assert.equal(s2.hooks.SessionStart.length, 1);
+  assert.equal(s2.hooks.SessionStart[0].hooks[0].command, 'user-added');
+});

@@ -39,6 +39,18 @@ export function hasEquivalentHook(settings, event, command) {
  */
 export function revertPatch(settings, patch) {
   const next = clone(settings);
+
+  // Defensive: validate patch structure before accessing properties
+  if (!patch || typeof patch !== 'object') {
+    return { settings: next, reverted: false };
+  }
+  if (typeof patch.container !== 'string' || !patch.container.startsWith('/hooks/')) {
+    return { settings: next, reverted: false };
+  }
+  if (typeof patch.entrySha256 !== 'string' || !/^[0-9a-f]{64}$/.test(patch.entrySha256)) {
+    return { settings: next, reverted: false };
+  }
+
   const event = patch.container.replace('/hooks/', '');
   const list = next?.hooks?.[event];
   if (!Array.isArray(list)) return { settings: next, reverted: false };
