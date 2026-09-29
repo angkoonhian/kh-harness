@@ -1,7 +1,7 @@
 // scripts/lib/detect-cli.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -219,6 +219,40 @@ test('a repository with no documentation at all is still proposed one', () => {
   assert.equal(c.state, 'absent');
   assert.equal(c.decidable, true, 'the space really is empty here');
   assert.ok(c.proposal);
+});
+
+// detect.mjs:41-43 is the sole line connecting --verify to report.verification,
+// and nothing touched it. It is also the only path that executes the target
+// repository's own commands, so it is the last place to leave untested.
+test('--verify populates report.verification; without it there is none', () => {
+  const d = bare();
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'node -e process.exit(0)' } }));
+
+  const without = JSON.parse(cli(d, '--json'));
+  assert.equal('verification' in without, false, 'no command may run without --verify');
+
+  const withFlag = JSON.parse(cli(d, '--verify', '--json'));
+  assert.ok(Array.isArray(withFlag.verification), 'report.verification must be present');
+  const t = withFlag.verification.find(v => v.kind === 'test');
+  assert.ok(t, `the discovered test command must be recorded; got ${JSON.stringify(withFlag.verification)}`);
+  assert.equal(t.pkg, 'app');
+  assert.equal(t.command, 'npm run test');
+  assert.equal(typeof t.exitCode, 'number');
+  assert.equal(typeof t.durationMs, 'number');
+  // install mutates the tree and is never run.
+  assert.equal(withFlag.verification.some(v => v.kind === 'install'), false);
+}, { timeout: 120000 });
+
+// `--verfiy` used to be a silent no-op: the user is told the tool verified
+// nothing only by its absence from the output.
+test('an unknown flag warns on stderr, never on stdout, and the run continues', () => {
+  const d = bare();
+  const r = spawnSync(process.execPath, [CLI, d, '--verfiy', '--json'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, 'an unknown flag is a warning, not a failure');
+  assert.equal(JSON.parse(r.stdout).schema, 1, 'stdout must stay parseable JSON');
+  assert.equal(r.stdout.includes('--verfiy'), false, 'the warning must not land on stdout');
+  assert.match(r.stderr, /unknown flag/i);
+  assert.match(r.stderr, /--verfiy/);
 });
 
 test('a missing target exits 2', () => {

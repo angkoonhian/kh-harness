@@ -14,7 +14,9 @@ function make(id, extra) {
       return { install: INSTALL[pm] ?? 'npm ci', build: has('build'), test: has('test'), lint: has('lint'), typecheck: has('typecheck') };
     },
     typecheckCommand(pkg) {
-      return pkg.scripts?.includes('typecheck') ? null : `npx tsc --noEmit -p ${pkg.dir === '.' ? 'tsconfig.json' : pkg.dir + '/tsconfig.json'}`;
+      // pkg.dir is repository-derived and heads for a shell in Plan 2: quote it.
+      const tsconfig = pkg.dir === '.' ? 'tsconfig.json' : `${pkg.dir}/tsconfig.json`;
+      return pkg.scripts?.includes('typecheck') ? null : `npx tsc --noEmit -p "${tsconfig}"`;
     },
     lintTouchedCommand(paths) {
       const js = paths.filter(p => /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(p));

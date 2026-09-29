@@ -42,7 +42,8 @@ test('defaultRun executes a command that exits 0', () => {
   const exitZeroFile = join(tmpdir(), `exit-0-${Date.now()}.mjs`);
   writeFileSync(exitZeroFile, 'process.exit(0)');
   try {
-    const result = defaultRun('.', '.', `node ${exitZeroFile}`);
+    // Quoted: TEMP contains a space on plenty of Windows installs.
+    const result = defaultRun('.', '.', `node "${exitZeroFile}"`);
     assert.equal(result.exitCode, 0);
     assert.equal(typeof result.durationMs, 'number');
     assert.ok(result.durationMs >= 0);
@@ -55,7 +56,7 @@ test('defaultRun captures the actual exit code, not flattened to 1', () => {
   const exitThreeFile = join(tmpdir(), `exit-3-${Date.now()}.mjs`);
   writeFileSync(exitThreeFile, 'process.exit(3)');
   try {
-    const result = defaultRun('.', '.', `node ${exitThreeFile}`);
+    const result = defaultRun('.', '.', `node "${exitThreeFile}"`);
     assert.equal(result.exitCode, 3);
     assert.equal(typeof result.durationMs, 'number');
     assert.ok(result.durationMs >= 0);

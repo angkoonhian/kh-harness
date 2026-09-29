@@ -14,10 +14,19 @@ import { gitInfo } from './lib/git-info.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
+const KNOWN_FLAGS = new Set(['--verify', '--json']);
+
 const argv = process.argv.slice(2);
 const flags = new Set(argv.filter(a => a.startsWith('--')));
 const target = argv.find(a => !a.startsWith('--')) ?? process.cwd();
 const root = resolve(target);
+
+// A typo like `--verfiy` used to be a silent no-op. Say so — on stderr, never
+// on stdout, which --json callers parse.
+const unknownFlags = [...flags].filter(f => !KNOWN_FLAGS.has(f));
+if (unknownFlags.length) {
+  process.stderr.write(`harness-kit: ignoring unknown flag(s): ${unknownFlags.join(', ')}\n`);
+}
 
 if (!existsSync(root)) {
   process.stderr.write(`harness-kit: no such path: ${root}\n`);

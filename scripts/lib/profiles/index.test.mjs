@@ -50,6 +50,13 @@ test('python profile returns null for guessable commands', () => {
   assert.equal(c.typecheck, null);
 });
 
+test('the derived typecheck command quotes its repository-derived path', () => {
+  const p = selectProfile(tsWorkspace);
+  const cmd = p.typecheckCommand({ name: 'b', dir: 'packages/my app', manifestPath: 'x', scripts: [] });
+  assert.ok(cmd.includes('"packages/my app/tsconfig.json"'),
+    `a path with a space must survive a shell intact; got ${cmd}`);
+});
+
 test('generic declares a reduced step set', () => {
   const steps = selectProfile(nothing).appliesToSteps();
   assert.equal(steps.includes(9), false);   // no per-edit sensor without a stack
