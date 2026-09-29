@@ -14,7 +14,7 @@ import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
-import { readManifest, emptyManifest, writeManifest } from './lib/manifest.mjs';
+import { readManifest, emptyManifest, writeManifest, classify } from './lib/manifest.mjs';
 import { applyProposals, renderDiff } from './lib/apply-lib.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -78,8 +78,32 @@ const checks = buildGaps({ stack, harness, exposures, profile, git });
 const manifest = readManifest(root) ?? emptyManifest(KIT_VERSION);
 const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack });
 
+// Files this kit previously wrote whose content on disk no longer matches
+// what the manifest recorded. propose.mjs deliberately never re-proposes a
+// file already in the manifest — even once its check looks 'absent' again,
+// e.g. because the user deleted it — a user's edit or deletion is a
+// decision, not a gap to re-fill (see "a file already in the manifest is
+// not re-proposed" in propose.test.mjs). That file therefore never reaches
+// applyProposals, so its drift must be surfaced here instead, independent
+// of whatever else this run does or doesn't propose. Silent drift is drift
+// the user never finds out about.
+const drift = (manifest.files ?? [])
+  .filter(f => classify(root, manifest, f.path) === 'ours-modified')
+  .map(f => f.path);
+
+function reportDrift() {
+  for (const path of drift) {
+    process.stdout.write(`kept       ${path} (modified since harness-kit wrote it — left as-is)\n`);
+  }
+}
+
 if (proposals.length === 0) {
-  process.stdout.write('harness-kit: no proposals — this repository already satisfies every applicable step.\n');
+  if (drift.length === 0) {
+    process.stdout.write('harness-kit: no proposals — this repository already satisfies every applicable step.\n');
+  } else {
+    process.stdout.write(`harness-kit: no proposals for ${root}.\n`);
+    reportDrift();
+  }
   process.exit(0);
 }
 
@@ -92,6 +116,7 @@ for (const p of proposals) {
 }
 
 if (!flags.has('--yes')) {
+  reportDrift();
   process.stdout.write('Dry run — nothing written. Re-run with --yes to apply.\n');
   process.exit(0);
 }
@@ -121,6 +146,7 @@ for (const p of result.patched) process.stdout.write(`patched    .claude/setting
 for (const r of result.redirected) process.stdout.write(`redirected ${r.from} -> ${r.to}\n`);
 for (const s of result.skipped) process.stdout.write(`skipped    ${s.path} (${s.why})\n`);
 for (const f of result.failed) process.stderr.write(`failed     ${f.path}: ${f.error}\n`);
+reportDrift();
 
 if (result.failed.length > 0) {
   process.stderr.write(
