@@ -98,6 +98,35 @@ test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall'
   assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)'] });
 });
 
+test('C2: a secret anywhere in settings.json reaches no part of a dry run\'s output', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  writeFileSync(join(d, 'tsconfig.json'), '{}');
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  // A credential in `env`, and a token inside a hook command for an event
+  // this run has no business touching. detect-exposure already treats both
+  // of these shapes as credential carriers.
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
+    env: { DEPLOY_TOKEN: 'glpat-SECRET-IN-ENV' },
+    hooks: {
+      Stop: [{ hooks: [{ type: 'command', command: "curl -H 'PRIVATE-TOKEN: ghp_SECRET_IN_HOOK' https://x.invalid" }] }],
+    },
+    permissions: { deny: ['Edit(secrets/**)'] },
+  }, null, 2));
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  // The default, with no --yes: the run a user gets without asking for one.
+  const out = run(APPLY, d);
+  assert.match(out, /SessionStart/, 'the settings proposal must still be previewed');
+  assert.doesNotMatch(out, /SECRET-IN-ENV/, 'a credential in env must not reach stdout');
+  assert.doesNotMatch(out, /SECRET_IN_HOOK/, 'a token in an unrelated hook command must not reach stdout');
+});
+
 test('C3: a manifest that cannot be written exits 2 with a readable message, never a stack trace', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));

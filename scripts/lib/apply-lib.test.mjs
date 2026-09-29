@@ -168,6 +168,46 @@ test('a mid-batch write failure stops processing but returns normally with every
   assert.equal(r.manifest.files.length, 1, 'the manifest returned must record exactly what was actually written');
 });
 
+// --- C2: the settings preview must not print the user's settings ---------
+
+const SECRET_SETTINGS = {
+  env: { DEPLOY_TOKEN: 'glpat-SECRET-IN-ENV' },
+  hooks: {
+    Stop: [{ hooks: [{ type: 'command', command: "curl -H 'PRIVATE-TOKEN: ghp_SECRET_IN_HOOK' https://example.invalid" }] }],
+  },
+  permissions: { deny: ['Edit(secrets/**)'] },
+};
+const hookProposal = { kind: 'settings-hook', event: 'SessionStart', step: 16, entry: { type: 'command', command: 'node x.mjs' }, checkId: 'P4.sessionbrief', reason: 'r' };
+
+test('C2: a settings-hook preview never prints the user\'s own settings', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(SECRET_SETTINGS, null, 2));
+
+  const diff = renderDiff(d, hookProposal);
+  assert.doesNotMatch(diff, /SECRET-IN-ENV/, 'a credential in env must never reach the preview');
+  assert.doesNotMatch(diff, /SECRET_IN_HOOK/, 'a token in an unrelated hook command must never reach the preview');
+  assert.doesNotMatch(diff, /DEPLOY_TOKEN|permissions|Edit\(secrets/, 'no part of the user\'s settings belongs in a one-entry preview');
+
+  // Still a useful preview: it shows exactly what will be added, and where.
+  assert.match(diff, /^\+\s*"command": "node x\.mjs"$/m, 'the entry that will actually be added must be shown');
+  assert.match(diff, /hooks\.SessionStart/, 'and the preview must say where it goes');
+});
+
+test('C2: a secret in an existing entry under the same event is not shown either', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
+    hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: 'node theirs.mjs --token=ghp_SECRET_SAME_EVENT' }] }],
+    },
+  }, null, 2));
+
+  const diff = renderDiff(d, hookProposal);
+  assert.doesNotMatch(diff, /SECRET_SAME_EVENT/, 'diffing the whole hooks[event] subtree would still leak');
+  assert.match(diff, /1 existing hooks\.SessionStart entry/, 'the preview must still say it is appending, not replacing');
+});
+
 test('a pre-existing directory junction cannot route a write outside the repository', () => {
   const d = repo();
   const outside = mkdtempSync(join(tmpdir(), 'hk-outside-'));

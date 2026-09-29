@@ -215,17 +215,44 @@ function readSettingsResult(root) {
   return { ok: true, settings: parsed };
 }
 
-/** Preview of a settings-hook proposal: the whole file, before and after the merge. */
+/**
+ * Preview of a settings-hook proposal: the added entry, and nothing else.
+ *
+ * `.claude/settings.json` is the single most credential-dense file this tool
+ * ever touches — this codebase's own detect-exposure treats it and hook
+ * command bodies as credential carriers — and a dry run is the *default*,
+ * so whatever this function emits is printed to a terminal without anyone
+ * asking for it. Serialising the whole settings object and diffing it with
+ * full context printed the user's `env` block and every unrelated hook
+ * command verbatim, secrets included.
+ *
+ * `addHookEntry` only ever appends one matcher entry to `hooks[event]`, so
+ * the entire change is that one entry. Showing the user's own lines to
+ * present a one-entry addition was gratuitous even before it leaked
+ * anything: nothing outside the added entry is read into this preview.
+ */
 function renderSettingsHookDiff(root, proposal) {
   const result = readSettingsResult(root);
   if (!result.ok) {
     return `--- a/${SETTINGS_PATH}\n+++ b/${SETTINGS_PATH}\n` +
       `(${SETTINGS_PATH} could not be parsed as a JSON object — no changes will be made; fix its JSON and re-run)`;
   }
-  const beforeText = JSON.stringify(result.settings, null, 2) + '\n';
-  const { settings: after } = addHookEntry(result.settings, proposal.event, proposal.entry);
-  const afterText = JSON.stringify(after, null, 2) + '\n';
-  return unifiedDiff(beforeText, afterText, SETTINGS_PATH);
+
+  const container = `hooks.${proposal.event}`;
+  const siblings = Array.isArray(result.settings?.hooks?.[proposal.event])
+    ? result.settings.hooks[proposal.event].length
+    : 0;
+
+  // Exactly the element addHookEntry will push — see its `matcherEntry`.
+  const added = JSON.stringify({ hooks: [proposal.entry] }, null, 2);
+
+  const lines = [`--- a/${SETTINGS_PATH}`, `+++ b/${SETTINGS_PATH}`, `@@ ${container} @@`];
+  for (const line of splitLines(added)) lines.push(`+${line}`);
+  if (siblings > 0) {
+    lines.push(`(appended after ${siblings} existing ${container} entr${siblings === 1 ? 'y' : 'ies'}, which are left unchanged and not shown)`);
+  }
+  lines.push(`(nothing else in ${SETTINGS_PATH} is changed, or shown — it is yours, and it may hold credentials)`);
+  return lines.join('\n');
 }
 
 /**
