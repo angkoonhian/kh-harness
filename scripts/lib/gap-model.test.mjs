@@ -91,3 +91,62 @@ test('a missing git remote is absent', () => {
   assert.equal(byId(gaps(bareStack, bareHarness), 'P4.remote').state, 'absent');
   assert.equal(byId(gaps(fullStack, richHarness), 'P4.remote').state, 'declared');
 });
+
+// --- The invariant itself, not just the current checks' compliance with it. ---
+//
+// The tests above only ever exercise the real CHECKS array, and every entry in
+// it happens to return a proposal exclusively when its own state is 'absent'.
+// That means those tests can all pass even if the central guard in buildGaps
+// were deleted outright — nothing observable would change. These tests close
+// that hole by injecting a rogue check definition through buildGaps'
+// `checkDefs` override and proving the guard, not the checks, does the work.
+
+const genericStack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
+const genericProfile = selectProfile(genericStack);
+const ROGUE_STEP = 6;
+const rogueGit = { branch: 'main', isRepo: true };
+
+function buildRogueGaps(checkDefs) {
+  // Fail loudly if the fixture's assumption stops holding, rather than
+  // silently passing because the rogue step was filtered to n/a before the
+  // guard ever ran.
+  assert.ok(
+    genericProfile.appliesToSteps().includes(ROGUE_STEP),
+    `fixture assumes step ${ROGUE_STEP} is applicable to profile ${genericProfile.id}; ` +
+      `appliesToSteps() reports ${JSON.stringify(genericProfile.appliesToSteps())}`
+  );
+  return buildGaps({ stack: genericStack, harness: bareHarness, exposures: [], profile: genericProfile, git: rogueGit, checkDefs });
+}
+
+test('the guard strips a proposal a rogue check attaches to state "declared"', () => {
+  const cs = buildRogueGaps([{
+    id: 'ROGUE.declared', step: ROGUE_STEP, phase: 9,
+    lookedFor: ['a rogue check that misbehaves'],
+    check: () => ({ state: 'declared', evidence: ['rogue'], proposal: 'this must never survive' }),
+  }]);
+  const c = byId(cs, 'ROGUE.declared');
+  assert.equal(c.state, 'declared', 'the guard must not rewrite the state');
+  assert.equal(c.proposal, null, 'the guard must strip a proposal from a non-absent state');
+});
+
+test('the guard strips a proposal a rogue check attaches to state "verified"', () => {
+  const cs = buildRogueGaps([{
+    id: 'ROGUE.verified', step: ROGUE_STEP, phase: 9,
+    lookedFor: ['a rogue check that misbehaves'],
+    check: () => ({ state: 'verified', evidence: ['rogue'], proposal: 'this must never survive' }),
+  }]);
+  const c = byId(cs, 'ROGUE.verified');
+  assert.equal(c.state, 'verified', 'the guard must not rewrite the state');
+  assert.equal(c.proposal, null, 'the guard must strip a proposal from a non-absent state');
+});
+
+test('the guard keeps a proposal when the rogue check\'s state genuinely is "absent"', () => {
+  const cs = buildRogueGaps([{
+    id: 'ROGUE.absent', step: ROGUE_STEP, phase: 9,
+    lookedFor: ['a rogue check that behaves correctly'],
+    check: () => ({ state: 'absent', evidence: ['rogue'], proposal: 'this must survive' }),
+  }]);
+  const c = byId(cs, 'ROGUE.absent');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.proposal, 'this must survive', 'a genuinely absent state must keep its proposal — the guard must not null everything');
+});

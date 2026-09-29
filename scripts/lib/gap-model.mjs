@@ -122,9 +122,9 @@ const CHECKS = [
   },
 ];
 
-export function buildGaps({ stack, harness, exposures, profile, git }) {
+export function buildGaps({ stack, harness, exposures, profile, git, checkDefs = CHECKS }) {
   const applicable = new Set(profile.appliesToSteps());
-  return CHECKS.map(def => {
+  return checkDefs.map(def => {
     if (!applicable.has(def.step)) {
       return { id: def.id, step: def.step, phase: def.phase, state: 'n/a',
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`], proposal: null };
