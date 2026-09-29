@@ -7,12 +7,13 @@ const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspac
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
 const bareHarness = {
   instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], agents: [], skills: [], commands: [], rules: [] },
+  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookEvents: {}, agents: [], skills: [], commands: [], rules: [] },
   otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
 };
 const richHarness = {
   instructions: { path: 'CLAUDE.md', lines: 153 }, agentsMd: null, reconPresent: true,
   claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs'],
+    hookEvents: { PostToolUse: ['node .claude/scripts/lint-touched.mjs'], Stop: ['node .claude/scripts/verify-touched.mjs'], SessionStart: ['node .claude/scripts/session-brief.mjs'] },
     agents: Array.from({ length: 13 }, (_, i) => `.claude/agents/c${i}.md`), skills: [], commands: [], rules: ['.claude/rules/api.md'] },
   otherEditors: [], architecture: 'docs/ARCHITECTURE.md', handoff: 'HANDOFF.md',
   bootstrap: 'scripts/bootstrap.sh', gitattributes: true, remotes: [{ name: 'origin', hasCredential: false }],
@@ -36,7 +37,7 @@ test('LOAD-BEARING: a fully harnessed repo yields zero proposals', () => {
 
 test('a bare repo yields proposals for the mechanical steps', () => {
   const ids = gaps(bareStack, bareHarness).filter(c => c.proposal).map(c => c.id);
-  for (const id of ['P1.bootstrap', 'P1.instructions', 'P2.sensor', 'P2.stopgate', 'P2.protected', 'P4.continuity']) {
+  for (const id of ['P1.bootstrap', 'P1.instructions', 'P2.sensor', 'P2.stopgate', 'P2.protected', 'P4.handoff', 'P4.sessionbrief']) {
     assert.ok(ids.includes(id), `expected a proposal for ${id}`);
   }
 });
@@ -109,6 +110,52 @@ test('a clean security sweep is verified', () => {
 test('a missing git remote is absent', () => {
   assert.equal(byId(gaps(bareStack, bareHarness), 'P4.remote').state, 'absent');
   assert.equal(byId(gaps(fullStack, richHarness), 'P4.remote').state, 'declared');
+});
+
+// --- Hook checks read the registry, not the filenames ---
+//
+// .claude/settings.json records what is actually wired up. A hook script may
+// live anywhere; a file under .claude/scripts/ that nothing registers does
+// nothing. Both directions are pinned here because mutation testing showed
+// this code had no net at all.
+
+const withHooks = (hookEvents, hooks = []) => ({ ...bareHarness,
+  claudeDir: { ...bareHarness.claudeDir, hooks, hookEvents } });
+
+for (const [id, event, cmd] of [
+  ['P2.sensor', 'PostToolUse', 'node tools/format-and-lint.js'],
+  ['P2.stopgate', 'Stop', 'make verify'],
+  ['P4.sessionbrief', 'SessionStart', 'node docs/agent-context/inject.js'],
+]) {
+  test(`${id} is declared by a registered ${event} hook living outside .claude/scripts/`, () => {
+    const c = byId(gaps(fullStack, withHooks({ [event]: [cmd] })), id);
+    assert.equal(c.state, 'declared');
+    assert.equal(c.proposal, null);
+    assert.ok(c.evidence.some(e => e.includes(cmd)), `evidence must name what was credited; got ${JSON.stringify(c.evidence)}`);
+  });
+
+  test(`${id} is absent when a suggestively named script is present but nothing registers a ${event} hook`, () => {
+    const decoys = ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs'];
+    const c = byId(gaps(fullStack, withHooks({}, decoys)), id);
+    assert.equal(c.state, 'absent', 'an unregistered file must not be credited');
+    assert.ok(c.proposal);
+  });
+}
+
+test('P4.handoff and P4.sessionbrief are independent — a working hook is not told to install one', () => {
+  const hookOnly = { ...withHooks({ SessionStart: ['node docs/agent-context/inject.js'] }), handoff: null };
+  const cs = gaps(fullStack, hookOnly);
+  assert.equal(byId(cs, 'P4.sessionbrief').state, 'declared');
+  assert.equal(byId(cs, 'P4.handoff').state, 'absent');
+  assert.equal(byId(cs, 'P4.handoff').proposal, 'create HANDOFF.md from template');
+
+  const handoffOnly = { ...withHooks({}), handoff: 'HANDOFF.md' };
+  const cs2 = gaps(fullStack, handoffOnly);
+  assert.equal(byId(cs2, 'P4.handoff').state, 'declared');
+  assert.equal(byId(cs2, 'P4.sessionbrief').state, 'absent');
+  // The conflated check used to propose both at once. Neither proposal may
+  // mention the other capability now.
+  assert.equal(/HANDOFF/i.test(byId(cs2, 'P4.sessionbrief').proposal), false);
 });
 
 // --- The invariant itself, not just the current checks' compliance with it. ---

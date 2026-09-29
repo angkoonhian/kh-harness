@@ -32,7 +32,16 @@ function harnessed() {
   // P2.protected requires at least one entry under permissions.deny — an empty
   // settings.json is indistinguishable from "no deny rules" and must NOT be
   // treated as protection.
-  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(migrations/**)'] } }));
+  // Hooks are credited from this registry, not from filenames under
+  // .claude/scripts/ — a script nothing registers does nothing.
+  write(d, '.claude/settings.json', JSON.stringify({
+    permissions: { deny: ['Edit(migrations/**)'] },
+    hooks: {
+      PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node .claude/scripts/lint-touched.mjs' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/verify-touched.mjs' }] }],
+      SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command: 'node .claude/scripts/session-brief.mjs' }] }],
+    },
+  }));
   write(d, '.claude/rules/api.md', '#');
   write(d, '.claude/scripts/lint-touched.mjs', '//');
   write(d, '.claude/scripts/verify-touched.mjs', '//');
@@ -121,6 +130,47 @@ test('SECURITY: a package.json script body never reaches stdout or detect.json',
   // And the human-readable summary path must be clean too.
   const summary = cli(d);
   assert.equal(summary.includes(MARKER), false, 'script body leaked to the summary');
+});
+
+// D2: a real repository registers its session brief outside .claude/scripts/.
+// Judged by filename it is invisible, and the tool proposes installing a
+// session brief to a repository that already has a working one.
+test('a hook registered in settings.json but living outside .claude/scripts/ is credited', () => {
+  // Built from bare(), so .claude/scripts/ is genuinely empty: the file list
+  // cannot be what credits these hooks.
+  const d = bare();
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'vitest', lint: 'eslint .', typecheck: 'tsc --noEmit' } }));
+  write(d, 'CLAUDE.md', 'rule\n');
+  write(d, 'docs/ARCHITECTURE.md', '# arch\n');
+  write(d, 'docs/harness/recon.md', '# recon\n');
+  write(d, 'HANDOFF.md', '# handoff\n');
+  write(d, 'scripts/bootstrap.sh', '#!/bin/sh\n');
+  write(d, '.claude/rules/api.md', '#');
+  execFileSync('git', ['init', '-q', d]);
+  execFileSync('git', ['-C', d, 'remote', 'add', 'origin', 'https://example.invalid/x.git']);
+  write(d, 'docs/agent-context/inject.js', '//');
+  write(d, 'tools/lint.js', '//');
+  write(d, 'tools/verify.js', '//');
+  write(d, '.claude/settings.json', JSON.stringify({
+    permissions: { deny: ['Edit(migrations/**)'] },
+    hooks: {
+      SessionStart: [{ matcher: 'startup|resume|compact', hooks: [{ type: 'command', command: 'node docs/agent-context/inject.js' }] }],
+      PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node tools/lint.js' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'node tools/verify.js' }] }],
+    },
+  }));
+
+  const r = JSON.parse(cli(d, '--json'));
+  assert.deepEqual(r.harness.claudeDir.hooks, [],
+    'fixture assumes nothing lives under .claude/scripts/');
+
+  for (const [id, cmd] of [['P2.sensor', 'tools/lint.js'], ['P2.stopgate', 'tools/verify.js'], ['P4.sessionbrief', 'docs/agent-context/inject.js']]) {
+    const c = r.checks.find(x => x.id === id);
+    assert.equal(c.state, 'declared', `${id} should be credited from the registry`);
+    assert.equal(c.proposal, null);
+    assert.ok(c.evidence.some(e => e.includes(cmd)), `${id} evidence must name the registered command; got ${JSON.stringify(c.evidence)}`);
+  }
+  assert.match(cli(d), /no proposals/i);
 });
 
 test('a missing target exits 2', () => {

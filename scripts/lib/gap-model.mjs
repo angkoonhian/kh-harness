@@ -3,6 +3,23 @@ export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 const MAX_INSTRUCTION_LINES = 150;
 
 /**
+ * Credit an event from `.claude/settings.json`'s hook registry rather than from
+ * a filename under `.claude/scripts/`. A hook's script may live anywhere in the
+ * repository, so a filename check cannot be made adequate here — and does not
+ * need to be, because settings.json is an exact record of what is wired up.
+ *
+ * This can only widen a check to `declared`; it can never create a proposal, so
+ * the central invariant is untouched. The registered command goes into the
+ * evidence so the user can see what was credited.
+ */
+function registeredHook(harness, event, proposal) {
+  const commands = harness.claudeDir.hookEvents?.[event] ?? [];
+  return commands.length
+    ? { state: 'declared', evidence: commands.map(c => `${event} hook: ${c}`) }
+    : { state: 'absent', proposal };
+}
+
+/**
  * Each entry describes one runbook step. `check` returns
  * { state, evidence, proposal? } — and the wrapper enforces the invariant that
  * only `absent` may carry a proposal, so no individual check can break it.
@@ -80,17 +97,15 @@ const CHECKS = [
   },
   {
     id: 'P2.sensor', step: 9, phase: 2,
-    lookedFor: ['a PostToolUse hook that lints touched files'],
-    check: ({ harness }) => harness.claudeDir.hooks.some(h => /lint-touched/.test(h))
-      ? { state: 'declared', evidence: harness.claudeDir.hooks.filter(h => /lint-touched/.test(h)) }
-      : { state: 'absent', proposal: 'install scripts/lint-touched.mjs and register a PostToolUse hook' },
+    lookedFor: ['a PostToolUse hook in .claude/settings.json'],
+    check: ({ harness }) => registeredHook(harness, 'PostToolUse',
+      'install scripts/lint-touched.mjs and register a PostToolUse hook'),
   },
   {
     id: 'P2.stopgate', step: 10, phase: 2,
-    lookedFor: ['a Stop hook that verifies touched files'],
-    check: ({ harness }) => harness.claudeDir.hooks.some(h => /verify-touched/.test(h))
-      ? { state: 'declared', evidence: harness.claudeDir.hooks.filter(h => /verify-touched/.test(h)) }
-      : { state: 'absent', proposal: 'install scripts/verify-touched.mjs and register a Stop hook' },
+    lookedFor: ['a Stop hook in .claude/settings.json'],
+    check: ({ harness }) => registeredHook(harness, 'Stop',
+      'install scripts/verify-touched.mjs and register a Stop hook'),
   },
   {
     id: 'P2.protected', step: 11, phase: 2,
@@ -116,15 +131,21 @@ const CHECKS = [
       ? { state: 'declared', evidence: harness.remotes.map(r => r.name) }
       : { state: 'absent', proposal: 'add a git remote so the harness is backed up off this machine' },
   },
+  // Two capabilities, two checks. Conflating them is how a repository with a
+  // working SessionStart hook was told to "install HANDOFF.md and session-brief
+  // hook" — a proposal to install something it already had.
   {
-    id: 'P4.continuity', step: 16, phase: 4,
-    lookedFor: ['HANDOFF.md', 'a SessionStart brief hook'],
-    check: ({ harness }) => {
-      const brief = harness.claudeDir.hooks.some(h => /session-brief/.test(h));
-      if (harness.handoff && brief) return { state: 'declared', evidence: [harness.handoff, 'session-brief hook'] };
-      const need = [!harness.handoff && 'HANDOFF.md', !brief && 'session-brief hook'].filter(Boolean);
-      return { state: 'absent', evidence: [`missing: ${need.join(', ')}`], proposal: `install ${need.join(' and ')}` };
-    },
+    id: 'P4.handoff', step: 16, phase: 4,
+    lookedFor: ['HANDOFF.md', 'docs/HANDOFF.md'],
+    check: ({ harness }) => harness.handoff
+      ? { state: 'declared', evidence: [harness.handoff] }
+      : { state: 'absent', proposal: 'create HANDOFF.md from template' },
+  },
+  {
+    id: 'P4.sessionbrief', step: 16, phase: 4,
+    lookedFor: ['a SessionStart hook in .claude/settings.json'],
+    check: ({ harness }) => registeredHook(harness, 'SessionStart',
+      'install scripts/session-brief.mjs and register a SessionStart hook'),
   },
 ];
 

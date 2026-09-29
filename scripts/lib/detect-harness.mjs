@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readIfPresent, existsAny } from './scan.mjs';
+import { redactSecrets } from './detect-exposure.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
   'scripts/bootstrap.sh', 'scripts/bootstrap.ps1', 'scripts/setup.sh', 'scripts/setup.ps1',
@@ -18,18 +19,60 @@ function lineCount(text) {
   return t.length === 0 ? 0 : t.split('\n').length;
 }
 
+// Project-scoped settings only. `~/.claude/settings.json` is deliberately not
+// read: it is machine state, not repository state — the same reasoning that
+// makes P2.langserver honestly `n/a`.
+const SETTINGS_FILES = ['.claude/settings.json', '.claude/settings.local.json'];
+
+/** Parse a settings file. Never throws: missing or malformed yields null. */
+function parseSettings(root, rel) {
+  const text = readIfPresent(root, rel);
+  if (text == null) return null;
+  try { return JSON.parse(text); } catch { return null; }
+}
+
 /**
  * Count entries in `.claude/settings.json`'s `permissions.deny` array. Never
  * throws: a missing file, unparseable JSON, or a missing/malformed `deny`
  * array all yield 0 rather than an error.
  */
 function denyRuleCount(root) {
-  const text = readIfPresent(root, '.claude/settings.json');
-  if (text == null) return 0;
-  try {
-    const deny = JSON.parse(text)?.permissions?.deny;
-    return Array.isArray(deny) ? deny.length : 0;
-  } catch { return 0; }
+  const deny = parseSettings(root, '.claude/settings.json')?.permissions?.deny;
+  return Array.isArray(deny) ? deny.length : 0;
+}
+
+/**
+ * The hooks a repository has actually registered, grouped by event.
+ *
+ * This is the repository's own registry of what is wired up. A hook's script
+ * may live anywhere — `node docs/agent-context/inject.js` is a real example —
+ * so the file list under `.claude/scripts/` cannot answer whether an event is
+ * covered, and a filename check can never be made adequate. Settings can.
+ *
+ * Shape parsed (Claude Code's):
+ *   { "hooks": { "<Event>": [ { "matcher": "…", "hooks": [ { "command": "…" } ] } ] } }
+ *
+ * Commands are redacted against the credential patterns before being recorded,
+ * because everything here is embedded whole into `docs/harness/detect.json`.
+ * Never throws: a missing file, bad JSON or any malformed shape yields `{}`.
+ */
+function hookEvents(root) {
+  const out = {};
+  for (const rel of SETTINGS_FILES) {
+    const hooks = parseSettings(root, rel)?.hooks;
+    if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) continue;
+    for (const [event, matchers] of Object.entries(hooks)) {
+      for (const matcher of Array.isArray(matchers) ? matchers : []) {
+        for (const entry of Array.isArray(matcher?.hooks) ? matcher.hooks : []) {
+          const command = typeof entry?.command === 'string' ? entry.command.trim() : '';
+          if (!command) continue;
+          (out[event] ??= []).push(redactSecrets(command));
+        }
+      }
+    }
+  }
+  for (const event of Object.keys(out)) out[event] = [...new Set(out[event])].sort();
+  return out;
 }
 
 /** Remote URLs may embed credentials. We record only whether one is present. */
@@ -61,7 +104,9 @@ export function detectHarness(root, files) {
       settings: files.includes('.claude/settings.json'),
       localSettings: files.includes('.claude/settings.local.json'),
       denyRules: denyRuleCount(root),
+      // File inventory. NOT what decides whether an event is covered — see hookEvents.
       hooks: under(files, '.claude/scripts/'),
+      hookEvents: hookEvents(root),
       agents: under(files, '.claude/agents/', '.md'),
       skills: under(files, '.claude/skills/', '.md'),
       commands: under(files, '.claude/commands/', '.md'),
