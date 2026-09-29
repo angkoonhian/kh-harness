@@ -32,37 +32,37 @@ const PEM_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 const DB_CRED = /(password|passwd|pwd)\s*[:=]\s*\S{8,}/i;
 const PLACEHOLDER = /(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|^(password|secret|todo)$)/i;
 
-const SCAN_EXT = [
-  '.md', '.json', '.yml', '.yaml', '.toml', '.env', '.example', '.txt', '.sh', '.ps1', '.cfg', '.ini',
-  '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.py', '.rb', '.go', '.java', '.cs', '.php',
+// Skip binary-ish extensions: images, archives, binaries, fonts, media, source maps
+const SKIP_EXT = [
+  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.webp',
+  '.pdf', '.zip', '.gz', '.tar', '.7z',
+  '.exe', '.dll', '.so', '.dylib', '.wasm', '.class', '.jar', '.pyc', '.node', '.bin',
+  '.woff', '.woff2', '.ttf', '.eot',
+  '.mp4', '.mp3', '.wav',
+  '.map',
 ];
 const SKIP_DIRS = ['node_modules/', '.git/', 'dist/', 'build/'];
 
-function hasScannableExtension(base) {
+function isBinaryExtension(base) {
   const lower = base.toLowerCase();
-  // Dotfiles with no extension (like .env, .npmrc) are always scanned
-  if (lower.startsWith('.')) {
-    const afterDot = lower.slice(1);
-    // If there's no dot in the remainder, it's a dotfile with no extension
-    if (!afterDot.includes('.')) return true;
-    // Otherwise, check if the extension matches SCAN_EXT
-  }
-  return SCAN_EXT.some(e => lower.endsWith(e));
+  return SKIP_EXT.some(e => lower.endsWith(e));
 }
 
 function scannable(root, rel) {
   if (SKIP_DIRS.some(p => rel.startsWith(p) || rel.includes('/' + p))) return false;
   const base = basename(rel);
-  // Allow: files with SCAN_EXT extensions, or extensionless files
-  if (!hasScannableExtension(base)) {
-    // Reject files with extensions that don't match SCAN_EXT
-    if (base.includes('.')) return false;
-  }
+  if (isBinaryExtension(base)) return false;
   try { return statSync(join(root, rel)).size <= MAX_BYTES; } catch { return false; }
 }
 
 function isPlaceholder(value) {
   return PLACEHOLDER.test(value);
+}
+
+function isBinaryContent(text) {
+  // Check first 8 KB for NUL byte (binary content marker)
+  const chunk = text.slice(0, 8192);
+  return chunk.includes('\0');
 }
 
 function scanFile(root, rel, isLocalSettings) {
@@ -77,6 +77,9 @@ function scanFile(root, rel, isLocalSettings) {
 
   const text = readIfPresent(root, rel);
   if (!text) return findings;
+
+  // Skip binary content
+  if (isBinaryContent(text)) return findings;
 
   const hasToken = TOKEN_PATTERNS.some(re => re.test(text)) || PEM_PATTERN.test(text);
   if (hasToken) {

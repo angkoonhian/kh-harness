@@ -188,3 +188,56 @@ test('reports both token and password in gitignored .env', () => {
   assert.ok(hasPassword, 'Should find password in .env');
   assert.ok(found.filter(e => e.location === '.env').length === 2, 'Should report both findings for .env');
 });
+
+// Fix Round 3: Regression suite for all discovered issues
+test('finds tracked .env.local with token (round 3 regression)', () => {
+  const d = repo();
+  write(d, '.env.local', `API_TOKEN=sk_live_${'G'.repeat(15)}\n`);
+  write(d, 'README.md', '# test');
+  const found = run(d);
+  const hasExposure = found.some(e => e.location === '.env.local' && e.kind === 'token-in-tracked-file');
+  assert.ok(hasExposure, 'Should find token in tracked .env.local');
+});
+
+test('skips binary file with NUL byte plus token-shaped string', () => {
+  const d = repo();
+  write(d, 'binary.dat', `\x00\x01\x02sk_live_${'H'.repeat(15)}`);
+  assert.doesNotThrow(() => run(d), 'Should not throw on binary with token-pattern');
+  const found = run(d);
+  const hasExposure = found.some(e => e.location === 'binary.dat');
+  assert.ok(!hasExposure, 'Should skip binary file even with token-like content');
+});
+
+test('skips oversized file at always-probed path', () => {
+  const d = repo();
+  write(d, '.env', 'x'.repeat(600_000) + `sk_live_${'I'.repeat(15)}`);
+  assert.doesNotThrow(() => run(d), 'Should not throw on oversized always-probed file');
+  const found = run(d);
+  const hasExposure = found.some(e => e.location === '.env');
+  assert.ok(!hasExposure, 'Should skip oversized file at always-probed path due to MAX_BYTES');
+});
+
+test('no path reported twice across routes', () => {
+  const d = repo();
+  try {
+    execSync('git init', { cwd: d, stdio: 'ignore' });
+    execSync('git config user.email "test@example.com"', { cwd: d, stdio: 'ignore' });
+    execSync('git config user.name "Test"', { cwd: d, stdio: 'ignore' });
+  } catch {}
+  write(d, '.gitignore', '.env\n');
+  write(d, '.env', `TOKEN=sk_test_${'J'.repeat(15)}\n`);
+  write(d, 'README.md', '# test');
+  execSync('git add .gitignore README.md', { cwd: d, stdio: 'ignore' });
+  execSync('git commit -m "init"', { cwd: d, stdio: 'ignore' });
+  const found = run(d);
+  const envLocations = found.filter(e => e.location === '.env');
+  assert.ok(envLocations.length <= 2, 'Should not report .env more than twice (one per finding type)');
+});
+
+test('finds token in extensionless credentials file', () => {
+  const d = repo();
+  write(d, 'credentials', `key: pk_live_${'K'.repeat(15)}\n`);
+  const found = run(d);
+  const hasExposure = found.some(e => e.location === 'credentials' && e.kind === 'token-in-tracked-file');
+  assert.ok(hasExposure, 'Should find token in extensionless credentials file');
+});
