@@ -196,3 +196,13 @@ test('reverting the last deny rule when sibling keys exist leaves those keys int
   assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow key must survive');
   assert.equal(s2.permissions.defaultMode, 'allow', 'defaultMode must survive');
 });
+
+test('reverting the last deny rule prunes deny but keeps sibling keys', () => {
+  const before = { permissions: { allow: ['Read(*)'], defaultMode: 'allow' } };
+  const { settings: s1, patch } = addDenyRules(before, ['Edit(y)']);
+  const { settings: s2 } = revertPatch(s1, patch);
+  assert.ok(s2.permissions, 'permissions must survive because allow/defaultMode remain');
+  assert.equal(s2.permissions.deny, undefined, 'the emptied deny array is pruned');
+  assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow must survive');
+  assert.equal(s2.permissions.defaultMode, 'allow', 'defaultMode must survive');
+});
