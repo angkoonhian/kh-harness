@@ -186,28 +186,48 @@ test('planUninstall writes nothing', () => {
   assert.equal(existsSync(join(d, MANIFEST_PATH)), false, 'manifest untouched (was never written by applyProposals)');
 });
 
-test('settings deleted between plan and run records patches as kept (C1a)', () => {
+// --- I3: an absent settings file is the clean case, not a failure --------
+
+test('I3/C1a: settings deleted between plan and run still lets the run complete cleanly', () => {
   const d = repo();
   mkdirSync(join(d, '.claude'), { recursive: true });
   writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
-  const hookProposal = { kind: 'settings-hook', event: 'SessionStart', step: 16, entry: { type: 'command', command: 'node x.mjs' }, checkId: 'P4.sessionbrief', reason: 'r' };
   const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
 
   const plan = planUninstall({ root: d, manifest });
   assert.equal(plan.revert.length, 1, 'has a patch to revert');
 
-  // Delete settings file between plan and run
+  // The user deletes their own settings file between plan and run. There is
+  // no hook left to remain registered, so there is nothing to fail about.
   rmSync(join(d, '.claude/settings.json'));
 
   const result = runUninstall({ root: d, manifest, plan });
-  assert.equal(result.settingsReadFailed, true);
-  assert.equal(result.patchesNotReverted.length, 1, 'patch recorded as not reverted');
+  assert.equal(result.settingsReadFailed, false, 'absent is not unreadable');
+  assert.equal(result.settingsMissing, true, 'but it is still reported');
+  assert.deepEqual(result.patchesNotReverted, [], 'nothing was left behind');
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), false,
+    'and the manifest is cleared — otherwise every re-run repeats this forever');
+});
 
-  // Verify manifest records the patch with reason
-  const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
-  assert.equal(manifestAfter.settingsPatches.length, 1);
-  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-missing',
-    'an absent file and an unparseable one no longer share a label');
+test('I3: a settings file already gone at plan time is reported distinguishably, not as a keep', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
+  rmSync(join(d, '.claude/settings.json'));
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.revert, []);
+  assert.deepEqual(plan.keepPatches, [], 'nothing is kept: the hook is already gone');
+  assert.equal(plan.gonePatches.length, 1, 'but the recorded patch is still accounted for');
+  assert.equal(plan.gonePatches[0].why, 'settings-missing',
+    'an EACCES, a syntax error and a deleted file must not be indistinguishable');
+
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.settingsMissing, true);
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), false);
 });
 
 // --- I6: the three failure flags that had no assertion anywhere ----------

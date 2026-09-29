@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -158,6 +158,22 @@ test('C3: a manifest that cannot be written exits 2 with a readable message, nev
   // saying so is the difference between a recoverable repository and a trap.
   assert.equal(existsSync(join(d, 'HANDOFF.md')), true);
   assert.match(out, /HANDOFF\.md/, 'must name what is on disk but untracked');
+});
+
+test('I3: a deleted settings file lets uninstall finish, clear the manifest, and exit 0', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  assert.equal(settings(d).hooks.SessionStart.length, 1);
+  assert.equal(existsSync(join(d, '.claude/harness-kit.manifest.json')), true);
+
+  // The user deletes their own settings file. No hook remains registered.
+  rmSync(join(d, '.claude/settings.json'));
+
+  const out = run(UNINSTALL, d, '--yes');               // throws on any non-zero exit
+  assert.match(out, /absent/i, 'the reason must be stated, and distinguishable from unreadable');
+  assert.doesNotMatch(out, /could not be read/i, 'there is no read failure here to report');
+  assert.equal(existsSync(join(d, '.claude/harness-kit.manifest.json')), false,
+    'the manifest must be cleared, or uninstall is impossible on every future run, forever');
 });
 
 test('apply refuses on a default branch unless told otherwise', () => {

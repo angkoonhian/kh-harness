@@ -55,6 +55,13 @@ if (plan.keepPatches.length) {
   }
 }
 
+if (plan.gonePatches.length) {
+  console.log('Settings file is absent — these recorded hook patches have nothing to revert:');
+  for (const p of plan.gonePatches) {
+    console.log(`  ${p.container}`);
+  }
+}
+
 if (!doYes) {
   console.log('');
   console.log('Run with --yes to apply.');
@@ -105,6 +112,12 @@ if (result.refused.length > 0) {
 // Report settings failures and patches that couldn't be reverted
 if (result.settingsReadFailed) {
   console.log('Settings file could not be read: hooks remain registered');
+}
+
+// Absent is not unreadable: there is no hook left to remain registered, so
+// this is information, not a failure, and it must not block a clean exit.
+if (result.settingsMissing) {
+  console.log('Settings file is absent: nothing to revert, no hooks remain registered');
 }
 
 if (result.settingsWriteFailed) {

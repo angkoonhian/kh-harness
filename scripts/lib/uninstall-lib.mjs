@@ -49,12 +49,19 @@ function guardRemoval(root, relPath) {
   return null;
 }
 
-/** Validate settings structure — must be a plain object, not null/array/primitive. */
-function validateSettings(content) {
-  if (!fs.existsSync(content)) return { valid: false, object: null, reason: 'settings-missing' };
+/**
+ * Reads and validates `.claude/settings.json`.
+ *
+ * Three outcomes, deliberately not collapsed into two. An absent file is not
+ * a failure — there is no hook left to remain registered — while a file that
+ * exists but cannot be read, or is not a JSON object, is. An EACCES, a
+ * syntax error and a deleted file must not be indistinguishable to a user.
+ */
+function validateSettings(settingsPath) {
+  if (!fs.existsSync(settingsPath)) return { valid: false, object: null, reason: 'settings-missing' };
 
   try {
-    const parsed = JSON.parse(fs.readFileSync(content, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     const isPlain = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
     if (isPlain) return { valid: true, object: parsed, reason: null };
     return { valid: false, object: null, reason: 'settings-unreadable' };
@@ -65,7 +72,7 @@ function validateSettings(content) {
 
 /** Read-only. Decides what may be removed; removes nothing. */
 export function planUninstall({ root, manifest }) {
-  const remove = [], keep = [], revert = [], keepPatches = [];
+  const remove = [], keep = [], revert = [], keepPatches = [], gonePatches = [];
 
   for (const f of manifest?.files ?? []) {
     const refusal = guardRemoval(root, f.path);
@@ -79,25 +86,33 @@ export function planUninstall({ root, manifest }) {
   }
 
   const validated = validateSettings(join(root, SETTINGS));
-  if (validated.valid) {
-    for (const p of manifest?.settingsPatches ?? []) {
-      if (revertPatch(validated.object, p).reverted) revert.push(p);
-      else keepPatches.push({ ...p, why: 'patch-modified' });
-    }
-  } else {
-    for (const p of manifest?.settingsPatches ?? []) {
+  for (const p of manifest?.settingsPatches ?? []) {
+    if (validated.reason === 'settings-missing') {
+      // No settings file means no hook is registered: there is nothing to
+      // revert and nothing left behind. Treating this as a failure kept the
+      // manifest and exited 2 on every re-run, forever — the repository
+      // became permanently un-uninstallable, which is the opposite of
+      // "always leaves cleanly". Reported, but never a keep and never a
+      // failure.
+      gonePatches.push({ ...p, why: validated.reason });
+    } else if (!validated.valid) {
       keepPatches.push({ ...p, why: validated.reason });
+    } else if (revertPatch(validated.object, p).reverted) {
+      revert.push(p);
+    } else {
+      keepPatches.push({ ...p, why: 'patch-modified' });
     }
   }
 
-  return { remove, keep, revert, keepPatches };
+  return { remove, keep, revert, keepPatches, gonePatches };
 }
 
 export function runUninstall({ root, manifest, plan }) {
   // Collect all outcomes before persisting anything.
   // Compute, then persist, always — no throw between action and bookkeeping.
   const removed = [], failed = [], refused = [];
-  let settingsReadFailed = false, settingsWriteFailed = false, manifestWriteFailed = false;
+  let settingsReadFailed = false, settingsMissing = false;
+  let settingsWriteFailed = false, manifestWriteFailed = false;
   const patchesNotReverted = [];
   const changedSincePlan = [];
 
@@ -176,12 +191,17 @@ export function runUninstall({ root, manifest, plan }) {
           }
         }
       }
+    } else if (validated.reason === 'settings-missing') {
+      // Nothing to revert and nothing left behind — reported, not a failure.
+      // See planUninstall.
+      settingsMissing = true;
     } else {
-      // Settings not readable, missing, or not a plain object; patches cannot
-      // be reverted. Derived from the manifest for the same reason as above:
-      // plan.revert is whatever the plan happened to manage, and a patch the
-      // plan never saw must still be recorded rather than silently dropped.
-      if (validated.reason !== null) settingsReadFailed = true;
+      // Present but unreadable, or not a plain object: as far as we can
+      // tell the patches are still registered, and we must not guess.
+      // Derived from the manifest for the same reason as above: plan.revert
+      // is whatever the plan happened to manage, and a patch the plan never
+      // saw must still be recorded rather than silently dropped.
+      settingsReadFailed = true;
       for (const p of manifestPatches) {
         patchesNotReverted.push({ ...p, why: validated.reason });
       }
@@ -241,6 +261,7 @@ export function runUninstall({ root, manifest, plan }) {
     failed,
     refused,
     settingsReadFailed,
+    settingsMissing,
     settingsWriteFailed,
     manifestWriteFailed,
     manifestDeleteFailed,
