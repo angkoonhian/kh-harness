@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { listFiles } from './scan.mjs';
@@ -164,6 +165,48 @@ test('hookEvents is empty for a missing, malformed or hook-less settings file', 
   write(shapeless, '.claude/settings.json', JSON.stringify({ hooks: { Stop: 'not-an-array', SessionStart: [{ hooks: [{ type: 'command' }] }] } }));
   assert.doesNotThrow(() => run(shapeless));
   assert.deepEqual(run(shapeless).claudeDir.hookEvents, {});
+});
+
+// --- Remote credential detection, at the producer ---
+//
+// Until now this was only ever tested through a hand-built fixture
+// (`{ remotes: [{ hasCredential: true }] }`), which supplies the answer the
+// code was supposed to compute: forcing hasCredential to false left the whole
+// suite green. These run against real `git remote` configuration.
+
+const SECRET = 'ghp_' + 'T'.repeat(36);
+
+function repoWithRemote(url, name = 'origin') {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  execFileSync('git', ['init', '-q', d], { stdio: 'ignore' });
+  execFileSync('git', ['-C', d, 'remote', 'add', name, url], { stdio: 'ignore' });
+  return d;
+}
+
+// A false positive here is one line telling you to check a URL; a false
+// negative is a live token left unreported.
+for (const [label, url, expected] of [
+  ['user:pass', `https://user:${SECRET}@host.invalid/o/r.git`, true],
+  ['oauth2 userinfo', `https://oauth2:${SECRET}@gitlab.com/o/r.git`, true],
+  ['x-access-token userinfo', `https://x-access-token:${SECRET}@github.com/o/r.git`, true],
+  ['single-token userinfo — the commonest shape', `https://${SECRET}@github.com/o/r.git`, true],
+  ['ssh git@ (not a credential)', 'ssh://git@github.com/o/r.git', false],
+  ['scp-style git@ (not a credential)', 'git@github.com:o/r.git', false],
+  ['clean https', 'https://github.com/o/r.git', false],
+]) {
+  test(`remote credential detection: ${label} -> ${expected}`, () => {
+    const h = run(repoWithRemote(url));
+    assert.deepEqual(h.remotes, [{ name: 'origin', hasCredential: expected }],
+      `${url} should${expected ? '' : ' not'} be flagged`);
+  });
+}
+
+test('NEVER records the remote URL itself, only whether a credential is present', () => {
+  const h = run(repoWithRemote(`https://${SECRET}@github.com/o/r.git`));
+  const serialised = JSON.stringify(h);
+  assert.equal(serialised.includes(SECRET), false);
+  assert.equal(serialised.includes('github.com'), false);
 });
 
 // --- docPointers: the repository's own pointer at its documentation ---

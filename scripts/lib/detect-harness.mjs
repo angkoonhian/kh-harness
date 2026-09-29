@@ -142,6 +142,19 @@ function projectDocs(files) {
   return files.filter(f => f.startsWith('docs/') && isDoc(f) && !isKitOutput(f)).sort();
 }
 
+/**
+ * Any userinfo on an http(s) remote is a credential. Both shapes count:
+ * `https://user:token@host` and the single-token `https://TOKEN@host`, which
+ * is the canonical one-liner in countless tutorials and was previously missed
+ * because the pattern required a colon.
+ *
+ * Anchoring on http(s) excludes `ssh://git@github.com` and scp-style
+ * `git@github.com:o/r.git`, where `git@` is a username, not a secret. The `@`
+ * must sit in the authority — `[^/@\s]+` cannot cross a path separator — so a
+ * repository path containing `@` is not mistaken for one.
+ */
+const REMOTE_CREDENTIAL = /^https?:\/\/[^/@\s]+@/i;
+
 /** Remote URLs may embed credentials. We record only whether one is present. */
 function remotes(root) {
   try {
@@ -153,7 +166,7 @@ function remotes(root) {
       const m = line.match(/^(\S+)\s+(\S+)/);
       if (!m) continue;
       const [, name, url] = m;
-      if (!seen.has(name)) seen.set(name, { name, hasCredential: /\/\/[^/@\s]+:[^/@\s]+@/.test(url) });
+      if (!seen.has(name)) seen.set(name, { name, hasCredential: REMOTE_CREDENTIAL.test(url) });
     }
     return [...seen.values()];
   } catch { return []; }
