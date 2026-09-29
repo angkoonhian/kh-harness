@@ -40,6 +40,16 @@ test('a missing script yields null, never a guess', () => {
   assert.equal(c.typecheck, null);
 });
 
+test('python profile returns null for guessable commands', () => {
+  const p = selectProfile(py);
+  const c = p.commands(py.packages[0]);
+  assert.ok(c.install !== null); // install is evidence-based from lockfile
+  assert.equal(c.build, null);
+  assert.equal(c.test, null);
+  assert.equal(c.lint, null);
+  assert.equal(c.typecheck, null);
+});
+
 test('generic declares a reduced step set', () => {
   const steps = selectProfile(nothing).appliesToSteps();
   assert.equal(steps.includes(9), false);   // no per-edit sensor without a stack
@@ -47,8 +57,18 @@ test('generic declares a reduced step set', () => {
 });
 
 test('no profile encodes a framework or database opinion', () => {
+  const forbidden = /react|postgres|tailwind|next|django|migrations|migrate|src\/|app\/|lib\/|components|models|controllers/i;
   for (const s of [tsSingle, tsWorkspace, py, nothing]) {
-    const blob = JSON.stringify(selectProfile(s).protectedGlobs());
-    assert.equal(/react|postgres|tailwind|next|django/i.test(blob), false);
+    const profile = selectProfile(s);
+    // Check all output surfaces for structural or product opinions
+    const surfaces = [
+      JSON.stringify(profile.protectedGlobs()),
+      JSON.stringify(profile.commands({ name: 'test', dir: '.', manifestPath: 'package.json', scripts: {} })),
+      JSON.stringify(profile.typecheckCommand({ name: 'test', dir: '.', manifestPath: 'package.json', scripts: {} })),
+      JSON.stringify(profile.lintTouchedCommand(['file.ts', 'file.py'])),
+    ];
+    for (const surface of surfaces) {
+      assert.equal(forbidden.test(surface), false, `Profile ${profile.id} contains forbidden pattern in: ${surface.substring(0, 100)}`);
+    }
   }
 });
