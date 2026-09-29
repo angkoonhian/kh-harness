@@ -190,10 +190,17 @@ test('reports both token and password in gitignored .env', () => {
 });
 
 // Fix Round 3: Regression suite for all discovered issues
+// Fix Round 4: this test previously never ran `git init`, so `listFiles`
+// fell back to the directory walk and the test never exercised the
+// `git ls-files` tracked-file route it claims to cover (where the original
+// bug lived). It now creates a real git repo and commits the file.
 test('finds tracked .env.local with token (round 3 regression)', () => {
   const d = repo();
+  execSync('git init', { cwd: d, stdio: 'ignore' });
   write(d, '.env.local', `API_TOKEN=sk_live_${'G'.repeat(15)}\n`);
   write(d, 'README.md', '# test');
+  execSync('git add .env.local README.md', { cwd: d, stdio: 'ignore' });
+  execSync('git -c user.email=test@example.com -c user.name=Test commit -m "init"', { cwd: d, stdio: 'ignore' });
   const found = run(d);
   const hasExposure = found.some(e => e.location === '.env.local' && e.kind === 'token-in-tracked-file');
   assert.ok(hasExposure, 'Should find token in tracked .env.local');
@@ -240,4 +247,39 @@ test('finds token in extensionless credentials file', () => {
   const found = run(d);
   const hasExposure = found.some(e => e.location === 'credentials' && e.kind === 'token-in-tracked-file');
   assert.ok(hasExposure, 'Should find token in extensionless credentials file');
+});
+
+// Fix Round 4: UTF-16LE/BE text (e.g. from PowerShell `Out-File`/`>` redirection)
+// was previously classified as binary by the NUL sniff and silently skipped.
+test('finds token in UTF-16LE file with BOM (round 4 fix)', () => {
+  const d = repo();
+  const body = Buffer.from(`TOKEN=${SECRET}\n`, 'utf16le');
+  const buf = Buffer.concat([Buffer.from([0xff, 0xfe]), body]);
+  write(d, '.env.ps1out', buf);
+  const found = run(d);
+  const hasExposure = found.some(e => e.location === '.env.ps1out' && e.kind === 'token-in-tracked-file');
+  assert.ok(hasExposure, 'Should find token in UTF-16LE BOM file');
+});
+
+test('finds token in UTF-16BE file with BOM (round 4 fix)', () => {
+  const d = repo();
+  const leBody = Buffer.from(`TOKEN=${SECRET}\n`, 'utf16le');
+  const beBody = Buffer.from(leBody); // copy before mutating in place
+  beBody.swap16();
+  const buf = Buffer.concat([Buffer.from([0xfe, 0xff]), beBody]);
+  write(d, '.env.be', buf);
+  const found = run(d);
+  const hasExposure = found.some(e => e.location === '.env.be' && e.kind === 'token-in-tracked-file');
+  assert.ok(hasExposure, 'Should find token in UTF-16BE BOM file');
+});
+
+// A genuinely binary file (NUL bytes, no BOM, no token-shaped bytes at all)
+// must still be skipped and must never throw.
+test('skips genuinely binary file (NUL bytes, no BOM) without throwing (round 4)', () => {
+  const d = repo();
+  const buf = Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x10, 0x20, 0x7f]);
+  write(d, 'blob.dat', buf);
+  assert.doesNotThrow(() => run(d));
+  const found = run(d);
+  assert.equal(found.some(e => e.location === 'blob.dat'), false, 'Should skip genuinely binary file');
 });

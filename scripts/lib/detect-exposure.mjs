@@ -1,7 +1,6 @@
 // scripts/lib/detect-exposure.mjs
-import { statSync } from 'node:fs';
+import { statSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { readIfPresent } from './scan.mjs';
 
 const MAX_BYTES = 512 * 1024;
 
@@ -59,10 +58,55 @@ function isPlaceholder(value) {
   return PLACEHOLDER.test(value);
 }
 
-function isBinaryContent(text) {
-  // Check first 8 KB for NUL byte (binary content marker)
-  const chunk = text.slice(0, 8192);
-  return chunk.includes('\0');
+/**
+ * Read a file's text content, deciding the encoding from its bytes rather
+ * than assuming UTF-8. Order matters (see task-5-report.md, fix round 4):
+ *   1. UTF-16LE BOM (FF FE)  -> decode as utf16le
+ *   2. UTF-16BE BOM (FE FF)  -> byte-swap then decode as utf16le
+ *   3. NUL byte in first 8 KB, no BOM -> treat as binary, skip (return null)
+ *   4. Otherwise decode as UTF-8, stripping a UTF-8 BOM if present.
+ *
+ * Known limitation: BOM-less UTF-16 (or other multi-byte-per-char encodings
+ * without a BOM) is out of scope. There is no reliable, non-heuristic way to
+ * distinguish it from binary content, and heuristics here have a history of
+ * causing regressions (see task-5-report.md). Such files are skipped.
+ *
+ * Never throws: any failure decoding is treated as "not readable text".
+ */
+function readTextIfPresent(root, rel) {
+  let buf;
+  try {
+    buf = readFileSync(join(root, rel));
+  } catch {
+    return null;
+  }
+
+  try {
+    // UTF-16LE BOM
+    if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+      return buf.subarray(2).toString('utf16le');
+    }
+
+    // UTF-16BE BOM: Node has no native utf16be decoder, so byte-swap into
+    // little-endian order first.
+    if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+      let body = Buffer.from(buf.subarray(2)); // copy: swap16 mutates in place
+      if (body.length % 2 !== 0) body = body.subarray(0, body.length - 1);
+      body.swap16();
+      return body.toString('utf16le');
+    }
+
+    // Binary-content sniff over the raw bytes (not a decoded string).
+    const sniffLen = Math.min(buf.length, 8192);
+    if (buf.subarray(0, sniffLen).includes(0)) return null;
+
+    // UTF-8, stripping a UTF-8 BOM if present so BOM-prefixed first lines
+    // still match patterns anchored at the start of the text.
+    const start = (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) ? 3 : 0;
+    return buf.subarray(start).toString('utf8');
+  } catch {
+    return null;
+  }
 }
 
 function scanFile(root, rel, isLocalSettings) {
@@ -75,11 +119,8 @@ function scanFile(root, rel, isLocalSettings) {
     return findings;
   }
 
-  const text = readIfPresent(root, rel);
+  const text = readTextIfPresent(root, rel);
   if (!text) return findings;
-
-  // Skip binary content
-  if (isBinaryContent(text)) return findings;
 
   const hasToken = TOKEN_PATTERNS.some(re => re.test(text)) || PEM_PATTERN.test(text);
   if (hasToken) {
