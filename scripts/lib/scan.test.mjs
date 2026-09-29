@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { listFiles, readIfPresent, existsAny } from './scan.mjs';
 
 function fixture() {
@@ -12,6 +13,14 @@ function fixture() {
   writeFileSync(join(d, 'src', 'index.ts'), 'export const a = 1;');
   mkdirSync(join(d, 'node_modules', 'left-pad'), { recursive: true });
   writeFileSync(join(d, 'node_modules', 'left-pad', 'index.js'), '//');
+  // Initialize as git repo for nested detection tests
+  try {
+    execFileSync('git', ['init', d], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'config', 'user.name', 'Test'], { stdio: 'ignore' });
+  } catch {
+    // If git init fails, continue anyway
+  }
   return d;
 }
 
@@ -43,4 +52,25 @@ test('existsAny returns the first hit, else null', () => {
   const d = fixture();
   assert.equal(existsAny(d, ['missing.txt', 'package.json']), 'package.json');
   assert.equal(existsAny(d, ['a', 'b']), null);
+});
+
+test('a fixture with a nested repository is reported as nested-repo', () => {
+  const d = fixture();
+  const nested = join(d, 'nested-repo');
+  mkdirSync(nested);
+  // Create a git repo inside
+  try {
+    execFileSync('git', ['init', nested], { stdio: 'ignore' });
+  } catch {
+    // git init may fail in test env; skip this test gracefully
+    return;
+  }
+  const { nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'nested-repo'));
+});
+
+test('a repository with no nesting returns empty nested array', () => {
+  const { nested } = listFiles(fixture());
+  assert.equal(Array.isArray(nested), true);
+  assert.equal(nested.length, 0);
 });

@@ -48,3 +48,33 @@ test('a single-package repo raises no sensor-scope question', () => {
 test('couldNotDerive is included in the report', () => {
   assert.ok(Array.isArray(buildReport(base).couldNotDerive));
 });
+
+test('deriveCouldNotDerive raises the nested-repository question when nested is non-empty', () => {
+  const nested = [{ path: 'app', kind: 'submodule' }];
+  const q = deriveCouldNotDerive({ stack, checks, nested });
+  assert.ok(q.some(s => /nested repositor/i.test(s) && /app/.test(s)));
+});
+
+test('deriveCouldNotDerive does not raise the nested-repository question when nested is empty', () => {
+  const q = deriveCouldNotDerive({ stack, checks, nested: [] });
+  assert.equal(q.some(s => /nested repositor/i.test(s)), false);
+});
+
+test('renderSummary includes the nested disclosure block and places it before the exposures section', () => {
+  const nested = [{ path: 'app', kind: 'submodule' }, { path: 'services/api', kind: 'nested-repo' }];
+  const r = buildReport({ ...base, nested, exposures: [{ kind: 'token', location: '.env', severity: 'high' }] });
+  const s = renderSummary(r);
+  const nestedPos = s.indexOf('Nested repositories');
+  const exposuresPos = s.indexOf('Exposures');
+  assert.ok(nestedPos > -1);
+  assert.ok(exposuresPos > -1);
+  assert.ok(nestedPos < exposuresPos, 'nested block should come before exposures');
+  assert.ok(s.includes('app (submodule)'));
+  assert.ok(s.includes('services/api (nested-repo)'));
+});
+
+test('renderSummary omits the nested block entirely when nested is empty', () => {
+  const r = buildReport(base);
+  const s = renderSummary(r);
+  assert.equal(s.includes('Nested repositories'), false);
+});
