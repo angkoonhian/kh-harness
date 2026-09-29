@@ -93,15 +93,19 @@ const CHECKS = [
   {
     id: 'P2.protected', step: 11, phase: 2,
     lookedFor: ['deny rules in .claude/settings.json'],
-    check: ({ harness }) => harness.claudeDir.settings
-      ? { state: 'declared', evidence: ['.claude/settings.json'] }
+    // Existence of settings.json is not enough — an empty or rule-less file
+    // must not be reported as protecting anything.
+    check: ({ harness }) => harness.claudeDir.denyRules > 0
+      ? { state: 'declared', evidence: [`${harness.claudeDir.denyRules} deny rule(s) in .claude/settings.json`] }
       : { state: 'absent', proposal: 'create .claude/settings.json with deny rules for protected paths' },
   },
   {
     id: 'P2.langserver', step: 12, phase: 2,
     lookedFor: ['a language server for the detected stack'],
-    // Whether a language server is installed is machine state, not repo state.
-    check: () => ({ state: 'declared', evidence: ['not determinable from the repository; verify by hand'] }),
+    // Whether a language server is installed is machine state, not repo state,
+    // so this genuinely does not apply to what this tool inspects — 'declared'
+    // would claim an observation that was never made.
+    check: () => ({ state: 'n/a', evidence: ['not determinable from the repository; verify by hand'] }),
   },
   {
     id: 'P4.remote', step: 15, phase: 4,

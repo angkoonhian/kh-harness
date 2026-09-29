@@ -7,12 +7,12 @@ const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspac
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: {} }], ci: [] };
 const bareHarness = {
   instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-  claudeDir: { settings: false, localSettings: false, hooks: [], agents: [], skills: [], commands: [], rules: [] },
+  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], agents: [], skills: [], commands: [], rules: [] },
   otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
 };
 const richHarness = {
   instructions: { path: 'CLAUDE.md', lines: 153 }, agentsMd: null, reconPresent: true,
-  claudeDir: { settings: true, localSettings: true, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs'],
+  claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs'],
     agents: Array.from({ length: 13 }, (_, i) => `.claude/agents/c${i}.md`), skills: [], commands: [], rules: ['.claude/rules/api.md'] },
   otherEditors: [], architecture: 'docs/ARCHITECTURE.md', handoff: 'HANDOFF.md',
   bootstrap: 'scripts/bootstrap.sh', gitattributes: true, remotes: [{ name: 'origin', hasCredential: false }],
@@ -36,7 +36,7 @@ test('LOAD-BEARING: a fully harnessed repo yields zero proposals', () => {
 
 test('a bare repo yields proposals for the mechanical steps', () => {
   const ids = gaps(bareStack, bareHarness).filter(c => c.proposal).map(c => c.id);
-  for (const id of ['P1.bootstrap', 'P1.instructions', 'P2.sensor', 'P2.stopgate', 'P4.continuity']) {
+  for (const id of ['P1.bootstrap', 'P1.instructions', 'P2.sensor', 'P2.stopgate', 'P2.protected', 'P4.continuity']) {
     assert.ok(ids.includes(id), `expected a proposal for ${id}`);
   }
 });
@@ -68,6 +68,25 @@ test('an oversized instruction file is still declared but noted', () => {
 test('scripts present are declared; missing scripts are absent', () => {
   assert.equal(byId(gaps(fullStack, richHarness), 'P2.scripts').state, 'declared');
   assert.equal(byId(gaps(bareStack, bareHarness), 'P2.scripts').state, 'absent');
+});
+
+test('deny rules present make P2.protected declared', () => {
+  const c = byId(gaps(fullStack, richHarness), 'P2.protected');
+  assert.equal(c.state, 'declared');
+  assert.equal(c.proposal, null);
+});
+
+test('a settings.json with zero deny rules is absent, not declared — existence alone is not enough', () => {
+  const h = { ...richHarness, claudeDir: { ...richHarness.claudeDir, denyRules: 0 } };
+  const c = byId(gaps(fullStack, h), 'P2.protected');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal);
+});
+
+test('P2.langserver is n/a, not declared — it is machine state the tool cannot observe', () => {
+  const c = byId(gaps(fullStack, richHarness), 'P2.langserver');
+  assert.equal(c.state, 'n/a');
+  assert.equal(c.proposal, null);
 });
 
 test('steps outside the profile are n/a', () => {

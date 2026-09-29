@@ -75,3 +75,34 @@ test('detects other editors', () => {
   assert.ok(h.otherEditors.includes('.github/copilot-instructions.md'));
   assert.ok(h.otherEditors.some(p => p.startsWith('.cursor/rules')));
 });
+
+test('denyRules is 0 when there is no settings file', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  assert.equal(run(d).claudeDir.denyRules, 0);
+});
+
+test('denyRules is 0 when settings.json has no permissions key', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ hooks: {} }));
+  assert.equal(run(d).claudeDir.denyRules, 0);
+});
+
+test('denyRules is 0 when the deny array is empty', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: [] } }));
+  assert.equal(run(d).claudeDir.denyRules, 0);
+});
+
+test('denyRules counts entries in permissions.deny', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Read(./.env)', 'Write(./secrets/**)'] } }));
+  assert.equal(run(d).claudeDir.denyRules, 2);
+});
+
+test('denyRules is 0 for malformed JSON, and detectHarness does not throw', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', '{ this is not json');
+  assert.doesNotThrow(() => run(d));
+  assert.equal(run(d).claudeDir.denyRules, 0);
+});
