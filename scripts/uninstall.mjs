@@ -94,6 +94,10 @@ if (result.settingsWriteFailed) {
   console.log('Settings file could not be written: hooks not reverted');
 }
 
+if (result.manifestWriteFailed) {
+  console.log(`Manifest file could not be updated: ${join(root, '.claude/harness-kit.manifest.json')}`);
+}
+
 if (result.patchesNotReverted.length > 0) {
   console.log('Could not revert:');
   for (const p of result.patchesNotReverted) {
@@ -111,12 +115,12 @@ if (plan.keep.length > 0 || plan.keepPatches.length > 0) {
   }
 }
 
-if (result.removed.length === 0 && result.failed.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && result.patchesNotReverted.length === 0) {
+if (result.removed.length === 0 && result.failed.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && result.patchesNotReverted.length === 0) {
   console.log('nothing was left behind');
 }
 
-// Exit 2 if any removal failed, or if settings couldn't be handled (C1b)
-if (result.failed.length > 0 || result.settingsReadFailed || result.settingsWriteFailed) {
+// Exit 2 if any removal failed, or if settings/manifest couldn't be handled (C1b)
+if (result.failed.length > 0 || result.settingsReadFailed || result.settingsWriteFailed || result.manifestWriteFailed) {
   process.exit(2);
 }
 

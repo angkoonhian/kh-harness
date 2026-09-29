@@ -31,9 +31,9 @@ export function planUninstall({ root, manifest }) {
 
 export function runUninstall({ root, manifest, plan }) {
   // Collect all outcomes before persisting anything.
-  // Compute, then write manifest, unconditionally — no throw between action and bookkeeping.
+  // Compute, then persist, always — no throw between action and bookkeeping.
   const removed = [], failed = [];
-  let settingsReadFailed = false, settingsWriteFailed = false;
+  let settingsReadFailed = false, settingsWriteFailed = false, manifestWriteFailed = false;
   const patchesNotReverted = [];
 
   // 1. Track actual outcomes of each removal attempt
@@ -50,13 +50,16 @@ export function runUninstall({ root, manifest, plan }) {
   if (plan.revert.length) {
     let settings = null;
     try {
-      settings = JSON.parse(readFileSync(join(root, SETTINGS), 'utf8'));
+      const parsed = JSON.parse(readFileSync(join(root, SETTINGS), 'utf8'));
+      // Treat non-object results (null, arrays, primitives) as unreadable — consistent with apply-lib
+      settings = (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) ? parsed : null;
+      if (!settings) settingsReadFailed = true;
     } catch {
       settingsReadFailed = true;
     }
 
     if (settings) {
-      // Settings readable; apply reverts
+      // Settings is a valid object; apply reverts
       for (const p of plan.revert) settings = revertPatch(settings, p).settings;
 
       // Try to write reverted settings; guard the write (C1c)
@@ -67,7 +70,7 @@ export function runUninstall({ root, manifest, plan }) {
         patchesNotReverted.push(...plan.revert);
       }
     } else {
-      // Settings not readable; patches cannot be reverted
+      // Settings not readable or not a plain object; patches cannot be reverted
       patchesNotReverted.push(...plan.revert);
     }
   }
@@ -84,12 +87,12 @@ export function runUninstall({ root, manifest, plan }) {
     ...plan.keepPatches,
     ...patchesNotReverted.map(p => ({
       ...p,
-      why: settingsReadFailed ? 'settings-unreadable' : (settingsWriteFailed ? 'settings-write-failed' : 'unknown')
+      why: settingsReadFailed ? 'settings-unreadable' : 'settings-write-failed'
     }))
   ];
 
   // 4. Persist the manifest once, from actual outcomes (C1c)
-  // No throw path between actions and bookkeeping — this is always reachable
+  // Guard the write so the outcome is always returned, even if persistence fails
   const hasKept = keptFiles.length > 0 || keptPatches.length > 0;
   const hasFailures = failed.length > 0;
 
@@ -101,7 +104,11 @@ export function runUninstall({ root, manifest, plan }) {
       files: keptFiles,
       settingsPatches: keptPatches
     };
-    writeManifest(root, updatedManifest);
+    try {
+      writeManifest(root, updatedManifest);
+    } catch (e) {
+      manifestWriteFailed = true;
+    }
   }
 
   return {
@@ -109,6 +116,7 @@ export function runUninstall({ root, manifest, plan }) {
     failed,
     settingsReadFailed,
     settingsWriteFailed,
+    manifestWriteFailed,
     patchesNotReverted
   };
 }

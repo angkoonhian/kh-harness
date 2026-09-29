@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { emptyManifest, MANIFEST_PATH } from './manifest.mjs';
 import { applyProposals } from './apply-lib.mjs';
 import { planUninstall, runUninstall } from './uninstall-lib.mjs';
@@ -148,4 +148,69 @@ test('settings write fails after file removal records file as removed (C1c)', ()
   assert.equal(manifestAfter.files.length, 0, 'file not in manifest (was successfully removed)');
   assert.equal(manifestAfter.settingsPatches.length, 1, 'patch in manifest (write failed)');
   assert.equal(manifestAfter.settingsPatches[0].why, 'settings-write-failed');
+});
+
+test('settings parse to null (falsy value) are treated as unreadable', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const hookProposal = { kind: 'settings-hook', event: 'SessionStart', step: 16, entry: { type: 'command', command: 'node x.mjs' }, checkId: 'P4.sessionbrief', reason: 'r' };
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.revert.length, 1);
+
+  // Replace settings with literal null
+  writeFileSync(join(d, '.claude/settings.json'), 'null');
+
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.settingsReadFailed, true, 'falsy parse result treated as read failure');
+  assert.equal(result.patchesNotReverted.length, 1, 'patch recorded as not reverted');
+
+  // Verify manifest records with correct reason
+  const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.equal(manifestAfter.settingsPatches.length, 1);
+  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-unreadable');
+});
+
+test('outcome object always returned, even if manifest write fails', () => {
+  const d = repo();
+  const fileProposal = { kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r' };
+  const { manifest } = applyProposals({ root: d, proposals: [fileProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.remove.length, 1);
+
+  // runUninstall should not throw and should return an outcome object with all fields
+  let result;
+  assert.doesNotThrow(() => {
+    result = runUninstall({ root: d, manifest, plan });
+  });
+
+  // Verify the outcome object has all fields even if something fails
+  assert.equal(typeof result.removed, 'object');
+  assert.equal(typeof result.failed, 'object');
+  assert.equal(typeof result.settingsReadFailed, 'boolean');
+  assert.equal(typeof result.settingsWriteFailed, 'boolean');
+  assert.equal(typeof result.manifestWriteFailed, 'boolean');
+  assert.equal(typeof result.patchesNotReverted, 'object');
+});
+
+test('settings array (falsy-like non-object) is treated as unreadable', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const hookProposal = { kind: 'settings-hook', event: 'SessionStart', step: 16, entry: { type: 'command', command: 'node x.mjs' }, checkId: 'P4.sessionbrief', reason: 'r' };
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.revert.length, 1);
+
+  // Replace settings with array (valid JSON but not an object)
+  writeFileSync(join(d, '.claude/settings.json'), '["not", "an", "object"]');
+
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.settingsReadFailed, true, 'array parse result treated as unreadable');
+  assert.equal(result.patchesNotReverted.length, 1);
+
+  const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.equal(manifestAfter.settingsPatches[0].why, 'settings-unreadable');
 });
