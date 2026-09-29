@@ -23,7 +23,8 @@ test('single npm package with scripts', () => {
   assert.equal(s.isWorkspace, false);
   assert.equal(s.packages.length, 1);
   assert.equal(s.packages[0].name, 'app');
-  assert.equal(s.packages[0].scripts.test, 'vitest');
+  // Script NAMES are recorded; bodies are deliberately not carried through.
+  assert.deepEqual(s.packages[0].scripts, ['build', 'test']);
 });
 
 test('pnpm workspace finds member packages', () => {

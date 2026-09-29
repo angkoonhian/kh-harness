@@ -8,11 +8,13 @@ function make(id, extra) {
     id,
     commands(pkg, stack) {
       const pm = stack?.packageManager ?? 'npm';
-      const has = name => (pkg.scripts && pkg.scripts[name] ? `${runner(pm)} ${name}` : null);
+      // `pkg.scripts` is a list of script NAMES; bodies are deliberately not
+      // carried through detection (see detect-stack.mjs).
+      const has = name => (pkg.scripts?.includes(name) ? `${runner(pm)} ${name}` : null);
       return { install: INSTALL[pm] ?? 'npm ci', build: has('build'), test: has('test'), lint: has('lint'), typecheck: has('typecheck') };
     },
     typecheckCommand(pkg) {
-      return pkg.scripts?.typecheck ? null : `npx tsc --noEmit -p ${pkg.dir === '.' ? 'tsconfig.json' : pkg.dir + '/tsconfig.json'}`;
+      return pkg.scripts?.includes('typecheck') ? null : `npx tsc --noEmit -p ${pkg.dir === '.' ? 'tsconfig.json' : pkg.dir + '/tsconfig.json'}`;
     },
     lintTouchedCommand(paths) {
       const js = paths.filter(p => /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(p));

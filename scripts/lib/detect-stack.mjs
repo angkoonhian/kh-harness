@@ -57,11 +57,14 @@ export function detectStack(root, files) {
   const packages = manifestPaths.map(manifestPath => {
     const pkg = parseJson(readIfPresent(root, manifestPath)) ?? {};
     const dir = manifestPath === 'package.json' ? '.' : manifestPath.slice(0, -'/package.json'.length);
-    return { name: pkg.name ?? dir, dir, manifestPath, scripts: pkg.scripts ?? {} };
+    // Script NAMES only. No consumer reads a body, and a body is repository-
+    // derived text that routinely embeds a token (`sentry-cli --auth-token …`).
+    // Copying it here would republish it into detect.json and onto stdout.
+    return { name: pkg.name ?? dir, dir, manifestPath, scripts: Object.keys(pkg.scripts ?? {}).sort() };
   });
 
   if (packages.length === 0 && files.includes('pyproject.toml')) {
-    packages.push({ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: {} });
+    packages.push({ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: [] });
   }
 
   let packageManager = null;

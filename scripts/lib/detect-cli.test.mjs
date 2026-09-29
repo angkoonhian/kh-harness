@@ -95,6 +95,34 @@ test('an empty repo falls back to the generic profile and does not crash', () =>
   assert.ok(r.checks.some(c => c.state === 'n/a'));
 });
 
+// A package.json script body is repository-derived text that routinely holds a
+// hardcoded token (`sentry-cli --auth-token …`). The report records that a
+// script exists, never what it says. This asserts the value never reaches
+// stdout nor the one file the tool writes.
+test('SECURITY: a package.json script body never reaches stdout or detect.json', () => {
+  const d = bare();
+  const MARKER = 'hk-marker-' + 'Z'.repeat(24);
+  write(d, 'package.json', JSON.stringify({
+    name: 'app',
+    scripts: { test: 'vitest', deploy: `sentry-cli --auth-token ${MARKER} releases new` },
+  }));
+
+  const stdout = cli(d, '--json');
+  assert.equal(stdout.includes(MARKER), false, 'script body leaked to stdout');
+
+  const onDisk = readFileSync(join(d, 'docs', 'harness', 'detect.json'), 'utf8');
+  assert.equal(onDisk.includes(MARKER), false, 'script body leaked into detect.json');
+
+  // The report must still know the script is there — the fix removes the value,
+  // not the observation.
+  const r = JSON.parse(stdout);
+  assert.ok(r.stack.packages[0].scripts.includes('deploy'), 'script presence must survive');
+
+  // And the human-readable summary path must be clean too.
+  const summary = cli(d);
+  assert.equal(summary.includes(MARKER), false, 'script body leaked to the summary');
+});
+
 test('a missing target exits 2', () => {
   assert.throws(
     () => execFileSync(process.execPath, [CLI, join(tmpdir(), 'does-not-exist-hk')], { encoding: 'utf8', stdio: 'pipe' }),

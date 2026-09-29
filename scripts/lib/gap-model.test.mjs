@@ -4,7 +4,7 @@ import { buildGaps, STATES } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 
 const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
-  packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: {} }], ci: [] };
+  packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
 const bareHarness = {
   instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
   claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], agents: [], skills: [], commands: [], rules: [] },
@@ -17,7 +17,7 @@ const richHarness = {
   otherEditors: [], architecture: 'docs/ARCHITECTURE.md', handoff: 'HANDOFF.md',
   bootstrap: 'scripts/bootstrap.sh', gitattributes: true, remotes: [{ name: 'origin', hasCredential: false }],
 };
-const fullStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: { test: 'vitest', lint: 'eslint .', typecheck: 'tsc --noEmit' } }] };
+const fullStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'test', 'typecheck'] }] };
 
 function gaps(stack, harness, exposures = [], git = { branch: 'main', isRepo: true }) {
   return buildGaps({ stack, harness, exposures, profile: selectProfile(stack), git });

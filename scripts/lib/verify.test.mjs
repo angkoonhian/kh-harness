@@ -6,10 +6,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const stack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
-  packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: { test: 'vitest', build: 'tsc' } }], ci: [] };
+  packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
 const profile = {
   id: 'typescript-single',
-  commands: pkg => ({ install: 'npm ci', build: pkg.scripts.build ? 'npm run build' : null, test: pkg.scripts.test ? 'npm run test' : null, lint: null, typecheck: null }),
+  commands: pkg => ({ install: 'npm ci', build: pkg.scripts.includes('build') ? 'npm run build' : null, test: pkg.scripts.includes('test') ? 'npm run test' : null, lint: null, typecheck: null }),
 };
 
 test('runs only the commands that exist', () => {

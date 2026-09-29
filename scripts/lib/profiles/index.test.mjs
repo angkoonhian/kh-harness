@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { selectProfile } from './index.mjs';
 
 const tsSingle = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
-  packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: { test: 'vitest' } }], ci: [] };
+  packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['test'] }], ci: [] };
 const tsWorkspace = { ...tsSingle, packageManager: 'pnpm', isWorkspace: true,
-  packages: [tsSingle.packages[0], { name: 'b', dir: 'packages/b', manifestPath: 'packages/b/package.json', scripts: {} }] };
+  packages: [tsSingle.packages[0], { name: 'b', dir: 'packages/b', manifestPath: 'packages/b/package.json', scripts: [] }] };
 const py = { languages: ['python'], packageManager: 'uv', isWorkspace: false,
-  packages: [{ name: 'svc', dir: '.', manifestPath: 'pyproject.toml', scripts: {} }], ci: [] };
+  packages: [{ name: 'svc', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
 const nothing = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
 
 test('selects typescript-single', () => {
@@ -63,8 +63,8 @@ test('no profile encodes a framework or database opinion', () => {
     // Check all output surfaces for structural or product opinions
     const surfaces = [
       JSON.stringify(profile.protectedGlobs()),
-      JSON.stringify(profile.commands({ name: 'test', dir: '.', manifestPath: 'package.json', scripts: {} })),
-      JSON.stringify(profile.typecheckCommand({ name: 'test', dir: '.', manifestPath: 'package.json', scripts: {} })),
+      JSON.stringify(profile.commands({ name: 'test', dir: '.', manifestPath: 'package.json', scripts: [] })),
+      JSON.stringify(profile.typecheckCommand({ name: 'test', dir: '.', manifestPath: 'package.json', scripts: [] })),
       JSON.stringify(profile.lintTouchedCommand(['file.ts', 'file.py'])),
     ];
     for (const surface of surfaces) {

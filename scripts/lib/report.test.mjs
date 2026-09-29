@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildReport, renderSummary, deriveCouldNotDerive } from './report.mjs';
 
 const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: true,
-  packages: Array.from({ length: 7 }, (_, i) => ({ name: `p${i}`, dir: `packages/p${i}`, manifestPath: `packages/p${i}/package.json`, scripts: {} })), ci: [] };
+  packages: Array.from({ length: 7 }, (_, i) => ({ name: `p${i}`, dir: `packages/p${i}`, manifestPath: `packages/p${i}/package.json`, scripts: [] })), ci: [] };
 const checks = [
   { id: 'P1.bootstrap', step: 5, phase: 1, state: 'absent', lookedFor: [], evidence: [], proposal: 'create scripts/bootstrap.sh' },
   { id: 'P1.instructions', step: 6, phase: 1, state: 'declared', lookedFor: [], evidence: ['CLAUDE.md (28 lines)'], proposal: null },

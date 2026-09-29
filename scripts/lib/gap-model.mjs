@@ -69,8 +69,10 @@ const CHECKS = [
     id: 'P2.scripts', step: 8, phase: 2,
     lookedFor: ['a lint and typecheck script in every package'],
     check: ({ stack }) => {
-      const missing = stack.packages.filter(p => !p.scripts?.lint || !p.scripts?.typecheck)
-        .map(p => `${p.name}: missing ${[!p.scripts?.lint && 'lint', !p.scripts?.typecheck && 'typecheck'].filter(Boolean).join(' + ')}`);
+      // `p.scripts` is a sorted list of script NAMES — see detect-stack.mjs.
+      const lacks = (p, name) => !p.scripts?.includes(name);
+      const missing = stack.packages.filter(p => lacks(p, 'lint') || lacks(p, 'typecheck'))
+        .map(p => `${p.name}: missing ${[lacks(p, 'lint') && 'lint', lacks(p, 'typecheck') && 'typecheck'].filter(Boolean).join(' + ')}`);
       return missing.length
         ? { state: 'absent', evidence: missing, proposal: `add lint/typecheck scripts to ${missing.length} package(s)` }
         : { state: 'declared', evidence: ['every package has lint and typecheck'] };
