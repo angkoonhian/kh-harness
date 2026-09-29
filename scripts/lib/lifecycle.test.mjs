@@ -176,6 +176,14 @@ test('I3: a deleted settings file lets uninstall finish, clear the manifest, and
     'the manifest must be cleared, or uninstall is impossible on every future run, forever');
 });
 
+test('I7: uninstall with no argument exits 2, never 1', () => {
+  let err;
+  try { execFileSync(process.execPath, [UNINSTALL], { encoding: 'utf8' }); } catch (e) { err = e; }
+  assert.ok(err, 'a missing argument is still a refusal to act');
+  assert.equal(err.status, 2, 'the CLI contract is exit 0, 2 or 3 — 1 means "the process crashed"');
+  assert.match(String(err.stderr ?? ''), /usage/i, 'and it must say how to call it');
+});
+
 test('apply refuses on a default branch unless told otherwise', () => {
   const d = fixture();
   git(d, 'checkout', '-q', '-b', 'master');

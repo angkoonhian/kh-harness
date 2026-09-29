@@ -391,6 +391,19 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
 export function applyProposals({ root, proposals, manifest, kitVersion }) {
   // Pass 1: validate. No write happens until every proposal in the batch has
   // cleared both the allowlist and the containment check.
+  //
+  // KNOWN GAP, deliberately not closed here. `assertContained` is a
+  // filesystem check, and pass 2 writes without re-running it: between the
+  // two passes an adversary with write access to the repository could
+  // replace a validated directory with a junction, and the write would
+  // follow it out. Closing that needs an open-then-verify-by-handle write
+  // rather than a path write, which Node's synchronous fs makes awkward and
+  // which would buy nothing against an attacker who already has write access
+  // to the tree. It is recorded because it is the same shape as I1 — a
+  // decision made once and then trusted — and because the next person to
+  // touch this loop should know the re-check is missing on purpose.
+  // uninstall-lib.mjs does re-check at delete time; the cost there is one
+  // realpathSync per entry, and deleting is not recoverable.
   for (const proposal of proposals) {
     if (proposal.kind === 'file') {
       assertAllowed(proposal.path);

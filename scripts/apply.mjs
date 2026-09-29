@@ -87,6 +87,13 @@ const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, ha
 // applyProposals, so its drift must be surfaced here instead, independent
 // of whatever else this run does or doesn't propose. Silent drift is drift
 // the user never finds out about.
+//
+// This is computed BEFORE the apply and reported after it. That is only
+// correct because propose.mjs never re-proposes a file already in the
+// manifest, so nothing this run writes can change any of these
+// classifications. If that rule ever changes, this must move below
+// applyProposals — it would otherwise report a pre-apply snapshot as though
+// it were the state the user is left with.
 const drift = (manifest.files ?? [])
   .filter(f => classify(root, manifest, f.path) === 'ours-modified')
   .map(f => f.path);

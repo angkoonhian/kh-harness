@@ -9,8 +9,10 @@ const root = process.argv[2];
 const doYes = process.argv.includes('--yes');
 
 if (!root) {
+  // The CLI contract is exit 0, 2 or 3 and nothing else. A missing argument
+  // is a refusal to act, not a crash.
   console.error('usage: uninstall <repo-path> [--yes]');
-  process.exit(1);
+  process.exit(2);
 }
 
 if (!existsSync(root)) {
@@ -132,24 +134,25 @@ if (result.manifestDeleteFailed) {
   console.log(`Manifest file could not be removed: ${join(root, '.claude/harness-kit.manifest.json')}`);
 }
 
+// The run re-derives the revertable set, so `result.patchesNotReverted` —
+// not `plan.keepPatches` — is what was actually left registered. Reporting
+// the plan's guess as well would double-count, and would name a patch this
+// same run had just removed.
 if (result.patchesNotReverted.length > 0) {
   console.log('Could not revert:');
   for (const p of result.patchesNotReverted) {
-    console.log(`  ${p.container}`);
+    console.log(`  ${p.container} (${p.why})`);
   }
 }
 
-if (plan.keep.length > 0 || plan.keepPatches.length > 0) {
+if (plan.keep.length > 0) {
   console.log('Kept:');
   for (const k of plan.keep) {
     console.log(`  ${k.path} (${k.why})`);
   }
-  for (const p of plan.keepPatches) {
-    console.log(`  ${p.container}`);
-  }
 }
 
-if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && result.refused.length === 0 && plan.keep.length === 0 && plan.keepPatches.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0) {
+if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && result.refused.length === 0 && plan.keep.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0) {
   console.log('nothing was left behind');
 }
 
