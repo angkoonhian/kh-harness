@@ -23,21 +23,70 @@ function detectNestedRepositories(root) {
     }
 
     // Detect nested independent repositories: untracked directories containing .git
-    try {
-      const untrackedDirs = execFileSync('git', ['-C', root, 'ls-files', '-o', '--exclude-standard', '--directory'], {
-        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      for (const line of untrackedDirs.split('\n')) {
-        const dir = line.trim();
-        if (!dir || dir.endsWith('/node_modules/')) continue;
-        const fullPath = join(root, dir);
-        if (existsSync(join(fullPath, '.git'))) {
-          nested.push({ path: dir.replace(/\/$/, ''), kind: 'nested-repo' });
+    // Recursive descent handles git ls-files --directory collapsing untracked subtrees
+    function findNestedRepos(relPath, depth) {
+      if (depth > 4) return; // Max depth 4 below repository root
+
+      try {
+        // Always run from root repo, but query subdirectory if relPath is set
+        const args = ['ls-files', '-o', '--exclude-standard', '--directory'];
+        if (relPath) args.push(relPath);
+        else args.push('.');
+
+        const untrackedDirs = execFileSync('git', ['-C', root, ...args], {
+          encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+        });
+
+        const dirs = untrackedDirs.split('\n')
+          .map(s => s.trim())
+          .filter(s => s && !s.endsWith('/node_modules/'));
+
+        if (dirs.length === 0) return; // Stop early if nothing new
+
+        for (const dir of dirs) {
+          const fullPath = join(root, relPath ? `${relPath}/${dir}` : dir);
+          const cleanDir = dir.replace(/\/$/, '');
+          const resultPath = relPath ? `${relPath}/${cleanDir}` : cleanDir;
+
+          if (existsSync(join(fullPath, '.git'))) {
+            nested.push({ path: resultPath, kind: 'nested-repo' });
+          } else {
+            // Recurse into this directory via filesystem
+            describeUntracked(fullPath, resultPath, depth + 1);
+          }
         }
+      } catch {
+        // If git ls-files fails at this level, stop recursion
       }
-    } catch {
-      // If git ls-files -o fails, continue without nested-repo detection
     }
+
+    // Filesystem walk inside an untracked directory to find nested repos
+    function describeUntracked(fullPath, resultPath, depth) {
+      if (depth > 4) return;
+      try {
+        const entries = readdirSync(fullPath);
+        for (const entry of entries) {
+          if (entry === 'node_modules' || entry === '.git') continue;
+          const subPath = join(fullPath, entry);
+          const subResultPath = `${resultPath}/${entry}`;
+
+          try {
+            if (existsSync(join(subPath, '.git'))) {
+              nested.push({ path: subResultPath, kind: 'nested-repo' });
+            } else {
+              // Recurse deeper
+              describeUntracked(subPath, subResultPath, depth + 1);
+            }
+          } catch {
+            // Skip entries we can't stat or access
+          }
+        }
+      } catch {
+        // If readdirSync fails, stop recursion
+      }
+    }
+
+    findNestedRepos('', 1);
   } catch {
     // If any git operation fails entirely, return empty
     return [];

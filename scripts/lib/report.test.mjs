@@ -78,3 +78,22 @@ test('renderSummary omits the nested block entirely when nested is empty', () =>
   const s = renderSummary(r);
   assert.equal(s.includes('Nested repositories'), false);
 });
+
+test('deriveCouldNotDerive raises stack detection question when profile is generic', () => {
+  const q = deriveCouldNotDerive({ stack, checks, profile: { id: 'generic' } });
+  assert.ok(q.some(s => /stack/i.test(s) && /confidence/i.test(s)));
+});
+
+test('deriveCouldNotDerive does not raise stack question for non-generic profile', () => {
+  const q = deriveCouldNotDerive({ stack, checks, profile: { id: 'typescript-workspace' } });
+  assert.equal(q.some(s => /stack.*confidence/i.test(s)), false);
+});
+
+test('exposures heading is self-contained and names nested count', () => {
+  const nested = [{ path: 'app', kind: 'submodule' }, { path: 'vendor/toolA', kind: 'nested-repo' }];
+  const r = buildReport({ ...base, nested, exposures: [{ kind: 'token', location: '.env', severity: 'high' }] });
+  const s = renderSummary(r);
+  assert.ok(s.includes('this repository only'));
+  assert.ok(s.includes('2 nested repositories'));
+  assert.ok(s.includes('not scanned'));
+});

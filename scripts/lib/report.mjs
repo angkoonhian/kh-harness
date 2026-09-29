@@ -1,11 +1,14 @@
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
 const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 4: 'Continuity' };
 
-export function deriveCouldNotDerive({ stack, checks, nested = [] }) {
+export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} }) {
   const out = [];
   if (nested.length) {
     const paths = nested.map(n => n.path).join(', ');
     out.push(`This repository contains ${nested.length} nested repositor${nested.length === 1 ? 'y' : 'ies'} (${paths}). Stack detection and credential scanning covered this repository only; each nested repository must be assessed separately.`);
+  }
+  if (profile.id === 'generic') {
+    out.push('Stack detection did not reach a decision (confidence below 0.5). What is this project\'s primary stack? Stack-specific steps were skipped as a result.');
   }
   if (stack.packages.length > 3) {
     out.push(`Which packages should the per-edit sensor cover? Detected ${stack.packages.length}; linting all of them on every edit may be too slow.`);
@@ -31,7 +34,7 @@ export function buildReport({ root, kitVersion, git, stack, harness, exposures, 
     exposures,
     checks,
     nested,
-    couldNotDerive: deriveCouldNotDerive({ stack, checks, nested }),
+    couldNotDerive: deriveCouldNotDerive({ stack, checks, nested, profile }),
   };
 }
 
@@ -59,8 +62,12 @@ export function renderSummary(report) {
   }
 
   if (report.exposures.length) {
-    const scanned = report.nested && report.nested.length ? ' in this repository only' : '';
-    lines.push(`Exposures (${report.exposures.length})${scanned} — values are never printed; rotate by hand:`);
+    let heading = `Exposures (${report.exposures.length})`;
+    if (report.nested && report.nested.length) {
+      heading += ` — this repository only; ${report.nested.length} nested repositor${report.nested.length === 1 ? 'y' : 'ies'} not scanned`;
+    }
+    heading += ' — values are never printed; rotate by hand:';
+    lines.push(heading);
     for (const e of report.exposures) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
     lines.push('');
   }

@@ -74,3 +74,48 @@ test('a repository with no nesting returns empty nested array', () => {
   assert.equal(Array.isArray(nested), true);
   assert.equal(nested.length, 0);
 });
+
+test('nested repository under fully-untracked parent is found (no tracked sibling)', () => {
+  const d = fixture();
+  const vendor = join(d, 'vendor');
+  const toolA = join(vendor, 'toolA');
+  mkdirSync(toolA, { recursive: true });
+  // Create a git repo inside with no tracked sibling under vendor/
+  try {
+    execFileSync('git', ['init', toolA], { stdio: 'ignore' });
+  } catch {
+    return;
+  }
+  const { nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'vendor/toolA'));
+});
+
+test('nested repository with tracked sibling under parent is found (regression)', () => {
+  const d = fixture();
+  const vendor = join(d, 'vendor');
+  const toolA = join(vendor, 'toolA');
+  mkdirSync(toolA, { recursive: true });
+  // Add tracked sibling
+  writeFileSync(join(vendor, 'NOTE.md'), '# Vendor');
+  // Create a git repo inside
+  try {
+    execFileSync('git', ['init', toolA], { stdio: 'ignore' });
+  } catch {
+    return;
+  }
+  const { nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'vendor/toolA'));
+});
+
+test('nested repository three levels down is found', () => {
+  const d = fixture();
+  const deep = join(d, 'a', 'b', 'c', 'repo');
+  mkdirSync(deep, { recursive: true });
+  try {
+    execFileSync('git', ['init', deep], { stdio: 'ignore' });
+  } catch {
+    return;
+  }
+  const { nested: detected } = listFiles(d);
+  assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'a/b/c/repo'));
+});
