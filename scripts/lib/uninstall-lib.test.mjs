@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { classify, emptyManifest, sha256, MANIFEST_PATH } from './manifest.mjs';
+import { classify, emptyManifest, sha256, writeManifest, MANIFEST_PATH } from './manifest.mjs';
 import { applyProposals } from './apply-lib.mjs';
 import { planUninstall, runUninstall } from './uninstall-lib.mjs';
 
@@ -328,4 +328,33 @@ test('settings array (falsy-like non-object) is treated as unreadable', () => {
 
   const manifestAfter = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
   assert.equal(manifestAfter.settingsPatches[0].why, 'settings-unreadable');
+});
+
+// --- I1: the revert path must re-derive, not replay a stale plan ---------
+
+test('I1: a settings file repaired between plan and run still gets its hook reverted', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
+  const healthy = readFileSync(join(d, '.claude/settings.json'), 'utf8');
+
+  // At plan time the file is unparseable, so the plan's candidate list is
+  // empty — through no fault of the patch, which is perfectly revertible.
+  writeFileSync(join(d, '.claude/settings.json'), '{ "permissions": { "deny": ["Edit(x)"], }, }');
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.revert, [], 'the plan could not read the file, so it has nothing to offer');
+  assert.equal(plan.keepPatches.length, 1);
+
+  // The user repairs their JSON before confirming. The hook is right there.
+  writeFileSync(join(d, '.claude/settings.json'), healthy);
+
+  const result = runUninstall({ root: d, manifest, plan });
+  const after = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+  assert.equal(after.hooks, undefined, 'the hook must be reverted, not left registered while the run reports success');
+  assert.deepEqual(after.permissions, { deny: ['Edit(x)'] }, 'their settings survive');
+  assert.deepEqual(result.patchesNotReverted, [], 'nothing was left behind, so nothing may be reported as kept');
+  assert.equal(result.settingsReadFailed, false);
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), false, 'and the manifest is cleared, so the repo is genuinely clean');
 });

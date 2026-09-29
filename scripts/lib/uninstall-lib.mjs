@@ -127,22 +127,30 @@ export function runUninstall({ root, manifest, plan }) {
   }
 
   // 2. Attempt to revert settings patches, tracking what could not be reverted
-  // Validate settings whenever the manifest has patches (defect 2: avoid false-fail with no patches)
-  const hasSettingsPatches = (manifest?.settingsPatches?.length ?? 0) > 0;
-  if (hasSettingsPatches) {
+  // Validate settings whenever the manifest has patches (avoids a false failure with no patches)
+  const manifestPatches = manifest?.settingsPatches ?? [];
+  if (manifestPatches.length > 0) {
     const validated = validateSettings(join(root, SETTINGS));
 
     if (validated.valid) {
       let settings = validated.object;
       let settingsChanged = false;
-      // Settings is a valid object; apply reverts and track which ones actually reverted
-      for (const p of plan.revert) {
+
+      // The revertable set is re-derived from the manifest here, exactly as
+      // planUninstall derives it — the file path already works this way, and
+      // the patch path must too. `plan.revert` is a stale candidate list:
+      // it was computed against whatever settings.json looked like at plan
+      // time, and the user may well have repaired an unparseable file in
+      // between. Iterating it then leaves a perfectly revertible hook
+      // registered while the run reports success and exits 0. The fresh
+      // revertPatch result below is what decides.
+      for (const p of manifestPatches) {
         const r = revertPatch(settings, p);
         if (r.reverted) {
           settings = r.settings;
           settingsChanged = true;
         } else {
-          // Patch exists but could not be reverted (user edited it) — defect 1
+          // Patch exists but could not be reverted (user edited it).
           patchesNotReverted.push({ ...p, why: 'patch-modified' });
         }
       }
@@ -162,9 +170,14 @@ export function runUninstall({ root, manifest, plan }) {
         }
       }
     } else {
-      // Settings not readable, missing, or not a plain object; patches cannot be reverted
+      // Settings not readable, missing, or not a plain object; patches cannot
+      // be reverted. Derived from the manifest for the same reason as above:
+      // plan.revert is whatever the plan happened to manage, and a patch the
+      // plan never saw must still be recorded rather than silently dropped.
       if (validated.reason !== null) settingsReadFailed = true;
-      patchesNotReverted.push(...plan.revert);
+      for (const p of manifestPatches) {
+        patchesNotReverted.push({ ...p, why: validated.reason });
+      }
     }
   }
 
@@ -180,14 +193,14 @@ export function runUninstall({ root, manifest, plan }) {
     keptPaths.has(f.path) || changedPaths.has(f.path) || failedPaths.has(f.path) || refusedPaths.has(f.path)
   );
 
-  // Patches to keep in manifest: user-edited patches + patches we couldn't revert
-  const keptPatches = [
-    ...plan.keepPatches,
-    ...patchesNotReverted.map(p => ({
-      ...p,
-      why: settingsReadFailed ? 'settings-unreadable' : 'settings-write-failed'
-    }))
-  ];
+  // Patches to keep in the manifest: everything the run itself could not
+  // revert. Not plan.keepPatches — that list was computed before the run and
+  // the run re-derives the revertable set from the manifest, so merging the
+  // two records a patch as left behind that this run actually removed.
+  const keptPatches = patchesNotReverted.map(p => ({
+    ...p,
+    why: settingsReadFailed ? 'settings-unreadable' : 'settings-write-failed'
+  }));
 
   // 4. Persist the manifest once, from actual outcomes
   // Guard both write and delete so the outcome is always returned
