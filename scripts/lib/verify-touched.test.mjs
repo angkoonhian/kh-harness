@@ -239,6 +239,19 @@ test('TIMEOUT: a second Stop in the same session SKIPS re-running the command en
   );
 });
 
+/**
+ * Review hygiene correction: mutating killTree (proven separately, see
+ * the report's Finding 4 mutation) leaves a REAL orphaned process pair on
+ * the machine running this suite — found by hand, once, via
+ * `Win32_Process`. A test that can leak a process must own cleaning it
+ * up itself, in a teardown that runs whether the test passed, failed, or
+ * threw — precisely because the failure mode (killTree regressing) is
+ * the one moment this test cannot trust verify-touched.mjs's own kill to
+ * have worked. The canary writes ITS OWN pid and its grandchild's pid to
+ * a file BEFORE doing anything else, so the teardown below can find and
+ * force-kill both directly — independent of, and never relying on,
+ * whatever the hook under test did or didn't manage to kill.
+ */
 test('ORPHAN CANARY: a timeout kills the whole process tree, not just the shell', async () => {
   // The old `spawnSync({ timeout })` implementation killed only the
   // SHELL — with `shell: true`, whatever the shell went on to run (a
@@ -248,27 +261,59 @@ test('ORPHAN CANARY: a timeout kills the whole process tree, not just the shell'
   // alive a moment after the hook returns, the heartbeat keeps advancing.
   const d = repo({});
   const heartbeat = join(d, 'heartbeat.txt');
+  const pidsFile = join(d, 'pids.txt');
   writeFileSync(
     join(d, 'canary.cjs'),
     [
       "const { spawn } = require('child_process');",
       `const heartbeatPath = ${JSON.stringify(heartbeat)};`,
-      "spawn(process.execPath, ['-e', 'let n=0; setInterval(() => { n++; require(\"fs\").writeFileSync(process.argv[1], String(n)); }, 50);', heartbeatPath], { stdio: 'ignore' });",
+      `const pidsPath = ${JSON.stringify(pidsFile)};`,
+      "const grandchild = spawn(process.execPath, ['-e', 'let n=0; setInterval(() => { n++; require(\"fs\").writeFileSync(process.argv[1], String(n)); }, 50);', heartbeatPath], { stdio: 'ignore' });",
+      // Written FIRST, before anything else, so the teardown below can
+      // find both pids even if the test assertions fail partway through.
+      "require('fs').writeFileSync(pidsPath, process.pid + '\\n' + grandchild.pid + '\\n');",
       "console.error('typecheck: launched canary');",
       'setInterval(() => {}, 1000);', // the parent itself also hangs, simulating a slow tsc
     ].join('\n'),
   );
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { typecheck: 'node canary.cjs' } }));
 
-  const r = run(d, payload(), { HK_VERIFY_TIMEOUT_MS: '300', HK_VERIFY_KILL_GRACE_MS: '500' });
-  assert.equal(r.code, 2, 'sanity: the timeout path actually ran');
+  try {
+    const r = run(d, payload(), { HK_VERIFY_TIMEOUT_MS: '300', HK_VERIFY_KILL_GRACE_MS: '500' });
+    assert.equal(r.code, 2, 'sanity: the timeout path actually ran');
 
-  await new Promise(res => setTimeout(res, 400));
-  const afterKill = existsSync(heartbeat) ? readFileSync(heartbeat, 'utf8') : null;
-  assert.ok(afterKill !== null, 'sanity: the canary grandchild actually started and wrote at least one heartbeat');
-  await new Promise(res => setTimeout(res, 400));
-  const later = readFileSync(heartbeat, 'utf8');
-  assert.equal(afterKill, later, 'the heartbeat must stop advancing — no grandchild survived the timeout kill');
+    await new Promise(res => setTimeout(res, 400));
+    const afterKill = existsSync(heartbeat) ? readFileSync(heartbeat, 'utf8') : null;
+    assert.ok(afterKill !== null, 'sanity: the canary grandchild actually started and wrote at least one heartbeat');
+    await new Promise(res => setTimeout(res, 400));
+    const later = readFileSync(heartbeat, 'utf8');
+    assert.equal(afterKill, later, 'the heartbeat must stop advancing — no grandchild survived the timeout kill');
+  } finally {
+    // Teardown: ALWAYS runs — pass, fail, or throw. Reads the pids file
+    // fresh here rather than trusting any variable set inside `try`,
+    // specifically so a throw partway through the try block still leaves
+    // this able to find and kill what was spawned.
+    let pids = [];
+    try {
+      if (existsSync(pidsFile)) {
+        pids = readFileSync(pidsFile, 'utf8').split(/\s+/).map(s => s.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
+      }
+    } catch {
+      // best-effort — a teardown that itself throws must never mask the
+      // test's own result
+    }
+    for (const pid of pids) {
+      try {
+        if (process.platform === 'win32') {
+          spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        } else {
+          process.kill(pid, 'SIGKILL');
+        }
+      } catch {
+        // already gone, or never started — nothing left to clean up
+      }
+    }
+  }
 });
 
 // --- Ruling 3: the shared redaction chokepoint (harness-redact.mjs) -------
@@ -499,12 +544,25 @@ test('BYTE BOUND: a single very long line does not reach stderr in full', () => 
 
 // --- Finding 10: the marker is keyed on the repository root too -----------
 
-test('ROOT ISOLATION: the SAME session_id in two different repositories never shares a marker', () => {
+test('ROOT ISOLATION: the SAME session_id AND the SAME failure in two different repositories never share a marker', () => {
+  // Review correction: the original fixture gave A and B DIFFERENT failure
+  // text, so a signature MISMATCH alone would explain r2 blocking,
+  // regardless of whether the marker path was root-isolated at all — the
+  // test would stay green even with rootTag deleted entirely. Giving both
+  // repositories the IDENTICAL command removes that confound: if rootTag
+  // were ever removed, both calls would read/write the SAME marker (same
+  // user, same session, same namespace, same — now unvarying — signature),
+  // and r2 would see `lastSignature === signature` and wrongly dedupe to
+  // exit 0, exactly like the LOAD-BEARING same-session test does on
+  // purpose. Only genuine root isolation makes r2 block here.
   const s = sid();
-  const dA = repo({ typecheck: 'node -e "console.error(\'typecheck: trouble in A\'); process.exit(1)"' });
-  const dB = repo({ typecheck: 'node -e "console.error(\'typecheck: trouble in B\'); process.exit(1)"' });
+  const SAME_FAILURE = 'node -e "console.error(\'typecheck: trouble\'); process.exit(1)"';
+  const dA = repo({ typecheck: SAME_FAILURE });
+  const dB = repo({ typecheck: SAME_FAILURE });
   const r1 = run(dA, payload({ session_id: s }));
   assert.equal(r1.code, 2, 'sanity: repo A blocks on its own first failure');
+  assert.match(r1.stderr, /trouble/, 'sanity: the failure text actually reaches stderr');
   const r2 = run(dB, payload({ session_id: s }));
-  assert.equal(r2.code, 2, 'repo B, despite sharing session_id with A, must get its own independent block');
+  assert.equal(r2.code, 2,
+    'repo B, despite an IDENTICAL failure signature and a SHARED session_id, must still get its own independent block');
 });

@@ -319,42 +319,76 @@ function writeReport(lines) {
 }
 
 /**
- * Dedupes a standing lint error so it is reported once per session, not
- * once per edit — without this, a file with one unfixed lint error gets
- * the identical notice re-surfaced on every single subsequent edit to that
- * file, which is how a sensor teaches people to ignore it. Keyed on `file
- * + signature` (not merely the file) so a NEW, different error on the same
- * file still gets reported: the SAME shared signature/cap machinery
- * verify-touched.mjs uses for the Stop gate, applied per file here rather
- * than once per session, since a sensor naturally has one independent
- * "stream" of potential issues per file rather than one for the whole
- * repository.
+ * Dedupes a standing lint error so its FULL diagnostic is dumped once per
+ * session, not once per edit — without this, a file with one unfixed lint
+ * error gets the identical notice re-surfaced on every single subsequent
+ * edit to that file, which is how a sensor teaches people to ignore it.
+ * Keyed on `file + signature` (not merely the file) so a NEW, different
+ * error on the same file still gets a full report: the SAME shared
+ * signature/cap machinery verify-touched.mjs uses for the Stop gate,
+ * applied per file here rather than once per session, since a sensor
+ * naturally has one independent "stream" of potential issues per file
+ * rather than one for the whole repository.
  *
- * Returns `true` when this exact (file, signature) pair has already been
- * reported `MAX_BLOCKS_PER_SESSION` times or more for THIS file, or was
- * the most recently reported one for it. A marker write failure fails
- * OPEN in the opposite direction from verify-touched.mjs's: there, failing
- * to record state must never cause an unbounded BLOCK; here, it must
- * never cause a real problem to go silently UNREPORTED — so a write
- * failure here still reports (returns `false`), accepting that the
- * dedupe nicety may not perfectly persist, rather than ever hiding a lint
- * finding from Claude. No `session_id` to key on (malformed payload, or a
- * value that fails `safeSessionId`) means dedupe is simply skipped — the
- * old, always-report behaviour, not a reason to suppress anything.
+ * Review correction (this was specified, then reversed, by the same
+ * reviewer): a repeat MUST NEVER go fully silent. Claude edits a file,
+ * is told about an issue, edits again meaning to fix it, and the fix
+ * does not work — the identical error persists. Silence in that exact
+ * moment is indistinguishable from the fix having worked; reporting
+ * nothing is worse than the noise this was built to remove, because
+ * `PostToolUse` exit 2 never blocks the turn — re-reporting costs tokens,
+ * never a stall. So an identical repeat gets a TERSE one-line notice
+ * instead (`action: 'terse'`) — still exit 2, naming the file and how many
+ * times this exact issue has now been seen — never the full diagnostic
+ * dump again, and never nothing. There is deliberately no suppression
+ * threshold for an UNCHANGED issue: a fixed cutoff after N terse repeats
+ * would only move the "silence impersonates success" defect to a later
+ * count instead of removing it, so EVERY repeat, however many, gets its
+ * own terse line.
+ *
+ * The per-file cap (`MAX_BLOCKS_PER_SESSION`) still bounds something real:
+ * the number of DISTINCT full-diagnostic dumps for one file in a session.
+ * A GENUINELY NEW error once that cap is reached is still suppressed
+ * (`action: 'suppress'`) — this case is unchanged from before and was not
+ * part of what was reversed, because a brand-new, never-before-seen
+ * problem is not the "did my fix work" moment this correction is about;
+ * it is the belt-and-braces backstop against runaway distinct-error churn
+ * the cap already existed for.
+ *
+ * Returns `{ action: 'report' }` (an ordinary full report should proceed —
+ * including when there is no usable `session_id` to key dedupe state on
+ * at all, which is simply the old always-report behaviour, never a
+ * suppression), `{ action: 'terse', message }`, or `{ action: 'suppress' }`.
+ * A marker write failure fails OPEN in the opposite direction from
+ * verify-touched.mjs's: there, failing to record state must never cause
+ * an unbounded BLOCK; here, it must never cause a real problem to go
+ * silently unreported — a write failure still returns `'report'`,
+ * accepting that the dedupe nicety may not perfectly persist, rather than
+ * ever hiding or flattening a lint finding.
  */
-function shouldSuppressDuplicate(root, sessionId, filePath, signature) {
-  if (sessionId === null) return false;
+function dedupeDecision(root, sessionId, filePath, signature) {
+  if (sessionId === null) return { action: 'report' };
   const path = markerPath(root, sessionId, 'sensor');
   const marker = readJSONMarker(path, { files: {} });
   const files = marker?.files && typeof marker.files === 'object' && !Array.isArray(marker.files) ? marker.files : {};
   const entry = files[filePath] && typeof files[filePath] === 'object' ? files[filePath] : null;
   const count = Number.isFinite(Number(entry?.count)) && Number(entry?.count) >= 0 ? Number(entry.count) : 0;
   const lastSignature = typeof entry?.lastSignature === 'string' ? entry.lastSignature : null;
+  const repeats = Number.isFinite(Number(entry?.repeats)) && Number(entry?.repeats) >= 0 ? Number(entry.repeats) : 0;
 
-  if (count >= MAX_BLOCKS_PER_SESSION || lastSignature === signature) return true;
+  if (lastSignature === signature) {
+    writeJSONMarker(path, { files: { ...files, [filePath]: { count, lastSignature, repeats: repeats + 1 } } });
+    const seen = repeats + 2; // +1 for the original full report, +1 for this occurrence
+    return {
+      action: 'terse',
+      message: `lint-touched: ${filePath} — unchanged since the last edit (the same issue has now been reported ${seen} times this session)`,
+    };
+  }
 
-  writeJSONMarker(path, { files: { ...files, [filePath]: { count: count + 1, lastSignature: signature } } });
-  return false;
+  if (count >= MAX_BLOCKS_PER_SESSION) return { action: 'suppress' };
+
+  writeJSONMarker(path, { files: { ...files, [filePath]: { count: count + 1, lastSignature: signature, repeats: 0 } } });
+  return { action: 'report' };
 }
 
 async function main() {
@@ -473,7 +507,9 @@ async function main() {
   if (reported.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
 
   const sessionId = safeSessionId(payload.session_id);
-  if (shouldSuppressDuplicate(root, sessionId, filePath, signatureOf(reported))) return 0;
+  const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
+  if (decision.action === 'suppress') return 0;
+  if (decision.action === 'terse') return writeReport([decision.message]);
 
   return writeReport(reported);
 }

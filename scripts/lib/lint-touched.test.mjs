@@ -4,6 +4,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, sep } from 'node:path';
+import { markerPath } from '../../assets/scripts/harness-redact.mjs';
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'lint-touched.mjs');
 
@@ -860,15 +861,63 @@ const editPayload = (filePath, sessionId) => ({
   hook_event_name: 'PostToolUse', session_id: sessionId, tool_name: 'Edit', tool_input: { file_path: filePath },
 });
 
-test('DEDUPE: the SAME standing lint error on the SAME file is reported once per session, then suppressed', () => {
+// Review correction: a repeat of the IDENTICAL failure must never go fully
+// silent — Claude editing a file, being told about an issue, editing again
+// to fix it, and the fix NOT working is exactly the moment silence would
+// be indistinguishable from "fixed it". So a repeat still exits 2, with a
+// terse line (count + file, "unchanged since the last edit") replacing the
+// full diagnostic dump — never nothing, never the full dump again. There
+// is deliberately no suppression threshold for an unchanged issue: this
+// three-edit sequence pins the SAME (terse) behaviour on a third
+// occurrence too, not merely a second.
+test('DEDUPE: a repeat of an identical error goes terse, not silent, and keeps exit 2', () => {
   const d = dedupeRepo();
   setMessage(d, 'no-unused-vars');
+
   const r1 = run(d, editPayload('src/a.ts', 'dedupe-session-1'));
-  assert.equal(r1.code, 2, 'sanity: the first edit reports the error');
+  assert.equal(r1.code, 2, 'sanity: the first edit reports the error in full');
   assert.match(r1.stderr, /no-unused-vars/);
 
   const r2 = run(d, editPayload('src/a.ts', 'dedupe-session-1'));
-  assert.equal(r2.code, 0, 'the identical standing error on a second edit to the same file must not be re-reported');
+  assert.equal(r2.code, 2, 'a repeat of the IDENTICAL error must still exit 2 — silence would look like the fix worked');
+  assert.doesNotMatch(r2.stderr, /no-unused-vars/, 'the full diagnostic must not be re-dumped — this is the terse line, not the original report');
+  assert.match(r2.stderr, /unchanged since the last edit/i);
+  assert.match(r2.stderr, /src\/a\.ts/);
+  assert.match(r2.stderr, /2 times/, 'the terse line states how many times this has now been seen');
+});
+
+test('DEDUPE: a THIRD occurrence of the same unchanged error also stays terse, with an advancing count', () => {
+  const d = dedupeRepo();
+  setMessage(d, 'no-unused-vars');
+  run(d, editPayload('src/a.ts', 'dedupe-session-1b'));  // 1st: full report
+  run(d, editPayload('src/a.ts', 'dedupe-session-1b'));  // 2nd: terse, "2 times"
+
+  const r3 = run(d, editPayload('src/a.ts', 'dedupe-session-1b'));
+  assert.equal(r3.code, 2, 'a THIRD occurrence of the same unchanged error must still exit 2, not go silent');
+  assert.doesNotMatch(r3.stderr, /no-unused-vars/, 'still terse, not a re-dump, on the third occurrence too');
+  assert.match(r3.stderr, /unchanged since the last edit/i);
+  assert.match(r3.stderr, /3 times/, 'the count keeps advancing rather than freezing or resetting — there is no suppression threshold for an unchanged issue');
+});
+
+test('DEDUPE: when the marker cannot be read or written at all, every edit still reports in FULL — never silent, never terse on a fabricated repeat', () => {
+  // Occupying the sensor's own marker path with a directory breaks BOTH
+  // read (EISDIR) and write for this session+file — the fail-open
+  // direction this is pinning is stronger than a write-only failure
+  // (already covered for the gate): here, dedupe state cannot be
+  // observed OR recorded at all, and the correct behaviour is still to
+  // report in full every time, never to silently suppress and never to
+  // fabricate a "terse repeat" it has no actual record of.
+  const d = dedupeRepo();
+  setMessage(d, 'no-unused-vars');
+  const sessionId = 'dedupe-session-broken-marker';
+  mkdirSync(markerPath(d, sessionId, 'sensor'), { recursive: true });
+
+  const r1 = run(d, editPayload('src/a.ts', sessionId));
+  const r2 = run(d, editPayload('src/a.ts', sessionId));
+  assert.equal(r1.code, 2, 'the first edit must still report');
+  assert.equal(r2.code, 2, 'the second edit must still report — marker I/O is broken, so it cannot know this is a repeat');
+  assert.match(r1.stderr, /no-unused-vars/);
+  assert.match(r2.stderr, /no-unused-vars/, 'with no readable marker, this must be a full report, not a fabricated terse line claiming a repeat count it never recorded');
 });
 
 test('DEDUPE: a DIFFERENT error on the SAME file in the SAME session is still reported', () => {
@@ -884,26 +933,30 @@ test('DEDUPE: a DIFFERENT error on the SAME file in the SAME session is still re
   assert.match(r2.stderr, /problem-two/);
 });
 
-test('DEDUPE: a standing error on a DIFFERENT file is reported independently, not globally capped', () => {
+test('DEDUPE: a standing error on a DIFFERENT file is tracked independently, not globally', () => {
   const d = dedupeRepo();
   setMessage(d, 'shared-problem');
   const r1 = run(d, editPayload('src/a.ts', 'dedupe-session-3'));
-  assert.equal(r1.code, 2, 'sanity: a.ts reports once');
+  assert.equal(r1.code, 2, 'sanity: a.ts reports once, in full');
+  assert.match(r1.stderr, /shared-problem/);
   const r2 = run(d, editPayload('src/a.ts', 'dedupe-session-3'));
-  assert.equal(r2.code, 0, 'sanity: a.ts is now suppressed (same signature)');
+  assert.equal(r2.code, 2, 'sanity: a.ts\'s own repeat goes terse (same signature), never silent');
+  assert.match(r2.stderr, /unchanged since the last edit/i);
 
   const r3 = run(d, editPayload('src/b.ts', 'dedupe-session-3'));
-  assert.equal(r3.code, 2, 'b.ts has never been reported in this session and must not be suppressed by a.ts\'s own state');
+  assert.equal(r3.code, 2, 'b.ts has never been reported in this session and must get its own FULL report, unaffected by a.ts\'s state');
   assert.match(r3.stderr, /shared-problem/);
+  assert.doesNotMatch(r3.stderr, /unchanged since the last edit/i, 'b.ts\'s first report must be the full diagnostic, not a terse line borrowed from a.ts');
 });
 
-test('DEDUPE: a DIFFERENT session for the same file is unaffected by a prior session\'s suppression', () => {
+test('DEDUPE: a DIFFERENT session for the same file is unaffected by a prior session\'s terse state', () => {
   const d = dedupeRepo();
   setMessage(d, 'cross-session-problem');
-  run(d, editPayload('src/a.ts', 'dedupe-session-4a'));          // session 4a: reports, then would suppress a repeat
-  run(d, editPayload('src/a.ts', 'dedupe-session-4a'));          // session 4a: suppressed
+  run(d, editPayload('src/a.ts', 'dedupe-session-4a'));          // session 4a: full report
+  run(d, editPayload('src/a.ts', 'dedupe-session-4a'));          // session 4a: terse repeat
   const r = run(d, editPayload('src/a.ts', 'dedupe-session-4b')); // a NEW session
-  assert.equal(r.code, 2, 'a different session must not inherit another session\'s suppression');
+  assert.equal(r.code, 2, 'a different session must not inherit another session\'s terse/repeat state');
+  assert.doesNotMatch(r.stderr, /unchanged since the last edit/i, 'a fresh session\'s first report is the full diagnostic, not a borrowed terse line');
 });
 
 test('DEDUPE: a THIRD distinct error on the same file hits the per-file cap and is not reported', () => {
