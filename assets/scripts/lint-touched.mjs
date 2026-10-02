@@ -236,17 +236,71 @@ function hasChanged(before, after) {
 }
 
 /**
- * Ruling 2's redaction, factored out so it is the only place this
- * decision is made. A shell echoes the WHOLE failing command line on its
- * own syntax error (sh/bash do this; cmd.exe does not) — and because the
- * hook appends the file path to that command, the echoed line also
- * mentions the edited file, so the attribution filter above would
- * otherwise let it straight through. Dropping any surviving line that
- * contains the lint script's own text, or the exact command handed to the
- * shell, closes that whole class rather than one shell's specific quirk.
+ * Layer 1 of ruling 2's redaction: fragment denylist. A shell echoes the
+ * WHOLE failing command line on its own syntax error (sh/bash do this;
+ * cmd.exe does not) — but a THIRD PARTY the command invokes can echo an
+ * arbitrary FRAGMENT of it instead. Confirmed: `node -e` with an
+ * unbalanced quote reports a SyntaxError whose message prints the
+ * offending source text — everything after `-e "`, which is not the whole
+ * `lintScript` or `fullCommand` string, with the appended path tacked
+ * onto the end by the shell's own word-splitting. Whole-string matching
+ * (`l.includes(lintScript)`) cannot see a fragment, so this also
+ * tokenizes the command on whitespace and drops any surviving line that
+ * contains one of its own tokens — long enough not to be noise (`< 8`
+ * chars skipped), and never the appended path itself or its basename,
+ * which legitimately belongs in a real diagnostic.
  */
-function redact(lines, lintScript, fullCommand) {
-  return lines.filter(l => !l.includes(lintScript) && !l.includes(fullCommand));
+function commandTokens(command, exemptions) {
+  const seen = new Set();
+  const tokens = [];
+  for (const raw of command.split(/\s+/)) {
+    const t = raw.replace(/^['"]+|['"]+$/g, '');
+    if (t.length < 8 || exemptions.has(t) || seen.has(t)) continue;
+    seen.add(t);
+    tokens.push(t);
+  }
+  return tokens;
+}
+
+function dropCommandFragments(lines, lintScript, fullCommand, appendedPath) {
+  const exemptions = new Set([appendedPath, basename(appendedPath)]);
+  const tokens = [
+    ...new Set([...commandTokens(lintScript, exemptions), ...commandTokens(fullCommand, exemptions)]),
+  ];
+  return lines.filter(l => {
+    if (l.includes(lintScript) || l.includes(fullCommand)) return false; // the whole-string case, still checked
+    return !tokens.some(t => l.includes(t));
+  });
+}
+
+/**
+ * Layer 2 of ruling 2's redaction: credential masking, independent of
+ * layer 1. Layer 1 is a denylist against what is KNOWN to have come from
+ * the command this hook itself built; this catches a credential-shaped
+ * value arriving from ANYWHERE in the output, including the linted
+ * file's own content — a vendor-prefixed secret (`sk-`, `ghp_`,
+ * `glpat-`, `github_pat_`, `AKIA`, Slack's `xox[abprs]-`, a `Bearer`
+ * header) or a generic `--token=`/`--auth-token=`/`--api-key=`/
+ * `password=`/`api_key=`. Masks the VALUE and never drops the line — a
+ * genuine diagnostic that happens to mention a credential should still
+ * reach Claude, with the secret starred out, not disappear entirely.
+ */
+const CREDENTIAL_RULES = [
+  [/\bsk-[A-Za-z0-9_-]{6,}/g, '***'],
+  [/\bglpat-[A-Za-z0-9_-]{6,}/g, '***'],
+  [/\bghp_[A-Za-z0-9]{6,}/g, '***'],
+  [/\bgithub_pat_[A-Za-z0-9_]{6,}/g, '***'],
+  [/\bAKIA[A-Za-z0-9]{12,}/g, '***'],
+  [/\bxox[abprs]-[A-Za-z0-9-]{6,}/g, '***'],
+  [/\bBearer\s+\S+/gi, 'Bearer ***'],
+  [/(--(?:token|auth-token|api-key)=)\S+/gi, '$1***'],
+  [/\b(password|api_key)=\S+/gi, '$1=***'],
+];
+
+function maskCredentials(line) {
+  let masked = line;
+  for (const [re, replacement] of CREDENTIAL_RULES) masked = masked.replace(re, replacement);
+  return masked;
 }
 
 /**
@@ -321,8 +375,9 @@ async function main() {
   // constant's comment for why a non-matching path is never appended at
   // all, rather than escaped. `scripts.lint`'s TEXT is NEVER printed,
   // logged, or included in any error message below — only its own
-  // captured output ever reaches stderr, filtered for attribution AND
-  // redacted (see redact) before writeReport is ever called.
+  // captured output ever reaches stderr, filtered for attribution, then
+  // redacted in two layers (see dropCommandFragments, maskCredentials)
+  // before writeReport is ever called.
   const fullCommand = SAFE_RELATIVE_PATH.test(relToOwner)
     ? `${lintScript} ${quoteArg(relToOwner)}`
     : lintScript;
@@ -377,7 +432,8 @@ async function main() {
   const base = basename(filePath);
   const combined = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   const attributed = combined.split(/\r?\n/).filter(l => l.trim() && mentionsFile(l, filePath, base));
-  return writeReport(redact(attributed, lintScript, fullCommand));
+  const survived = dropCommandFragments(attributed, lintScript, fullCommand, relToOwner);
+  return writeReport(survived.map(maskCredentials));
 }
 
 (async () => {

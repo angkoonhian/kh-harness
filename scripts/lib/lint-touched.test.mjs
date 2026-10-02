@@ -116,7 +116,13 @@ test('ATTRIBUTION: a lint failure naming only a different file is silent and exi
 });
 
 test('ATTRIBUTION: a lint failure naming the edited file by its basename alone still reports', () => {
-  const d = repo('node -e "console.error(\'1:1 error  no-unused-vars  a.ts\'); process.exit(1)"');
+  // Built via array-join (no literal spaces in the COMMAND's own source)
+  // rather than a quoted string with embedded spaces — a word like
+  // "no-unused-vars", isolated by whitespace in the SOURCE text, would
+  // otherwise become its own command TOKEN under layer 1's fragment
+  // redaction (see dropCommandFragments) purely because this fixture
+  // prints a fixed string, which a real `scripts.lint` value never does.
+  const d = repo('node -e "console.error([\'1:1\',\'error\',\'no-unused-vars\',\'a.ts\'].join(String.fromCharCode(32))); process.exit(1)"');
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 2);
   assert.match(r.stderr, /no-unused-vars/);
@@ -366,9 +372,13 @@ test('a non-allowlisted file_path (contains a space) still lints via the unmodif
   // The script already mentions the odd path in its own output — simulating
   // a real linter that scanned the whole project and found this file, the
   // same way it would with or without the path appended to the command.
+  // Built via array-join, not a quoted string with embedded spaces — see
+  // the basename-attribution test above for why (layer 1's fragment
+  // redaction would otherwise isolate "path.ts:1" as its own command
+  // token and drop this line, a fixture artifact rather than a real leak).
   writeFileSync(join(d, 'package.json'), JSON.stringify({
     name: 'app',
-    scripts: { lint: 'node -e "console.error(\'weird path.ts:1 problem\'); process.exit(1)"' },
+    scripts: { lint: 'node -e "console.error([\'weird\',\'path.ts:1\',\'problem\'].join(String.fromCharCode(32))); process.exit(1)"' },
   }));
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'weird path.ts' } });
   assert.equal(r.code, 2, 'the fallback (unmodified script) still runs and still reports, attributed correctly');
@@ -509,4 +519,153 @@ test('STDIN: a caller that never closes stdin still gets exit 0 within the bound
     // closed it.
     child.stdin.write('{"hook_event_name":"PostToolUse"');
   });
+});
+
+// --- CRITICAL 2, round 3: fragment redaction (layer 1) + credential ------
+// masking (layer 2) --------------------------------------------------------
+//
+// Round 2's redaction matched `lintScript`/`fullCommand` as WHOLE strings.
+// The coordinator's independent probe found a narrower leak it cannot see:
+// node's own SyntaxError reporter prints a FRAGMENT of the command — not
+// the whole string — with the appended path tacked onto the end by the
+// shell's own word-splitting. This four-mode matrix is ported directly
+// from that probe (same token, same four scripts.lint variants) so what
+// was run and what the suite guards are the same thing.
+test('CREDENTIAL MATRIX: a token in scripts.lint leaks in none of four failure modes', () => {
+  const TOKEN = 'sk-live-REALLEAK0001';
+  const variants = {
+    'syntax error (unbalanced quote)': `node -e "console.log('x` + `  --token=${TOKEN}`,
+    'nonexistent binary': `definitely-not-a-real-binary-xyz --token=${TOKEN}`,
+    'linter fails naming the file': `node -e "console.error('src/a.ts:1 oops'); process.exit(1)" --token=${TOKEN}`,
+    'timeout': `node -e "console.error('src/a.ts:1 slow'); setTimeout(()=>{},9999)" --token=${TOKEN}`,
+  };
+  for (const [label, lint] of Object.entries(variants)) {
+    const d = mkdtempSync(join(tmpdir(), 'hk-leak-'));
+    mkdirSync(join(d, 'src'), { recursive: true });
+    writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;\n');
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint } }));
+    const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } }, { HK_LINT_TIMEOUT_MS: '400' });
+    const hits = (r.stdout + r.stderr).split(TOKEN).length - 1;
+    assert.equal(hits, 0, `[${label}] token leaked (exit=${r.code}): ${JSON.stringify(r.stderr)}`);
+  }
+});
+
+// --- Proving nothing legitimate was lost by the two redaction layers -----
+
+test('REDACTION DOES NOT OVER-REACH: a plain diagnostic still reaches stderr with exit 2', () => {
+  const d = repo('node -e "console.error(\'src/a.ts:1 no-unused-vars\'); process.exit(1)"');
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /no-unused-vars/);
+});
+
+test('REDACTION DOES NOT OVER-REACH: eslint-stylish-shaped output still reports something actionable', () => {
+  // eslint's default "stylish" formatter prints the bare file path on its
+  // own line, then the diagnostics on FOLLOWING indented lines that do not
+  // themselves mention the file at all. mentionsFile is deliberately not
+  // restricted to a "path:line" shape (a diagnostic-shape allowlist would
+  // silence exactly this, the single most common real formatter in this
+  // ecosystem) — this proves the path line itself still survives and
+  // reaches Claude, which is what "something actionable" means today.
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;\n');
+  const stylish = [
+    'src/a.ts',
+    "  1:7  error  'x' is defined but never used  no-unused-vars",
+    '',
+    String.fromCharCode(0x2716) + ' 1 problem (1 error, 0 warnings)',
+  ].join(String.fromCharCode(10));
+  writeFileSync(join(d, 'runlint.cjs'), `process.stderr.write(${JSON.stringify(stylish)} + '\\n'); process.exit(1);\n`);
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
+
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2, 'the stylish-shaped output is still reported, not swallowed entirely');
+  assert.match(r.stderr, /src\/a\.ts/, 'at minimum, the path line that attributes this to the edit survives');
+  // CONCERN (not fixed this round, per the coordinator's explicit ruling):
+  // the indented detail line below the path does NOT itself mention the
+  // file, so mentionsFile drops it — only the bare path line survives.
+  // See the report for this task's "known limitation" writeup.
+});
+
+// --- Isolating which layer actually does the work -------------------------
+//
+// The credential in the coordinator's matrix happens to be `--token=`-
+// shaped, which layer 2 (credential masking) ALSO recognizes independently
+// of layer 1 — so removing layer 1 alone does not fail the matrix test
+// above; layer 2 quietly covers for it on that one case. These two tests
+// use values layer 2 does NOT recognize (or a diagnostic layer 1 has no
+// reason to touch) specifically so each layer's OWN removal has a test
+// that can only die from that layer's absence, not the other's.
+
+test('LAYER 1 ONLY: a command-fragment leak with no recognizable credential prefix is still caught', () => {
+  // Same unbalanced-quote shape as the coordinator's repro, but the leaked
+  // value has no sk-/ghp_/glpat-/etc. prefix and is not a --token=-style
+  // flag — layer 2's pattern list cannot mask this; only layer 1's generic
+  // command-fragment tokenization can.
+  const SECRET = 'INTERNALBUILDID9f8e7d6c5b4a3210';
+  const d = mkdtempSync(join(tmpdir(), 'hk-leak-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;\n');
+  const lint = `node -e "console.log('x` + `  ${SECRET}`;
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint } }));
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } }, { HK_LINT_TIMEOUT_MS: '400' });
+  assert.doesNotMatch(r.stdout, new RegExp(SECRET));
+  assert.doesNotMatch(r.stderr, new RegExp(SECRET));
+});
+
+test('LAYER 2 ONLY: a credential-shaped value in a genuine diagnostic (not echoed from the command) is masked, not dropped', () => {
+  // Built via array-join so the SOURCE text has no internal whitespace
+  // around the token — layer 1's command tokenizer never isolates it as
+  // its own token (see the two fixtures above this test's own class for
+  // why that matters), so this line survives layer 1 untouched. Only
+  // layer 2's credential-shape masking can catch it from here — exactly
+  // the "arriving from anywhere, including the linted file's own content"
+  // case ruling 2's layer 2 exists for.
+  const d = repo(
+    'node -e "console.error([\'src/a.ts:1\',\'hardcoded\',\'secret\',\'sk-live-DIAGNOSTICLEAK0001\',\'found\'].join(String.fromCharCode(32))); process.exit(1)"',
+  );
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2, 'a genuine diagnostic mentioning a credential is still reported — masked, not dropped');
+  assert.doesNotMatch(r.stderr, /sk-live-DIAGNOSTICLEAK0001/, 'the credential value itself must not reach stderr');
+  assert.match(r.stderr, /hardcoded/, 'the surrounding diagnostic text survives — only the credential is masked');
+  assert.match(r.stderr, /\*\*\*/, 'the masked value leaves a visible placeholder, not a silently vanished word');
+});
+
+// --- Layer 2's own pattern coverage, beyond the sk- prefix already proven -
+
+test('MASK: a GitHub PAT (ghp_...) in a genuine diagnostic is masked, not dropped', () => {
+  const d = repo(
+    'node -e "console.error([\'src/a.ts:1\',\'leaked\',\'ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGG\'].join(String.fromCharCode(32))); process.exit(1)"',
+  );
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  assert.doesNotMatch(r.stderr, /ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGG/);
+  assert.match(r.stderr, /\*\*\*/);
+});
+
+test('MASK: a generic --auth-token=/password= style value is masked by key shape, not by vendor prefix', () => {
+  const d = repo(
+    'node -e "console.error([\'src/a.ts:1\',\'config\',\'dump:\',\'password=hunter2plaintext\'].join(String.fromCharCode(32))); process.exit(1)"',
+  );
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  assert.doesNotMatch(r.stderr, /hunter2plaintext/, 'the value after password= must be masked even with no known vendor prefix');
+  assert.match(r.stderr, /password=\*\*\*/);
+});
+
+// --- Layer 1 must not over-redact: the file's own (possibly long) name ---
+// is always exempt, even though it is itself a "token" of the command.
+
+test('LAYER 1 does not redact a long file basename that is legitimately part of a real diagnostic', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'quite-a-long-component-name.ts'), 'export const a = 1;\n');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({
+    name: 'app',
+    scripts: { lint: 'node -e "console.error(\'quite-a-long-component-name.ts:1 problem\'); process.exit(1)"' },
+  }));
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/quite-a-long-component-name.ts' } });
+  assert.equal(r.code, 2, 'the file\'s own (long) name must never be treated as a redactable command fragment');
+  assert.match(r.stderr, /quite-a-long-component-name\.ts/);
 });
