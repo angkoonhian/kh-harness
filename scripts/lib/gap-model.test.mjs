@@ -27,8 +27,8 @@ const richHarness = {
 };
 const fullStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'test', 'typecheck'] }] };
 
-function gaps(stack, harness, exposures = [], git = { branch: 'main', isRepo: true }) {
-  return buildGaps({ stack, harness, exposures, profile: selectProfile(stack), git });
+function gaps(stack, harness, exposures = [], git = { branch: 'main', isRepo: true }, files = []) {
+  return buildGaps({ stack, harness, exposures, profile: selectProfile(stack), git, files });
 }
 const byId = (cs, id) => cs.find(c => c.id === id);
 
@@ -101,6 +101,57 @@ test('steps outside the profile are n/a', () => {
   const nothing = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
   const c = byId(gaps(nothing, bareHarness), 'P2.sensor');
   assert.equal(c.state, 'n/a');
+  assert.equal(c.proposal, null);
+});
+
+// --- P1.bootstrap: the three-way split, not two ----------------------------
+//
+// Coordinator finding: this check used to decide `absent` + a proposal
+// purely from `harness.bootstrap` being falsy, never looking at whether an
+// install command was actually derivable — while propose.mjs's generator
+// (correctly) looked at the real evidence and produced nothing for a
+// pyproject-only Python repo. Detect advertised a proposal; apply produced
+// nothing. The check must now share the SAME derivation
+// (installCommand from bootstrap-install.mjs) that the generator uses, so
+// the two cannot drift again.
+//
+// The three outcomes, and this is the one axis `profile.appliesToSteps()`
+// does not by itself distinguish:
+//   generic, nothing to install anywhere           -> n/a
+//   a stack IS detected, install command derivable  -> absent + proposal
+//   a stack IS detected, install command NOT derivable -> absent + decidable:false + question
+test('P1.bootstrap: a detected stack with a derivable install command is absent + proposal', () => {
+  const pipStack = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] };
+  const c = byId(gaps(pipStack, bareHarness, [], undefined, ['requirements.txt']), 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true);
+  assert.ok(c.proposal);
+  assert.equal(c.question, null);
+});
+
+test('P1.bootstrap: a detected stack with NO derivable install command is absent + decidable:false + a question, never a proposal', () => {
+  // Same shape as a pyproject-only Python repo: python IS the profile
+  // (packages.length > 0), but no lockfile backs ANY package manager —
+  // packageManager is null. A bootstrap script plainly applies here (n/a
+  // would be a lie), but detection cannot derive the steps (a proposal
+  // would also be a lie).
+  const pyprojectOnlyStack = { languages: ['python'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const c = byId(gaps(pyprojectOnlyStack, bareHarness, [], undefined, ['pyproject.toml']), 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null, 'an undecidable absent must never propose — enforced centrally, but pinned here too');
+  assert.ok(c.question, 'the missing fact must be asked, not silently dropped');
+  assert.match(c.question, /install/i);
+});
+
+test('P1.bootstrap: a pip stack with NO requirements.txt evidence is also undecidable, not a guess', () => {
+  const pipNoEvidence = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] };
+  const c = byId(gaps(pipNoEvidence, bareHarness, [], undefined, []), 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
   assert.equal(c.proposal, null);
 });
 

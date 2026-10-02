@@ -43,7 +43,7 @@ const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
 const exposures = detectExposures(root, files, harness);
 const profile = selectProfile(stack);
-const checks = buildGaps({ stack, harness, exposures, profile, git });
+const checks = buildGaps({ stack, harness, exposures, profile, git, files });
 
 const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested });
 

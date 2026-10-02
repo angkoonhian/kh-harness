@@ -1,3 +1,5 @@
+import { installCommand } from './bootstrap-install.mjs';
+
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
 const MAX_INSTRUCTION_LINES = 150;
@@ -58,9 +60,30 @@ const CHECKS = [
   {
     id: 'P1.bootstrap', step: 5, phase: 1,
     lookedFor: ['scripts/bootstrap.sh', 'scripts/setup.sh', 'Makefile', 'justfile'],
-    check: ({ harness }) => harness.bootstrap
-      ? { state: 'declared', evidence: [harness.bootstrap] }
-      : { state: 'absent', proposal: 'create scripts/bootstrap.sh from template' },
+    // Coordinator finding (Major): this used to decide `absent` + a
+    // proposal from `harness.bootstrap` alone, never checking whether an
+    // install command was actually derivable — while propose.mjs's own
+    // generator (correctly) refused to write anything without real
+    // evidence. A pyproject-only Python repository (no requirements.txt, no
+    // poetry.lock/uv.lock) fell exactly into that gap: this check advertised
+    // "create scripts/bootstrap.sh from template", and apply silently wrote
+    // nothing. `installCommand`, imported from bootstrap-install.mjs, is the
+    // SAME derivation propose.mjs's generator uses — not a second
+    // independent guess at the same question — so the two cannot drift
+    // again. This is the detected-but-undeliverable branch of the three-way
+    // split; see this file's own comment in `buildGaps`, at the `n/a`
+    // branch, for the other two.
+    check: ({ harness, stack, files }) => {
+      if (harness.bootstrap) return { state: 'declared', evidence: [harness.bootstrap] };
+      if (installCommand(stack.packageManager, files)) {
+        return { state: 'absent', proposal: 'create scripts/bootstrap.sh from template' };
+      }
+      return {
+        state: 'absent', decidable: false,
+        evidence: ['no install command could be derived from stack.packageManager or any lockfile among the detected files'],
+        question: 'A bootstrap script applies here, but no install command could be derived from a lockfile or declared package manager — how are this project\'s dependencies installed?',
+      };
+    },
   },
   {
     id: 'P1.instructions', step: 6, phase: 1,
@@ -182,30 +205,49 @@ const CHECKS = [
   },
 ];
 
-export function buildGaps({ stack, harness, exposures, profile, git, checkDefs = CHECKS }) {
+// `files` defaults to `[]`, unlike propose.mjs's `buildProposals` (which
+// requires it with no default — see that file's own comment on why a
+// silent `[]` there was a defect). Here it is safe: the only check that
+// reads `files` at all is P1.bootstrap (via `installCommand`, below), and
+// a caller that omits it only ever loses the FROZEN-vs-plain distinction
+// for an npm-family package manager (still derivable either way) or, for
+// pip specifically, falls to the conservative `decidable: false` branch —
+// never the dangerous direction of a false positive proposal.
+export function buildGaps({ stack, harness, exposures, profile, git, files = [], checkDefs = CHECKS }) {
   const applicable = new Set(profile.appliesToSteps());
   return checkDefs.map(def => {
     if (!applicable.has(def.step)) {
-      // DELIBERATE, for P1.bootstrap specifically on a `generic` profile (no
-      // package manager, no packages at all — nothing to install): an
-      // earlier plan draft specified `absent` + `decidable: false` for this
-      // exact case, asking a question instead of proposing. This code
-      // reports `n/a` instead, and that is the considered, correct answer,
-      // not a gap to "fix" back toward the plan's text. "Not applicable" is
-      // a true statement about a repository with nothing to install;
-      // "absent but undecidable" implies there IS something missing that
-      // might yet be answered into existence, which is not true here — the
-      // generic profile's own `appliesToSteps()` (profiles/generic.mjs)
-      // already excludes step 5 for exactly this reason. See
-      // detect-cli.test.mjs's end-to-end test pinning this through the real
-      // CLI, and propose.test.mjs's hand-constructed `decidable: false` test
-      // (kept as a generator-level unit guard, not a claim that the real
-      // path ever produces that combination for this check).
+      // The three-way split for P1.bootstrap (and, in principle, any future
+      // check with the same shape), corrected after a coordinator review
+      // caught this comment itself stating it wrong the first time:
+      //
+      //   generic, NOTHING to install anywhere        -> n/a (here)
+      //   a stack IS detected, install derivable       -> absent + proposal
+      //   a stack IS detected, install NOT derivable   -> absent + decidable:false + question
+      //
+      // `n/a` (this branch) is correct ONLY for the first case: a
+      // repository with nothing to install, where "not applicable" is a
+      // true statement and `generic.appliesToSteps()` (profiles/generic.mjs)
+      // already excludes step 5. It is NOT a substitute for the third case
+      // — a python/pyproject-only repository (no requirements.txt, no
+      // poetry.lock/uv.lock) DOES select a non-generic profile (python),
+      // so this branch is never reached for it; that case is handled
+      // inside P1.bootstrap's own `check` function instead, which reports
+      // `absent` + `decidable: false` + a question naming the missing
+      // fact. Conflating the two — treating EITHER case as `n/a`, or
+      // EITHER as `decidable: false` — was the actual mistake across two
+      // review rounds; this comment previously claimed the plan's
+      // `decidable: false` framing was simply superseded, which was only
+      // true for the first case, not the third. See
+      // detect-cli.test.mjs's end-to-end tests for all three cases through
+      // the real CLI, and propose.test.mjs's hand-constructed
+      // `decidable: false` test (kept as a generator-level unit guard, not
+      // a claim that the real path reaches it via this n/a branch).
       return { id: def.id, step: def.step, phase: def.phase, state: 'n/a',
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
         decidable: true, question: null, proposal: null };
     }
-    const r = def.check({ stack, harness, exposures, profile, git });
+    const r = def.check({ stack, harness, exposures, profile, git, files });
     // The second axis, enforced in the same place and for the same reason.
     // `absent` means two incompatible things: "I enumerated the complete space
     // and it is not there" (decidable — the bootstrap script, the deny rules,

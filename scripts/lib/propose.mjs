@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { render, versionStamp } from './render.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { globToRegExp } from './glob.mjs';
+import { installCommand } from './bootstrap-install.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -249,56 +250,11 @@ function stopgateProposal({ kitVersion, stack }) {
 const BOOTSTRAP_PATH = 'scripts/bootstrap.sh';
 const BOOTSTRAP_STEP = 5;
 
-/**
- * Deterministic, lockfile-gated install forms ONLY — used verbatim. A
- * bootstrap script exists so a clean checkout reaches a working state
- * REPRODUCIBLY; the plain forms (`npm install`, `pnpm install`, ...) can
- * silently rewrite the lockfile on a clean checkout, which is exactly the
- * kind of surprise a script that "will be run and trusted" must not carry.
- *
- * `pip` IS included, but it is not a frozen/plain PAIR the way the other six
- * are — `plain: null` marks that there is no `pip install --frozen` form
- * and no reasonable plain guess either. An earlier ruling's six-command
- * list omitted pip entirely, and this generator correctly refused to invent
- * a seventh form rather than guess — but the omission was the defect, not
- * the refusal: `pip install -r requirements.txt` IS derivable, from
- * requirements.txt's own presence, exactly like every other lockfile here.
- * Without requirements.txt there is no evidence for ANY install form —
- * `pip install -e .` from a bare pyproject.toml would be a guess about
- * library-vs-application intent — so `plain: null` here means "stay
- * undecidable", not "fall back"; see `installCommand` below.
- */
-const INSTALL_COMMANDS = {
-  npm: { lockfile: 'package-lock.json', frozen: 'npm ci', plain: 'npm install' },
-  pnpm: { lockfile: 'pnpm-lock.yaml', frozen: 'pnpm install --frozen-lockfile', plain: 'pnpm install' },
-  yarn: { lockfile: 'yarn.lock', frozen: 'yarn install --immutable', plain: 'yarn install' },
-  bun: { lockfile: 'bun.lockb', frozen: 'bun install --frozen-lockfile', plain: 'bun install' },
-  poetry: { lockfile: 'poetry.lock', frozen: 'poetry install --sync', plain: 'poetry install' },
-  uv: { lockfile: 'uv.lock', frozen: 'uv sync --frozen', plain: 'uv sync' },
-  pip: { lockfile: 'requirements.txt', frozen: 'pip install -r requirements.txt', plain: null },
-};
-
-/**
- * Returns `{ command, fallback }`, or `null` when no install command can be
- * derived at all — an undetected package manager, or one (pip, with no
- * requirements.txt) whose table entry has no plain form to fall back to.
- *
- * The lockfile's PRESENCE in `files` — not `stack.packageManager` alone —
- * is what licenses the deterministic form. The two happen to move together
- * in real detection (detect-stack.mjs only ever sets `packageManager` when
- * it already found the matching lockfile), but this function does not lean
- * on that coincidence: it re-checks `files` independently, so a caller that
- * (like a test fixture, or a future detector) sets `packageManager` without
- * the lockfile gets the honest fallback rather than a command the evidence
- * does not actually support.
- */
-function installCommand(packageManager, files) {
-  const spec = INSTALL_COMMANDS[packageManager];
-  if (!spec) return null;
-  if (files.includes(spec.lockfile)) return { command: spec.frozen, fallback: false, lockfile: spec.lockfile };
-  if (spec.plain == null) return null; // no lockfile, and no plain form to guess (pip) — stay undecidable
-  return { command: spec.plain, fallback: true, lockfile: spec.lockfile };
-}
+// `installCommand` (and the verbatim command table behind it) lives in
+// bootstrap-install.mjs, shared with gap-model.mjs's P1.bootstrap CHECK —
+// see that module's own header comment for why: the check and this
+// generator must agree on what counts as "derivable" by construction, not
+// by two people independently getting the same answer twice.
 
 /**
  * Build/test lines, derived from declared script NAMES only (never bodies —
@@ -435,4 +391,13 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
   return out;
 }
 
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH };
+// Exported for propose.test.mjs's generic coherence test: "every check that
+// advertises a proposal, and has a generator registered for its id, must
+// actually produce something when applied." That test iterates over
+// `Object.keys(GENERATORS)` rather than a hand-maintained list of ids, so a
+// capability added here later is automatically covered by it — see the
+// coordinator finding that caught P1.bootstrap drifting from its own
+// generator (a pyproject-only Python repo: `detect` advertised a proposal,
+// `apply` produced nothing) without any test failing, because nothing
+// checked the two against each other.
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, GENERATORS };

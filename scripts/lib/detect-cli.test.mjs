@@ -156,6 +156,34 @@ test('END-TO-END: a python repo with no requirements.txt and no pyproject.toml s
   assert.equal(c.proposal, null);
 });
 
+// Major, caught by a later coordinator review: a pyproject-only Python repo
+// (pyproject.toml, no requirements.txt, no poetry.lock/uv.lock) SELECTS the
+// python profile (packages.length > 0 via the pyproject.toml fallback in
+// detect-stack.mjs), so step 5 IS applicable — this is NOT the n/a case
+// above. Before the fix, P1.bootstrap's check ignored the stack entirely
+// and reported `absent` + a proposal regardless, while propose.mjs's
+// generator (correctly, looking at real evidence) produced no file at all:
+// `detect` advertised "create scripts/bootstrap.sh from template", `apply`
+// silently wrote nothing. The true answer is the third case: a bootstrap
+// script applies, but detection cannot derive the install step, so this
+// must be `absent` + `decidable: false` + a question — never a proposal.
+test('END-TO-END: a pyproject-only python repo (no requirements.txt, no lockfile) is absent + decidable:false + a question, never a proposal', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-pyproject-only-'));
+  write(d, 'pyproject.toml', '[project]\nname = "svc"\n');
+  write(d, 'app.py', 'print("hi")\n');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.profile, 'python', 'pyproject.toml alone selects the python profile, not generic');
+  assert.equal(r.stack.packageManager, null, 'no lockfile backs any package manager here');
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null, 'a bootstrap proposal here would be a lie — apply could not fulfil it');
+  assert.ok(c.question, 'the missing fact must be asked, not silently dropped');
+  assert.match(c.question, /install/i);
+  assert.ok(r.couldNotDerive.some(q => /install/i.test(q)), 'the question must be routed to couldNotDerive');
+  assert.equal(/create scripts\/bootstrap\.sh/.test(cli(d)), false, 'the human summary must not propose a script detection cannot derive');
+});
+
 // A package.json script body is repository-derived text that routinely holds a
 // hardcoded token (`sentry-cli --auth-token …`). The report records that a
 // script exists, never what it says. This asserts the value never reaches

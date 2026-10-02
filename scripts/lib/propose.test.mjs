@@ -4,7 +4,9 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest } from './manifest.mjs';
-import { buildProposals } from './propose.mjs';
+import { buildProposals, GENERATORS } from './propose.mjs';
+import { buildGaps } from './gap-model.mjs';
+import { selectProfile } from './profiles/index.mjs';
 
 const root = () => mkdtempSync(join(tmpdir(), 'hk-prop-'));
 const check = (o) => ({ id: 'P4.handoff', step: 16, phase: 4, state: 'absent', decidable: true, evidence: [], proposal: 'create HANDOFF.md', ...o });
@@ -533,4 +535,140 @@ test('a declared P1.bootstrap check yields no proposals, even with a full stack 
     packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
   const ps = buildProposals(args([check({ id: 'P1.bootstrap', step: 5, state: 'declared', proposal: null })], { stack, files: ['pnpm-lock.yaml'] }));
   assert.deepEqual(ps, []);
+});
+
+// --- COHERENCE: detect and propose must agree ------------------------------
+//
+// Major, caught by a coordinator review: gap-model.mjs's P1.bootstrap check
+// used to advertise a proposal purely from `harness.bootstrap` being falsy,
+// never checking whether its own generator could actually produce
+// anything — so a pyproject-only Python repo got `absent` + a proposal from
+// `detect`, and silently NOTHING from `apply`. Sharing the derivation
+// (bootstrap-install.mjs) fixes THIS instance. This test guards the CLASS:
+// run the REAL detection path (buildGaps, not a hand-built check object) on
+// a handful of fixtures, and for every check it produces that advertises a
+// proposal AND has a generator registered for its id (`GENERATORS`, read
+// from propose.mjs — not a list this test maintains itself), applying that
+// single check must yield at least one proposal. A future check/generator
+// pair that drifts the same way fails this without anyone having to
+// remember to add a case for it. Checks with no registered generator (e.g.
+// P0.recon, P4.remote — prompt-only steps apply.mjs cannot act on, see
+// lifecycle.test.mjs's own comment on P4.remote) are correctly skipped,
+// not a false failure.
+const harnessFixture = (overrides = {}) => ({
+  instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
+  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookEvents: {}, agents: [], skills: [], commands: [], rules: [] },
+  otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
+  ...overrides,
+});
+
+const COHERENCE_FIXTURES = [
+  {
+    name: 'TypeScript single package, nothing harnessed',
+    stack: { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
+      packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'typecheck', 'test'] }], ci: [] },
+    files: ['package.json', 'package-lock.json', 'tsconfig.json', 'src/index.ts'],
+    harness: harnessFixture(),
+  },
+  {
+    name: 'pnpm workspace, root declares lint/typecheck/test/build',
+    stack: {
+      languages: ['typescript'], packageManager: 'pnpm', isWorkspace: true,
+      packages: [
+        { name: 'root', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'typecheck', 'test', 'build'] },
+        { name: 'api', dir: 'packages/api', manifestPath: 'packages/api/package.json', scripts: [] },
+      ],
+      ci: [],
+    },
+    files: ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'packages/api/package.json'],
+    harness: harnessFixture(),
+  },
+  {
+    // PostToolUse/Stop are pre-registered here deliberately — see the note
+    // below the fixture table. This fixture's job is to exercise
+    // P1.bootstrap (and P2.protected, P4.*) for a REAL python stack; P2.sensor
+    // and P2.stopgate are sidestepped (reported `declared`) rather than
+    // exercised, for a reason unrelated to the P1.bootstrap fix this test
+    // guards.
+    name: 'pip python repo with requirements.txt',
+    stack: { languages: ['python'], packageManager: 'pip', isWorkspace: false,
+      packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] },
+    files: ['requirements.txt', 'app.py'],
+    harness: harnessFixture({ claudeDir: { settings: true, localSettings: false, denyRules: 1, hooks: [],
+      hookEvents: { PostToolUse: ['already/registered.mjs'], Stop: ['already/registered.mjs'] },
+      agents: [], skills: [], commands: [], rules: [] } }),
+  },
+  {
+    // This fixture is the regression itself: before the fix, this reported
+    // `absent` + a proposal for P1.bootstrap with no generator able to
+    // fulfil it. After the fix, decidable:false means NO proposal is
+    // advertised here at all — so it contributes nothing to this test's
+    // loop, by design, but is kept in the set as a living pin against the
+    // defect recurring silently (a mutation reverting the gap-model.mjs fix
+    // would make this fixture start advertising a proposal again, and this
+    // test would catch it the moment that proposal's generator failed to
+    // fulfil it). PostToolUse/Stop pre-registered for the same reason as
+    // the fixture above.
+    name: 'pyproject-only python repo (no requirements.txt, no lockfile)',
+    stack: { languages: ['python'], packageManager: null, isWorkspace: false,
+      packages: [{ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] },
+    files: ['pyproject.toml', 'app.py'],
+    harness: harnessFixture({ claudeDir: { settings: true, localSettings: false, denyRules: 1, hooks: [],
+      hookEvents: { PostToolUse: ['already/registered.mjs'], Stop: ['already/registered.mjs'] },
+      agents: [], skills: [], commands: [], rules: [] } }),
+  },
+];
+
+// NOTE on the two python fixtures above pre-registering PostToolUse/Stop
+// and setting denyRules: 1: writing THIS coherence test, to pin the
+// P1.bootstrap fix, surfaced THREE separate, pre-existing coherence gaps of
+// the exact same family, all out of today's scope:
+//   - P2.sensor's check advertises a proposal purely from "is the
+//     PostToolUse hook registered", never consulting `stack`, while its
+//     generator (sensorProposal) refuses to fire when no package declares
+//     a `lint` script.
+//   - P2.stopgate: same shape, for the Stop hook and typecheck/test.
+//   - P2.protected's check advertises a proposal purely from
+//     `harness.claudeDir.denyRules > 0`, never consulting `files`, while
+//     its generator (protectedPathProposal) refuses to fire when no
+//     protected-path evidence exists in the repository at all.
+// Since detect-stack.mjs always gives a python package `scripts: []` (it
+// has no python script-name convention to read), the first two mismatch
+// for EVERY real python repository, not just the fixtures here. None of
+// the three is fixed in this change: existing tests already encode the
+// opposite expectation for OTHER stacks too (gap-model.test.mjs's "a bare
+// repo yields proposals for the mechanical steps" wants P2.sensor,
+// P2.stopgate AND P2.protected in the proposal list for a TypeScript stack
+// with empty scripts and no files evidence) — "fixing" any of the three
+// here would mean redefining accepted behaviour across multiple existing
+// tests, not a surgical correction, and deserves its own deliberate ruling
+// rather than being folded into this one. Sidestepped here (not avoided —
+// P1.bootstrap, P4.handoff and P4.sessionbrief are still genuinely
+// exercised for both python fixtures) and flagged in this task's report
+// rather than silently papered over or silently expanded into.
+
+test('COHERENCE: every check that advertises a proposal, and has a registered generator, actually yields one when applied', () => {
+  let sawAtLeastOneGeneratedCheck = false;
+  for (const { name, stack, files, harness } of COHERENCE_FIXTURES) {
+    const profile = selectProfile(stack);
+    const checks = buildGaps({ stack, harness, exposures: [], profile, git: { branch: 'main', isRepo: true }, files });
+    for (const c of checks) {
+      if (!c.proposal) continue;
+      if (!(c.id in GENERATORS)) continue;
+      sawAtLeastOneGeneratedCheck = true;
+      const ps = buildProposals({
+        checks: [c], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0',
+        harness, root: root(), stack, files,
+      });
+      assert.ok(
+        ps.some(p => p.checkId === c.id),
+        `fixture "${name}": ${c.id} advertised a proposal ("${c.proposal}") but its own generator produced nothing when applied`,
+      );
+    }
+  }
+  // Sanity: the fixtures above must actually exercise at least one
+  // generator-backed check, or this test would pass vacuously — exactly the
+  // test-quality failure mode this project has caught multiple times before
+  // (a fixture whose data never survives to the branch under test).
+  assert.ok(sawAtLeastOneGeneratedCheck, 'fixture sanity: no check with a registered generator ever advertised a proposal — this test checked nothing');
 });
