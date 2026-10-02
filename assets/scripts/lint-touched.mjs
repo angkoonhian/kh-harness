@@ -35,7 +35,9 @@ const MAX_REPORT_LINES = 60;
 // Generous but bounded: raised from spawnSync's 1MB default so a verbose
 // `eslint .` whole-project run (the fallback path below) does not overflow
 // and get silently discarded — see the overflow handling near `isOverflow`.
-const LINT_MAX_BUFFER = 10 * 1024 * 1024;
+// Overridable (like HK_LINT_TIMEOUT_MS) so a test can cross the threshold
+// with a small fixture instead of generating megabytes of real output.
+const LINT_MAX_BUFFER = Number(process.env.HK_LINT_MAX_BUFFER) || 10 * 1024 * 1024;
 
 /**
  * `tool_input.file_path` is attacker-shaped: it is NEVER required to exist

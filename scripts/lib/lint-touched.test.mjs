@@ -458,17 +458,66 @@ test('PYTHON: a pyproject.toml with no [tool.poetry.scripts] or [scripts] table 
 });
 
 // --- Minor 7: output above spawnSync's default 1MB maxBuffer -------------
-test('BUFFER: lint output larger than the default 1MB maxBuffer is still reported, not silently discarded', () => {
+test('BUFFER: lint output larger than the configured maxBuffer is still reported, not silently discarded', () => {
+  // The original fixture (20,000 lines, ~929KB) stayed UNDER the real 1MB
+  // default, so ENOBUFS never fired — the test passed for a reason
+  // unrelated to what it claimed to check: removing `maxBuffer` entirely
+  // (so spawnSync silently falls back to its own 1MB default, ignoring
+  // HK_LINT_MAX_BUFFER completely), or removing the whole `isOverflow`
+  // carve-out, both left the suite green. Worse, a fixture that merely
+  // EXCEEDS a small configured maxBuffer is not enough either: Node may
+  // still deliver the whole thing in one read and only flag ENOBUFS
+  // afterward, in which case the captured content is identical regardless
+  // of whether the override ever reached spawnSync — proven empirically
+  // (maxBuffer=20000 against this exact fixture): the overflow case
+  // captures exactly ~20005 bytes and is missing the fixture's last line;
+  // the same fixture under the real 1MB default captures all ~229KB with
+  // the last line intact. That is the one externally-observable signal
+  // that distinguishes "genuinely truncated by a small maxBuffer" from
+  // "fully captured because the override never took effect" — exit code
+  // and non-empty stderr alone cannot, which is exactly how the original
+  // fixture passed for the wrong reason.
   const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
   mkdirSync(join(d, 'src'), { recursive: true });
   writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;\n');
-  // Each line mentions src/a.ts (so it survives attribution) and the whole
-  // block comfortably exceeds Node's 1MB spawnSync default.
-  const script = 'node -e "for (let i = 0; i < 20000; i++) console.error(\'src/a.ts:\' + i + \' padding-padding-padding-padding\'); process.exit(1);"';
+
+  const BUFFER_SIZE = 20_000;
+  const LINE_COUNT = 5_000;
+  const lineText = i => `src/a.ts:${i} padding-padding-padding-padding`;
+  const expectedBytes = Array.from({ length: LINE_COUNT }, (_, i) => lineText(i)).join('\n').length;
+  // Prove the fixture actually crosses the configured threshold — AND
+  // stays comfortably under spawnSync's real 1MB default — before
+  // asserting anything about what happens when it does. Without both
+  // halves, this is the same mistake the original fixture made.
+  assert.ok(expectedBytes > BUFFER_SIZE, `fixture (${expectedBytes} bytes) must exceed the configured maxBuffer (${BUFFER_SIZE} bytes)`);
+  assert.ok(expectedBytes < 1024 * 1024, `fixture (${expectedBytes} bytes) must stay under spawnSync's real 1MB default, or this cannot distinguish the override taking effect from it being silently ignored`);
+
+  const script = `node -e "for (let i = 0; i < ${LINE_COUNT}; i++) console.error('src/a.ts:' + i + ' padding-padding-padding-padding'); process.exit(1);"`;
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: script } }));
-  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
-  assert.equal(r.code, 2, 'output exceeding the 1MB default must still be reported, bounded by MAX_REPORT_LINES, not discarded entirely');
+  const r = run(
+    d,
+    { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } },
+    { HK_LINT_MAX_BUFFER: String(BUFFER_SIZE) },
+  );
+  assert.equal(r.code, 2, 'output exceeding the configured maxBuffer must still be reported, bounded by MAX_REPORT_LINES, not discarded entirely');
   assert.notEqual(r.stderr.trim(), '');
+  // The decisive check. MAX_REPORT_LINES=60 always shows only the FIRST 60
+  // lines, so the first 60 lines are IDENTICAL whether spawnSync captured
+  // 20KB or the full 229KB — checking for a specific line (e.g. the last
+  // one) proves nothing, since neither capture would ever show it. What
+  // DOES differ is the truncation notice's own count, which reports how
+  // many attributed lines were actually captured: ~447 total (387 beyond
+  // the 60 shown) when the override genuinely cut the stream at ~20KB,
+  // vs. the full 5,000 (4,940 beyond 60) if spawnSync silently fell back
+  // to its 1MB default because the override never reached it.
+  const truncationMatch = r.stderr.match(/truncated: (\d+) more line\(s\)/);
+  assert.ok(truncationMatch, 'output this large must be truncated by MAX_REPORT_LINES');
+  const moreLines = Number(truncationMatch[1]);
+  assert.ok(
+    moreLines < LINE_COUNT - 100,
+    `expected far fewer than ${LINE_COUNT} total attributed lines (saw ${moreLines} beyond the 60 shown) — ` +
+      'a number this close to the full fixture means maxBuffer never actually truncated the stream',
+  );
 });
 
 // --- Minor 8: MAX_REPORT_LINES truncation is pinned -----------------------
