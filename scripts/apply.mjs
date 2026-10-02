@@ -16,20 +16,23 @@ import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote } from './lib/apply-lib.mjs';
+import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const DEFAULT_BRANCHES = new Set(['main', 'master']);
-const KNOWN_FLAGS = new Set(['--yes', '--allow-default-branch', '--allow-dirty']);
+const KNOWN_FLAGS = new Set(['--yes', '--allow-default-branch', '--allow-dirty', '--help', '-h']);
 
 const argv = process.argv.slice(2);
-const flags = new Set(argv.filter(a => a.startsWith('--')));
-const target = argv.find(a => !a.startsWith('--')) ?? process.cwd();
-const root = resolve(target);
 
-const unknownFlags = [...flags].filter(f => !KNOWN_FLAGS.has(f));
-if (unknownFlags.length) {
-  process.stderr.write(`harness-kit: ignoring unknown flag(s): ${unknownFlags.join(', ')}\n`);
+if (wantsHelp(argv)) {
+  process.stdout.write(APPLY_USAGE + '\n');
+  process.exit(0);
 }
+
+const { flags, target, unknown } = parseArgv(argv, KNOWN_FLAGS);
+const root = resolve(target ?? process.cwd());
+
+warnUnknown(unknown);
 
 if (!existsSync(root)) {
   process.stderr.write(`harness-kit: no such path: ${root}\n`);

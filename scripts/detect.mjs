@@ -12,22 +12,27 @@ import { buildReport, renderSummary } from './lib/report.mjs';
 import { verifyCommands } from './lib/verify.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { readManifest } from './lib/manifest.mjs';
+import { parseArgv, warnUnknown, wantsHelp, DETECT_USAGE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
-const KNOWN_FLAGS = new Set(['--verify', '--json']);
+const KNOWN_FLAGS = new Set(['--verify', '--json', '--help', '-h']);
 
 const argv = process.argv.slice(2);
-const flags = new Set(argv.filter(a => a.startsWith('--')));
-const target = argv.find(a => !a.startsWith('--')) ?? process.cwd();
-const root = resolve(target);
+
+if (wantsHelp(argv)) {
+  process.stdout.write(DETECT_USAGE + '\n');
+  process.exit(0);
+}
+
+// Parsed by the one shared parser all three entry points use — see cli.mjs
+// for why three independent copies of this was itself a finding (F10).
+const { flags, target, unknown } = parseArgv(argv, KNOWN_FLAGS);
+const root = resolve(target ?? process.cwd());
 
 // A typo like `--verfiy` used to be a silent no-op. Say so — on stderr, never
 // on stdout, which --json callers parse.
-const unknownFlags = [...flags].filter(f => !KNOWN_FLAGS.has(f));
-if (unknownFlags.length) {
-  process.stderr.write(`harness-kit: ignoring unknown flag(s): ${unknownFlags.join(', ')}\n`);
-}
+warnUnknown(unknown);
 
 if (!existsSync(root)) {
   process.stderr.write(`harness-kit: no such path: ${root}\n`);
