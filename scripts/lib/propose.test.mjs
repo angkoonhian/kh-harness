@@ -261,6 +261,76 @@ test('a declared P2.protected check yields no proposals', () => {
   assert.deepEqual(ps, []);
 });
 
+// --- P1.pathrules: globs from the workspace layout, bodies left empty -----
+
+const fourPkgStack = {
+  packages: [
+    { name: 'root', dir: '.', manifestPath: 'package.json', scripts: [] },
+    { name: '@acme/a', dir: 'packages/a', manifestPath: 'packages/a/package.json', scripts: [] },
+    { name: '@acme/b', dir: 'packages/b', manifestPath: 'packages/b/package.json', scripts: [] },
+    { name: '@acme/c', dir: 'packages/c', manifestPath: 'packages/c/package.json', scripts: [] },
+    { name: '@acme/d', dir: 'packages/d', manifestPath: 'packages/d/package.json', scripts: [] },
+  ],
+  languages: ['typescript'], isWorkspace: true, packageManager: 'npm', ci: [],
+};
+const singlePkgStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+const pathrulesCheck = () => check({ id: 'P1.pathrules', step: 7, proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout' });
+
+test('P1.pathrules proposes one rule file per NON-ROOT package in a four-package workspace', () => {
+  const ps = buildProposals(args([pathrulesCheck()], { stack: fourPkgStack }));
+  assert.equal(ps.length, 4, 'the root package itself does not get its own rule file — it spans the whole repo, which CLAUDE.md already covers');
+  assert.ok(ps.every(p => p.kind === 'file'));
+  const paths = ps.map(p => p.path).sort();
+  assert.deepEqual(paths, [
+    '.claude/rules/packages-a.md',
+    '.claude/rules/packages-b.md',
+    '.claude/rules/packages-c.md',
+    '.claude/rules/packages-d.md',
+  ]);
+});
+
+test('each path-rule file carries the derived glob in its frontmatter paths: field', () => {
+  const ps = buildProposals(args([pathrulesCheck()], { stack: fourPkgStack }));
+  const a = ps.find(p => p.path === '.claude/rules/packages-a.md');
+  assert.match(a.contents, /^---/, 'frontmatter must open the file');
+  assert.match(a.contents, /paths:\s*\n\s*-\s*"packages\/a\/\*\*\/\*"/);
+});
+
+test('each path-rule file carries the package name as a heading and the compaction warning', () => {
+  const ps = buildProposals(args([pathrulesCheck()], { stack: fourPkgStack }));
+  const a = ps.find(p => p.path === '.claude/rules/packages-a.md');
+  assert.match(a.contents, /^#\s+@acme\/a\s*$/m, 'the package name is a real heading');
+  assert.match(a.contents, /compact/i, 'the compaction warning must be present');
+  assert.match(a.contents, /CLAUDE\.md/, 'the warning must say where to put things that must survive compaction instead');
+});
+
+test('a path-rule file invents no rule content — everything past the heading is an HTML comment', () => {
+  const ps = buildProposals(args([pathrulesCheck()], { stack: fourPkgStack }));
+  const a = ps.find(p => p.path === '.claude/rules/packages-a.md');
+  const afterHeading = a.contents.slice(a.contents.search(/^#\s+@acme\/a\s*$/m)).replace(/^#.*$/m, '').trim();
+  assert.match(afterHeading, /^<!--[\s\S]*-->$/, 'nothing after the heading may read as a loadable instruction — comment, not content');
+});
+
+test('P1.pathrules proposes nothing for a single-package repository — no meaningful path split to scaffold', () => {
+  const ps = buildProposals(args([pathrulesCheck()], { stack: singlePkgStack }));
+  assert.deepEqual(ps, []);
+});
+
+test('P1.pathrules proposes nothing when stack.packages is empty (the default)', () => {
+  const ps = buildProposals(args([pathrulesCheck()]));
+  assert.deepEqual(ps, []);
+});
+
+test('a declared P1.pathrules check yields no proposals, even in a four-package workspace', () => {
+  const ps = buildProposals(args([check({ id: 'P1.pathrules', step: 7, state: 'declared', proposal: null })], { stack: fourPkgStack }));
+  assert.deepEqual(ps, []);
+});
+
+test('P1.pathrules version-stamps each generated file', () => {
+  const ps = buildProposals(args([pathrulesCheck()], { stack: fourPkgStack }));
+  for (const p of ps) assert.match(p.contents, /harness-kit 0\.2\.0/);
+});
+
 // --- root-anchored vs **-anchored forms must each cover their own case ----
 
 const tsStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };

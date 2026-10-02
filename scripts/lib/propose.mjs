@@ -5,6 +5,7 @@ import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
+import { pathRuleTargets } from './pathrules-evidence.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -251,6 +252,67 @@ function bootstrapProposal({ kitVersion, stack, files, root }) {
   }];
 }
 
+const PATH_RULE_STEP = 7;
+
+/**
+ * The path-rule scaffold: one file per non-root workspace package, with the
+ * glob `pathRuleTargets` (pathrules-evidence.mjs, shared with gap-model.mjs's
+ * P1.pathrules CHECK — see that module's own header for why) derives purely
+ * from the workspace's own directory layout. The body is deliberately left
+ * for the user to fill: the conventions a package needs are theirs, and
+ * inventing them is the failure this project exists to avoid (brief, Task 6).
+ *
+ * VERIFIED against Claude Code's own documentation
+ * (https://code.claude.com/docs/en/memory, sections "Organize rules with
+ * .claude/rules/", "Path-specific rules" and "Rule frontmatter reference" —
+ * fetched directly while implementing this generator, superseding an
+ * earlier, wrong assumption elsewhere in this plan about a different Stop-
+ * hook limit):
+ *   - the directory is `.claude/rules/`; `.md` files are discovered
+ *     recursively;
+ *   - the ONLY frontmatter field Claude Code reads from a rule is `paths`
+ *     (a YAML list, or a comma-separated string, of glob patterns) — any
+ *     other key is ignored without error, and Claude Code strips the
+ *     frontmatter entirely before the file reaches context;
+ *   - a rule WITHOUT `paths` loads unconditionally every session; one WITH
+ *     it loads only when Claude reads a file matching the glob — this is
+ *     what makes the file genuinely empty-by-default safe to scaffold;
+ *   - `src/**\/* -> All files under src/ directory` is the documented
+ *     example for "everything under a directory", the only pattern
+ *     derivable from layout alone — this generator never guesses a
+ *     narrower, extension-specific glob;
+ *   - per the documentation's own "Instructions seem lost after /compact"
+ *     section: a project-root CLAUDE.md is re-read from disk and
+ *     re-injected after compaction, but a path-scoped rule is NOT —
+ *     it returns to context only the next time Claude reads a matching
+ *     file. That is the verified fact behind the compaction comment this
+ *     template carries, not a guess.
+ * NOT separately verified, and therefore stated as inference, not fact, in
+ * the template's own comment: whether an empty-of-prose rule body (just a
+ * heading and an HTML comment, no actual "rule" sentence) is accepted.
+ * Nothing in the documentation suggests a non-empty body is required — a
+ * rule file is ordinary markdown loaded as context — but this was not
+ * independently confirmed against a running Claude Code session.
+ *
+ * The body is deliberately NOT a rule: a real heading (the package name) and
+ * everything else inside a single HTML comment — a prompt for the human
+ * maintaining this file, not content a future read of it could mistake for
+ * an instruction. Same discipline as protectedPathProposal and
+ * bootstrapProposal above, applied to prose instead of deny rules or
+ * install steps: write only what detection proved, and say so.
+ */
+function pathRuleProposal({ kitVersion, stack }) {
+  return pathRuleTargets(stack).map(t => ({
+    kind: 'file', path: t.path, step: PATH_RULE_STEP,
+    contents: render(read('templates/path-rule.md.tmpl'), {
+      stamp: versionStamp(kitVersion, PATH_RULE_STEP, '<!--') + ' -->',
+      glob: t.glob,
+      name: t.name,
+    }),
+    reason: `scaffold a path-scoped rule file for ${t.name} (${t.dir})`,
+  }));
+}
+
 /** Generators receive the full detection context and return proposals.
  * { kitVersion, harness, root, stack, checks, files } are available to all
  * generators. A generator yields nothing by returning an empty array or not
@@ -282,6 +344,7 @@ const GENERATORS = {
   'P2.sensor': sensorProposal,
   'P2.stopgate': stopgateProposal,
   'P1.bootstrap': bootstrapProposal,
+  'P1.pathrules': pathRuleProposal,
 };
 
 /**

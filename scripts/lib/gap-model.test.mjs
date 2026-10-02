@@ -386,6 +386,51 @@ test('a missing git remote is absent', () => {
   assert.equal(byId(gaps(fullStack, richHarness), 'P4.remote').state, 'declared');
 });
 
+// --- P1.pathrules: decidable only for a genuine workspace ------------------
+//
+// Ruling (coordinator, Task 6): a single-package repository has no
+// meaningful path split to scaffold a rule file for, so the check must ASK
+// rather than propose one. `pathRuleTargets` (pathrules-evidence.mjs) is
+// the SAME derivation propose.mjs's generator uses to build the actual
+// files — not a second independent guess at "is this a workspace worth
+// scaffolding".
+
+const workspaceStack = {
+  packages: [
+    { name: 'root', dir: '.', manifestPath: 'package.json', scripts: [] },
+    { name: 'api', dir: 'packages/api', manifestPath: 'packages/api/package.json', scripts: [] },
+    { name: 'web', dir: 'packages/web', manifestPath: 'packages/web/package.json', scripts: [] },
+  ],
+  languages: ['typescript'], packageManager: 'npm', isWorkspace: true, ci: [],
+};
+
+test('P1.pathrules proposes when the repository is a genuine workspace with no .claude/rules/ yet', () => {
+  const c = byId(gaps(workspaceStack, bareHarness), 'P1.pathrules');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true);
+  assert.ok(c.proposal);
+});
+
+test('P1.pathrules asks, and proposes nothing, for a single-package repository', () => {
+  const c = byId(gaps(bareStack, bareHarness), 'P1.pathrules');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null);
+  assert.ok(c.question, 'the honest answer for a single package is a question, not silence');
+});
+
+test('P1.pathrules is declared when .claude/rules/ already holds a file, workspace or not', () => {
+  const c = byId(gaps(bareStack, richHarness), 'P1.pathrules');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, richHarness.claudeDir.rules);
+});
+
+test('lookedFor names both the rules directory and the workspace layout for P1.pathrules', () => {
+  const lf = byId(gaps(bareStack, bareHarness), 'P1.pathrules').lookedFor.join(' | ');
+  assert.match(lf, /\.claude\/rules/);
+  assert.match(lf, /workspace/i);
+});
+
 // --- P1.architecture: the repository's own pointer, and decidability ---
 
 test('P1.architecture is declared when the instruction file points at documentation', () => {

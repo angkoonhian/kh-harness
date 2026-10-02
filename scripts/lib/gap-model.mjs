@@ -2,6 +2,7 @@ import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
+import { pathRuleTargets } from './pathrules-evidence.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
@@ -141,10 +142,33 @@ const CHECKS = [
   },
   {
     id: 'P1.pathrules', step: 7, phase: 1,
-    lookedFor: ['.claude/rules/'],
-    check: ({ harness }) => harness.claudeDir.rules.length
-      ? { state: 'declared', evidence: harness.claudeDir.rules }
-      : { state: 'absent', proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout' },
+    // Review Minor (same shape as P1.bootstrap/P2.sensor/P2.stopgate above):
+    // name both the directory this check inspects for existing rules AND
+    // the workspace layout the question below actually asks about, not
+    // just the former.
+    lookedFor: ['.claude/rules/', 'the workspace layout (stack.isWorkspace, stack.packages)'],
+    // Ruling (coordinator, Task 6): decidable only for a genuine WORKSPACE.
+    // `pathRuleTargets`, imported from pathrules-evidence.mjs, is the SAME
+    // derivation propose.mjs's generator uses to build the actual rule
+    // files — not a second independent guess at "is there a meaningful path
+    // split here" (same discipline as P1.bootstrap/P2.sensor/P2.stopgate/
+    // P2.protected above, each sharing its own evidence module with its own
+    // generator). A single-package repository has no sub-directory split
+    // worth scaffolding a rule file for, so the honest answer is to ASK,
+    // not propose one.
+    check: ({ harness, stack }) => {
+      if (harness.claudeDir.rules.length) {
+        return { state: 'declared', evidence: harness.claudeDir.rules };
+      }
+      if (pathRuleTargets(stack).length) {
+        return { state: 'absent', proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout' };
+      }
+      return {
+        state: 'absent', decidable: false,
+        evidence: ['this is a single-package repository (stack.isWorkspace is false) — there is no sub-directory split to scope a rule to'],
+        question: 'Path-scoped rules apply here, but this is a single-package repository with no workspace layout to derive a glob from — are there subdirectories with their own conventions that should each get their own .claude/rules/ file, and if so, what glob should scope each one?',
+      };
+    },
   },
   {
     id: 'P2.scripts', step: 8, phase: 2,

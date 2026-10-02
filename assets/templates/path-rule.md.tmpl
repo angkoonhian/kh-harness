@@ -1,0 +1,22 @@
+---
+paths:
+  - "{{glob}}"
+---
+
+{{stamp}}
+
+# {{name}}
+
+<!--
+  Path-scoped rules behave differently from CLAUDE.md after compaction:
+  Claude Code re-reads CLAUDE.md from disk and re-injects it, but this file
+  is not reloaded automatically — it returns to context only the next time
+  Claude reads a file matching the glob above. Anything that must never be
+  forgotten belongs in CLAUDE.md or a hook, not here.
+
+  harness-kit derived the glob above from your workspace layout; it does
+  not invent what belongs below it — these conventions are yours. Add them
+  here: a review checklist, a testing approach, naming rules, anything a
+  contributor to {{name}} needs to be told that the code itself doesn't
+  already say.
+-->
