@@ -348,19 +348,29 @@ export function renderDiff(root, proposal) {
 }
 
 /**
- * `mode`, when given, is applied with an explicit `chmodSync` AFTER the
+ * `mode`, when given, is applied with an explicit `chmod` call AFTER the
  * write — not merely passed as `writeFileSync`'s own `mode` option, which
  * Node only honours when the file is actually CREATED (the open flag's
  * mode is ignored on an existing file). A proposal like P1.bootstrap's
  * `scripts/bootstrap.sh` (mode `0o755` — it has a shebang and is meant to
  * be executed directly) must end up executable whether this is the first
  * write or a later one re-writing changed contents.
+ *
+ * `chmod` is injected (defaulting to the real `chmodSync`) for the same
+ * reason `verify.mjs`'s `run` is injectable: real POSIX mode bits are not
+ * observable on every platform this project is developed on (Windows'
+ * `chmodSync` has no execute-bit concept `stat().mode` can report — a
+ * review confirmed the bits are genuinely unobservable there, not merely
+ * untested), but the CALL this function makes is the same production line
+ * regardless of OS. Injecting `chmod` lets a test pin that line directly,
+ * on every platform, rather than asserting an effect one platform cannot
+ * produce.
  */
-function writeFileDeep(absPath, contents, relPath, mode) {
+function writeFileDeep(absPath, contents, relPath, mode, chmod) {
   try {
     mkdirSync(dirname(absPath), { recursive: true });
     writeFileSync(absPath, contents, 'utf8');
-    if (mode != null) chmodSync(absPath, mode);
+    if (mode != null) chmod(absPath, mode);
   } catch (err) {
     const wrapped = new Error(`failed to write ${relPath}: ${err.message}`);
     wrapped.path = relPath;
@@ -374,7 +384,7 @@ function upsertFileEntry(files, entry) {
   else files[idx] = entry;
 }
 
-function applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected }) {
+function applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected, chmod }) {
   const { targetPath, redirectFrom } = resolveFileTarget(root, proposal);
   if (redirectFrom) redirected.push({ from: redirectFrom, to: targetPath });
 
@@ -392,14 +402,14 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
       return;
     }
 
-    writeFileDeep(abs, proposal.contents, targetPath, proposal.mode);
+    writeFileDeep(abs, proposal.contents, targetPath, proposal.mode, chmod);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: newHash, step: proposal.step, writtenAt: new Date().toISOString() });
     written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
     return;
   }
 
   if (cls === 'theirs' && !existsSync(abs)) {
-    writeFileDeep(abs, proposal.contents, targetPath, proposal.mode);
+    writeFileDeep(abs, proposal.contents, targetPath, proposal.mode, chmod);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: sha256(proposal.contents), step: proposal.step, writtenAt: new Date().toISOString() });
     written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
     return;
@@ -521,8 +531,14 @@ function applySettingsDenyProposal({ root, proposal, nextManifest, patched, skip
  * `failed` and returned normally, with the manifest reflecting exactly what
  * was written before the failure — so the caller can always write that
  * manifest and know it describes reality.
+ *
+ * `chmod` defaults to the real `chmodSync` and is never overridden by any
+ * production caller (apply.mjs) — it exists so a test can inject a stub and
+ * assert the call itself, platform-independently, rather than its OS-level
+ * effect (see `writeFileDeep`'s own comment on why that effect is not
+ * observable on every platform this project is developed on).
  */
-export function applyProposals({ root, proposals, manifest, kitVersion }) {
+export function applyProposals({ root, proposals, manifest, kitVersion, chmod = chmodSync }) {
   // Pass 1: validate. No write happens until every proposal in the batch has
   // cleared both the allowlist and the containment check.
   //
@@ -567,7 +583,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion }) {
   for (const proposal of proposals) {
     try {
       if (proposal.kind === 'file') {
-        applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected });
+        applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected, chmod });
       } else if (proposal.kind === 'settings-hook') {
         applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped });
       } else {

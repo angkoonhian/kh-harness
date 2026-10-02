@@ -57,44 +57,69 @@ test('REFUSES to overwrite the user\'s OWN scripts/bootstrap.sh', () => {
   assert.equal(r.skipped[0].why, 'theirs');
 });
 
-// Coordinator finding (Minor): the generated bootstrap script has a
-// shebang and is meant to be executed directly, yet `writeFileSync` with
-// no `mode` leaves it at the platform default (typically 0644, not
-// executable) — a shebang on a non-executable file is decorative. The
-// fix (apply-lib.mjs's `writeFileDeep`) calls `chmodSync` explicitly,
-// after the write, whenever `proposal.mode` is set — not merely passed as
-// `writeFileSync`'s own `mode` option, which Node only honours when the
-// file is actually CREATED, not when re-writing an existing one.
+// Coordinator finding (Minor), then corrected again — the ninth instance
+// of this project's "a test cannot observe what it asserts" pattern. The
+// generated bootstrap script has a shebang and is meant to be executed
+// directly, yet `writeFileSync` with no `mode` leaves it at the platform
+// default (typically 0644, not executable) — a shebang on a non-executable
+// file is decorative. The fix (apply-lib.mjs's `writeFileDeep`) calls
+// `chmod` explicitly, after the write, whenever `proposal.mode` is set —
+// not merely passed as `writeFileSync`'s own `mode` option, which Node
+// only honours when the file is actually CREATED, not when re-writing an
+// existing one.
 //
-// The exact mode bits can only be asserted on a POSIX host — reviewed and
-// confirmed: Windows has no execute-bit concept Node's `stat().mode`
-// reflects (`chmodSync` there toggles only the read-only attribute), so
-// asserting `0o755` unconditionally would fail on THIS development
-// machine for a reason unrelated to the fix. On win32 this still proves
-// the call does not throw and the file remains writable (a regression
-// guard, not a claim about bits Windows does not have).
-test('a proposal with mode: 0o755 is written executable — asserted on the mode bits, not on ls output', () => {
+// The FIRST version of this test asserted real POSIX mode bits on win32
+// too, via a weaker fallback ("the file remains readable after chmodSync")
+// — which PASSED whether or not the chmod fix existed at all, because
+// Windows' `chmodSync` genuinely has no execute-bit effect `stat().mode`
+// can report (confirmed empirically: `chmodSync(p, 0o755)` followed by
+// `stat` on this machine still reports `0o666`). Deleting the ENTIRE fix —
+// the `chmod` parameter, the call, all of it — left that test and its
+// companion green, 35/35, on the platform this project is developed on. A
+// test that cannot observe its subject must not report success.
+//
+// Split into two tests instead: a platform-independent one that pins the
+// actual production CALL (via the injected `chmod`, following the same
+// pattern as `verify.mjs`'s injectable `run`), and a POSIX-only one that
+// asserts the real bits and is explicitly SKIPPED — with a stated reason,
+// not silently absent — on win32.
+test('chmod is called with the proposal\'s mode — platform-independent, pins the production line directly', () => {
+  const d = repo();
+  const calls = [];
+  const chmod = (p, m) => calls.push([p, m]);
+  const p = fileProposal({ path: 'scripts/bootstrap.sh', step: 5, checkId: 'P1.bootstrap', contents: '#!/usr/bin/env bash\nnpm ci\n', mode: 0o755 });
+  const { written } = applyProposals({ root: d, proposals: [p], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0', chmod });
+  assert.equal(written.length, 1);
+  assert.deepEqual(calls, [[join(d, 'scripts/bootstrap.sh'), 0o755]],
+    'the production chmod call must fire with exactly this path and mode, on every platform — deleting the fix leaves this empty');
+});
+
+test('a proposal with mode: 0o755 actually gets real POSIX permission bits (skipped, with a reason, on win32)', (t) => {
+  if (process.platform === 'win32') {
+    t.skip(
+      'Windows has no execute-bit concept Node\'s stat().mode can report — ' +
+      'chmodSync(path, 0o755) followed by stat() still reports 0o666 on this ' +
+      'machine (confirmed empirically), so this assertion is UNOBSERVABLE here, ' +
+      'not merely unexercised. The call-level test above pins the production ' +
+      'line on every platform, including this one.',
+    );
+    return;
+  }
   const d = repo();
   const p = fileProposal({ path: 'scripts/bootstrap.sh', step: 5, checkId: 'P1.bootstrap', contents: '#!/usr/bin/env bash\nnpm ci\n', mode: 0o755 });
   const { written } = applyProposals({ root: d, proposals: [p], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
   assert.equal(written.length, 1);
-  const abs = join(d, 'scripts/bootstrap.sh');
-  const mode = statSync(abs).mode & 0o777;
-  if (process.platform === 'win32') {
-    assert.doesNotThrow(() => readFileSync(abs, 'utf8'), 'the file must remain readable after chmodSync on a platform with no real execute bit');
-  } else {
-    assert.equal(mode, 0o755, `expected mode 0o755, got 0o${mode.toString(8)}`);
-  }
+  const mode = statSync(join(d, 'scripts/bootstrap.sh')).mode & 0o777;
+  assert.equal(mode, 0o755, `expected mode 0o755, got 0o${mode.toString(8)}`);
 });
 
-test('a proposal with no mode specified leaves the platform default untouched (no accidental chmod on everything)', () => {
+test('a proposal with no mode specified never calls chmod at all', () => {
   const d = repo();
-  const { written } = applyProposals({ root: d, proposals: [fileProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const calls = [];
+  const chmod = (p, m) => calls.push([p, m]);
+  const { written } = applyProposals({ root: d, proposals: [fileProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0', chmod });
   assert.equal(written.length, 1);
-  // No assertion on the exact default mode (umask-dependent even on POSIX)
-  // — only that applying a proposal with no `mode` field never throws from
-  // a stray `chmodSync(abs, undefined)` call.
-  assert.doesNotThrow(() => readFileSync(join(d, 'HANDOFF.md'), 'utf8'));
+  assert.deepEqual(calls, [], 'no mode on the proposal means chmod must never be called at all');
 });
 
 test('REFUSES to overwrite a file the user edited after we wrote it', () => {
