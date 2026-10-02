@@ -36,6 +36,17 @@ test('every check uses a legal state', () => {
   for (const c of gaps(bareStack, bareHarness)) assert.ok(STATES.includes(c.state), `${c.id} -> ${c.state}`);
 });
 
+// Review Minor: `files` used to default to `[]`, so a caller that forgot
+// it silently flipped P2.protected to `n/a` — a wrong capability state,
+// not just a missing optional detail. Required now, same precedent as
+// propose.mjs's `buildProposals`: omitting it throws loudly instead.
+test('buildGaps throws when `files` is omitted, rather than silently defaulting', () => {
+  assert.throws(
+    () => buildGaps({ stack: bareStack, harness: bareHarness, exposures: [], profile: selectProfile(bareStack), git: { branch: 'main', isRepo: true } }),
+    /files/i,
+  );
+});
+
 test('LOAD-BEARING: a fully harnessed repo yields zero proposals', () => {
   const cs = gaps(fullStack, richHarness);
   const proposals = cs.filter(c => c.proposal !== null);
@@ -153,6 +164,20 @@ test('P2.protected is n/a with no question when the repository holds nothing to 
   assert.equal(c.state, 'n/a');
   assert.equal(c.proposal, null);
   assert.equal(c.question, null, 'do not ask about protected paths that do not exist');
+});
+
+// Review Minor: the n/a reason used to claim repository-WIDE absence
+// ("found in this repository"), but `files` is the TRACKED (or
+// fallback-walk-visible) list from scan.mjs — a gitignored lockfile
+// sitting on disk is invisible to it, so the old wording told a confident
+// user a false thing. Same error class, same fix, as Task 2's deny-rule
+// evidence filter (which could not match gitignored build output): say
+// what was actually checked, not what is true everywhere. Pinned as its
+// own test so the wording cannot silently regress back to the overclaim.
+test('P2.protected\'s n/a reason says "tracked", not a repository-wide claim it cannot back', () => {
+  const c = byId(buildGaps(bareRepoFixture()), 'P2.protected');
+  assert.equal(c.state, 'n/a');
+  assert.match(c.evidence.join(' '), /tracked/i, 'the n/a reason must name what was actually checked (tracked files), not claim repository-wide absence');
 });
 
 test('all three still propose when their evidence IS present', () => {
@@ -330,6 +355,20 @@ test('P1.bootstrap stays n/a on a generic profile when no lockfile backs it eith
   const c = byId(gaps(nothing, bareHarness, [], undefined, []), 'P1.bootstrap');
   assert.equal(c.state, 'n/a');
   assert.equal(c.proposal, null);
+});
+
+// Review Minor: P1.bootstrap, P2.sensor and P2.stopgate each ask a
+// question about a declared SCRIPT (or lockfile/package-manager) source,
+// but `lookedFor` used to name only the other evidence location (the file
+// path / hook registry) — a check reporting it looked in one place while
+// asking about another makes the question read as arbitrary. `lookedFor`
+// must name the script/lockfile source too, for all three.
+test('lookedFor names the script/lockfile source the question actually asks about, for P1.bootstrap, P2.sensor and P2.stopgate', () => {
+  const checks = gaps(bareStack, bareHarness);
+  const named = (id, re) => assert.match(byId(checks, id).lookedFor.join(' | '), re, `${id}.lookedFor must name what the question asks about`);
+  named('P1.bootstrap', /lockfile|package manager/i);
+  named('P2.sensor', /lint script/i);
+  named('P2.stopgate', /typecheck|test script/i);
 });
 
 test('exposures make the security check failing, never absent', () => {
@@ -525,7 +564,10 @@ function buildRogueGaps(checkDefs) {
     `fixture assumes step ${ROGUE_STEP} is applicable to profile ${genericProfile.id}; ` +
       `appliesToSteps() reports ${JSON.stringify(genericProfile.appliesToSteps())}`
   );
-  return buildGaps({ stack: genericStack, harness: bareHarness, exposures: [], profile: genericProfile, git: rogueGit, checkDefs });
+  // `files` is required (see buildGaps' own header comment) even though
+  // none of this file's rogue checks ever reads it — an empty array, not
+  // an omission, is how a caller says "there really are none."
+  return buildGaps({ stack: genericStack, harness: bareHarness, exposures: [], profile: genericProfile, git: rogueGit, files: [], checkDefs });
 }
 
 test('the guard strips a proposal a rogue check attaches to state "declared"', () => {

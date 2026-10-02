@@ -62,7 +62,12 @@ const CHECKS = [
   },
   {
     id: 'P1.bootstrap', step: 5, phase: 1,
-    lookedFor: ['scripts/bootstrap.sh', 'scripts/setup.sh', 'Makefile', 'justfile'],
+    // Review Minor: this used to name only the files `declared` evidence
+    // comes from, omitting the lockfile/package-manager evidence the
+    // question above actually asks about — a check reporting it looked in
+    // one place while asking about another. Named both, so a reader does
+    // not read the question as arbitrary.
+    lookedFor: ['scripts/bootstrap.sh', 'scripts/setup.sh', 'Makefile', 'justfile', 'a lockfile or declared package manager (to derive the install command)'],
     // Coordinator finding (Major): this used to decide `absent` + a
     // proposal from `harness.bootstrap` alone, never checking whether an
     // install command was actually derivable — while propose.mjs's own
@@ -156,7 +161,11 @@ const CHECKS = [
   },
   {
     id: 'P2.sensor', step: 9, phase: 2,
-    lookedFor: ['a PostToolUse hook in .claude/settings.json'],
+    // Review Minor: this used to name only the hook registry, while the
+    // question below asks about a declared `lint` SCRIPT — a check
+    // reporting it looked in one place while asking about another makes
+    // the question read as arbitrary. Named both.
+    lookedFor: ['a PostToolUse hook in .claude/settings.json', 'a lint script declared in any package'],
     // Task 5b (coordinator-inserted correction): this used to decide
     // `absent` + a proposal purely from whether a PostToolUse hook was
     // registered, never checking whether propose.mjs's own generator
@@ -185,7 +194,9 @@ const CHECKS = [
   },
   {
     id: 'P2.stopgate', step: 10, phase: 2,
-    lookedFor: ['a Stop hook in .claude/settings.json'],
+    // Same Minor as P2.sensor immediately above: name the declared-script
+    // evidence the question asks about, alongside the hook registry.
+    lookedFor: ['a Stop hook in .claude/settings.json', 'a typecheck or test script declared in the root package'],
     // Same shape as P2.sensor immediately above, for the Stop gate:
     // `rootVerifyScript` (stopgate-evidence.mjs) is the SAME root-only
     // typecheck/test derivation propose.mjs's stopgateProposal uses.
@@ -224,7 +235,14 @@ const CHECKS = [
         return { state: 'declared', evidence: [`${harness.claudeDir.denyRules} deny rule(s) in .claude/settings.json`] };
       }
       if (protectedPathCandidates({ stack, files }).length === 0) {
-        return { state: 'n/a', evidence: ['no protected-path evidence (lockfile, build output, migrations, generated files) found in this repository'] };
+        // Review Minor: this used to assert repository-WIDE absence
+        // ("found in this repository"), but `files` is the TRACKED (or
+        // fallback-walk-visible) list from scan.mjs — a gitignored
+        // lockfile sitting on disk is invisible to it. Same error class
+        // as Task 2's deny-rule evidence filter (which could not match
+        // gitignored build output), same fix: say what was actually
+        // checked, not what is actually true everywhere.
+        return { state: 'n/a', evidence: ['no tracked protected-path evidence (lockfile, build output, migrations, generated files) found — an untracked or gitignored file of the same kind would not be visible here'] };
       }
       return { state: 'absent', proposal: 'create .claude/settings.json with deny rules for protected paths' };
     },
@@ -262,18 +280,27 @@ const CHECKS = [
   },
 ];
 
-// `files` defaults to `[]`, unlike propose.mjs's `buildProposals` (which
-// requires it with no default — see that file's own comment on why a
-// silent `[]` there was a defect). Here it is safe: the only check that
-// reads `files` at all is P1.bootstrap (via `installCommand`, below), and
-// a caller that omits it only ever loses the FROZEN-vs-plain distinction
-// for an npm-family package manager (still derivable either way) or, for
-// pip specifically, falls to the conservative `decidable: false` branch —
-// never the dangerous direction of a false positive proposal. `root`
-// defaults to `undefined` for the same reason, and for the same reason it
-// is safe: `installCommand` only ever uses it to read a yarn.lock's own
-// header, falling back to the honest plain form when it is not given.
-export function buildGaps({ stack, harness, exposures, profile, git, files = [], root, checkDefs = CHECKS }) {
+// Review Minor: `files` used to default to `[]`, on the claim that
+// P1.bootstrap was the only check that read it — false even when it was
+// written (P2.protected already consulted it via `protectedPathCandidates`)
+// and worse than it reads: a caller that merely forgot to pass `files`
+// silently flipped P2.protected from whatever it should have reported to
+// `n/a`, a wrong but confident-looking CAPABILITY STATE, not just a missing
+// detail. That is exactly the failure shape propose.mjs's `buildProposals`
+// was already fixed against (see that file's own comment) — `files` has no
+// default there either, and omitting it is a loud `TypeError`, not a quiet
+// wrong answer. `files` is required here for the same reason, consulted by:
+//   - P1.bootstrap (via `installCommand`, below) — the install command.
+//   - P2.protected (via `protectedPathCandidates`) — anything worth
+//     protecting.
+// `root` keeps its own default of `undefined`, deliberately: `installCommand`
+// only ever uses it to read a yarn.lock's own header, falling back to the
+// honest plain form when it is not given — never the dangerous direction of
+// a false positive, so no caller is forced to supply it.
+export function buildGaps({ stack, harness, exposures, profile, git, files, root, checkDefs = CHECKS }) {
+  if (files === undefined) {
+    throw new TypeError('buildGaps: `files` is required — P1.bootstrap and P2.protected both decide a capability\'s reported state from it, and a silently-defaulted `[]` used to flip P2.protected to `n/a` for a caller that merely forgot to pass it.');
+  }
   const applicable = new Set(profile.appliesToSteps());
   return checkDefs.map(def => {
     if (!applicable.has(def.step)) {
