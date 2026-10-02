@@ -55,6 +55,16 @@ test('classify: a file we never wrote is theirs', () => {
   assert.equal(classify(d, emptyManifest('0.1.0'), 'CLAUDE.md'), 'theirs');
 });
 
+// Ruling: a repository's OWN scripts/bootstrap.sh is likely load-bearing —
+// never assume the generic "theirs" mechanism covers this path; pin it
+// explicitly so a future change to classify() cannot silently narrow what
+// counts as "theirs" without this exact path still being caught.
+test('classify: a repository\'s own scripts/bootstrap.sh is theirs, never ours', () => {
+  const d = repo();
+  write(d, 'scripts/bootstrap.sh', '#!/usr/bin/env bash\necho "the user\'s own bootstrap"\n');
+  assert.equal(classify(d, emptyManifest('0.1.0'), 'scripts/bootstrap.sh'), 'theirs');
+});
+
 test('classify: a manifest entry whose file was deleted is ours-modified, not a throw', () => {
   const d = repo();
   const m = emptyManifest('0.1.0');

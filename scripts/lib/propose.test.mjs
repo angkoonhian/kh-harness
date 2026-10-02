@@ -323,3 +323,177 @@ test('buildProposals requires files explicitly — a caller that omits it gets a
   const { files, ...rest } = args([protectedCheck()], { files: ['pnpm-lock.yaml'] });
   assert.throws(() => buildProposals(rest), /Cannot read properties of undefined|files is not defined|undefined/);
 });
+
+// --- P1.bootstrap: the bootstrap script, from PROVEN steps only ------------
+//
+// Decidability is the point of this generator: it may only ever write what
+// detection proved — the install command from the lockfile's own presence,
+// and build/test lines from declared script NAMES. Everything else (a
+// generic stack, no install command derivable at all) must yield no
+// proposal, not a guessed one — see gap-model.mjs's own comment on why
+// `absent` and `decidable` are two separate axes.
+const bootstrapCheck = () => check({ id: 'P1.bootstrap', step: 5, proposal: 'create bootstrap' });
+
+test('P1.bootstrap writes only steps detection proved', () => {
+  const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.match(b.contents, /pnpm install/);
+  assert.match(b.contents, /pnpm build/);
+  assert.match(b.contents, /pnpm test/);
+  assert.equal(/lint/.test(b.contents), false, 'no lint script was declared, so none is invented');
+});
+
+test('P1.bootstrap proposes nothing for a generic stack', () => {
+  const stack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
+  const ps = buildProposals(args([check({ id: 'P1.bootstrap', step: 5, decidable: false })], { stack }));
+  assert.deepEqual(ps, [], 'an undecidable check proposes nothing');
+});
+
+test('the generated script carries a version stamp and is executable shell', () => {
+  const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.match(b.contents, /^#!\/usr\/bin\/env bash\n/, 'the shebang must be the very first line');
+  assert.match(b.contents, /^set -euo pipefail$/m);
+  assert.match(b.contents, /harness-kit 0\.2\.0/, 'carries the version stamp');
+  assert.match(b.contents, /runbook step 5/);
+});
+
+// Ruling 1: CRLF silently destroys this deliverable (bad interpreter:
+// /usr/bin/env bash^M at runtime) and the binary-file guard (glob.test.mjs)
+// does not catch it — CR is not NUL. This must be asserted directly.
+test('CRLF: the generated bootstrap script contains no CR bytes at all', () => {
+  const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.equal(b.contents.includes('\r'), false, 'a CRLF script fails at runtime with "bad interpreter" and is invisible to the NUL guard');
+});
+
+// Ruling 2: the deterministic, reproducible form is used verbatim whenever
+// the lockfile that proves it is actually among `files` — never derived
+// from `stack.packageManager` alone, because a bootstrap script exists for
+// reproducibility and a form that can silently rewrite the lockfile from a
+// clean checkout is a defect, not a convenience.
+const DETERMINISTIC = [
+  ['npm', 'package-lock.json', 'npm ci'],
+  ['pnpm', 'pnpm-lock.yaml', 'pnpm install --frozen-lockfile'],
+  ['yarn', 'yarn.lock', 'yarn install --immutable'],
+  ['bun', 'bun.lockb', 'bun install --frozen-lockfile'],
+  ['poetry', 'poetry.lock', 'poetry install --sync'],
+  ['uv', 'uv.lock', 'uv sync --frozen'],
+];
+
+for (const [pm, lockfile, command] of DETERMINISTIC) {
+  test(`P1.bootstrap uses the reproducible install form verbatim for ${pm} when ${lockfile} is present`, () => {
+    const stack = { languages: [], packageManager: pm, isWorkspace: false, packages: [], ci: [] };
+    const ps = buildProposals(args([bootstrapCheck()], { stack, files: [lockfile] }));
+    const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+    assert.ok(b, `expected a bootstrap proposal for ${pm}`);
+    assert.match(b.contents, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(b.contents.includes('No ' + lockfile + ' found'), false, 'the lockfile IS present, so no fallback comment is warranted');
+  });
+}
+
+test('P1.bootstrap falls back to the plain install form, with a comment, when no lockfile backs the detected package manager', () => {
+  // `files` is deliberately empty: this is the one piece of evidence that
+  // licenses the deterministic form, and it is independent of
+  // `stack.packageManager` (a detection fact and a file-list fact, checked
+  // separately on purpose — see propose.mjs's installCommand comment).
+  const stack = { languages: [], packageManager: 'npm', isWorkspace: false, packages: [], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: [] }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.match(b.contents, /npm install/);
+  assert.equal(/npm ci/.test(b.contents), false, 'npm ci is a lie without package-lock.json as evidence');
+  assert.match(b.contents, /#.*package-lock\.json/, 'the fallback is disclosed in a comment, not silently swapped in');
+});
+
+test('P1.bootstrap proposes nothing when no install command is derivable, even though the check itself is decidable', () => {
+  // This is the generator's OWN defensive gate, independent of the check's
+  // `decidable` flag (exercised separately above) — belt-and-suspenders for
+  // exactly the case the brief calls out: "no install command is derivable".
+  const stack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack }));
+  assert.deepEqual(ps, []);
+});
+
+test('P1.bootstrap proposes nothing for pip — requirements.txt carries no frozen/plain distinction in the verbatim command list', () => {
+  const stack = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['requirements.txt'] }));
+  assert.deepEqual(ps, [], 'pip has no verbatim reproducible form in this list, so nothing is guessed');
+});
+
+test('P1.bootstrap derives build/test only from the ROOT package — a nested package\'s scripts are not the repository\'s own bootstrap', () => {
+  // Same reasoning as P2.stopgate's own monorepo test above: a bootstrap
+  // script is not tied to any one file, so there is no owning package to
+  // resolve other than the root.
+  const stack = {
+    languages: ['typescript'], packageManager: 'npm', isWorkspace: true,
+    packages: [
+      { name: 'root', dir: '.', manifestPath: 'package.json', scripts: [] },
+      { name: 'api', dir: 'packages/api', manifestPath: 'packages/api/package.json', scripts: ['build', 'test'] },
+    ],
+    ci: [],
+  };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['package-lock.json'] }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b, 'install is still derivable from the lockfile alone');
+  assert.match(b.contents, /npm ci/);
+  assert.equal(/build/.test(b.contents), false, 'the nested package\'s build script is not the root\'s own bootstrap step');
+  assert.equal(/\btest\b/.test(b.contents), false, 'the nested package\'s test script is not the root\'s own bootstrap step either');
+});
+
+test('P1.bootstrap never invents a lint step even when one IS declared on the root package', () => {
+  const stack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'lint', 'test'] }], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['package-lock.json'] }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.match(b.contents, /npm run build/);
+  assert.match(b.contents, /npm run test/);
+  assert.equal(/lint/.test(b.contents), false, 'lint is declared but is still never written — only build/test are proven bootstrap steps');
+});
+
+// Ruling 4: Plan 1 shipped a Critical where package.json script BODIES were
+// copied into generated output and leaked a credential. This generator only
+// ever sees script NAMES (detect-stack.mjs strips bodies before the stack
+// object exists at all), but this test proves it directly: even when a
+// token-bearing body is reachable on the stack object (simulating a future
+// detection regression), it never reaches the generated script.
+test('SECRET: a token-bearing script body reachable on the stack object never appears in the generated bootstrap script', () => {
+  const leakedToken = 'sentry-cli releases new --auth-token sk-leaked-TOKEN-should-never-appear';
+  const stack = {
+    languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
+    packages: [{
+      name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'],
+      // Not a real field detect-stack.mjs produces — simulates the exact
+      // leak shape Plan 1 shipped, to prove this generator never reads it.
+      scriptBodies: { build: leakedToken },
+    }],
+    ci: [],
+  };
+  // Sanity first: the fixture must actually carry the token somewhere
+  // reachable, or "it never appears in output" would be true for the wrong
+  // reason (the fixture never crossed the branch under test).
+  assert.ok(JSON.stringify(stack).includes(leakedToken), 'fixture sanity: the token must actually be reachable on the stack object');
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['package-lock.json'] }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.equal(b.contents.includes(leakedToken), false, 'a script BODY must never be copied into generated output — names only');
+  assert.equal(b.contents.includes('auth-token'), false);
+});
+
+test('a declared P1.bootstrap check yields no proposals, even with a full stack present', () => {
+  const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
+  const ps = buildProposals(args([check({ id: 'P1.bootstrap', step: 5, state: 'declared', proposal: null })], { stack, files: ['pnpm-lock.yaml'] }));
+  assert.deepEqual(ps, []);
+});

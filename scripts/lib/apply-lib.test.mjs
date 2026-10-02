@@ -37,6 +37,26 @@ test('REFUSES to overwrite a file it did not write', () => {
   assert.equal(r.skipped.length, 1);
 });
 
+// Ruling: scripts/bootstrap.sh is the one path in this task most likely to
+// already be load-bearing in a real repository. Do not rely on the generic
+// "REFUSES to overwrite a file it did not write" test above to cover this
+// path by implication — pin it with its own explicit fixture, so a future
+// change narrowing that generic mechanism cannot silently stop protecting
+// THIS path without a test failing by name.
+test('REFUSES to overwrite the user\'s OWN scripts/bootstrap.sh', () => {
+  const d = repo();
+  mkdirSync(join(d, 'scripts'), { recursive: true });
+  const usersOwn = '#!/usr/bin/env bash\necho "the user\'s own, load-bearing bootstrap"\n';
+  writeFileSync(join(d, 'scripts/bootstrap.sh'), usersOwn);
+  const proposal = fileProposal({ path: 'scripts/bootstrap.sh', step: 5, checkId: 'P1.bootstrap', contents: '#!/usr/bin/env bash\nnpm ci\n' });
+  const r = applyProposals({ root: d, proposals: [proposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(readFileSync(join(d, 'scripts/bootstrap.sh'), 'utf8'), usersOwn, 'the user\'s own bootstrap script must survive byte-for-byte');
+  assert.equal(r.written.length, 0, 'nothing may be written when the target is theirs');
+  assert.equal(r.skipped.length, 1);
+  assert.equal(r.skipped[0].path, 'scripts/bootstrap.sh');
+  assert.equal(r.skipped[0].why, 'theirs');
+});
+
 test('REFUSES to overwrite a file the user edited after we wrote it', () => {
   const d = repo();
   const m = emptyManifest('0.2.0');

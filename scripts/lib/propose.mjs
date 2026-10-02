@@ -246,6 +246,111 @@ function stopgateProposal({ kitVersion, stack }) {
   }];
 }
 
+const BOOTSTRAP_PATH = 'scripts/bootstrap.sh';
+const BOOTSTRAP_STEP = 5;
+
+/**
+ * Deterministic, lockfile-gated install forms ONLY — used verbatim. A
+ * bootstrap script exists so a clean checkout reaches a working state
+ * REPRODUCIBLY; the plain forms (`npm install`, `pnpm install`, ...) can
+ * silently rewrite the lockfile on a clean checkout, which is exactly the
+ * kind of surprise a script that "will be run and trusted" must not carry.
+ *
+ * `pip` is deliberately NOT in this table. `requirements.txt` has no
+ * frozen/plain distinction the way a real lockfile does (there is no
+ * `pip install --frozen` form), so there is no verbatim reproducible
+ * command to use for it — inventing one would be exactly the guessed step
+ * this generator exists to refuse. A pip-only stack therefore derives no
+ * install command at all (see `installCommand` below) and gets no bootstrap
+ * proposal, same as a stack with no package manager detected.
+ */
+const INSTALL_COMMANDS = {
+  npm: { lockfile: 'package-lock.json', frozen: 'npm ci', plain: 'npm install' },
+  pnpm: { lockfile: 'pnpm-lock.yaml', frozen: 'pnpm install --frozen-lockfile', plain: 'pnpm install' },
+  yarn: { lockfile: 'yarn.lock', frozen: 'yarn install --immutable', plain: 'yarn install' },
+  bun: { lockfile: 'bun.lockb', frozen: 'bun install --frozen-lockfile', plain: 'bun install' },
+  poetry: { lockfile: 'poetry.lock', frozen: 'poetry install --sync', plain: 'poetry install' },
+  uv: { lockfile: 'uv.lock', frozen: 'uv sync --frozen', plain: 'uv sync' },
+};
+
+/**
+ * Returns `{ command, fallback }`, or `null` when no install command can be
+ * derived at all (an undetected package manager, or one with no verbatim
+ * reproducible form — see the table above).
+ *
+ * The lockfile's PRESENCE in `files` — not `stack.packageManager` alone —
+ * is what licenses the deterministic form. The two happen to move together
+ * in real detection (detect-stack.mjs only ever sets `packageManager` when
+ * it already found the matching lockfile), but this function does not lean
+ * on that coincidence: it re-checks `files` independently, so a caller that
+ * (like a test fixture, or a future detector) sets `packageManager` without
+ * the lockfile gets the honest fallback rather than a command the evidence
+ * does not actually support.
+ */
+function installCommand(packageManager, files) {
+  const spec = INSTALL_COMMANDS[packageManager];
+  if (!spec) return null;
+  if (files.includes(spec.lockfile)) return { command: spec.frozen, fallback: false, lockfile: spec.lockfile };
+  return { command: spec.plain, fallback: true, lockfile: spec.lockfile };
+}
+
+/**
+ * Build/test lines, derived from declared script NAMES only (never bodies —
+ * see detect-stack.mjs), and only from the ROOT package (`dir === '.'`).
+ * Same reasoning as `stopgateProposal`'s own root-only gate immediately
+ * above: a bootstrap script is not tied to any one edited file, so there is
+ * no per-file owning package to resolve the way lint-touched.mjs resolves
+ * one — the root package is the only honest anchor for "the repository's
+ * own" build/test step. A monorepo where only a NESTED package declares
+ * `build`/`test` gets no line for either, same false-assurance concern the
+ * Stop gate's own monorepo test already covers for a different hook.
+ *
+ * Deliberately does NOT consider `lint`: the brief's own proven-step list is
+ * install (from the lockfile) and build/test (from script names) — nothing
+ * else. `selectProfile(stack).commands(pkg)` is reused here rather than
+ * reimplemented, so the exact `<pm> <script>` shape (bare for pnpm/yarn,
+ * `run` for npm/bun) stays governed by ONE already-tested place
+ * (profiles/typescript.mjs), not a second copy that could drift from it.
+ */
+function bootstrapScriptLines(stack) {
+  const rootPkg = stack.packages.find(p => p.dir === '.');
+  if (!rootPkg) return [];
+  const commands = selectProfile(stack).commands(rootPkg);
+  return [commands.build, commands.test].filter(Boolean);
+}
+
+/**
+ * The bootstrap script: takes a clean checkout to a working state, written
+ * from DETECTED facts only. Decidability is the whole point — see the
+ * brief's own framing, echoed in gap-model.mjs's comment on `P1.bootstrap`:
+ * a script with guessed steps is worse than none, because it will be run
+ * and trusted. This generator's own gate below (no install command
+ * derivable => no proposal) is a defensive SECOND check, independent of
+ * the check-level `decidable` flag that `buildProposals` already enforces
+ * centrally — belt-and-suspenders for exactly the case the brief names:
+ * a generic stack, or no install command derivable at all.
+ */
+function bootstrapProposal({ kitVersion, stack, files }) {
+  const install = installCommand(stack.packageManager, files);
+  if (!install) return [];
+
+  const lines = [];
+  if (install.fallback) {
+    lines.push(`# No ${install.lockfile} found — using the plain install form so this script never silently rewrites a lockfile that does not exist yet. Commit the lockfile it creates, then re-run harness-kit for the reproducible form.`);
+  }
+  lines.push(install.command);
+  lines.push(...bootstrapScriptLines(stack));
+
+  return [{
+    kind: 'file', path: BOOTSTRAP_PATH, step: BOOTSTRAP_STEP,
+    contents: render(read('templates/bootstrap.sh.tmpl'), {
+      stamp: versionStamp(kitVersion, BOOTSTRAP_STEP, '#'),
+      steps: lines.join('\n'),
+    }),
+    reason: 'no bootstrap script found',
+  }];
+}
+
 /** Generators receive the full detection context and return proposals.
  * { kitVersion, harness, root, stack, checks, files } are available to all
  * generators. A generator yields nothing by returning an empty array or not
@@ -276,6 +381,7 @@ const GENERATORS = {
   'P2.protected': protectedPathProposal,
   'P2.sensor': sensorProposal,
   'P2.stopgate': stopgateProposal,
+  'P1.bootstrap': bootstrapProposal,
 };
 
 /**
@@ -323,4 +429,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
   return out;
 }
 
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH };

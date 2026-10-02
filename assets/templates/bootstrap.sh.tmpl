@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+{{stamp}}
+set -euo pipefail
+
+{{steps}}
+
+# What else does a clean checkout need to reach a working state here —
+# database migrations, seed data, environment files? Detection cannot prove
+# any of that; add it above once you know.
