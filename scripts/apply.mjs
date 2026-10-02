@@ -76,7 +76,7 @@ const profile = selectProfile(stack);
 const checks = buildGaps({ stack, harness, exposures, profile, git });
 
 const manifest = readManifest(root) ?? emptyManifest(KIT_VERSION);
-const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack });
+const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });
 
 // Files this kit previously wrote whose content on disk no longer matches
 // what the manifest recorded. propose.mjs deliberately never re-proposes a
@@ -116,7 +116,9 @@ if (proposals.length === 0) {
 
 process.stdout.write(`harness-kit: ${proposals.length} proposal${proposals.length === 1 ? '' : 's'} for ${root}\n\n`);
 for (const p of proposals) {
-  const label = p.kind === 'file' ? p.path : `.claude/settings.json (hook: ${p.event})`;
+  const label = p.kind === 'file' ? p.path
+    : p.kind === 'settings-deny' ? '.claude/settings.json (deny rules)'
+    : `.claude/settings.json (hook: ${p.event})`;
   process.stdout.write(`--- ${label}  [${p.checkId}]\n`);
   process.stdout.write(`    ${p.reason}\n`);
   process.stdout.write(renderDiff(root, p) + '\n\n');

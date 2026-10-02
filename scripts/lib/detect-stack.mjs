@@ -1,4 +1,5 @@
 import { readIfPresent } from './scan.mjs';
+import { globToRegExpSource } from './glob.mjs';
 
 const LOCKS = [
   ['pnpm-lock.yaml', 'pnpm'], ['yarn.lock', 'yarn'], ['bun.lockb', 'bun'],
@@ -28,7 +29,7 @@ function membersFor(patterns, files) {
   const manifests = files.filter(f => f.endsWith('package.json') && f !== 'package.json');
   const hits = new Set();
   for (const pattern of patterns) {
-    const re = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*') + '/package\\.json$');
+    const re = new RegExp('^' + globToRegExpSource(pattern) + '/package\\.json$');
     for (const m of manifests) if (re.test(m)) hits.add(m);
   }
   return [...hits];

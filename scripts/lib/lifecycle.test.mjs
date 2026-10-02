@@ -130,7 +130,13 @@ test('C2: a secret anywhere in settings.json reaches no part of a dry run\'s out
 test('C3: a manifest that cannot be written exits 2 with a readable message, never a stack trace', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
-  writeFileSync(join(d, 'package-lock.json'), '{}');
+  // No lockfile here (deliberately, unlike the other fixtures in this file):
+  // Task 2's P2.protected check would find evidence for a deny-rule
+  // proposal and, sorting before P4.handoff by step number, hit the
+  // `.claude`-is-a-file write failure FIRST — stopping the batch before
+  // HANDOFF.md below is ever attempted. This test is about the
+  // manifest-write failure path, not about which proposal happens to sort
+  // first, so the fixture carries no protected path to propose over.
   writeFileSync(join(d, 'tsconfig.json'), '{}');
   // `.claude` as a plain file. Every write beneath it fails, including the
   // `mkdirSync` inside writeManifest — the one write in the tool that must

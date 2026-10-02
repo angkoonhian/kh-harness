@@ -224,3 +224,86 @@ test('a dangling symlink sitting at the target itself is refused, not silently f
   assert.throws(() => applyProposals({ root: d, proposals: [fileProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' }), /not allowed/i);
   assert.equal(existsSync(outside), false, 'the dangling target must not have been created');
 });
+
+// --- Task 2: settings-deny proposals apply additively ----------------------
+
+const denyProposal = (globs = ['Edit(prisma/migrations/**)', 'Edit(pnpm-lock.yaml)']) =>
+  ({ kind: 'settings-deny', step: 11, globs, checkId: 'P2.protected', reason: 'r' });
+
+test('a settings-deny proposal merges and records a hash-identified patch', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ env: { KEEP: '1' } }));
+  const { manifest, patched } = applyProposals({ root: d, proposals: [denyProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const s = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+  assert.deepEqual(s.permissions.deny, ['Edit(prisma/migrations/**)', 'Edit(pnpm-lock.yaml)']);
+  assert.deepEqual(s.env, { KEEP: '1' }, 'unrelated settings survive');
+  assert.equal(patched.length, 1);
+  assert.equal(manifest.settingsPatches[0].container, '/permissions/deny');
+  assert.match(manifest.settingsPatches[0].entrySha256, /^[0-9a-f]{64}$/);
+});
+
+test('a settings-deny proposal whose rules are all already present is reported unchanged, not rewritten', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const before = JSON.stringify({ permissions: { deny: ['Edit(prisma/migrations/**)', 'Edit(pnpm-lock.yaml)'] } }, null, 2);
+  writeFileSync(join(d, '.claude/settings.json'), before);
+  const { skipped, patched, manifest } = applyProposals({ root: d, proposals: [denyProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), before, 'file must be byte-identical — nothing to add');
+  assert.equal(patched.length, 0);
+  assert.equal(skipped.some(s => s.path === '.claude/settings.json' && s.why === 'unchanged'), true);
+  assert.equal(manifest.settingsPatches.length, 0, 'no patch may be recorded when nothing was added');
+});
+
+test('a settings-deny proposal adds only the genuinely new rules when some already exist', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(prisma/migrations/**)'] } }));
+  const { manifest } = applyProposals({ root: d, proposals: [denyProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const s = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+  assert.deepEqual(s.permissions.deny, ['Edit(prisma/migrations/**)', 'Edit(pnpm-lock.yaml)'], 'no duplicate of the pre-existing rule');
+  assert.deepEqual(manifest.settingsPatches[0].rules, ['Edit(pnpm-lock.yaml)']);
+});
+
+test('an unparseable settings.json is left untouched when a settings-deny proposal targets it', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const original = '{ "permissions": { "deny": ["Edit(x)"], }, }'; // trailing commas — invalid JSON
+  writeFileSync(join(d, '.claude/settings.json'), original);
+  const r = applyProposals({ root: d, proposals: [denyProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), original, 'must not touch an unparseable settings file');
+  assert.equal(r.patched.length, 0);
+  assert.equal(r.skipped[0].why, 'unparseable');
+  assert.equal(r.manifest.settingsPatches.length, 0, 'no patch may be recorded for a write that did not happen');
+});
+
+// --- the settings-deny preview must not print the user's own settings -----
+
+const denySecretProposal = { kind: 'settings-deny', step: 11, globs: ['Edit(prisma/migrations/**)'], checkId: 'P2.protected', reason: 'r' };
+
+test('a settings-deny preview never prints the user\'s own settings', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(SECRET_SETTINGS, null, 2));
+
+  const diff = renderDiff(d, denySecretProposal);
+  assert.doesNotMatch(diff, /SECRET-IN-ENV/, 'a credential in env must never reach the preview');
+  assert.doesNotMatch(diff, /SECRET_IN_HOOK/, 'a token in an unrelated hook command must never reach the preview');
+  assert.doesNotMatch(diff, /DEPLOY_TOKEN|Edit\(secrets/, 'no part of the user\'s settings belongs in a one-rule preview');
+
+  // Still a useful preview: it shows exactly what will be added, and where.
+  assert.match(diff, /^\+"Edit\(prisma\/migrations\/\*\*\)"$/m, 'the rule that will actually be added must be shown');
+  assert.match(diff, /permissions\.deny/, 'and the preview must say where it goes');
+});
+
+test('a secret in an existing deny rule under the same container is not shown either', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
+    permissions: { deny: ['Bash(curl --header "Authorization: Bearer ghp_SECRET_SAME_CONTAINER":*)'] },
+  }, null, 2));
+
+  const diff = renderDiff(d, denySecretProposal);
+  assert.doesNotMatch(diff, /SECRET_SAME_CONTAINER/, 'diffing the whole permissions.deny array would still leak');
+  assert.match(diff, /1 existing permissions\.deny entr/, 'the preview must still say it is appending, not replacing');
+});

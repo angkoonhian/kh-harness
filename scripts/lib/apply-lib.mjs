@@ -14,7 +14,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { classify, emptyManifest, sha256 } from './manifest.mjs';
-import { addHookEntry, hasEquivalentHook } from './settings-merge.mjs';
+import { addDenyRules, addHookEntry, hasEquivalentHook } from './settings-merge.mjs';
 
 const SETTINGS_PATH = '.claude/settings.json';
 const CLAUDE_REDIRECT_PATH = 'docs/harness/CLAUDE.proposed.md';
@@ -256,6 +256,40 @@ function renderSettingsHookDiff(root, proposal) {
 }
 
 /**
+ * Preview of a settings-deny proposal: the rules that would actually be
+ * added, and nothing else — mirrors renderSettingsHookDiff immediately
+ * above, and for the same reason. `permissions.deny` can hold the user's own
+ * rules, which can themselves embed a credential (a `Bash(curl ... TOKEN ...)`
+ * pattern is a deny rule shape as valid as any other), so diffing the whole
+ * array would leak exactly like diffing the whole file would.
+ *
+ * `addDenyRules` already computes exactly which proposed rules are new —
+ * `added` — so this never needs to look at anything else in the file.
+ */
+function renderSettingsDenyDiff(root, proposal) {
+  const result = readSettingsResult(root);
+  if (!result.ok) {
+    return `--- a/${SETTINGS_PATH}\n+++ b/${SETTINGS_PATH}\n` +
+      `(${SETTINGS_PATH} could not be parsed as a JSON object — no changes will be made; fix its JSON and re-run)`;
+  }
+
+  const existing = Array.isArray(result.settings?.permissions?.deny) ? result.settings.permissions.deny.length : 0;
+  const { added } = addDenyRules(result.settings, proposal.globs);
+
+  const lines = [`--- a/${SETTINGS_PATH}`, `+++ b/${SETTINGS_PATH}`, `@@ permissions.deny @@`];
+  if (added.length === 0) {
+    lines.push(`(every proposed rule is already present — nothing would be added)`);
+  } else {
+    for (const rule of added) lines.push(`+${JSON.stringify(rule)}`);
+    if (existing > 0) {
+      lines.push(`(appended after ${existing} existing permissions.deny entr${existing === 1 ? 'y' : 'ies'}, which are left unchanged and not shown)`);
+    }
+  }
+  lines.push(`(nothing else in ${SETTINGS_PATH} is changed, or shown — it is yours, and it may hold credentials)`);
+  return lines.join('\n');
+}
+
+/**
  * Where a file proposal will actually land. CLAUDE.md is the file most
  * likely to be hand-tuned and to hold decisions that cannot be re-derived
  * from source: if it already exists — no matter who wrote it, or when — the
@@ -278,6 +312,9 @@ function resolveFileTarget(root, proposal) {
 export function renderDiff(root, proposal) {
   if (proposal.kind === 'settings-hook') {
     return renderSettingsHookDiff(root, proposal);
+  }
+  if (proposal.kind === 'settings-deny') {
+    return renderSettingsDenyDiff(root, proposal);
   }
 
   const { targetPath, redirectFrom } = resolveFileTarget(root, proposal);
@@ -376,6 +413,42 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
   patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId });
 }
 
+function applySettingsDenyProposal({ root, proposal, nextManifest, patched, skipped }) {
+  const settingsPath = join(root, SETTINGS_PATH);
+  const result = readSettingsResult(root);
+
+  if (!result.ok) {
+    // Same reasoning as applySettingsHookProposal: never silently replace an
+    // unparseable settings.json with {}.
+    skipped.push({ path: SETTINGS_PATH, why: 'unparseable', checkId: proposal.checkId });
+    return;
+  }
+
+  const { settings: next, patch } = addDenyRules(result.settings, proposal.globs);
+
+  // addDenyRules returns patch: null when every proposed rule is already
+  // present — a patch describing an empty change is a lie the manifest would
+  // later act on (e.g. uninstall trying to revert rules that were never
+  // ours to begin with), so only a non-null patch may ever be recorded.
+  if (!patch) {
+    skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
+    return;
+  }
+
+  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + '\n', SETTINGS_PATH);
+
+  nextManifest.settingsPatches.push({
+    event: 'permissions.deny',
+    container: patch.container,
+    entrySha256: patch.entrySha256,
+    rules: patch.rules,
+    step: proposal.step,
+    checkId: proposal.checkId,
+    appliedAt: new Date().toISOString(),
+  });
+  patched.push({ event: 'permissions.deny', step: proposal.step, checkId: proposal.checkId });
+}
+
 /**
  * Applies proposals additively: writes only what classify() says is safe to
  * write, never mutates the manifest it was given, and validates every
@@ -410,7 +483,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion }) {
       const { targetPath } = resolveFileTarget(root, proposal);
       assertAllowed(targetPath);
       assertContained(root, targetPath);
-    } else if (proposal.kind === 'settings-hook') {
+    } else if (proposal.kind === 'settings-hook' || proposal.kind === 'settings-deny') {
       assertAllowed(SETTINGS_PATH);
       assertContained(root, SETTINGS_PATH);
     } else {
@@ -434,8 +507,10 @@ export function applyProposals({ root, proposals, manifest, kitVersion }) {
     try {
       if (proposal.kind === 'file') {
         applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected });
-      } else {
+      } else if (proposal.kind === 'settings-hook') {
         applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped });
+      } else {
+        applySettingsDenyProposal({ root, proposal, nextManifest, patched, skipped });
       }
     } catch (err) {
       failed.push({ path: err?.path ?? proposal.path ?? SETTINGS_PATH, error: err?.message ?? String(err) });

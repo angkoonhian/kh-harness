@@ -1,3 +1,5 @@
+import { LOCKFILE_GLOBS } from './generic.mjs';
+
 const INSTALL = { uv: 'uv sync', poetry: 'poetry install', pip: 'pip install -r requirements.txt' };
 const EXEC = { uv: 'uv run', poetry: 'poetry run', pip: '' };
 
@@ -13,6 +15,6 @@ export const python = {
     const py = paths.filter(p => p.endsWith('.py'));
     return py.length ? `ruff check ${py.join(' ')}` : null;
   },
-  protectedGlobs() { return ['**/*.lock', 'requirements*.txt', '**/__pycache__/**']; },
+  protectedGlobs() { return [...LOCKFILE_GLOBS, 'requirements*.txt', '**/__pycache__/**']; },
   appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16]; },
 };

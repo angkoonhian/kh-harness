@@ -1,3 +1,5 @@
+import { LOCKFILE_GLOBS } from './generic.mjs';
+
 const RUN = { pnpm: 'pnpm', yarn: 'yarn', bun: 'bun run', npm: 'npm run' };
 const INSTALL = { pnpm: 'pnpm install', yarn: 'yarn install', bun: 'bun install', npm: 'npm ci' };
 
@@ -23,7 +25,7 @@ function make(id, extra) {
       return js.length ? `npx eslint --no-error-on-unmatched-pattern ${js.join(' ')}` : null;
     },
     protectedGlobs() {
-      return ['**/*.lock', '**/*-lock.json', '**/*.lockb', '**/dist/**', '**/build/**'];
+      return [...LOCKFILE_GLOBS, '**/dist/**', '**/build/**'];
     },
     appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16]; },
     ...extra,
