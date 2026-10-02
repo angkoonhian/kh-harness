@@ -47,11 +47,38 @@ test('a file already in the manifest is not re-proposed', () => {
   assert.deepEqual(buildProposals(args([check({})], { manifest: m })), []);
 });
 
-test('the session-brief check proposes both a script and a settings hook', () => {
+// Whole-branch review, F3/F4: session-brief.mjs now imports the shared
+// `harness-redact.mjs` — `boundReport` (the byte bound Claude Code's
+// 10,000-character hook-output cap requires), `projectRoot` and
+// `findHandoff`. So this generator proposes that file too, and the hook
+// declares it in `requiresFiles`. Without BOTH, a repository that qualifies
+// for the brief and for neither process hook — every repository with no
+// declared `lint`/`typecheck`/`test` script, and the brief has no evidence
+// gate — would get a SessionStart hook registered against a script that
+// dies with ERR_MODULE_NOT_FOUND on every single session.
+test('the session-brief check proposes the script, the shared module it imports, and a settings hook', () => {
   const ps = buildProposals(args([check({ id: 'P4.sessionbrief', proposal: 'install session brief' })]));
-  const kinds = ps.map(p => p.kind).sort();
-  assert.deepEqual(kinds, ['file', 'settings-hook']);
-  assert.equal(ps.find(p => p.kind === 'file').path, '.claude/scripts/session-brief.mjs');
+  assert.deepEqual(ps.map(p => p.kind).sort(), ['file', 'file', 'settings-hook']);
+  assert.deepEqual(
+    ps.filter(p => p.kind === 'file').map(p => p.path).sort(),
+    ['.claude/scripts/harness-redact.mjs', '.claude/scripts/session-brief.mjs'],
+  );
+  const hook = ps.find(p => p.kind === 'settings-hook');
+  assert.deepEqual(hook.requiresFiles.sort(), ['.claude/scripts/harness-redact.mjs', '.claude/scripts/session-brief.mjs'],
+    'the hook must not be registered unless everything the script imports is on disk');
+});
+
+// The brief fires on every repository; the two process hooks do not. This is
+// the case F3/F4's fix had to be careful about: it is the ONLY one where
+// session-brief.mjs is installed with no sibling generator to bring the
+// shared module along.
+test('F3/F4: the brief brings the shared module even when neither process hook is proposed', () => {
+  const ps = buildProposals(args([check({ id: 'P4.sessionbrief', proposal: 'install session brief' })], {
+    // No lint script, no root typecheck/test script: sensorProposal and
+    // stopgateProposal would both decline, so neither can supply it.
+    stack: { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] },
+  }));
+  assert.ok(ps.some(p => p.path === '.claude/scripts/harness-redact.mjs'));
 });
 
 test('a declared session-brief check yields no proposals (hook already registered)', () => {

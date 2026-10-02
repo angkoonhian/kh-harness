@@ -843,9 +843,23 @@ test('P1.pathrules asks, and proposes nothing, for a single-package repository',
 // content-valued artefact instead of a behaviour-valued one).
 
 test('P1.pathrules is declared when .claude/rules/ already holds a file, workspace or not', () => {
-  const c = byId(gaps(bareStack, richHarness), 'P1.pathrules');
+  const c = byId(gaps(bareStack, richHarness, [], undefined, richHarness.claudeDir.rules), 'P1.pathrules');
   assert.equal(c.state, 'declared');
   assert.deepEqual(c.evidence, richHarness.claudeDir.rules);
+});
+
+// Whole-branch review, F2, the privacy half: `harness.claudeDir.rules` is a
+// DISK read now, so it can name a file the user deliberately kept out of git.
+// `registeredHook`'s standing discipline is that such a path is counted and
+// disclosed, never named, because this evidence is serialised into
+// `docs/harness/detect.json`, which IS committed.
+test('P1.pathrules counts and discloses a rule file the scan cannot see, and never names it', () => {
+  const c = byId(gaps(bareStack, richHarness, [], undefined, []), 'P1.pathrules');
+  assert.equal(c.state, 'declared', 'a rule file on disk satisfies the capability even when gitignored');
+  assert.equal(c.evidence.length, 1);
+  assert.match(c.evidence[0], /1 rule file under \.claude\/rules\//);
+  assert.match(c.evidence[0], /gitignored/);
+  assert.equal(c.evidence[0].includes('api.md'), false, 'a path the scan list never surfaced must not be named');
 });
 
 test('lookedFor names both the rules directory and the workspace layout for P1.pathrules', () => {

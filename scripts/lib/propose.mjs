@@ -13,10 +13,12 @@ const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
 const BRIEF_PATH = '.claude/scripts/session-brief.mjs';
 const LINT_TOUCHED_PATH = '.claude/scripts/lint-touched.mjs';
 const VERIFY_TOUCHED_PATH = '.claude/scripts/verify-touched.mjs';
-// Shared by lint-touched.mjs (PostToolUse) and verify-touched.mjs (Stop) —
-// see harness-redact.mjs's own comment for why a shared chokepoint exists
-// at all. Both scripts import it via a relative `./harness-redact.mjs`, so
-// it must always land in the SAME directory as each of them.
+// Shared by ALL THREE installed hooks — lint-touched.mjs (PostToolUse),
+// verify-touched.mjs (Stop) and, since the whole-branch review's F3/F4,
+// session-brief.mjs (SessionStart). See harness-redact.mjs's own comment
+// for why a shared module exists at all. Each script imports it via a
+// relative `./harness-redact.mjs`, so it must always land in the SAME
+// directory as each of them.
 const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
 
 /**
@@ -63,13 +65,25 @@ function protectedPathProposal({ stack, files }) {
 }
 
 /**
- * The shared redaction module both process-output hooks (lint-touched.mjs's
- * PostToolUse sensor and verify-touched.mjs's Stop gate) import — see
- * harness-redact.mjs's own comment for why a shared chokepoint exists at
- * all. Returned by EITHER sensorProposal or stopgateProposal's own
- * generator, independently — not only by whichever happens to run first —
- * so that satisfying just one of the two checks (the other already
- * `declared`, or installed by an earlier run) still brings this file along.
+ * The shared module every installed hook imports — lint-touched.mjs's
+ * PostToolUse sensor, verify-touched.mjs's Stop gate and session-brief.mjs's
+ * SessionStart brief — see harness-redact.mjs's own comment for why it
+ * exists at all. Returned by EACH of the three generators independently —
+ * not only by whichever happens to run first — so that satisfying just one
+ * of the three checks (the others already `declared`, or installed by an
+ * earlier run) still brings this file along.
+ *
+ * Whole-branch review, F3/F4: session-brief.mjs became the third importer
+ * when it stopped carrying its own line-only bound and its own idea of where
+ * the handoff file is. `P4.sessionbrief`'s generator therefore proposes this
+ * file too, and lists it in `requiresFiles` — without BOTH, a repository
+ * that qualifies for the brief and for neither process hook (no `lint`
+ * script, no root `typecheck`/`test` script — which is every repository
+ * with no declared scripts at all, and the brief has no evidence gate) would
+ * get a SessionStart hook registered against a script that dies with
+ * ERR_MODULE_NOT_FOUND on every session. That is review finding 5's exact
+ * shape, and `missingDependencies` (apply-lib.mjs) is what enforces it
+ * against the real filesystem.
  * `buildProposals`' own dedupe (see its comment on `alreadyWritten`) is what
  * keeps it from being proposed twice when BOTH generators fire in the same
  * batch, and from being re-proposed once a prior run already recorded it in
@@ -96,7 +110,7 @@ function redactAssetProposal(kitVersion) {
     // through that function because this comment's wording is bespoke —
     // see render.mjs's own comment on why uninstall-lib.mjs depends on
     // this literal text being present verbatim.
-    contents: `// ${STAMP_MARKER} ${kitVersion} (shared asset used by the PostToolUse and Stop hooks). ` +
+    contents: `// ${STAMP_MARKER} ${kitVersion} (shared asset used by the PostToolUse, Stop and SessionStart hooks). ` +
       `Edit freely — harness-kit will report your changes rather than overwrite them.\n` +
       read('scripts/harness-redact.mjs'),
     reason: 'shared redaction module required by the PostToolUse/Stop hooks',
@@ -444,14 +458,17 @@ const GENERATORS = {
       `#!/usr/bin/env node\n${versionStamp(kitVersion, 16, '//')}\n`,
     ),
     reason: 'no SessionStart brief hook registered',
-  }, {
+  }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'SessionStart', step: 16,
     entry: { type: 'command', command: `node ${BRIEF_PATH}` },
-    // session-brief.mjs has no shared dependency the way the other two
-    // hooks do, but declaring this anyway means a write failure for its
-    // OWN file (not just a missing shared module) is caught the same way,
-    // by the same generic check — one rule, not two.
-    requiresFiles: [BRIEF_PATH],
+    // Whole-branch review, F3/F4: session-brief.mjs now imports the shared
+    // `harness-redact.mjs` (for `boundReport`, `projectRoot` and
+    // `findHandoff`), so it has exactly the dependency the other two hooks
+    // have and it is declared here the same way. See `redactAssetProposal`'s
+    // own comment for why every generator that needs it proposes it, and
+    // `missingDependencies` (apply-lib.mjs) for the filesystem check that
+    // keeps the hook from being REGISTERED without it.
+    requiresFiles: [BRIEF_PATH, REDACT_PATH],
     reason: hookRegistrationReason('SessionStart', check),
   }],
   'P2.protected': protectedPathProposal,

@@ -111,6 +111,35 @@ test('boundReport includes the header in the byte budget', () => {
   assert.match(report, /truncated: output exceeded the byte limit/);
 });
 
+// Whole-branch review, F3. The bound used to cut at exactly
+// MAX_REPORT_BYTES and THEN append its own ~50-byte notice, so what this
+// returned was ~10,050 bytes — over Claude Code's 10,000-character hook-
+// output cap, which is the entire reason the constant has that value. A
+// bound fifty bytes over the limit does not prevent the failure it exists
+// to prevent: past the cap Claude Code replaces the output with a file path
+// and does not ask Claude to read it.
+test('F3: boundReport, PLUS the trailing newline every caller adds, never exceeds MAX_REPORT_BYTES', () => {
+  for (const lines of [
+    ['z'.repeat(MAX_REPORT_BYTES * 3)],
+    Array.from({ length: MAX_REPORT_LINES * 3 }, () => 'y'.repeat(500)),
+    Array.from({ length: 5 }, () => 'w'.repeat(MAX_REPORT_BYTES)),
+  ]) {
+    const written = boundReport(lines, 'HEADER\n') + '\n';
+    assert.ok(Buffer.byteLength(written, 'utf8') <= MAX_REPORT_BYTES,
+      `what is actually written must be within the cap, got ${Buffer.byteLength(written, 'utf8')}`);
+    assert.match(written, /truncated: output exceeded the byte limit/);
+  }
+});
+
+test('F3: the byte cut never leaves a half-character behind', () => {
+  // A multi-byte character straddling the boundary used to decode to U+FFFD
+  // — a corrupted last character in the one place a user reads for
+  // information.
+  const report = boundReport(['é'.repeat(MAX_REPORT_BYTES)], '');
+  assert.equal(report.includes('�'), false, 'no replacement character may appear at the cut');
+  assert.match(report, /truncated: output exceeded the byte limit/);
+});
+
 test('boundReport truncates a single line that alone exceeds MAX_REPORT_BYTES', () => {
   const huge = 'y'.repeat(MAX_REPORT_BYTES * 2);
   const report = boundReport([huge]);

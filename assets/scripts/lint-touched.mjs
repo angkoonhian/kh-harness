@@ -26,6 +26,7 @@ import {
   MAX_BLOCKS_PER_SESSION,
   markerPath,
   readJSONMarker,
+  projectRoot,
   safeSessionId,
   signatureOf,
   writeJSONMarker,
@@ -409,7 +410,9 @@ async function main() {
   const isPy = PY_EXTENSIONS.has(ext);
   if (!isJs && !isPy) return 0;
 
-  const root = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Shared with session-brief.mjs, which used a bare process.cwd() —
+  // whole-branch review, F4: three hooks, two conventions, one of them wrong.
+  const root = projectRoot();
   const absPath = isAbsolute(filePath) ? filePath : join(root, filePath);
   // Containment BEFORE anything else touches the filesystem on this path's
   // behalf: an out-of-root file must never cause an out-of-tree

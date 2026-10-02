@@ -1,14 +1,28 @@
 // assets/scripts/harness-redact.mjs
 //
-// Shared stderr redaction chokepoint for every process-output hook this kit
-// installs — today that is lint-touched.mjs's PostToolUse sensor and
-// verify-touched.mjs's Stop gate, and any future one must import this file
-// rather than carry its own copy. Two hooks each holding an independent
-// copy of this logic is exactly the shape that lets a redaction fix land in
-// one and not the other; this project has already shipped four
+// The one module EVERY hook this kit installs imports — lint-touched.mjs's
+// PostToolUse sensor, verify-touched.mjs's Stop gate, and session-brief.mjs's
+// SessionStart brief — and any future one must import this file rather than
+// carry its own copy of anything in it. Two hooks each holding an
+// independent copy of this logic is exactly the shape that lets a fix land
+// in one and not the other; this project has already shipped four
 // secret-exposure defects, and "the fix only ever reached one of the two
 // copies" is a failure mode this extraction removes structurally, not by
 // convention.
+//
+// It is named for the first thing it shared (stderr redaction) and now
+// carries four: the two redaction layers, the output BOUNDS, the
+// session-marker machinery, and — whole-branch review, F3/F4 — the two
+// facts every hook needs before it can do anything at all: where the
+// repository root is, and where this repository's handoff file lives. The
+// name is kept rather than widened because `REDACT_PATH` is recorded in
+// every manifest this tool has ever written, and a rename would orphan
+// those entries; the scope is stated here instead.
+//
+// Whole-branch review, F3: session-brief.mjs is the reason the bound below
+// has a byte limit at all — `MAX_REPORT_LINES`' own comment cited it as the
+// model — and it was the one hook that never got that byte limit, because
+// it predates this module and could not import it. It imports it now.
 //
 // Two independent layers:
 //
@@ -35,7 +49,7 @@
 // own concern and stays in the caller; it has nothing to do with redaction
 // and does not belong in a shared chokepoint.
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -93,7 +107,8 @@ export function maskCredentials(line) {
 // Shared so neither hook's bound can silently drift out of sync with the
 // other's — see MAX_REPORT_LINES/MAX_REPORT_BYTES below.
 
-/** Mirrors session-brief.mjs's own bound on what is printed to a session. */
+/** The line bound every hook's output shares, session-brief.mjs included —
+ * it used to carry its own copy of this number and nothing else. */
 export const MAX_REPORT_LINES = 60;
 /**
  * A line-count bound alone cannot stop a single very long line (minified
@@ -102,16 +117,61 @@ export const MAX_REPORT_LINES = 60;
  * buffer — measured: a single 50 000-character line reached stderr in full
  * before this existed. 10 000 bytes is generous for a genuine diagnostic
  * and far below anything that would flood a turn.
+ *
+ * It is also EXACTLY Claude Code's own documented cap, which is the reason
+ * the number matters rather than merely being generous. From the hooks
+ * reference: a hook's `additionalContext`, `systemMessage` and
+ * `initialUserMessage` strings, and its plain stdout, are capped at 10,000
+ * characters; over the limit, Claude Code saves the output to a file in the
+ * session directory and replaces it with the file path plus a preview of the
+ * first 2,000 characters — and "Claude Code doesn't ask Claude to read the
+ * file". So exceeding this is not a flooded context, it is the output
+ * SILENTLY NOT ARRIVING. That is what F3 cost session-brief.mjs: past the
+ * cap, the handoff was replaced by a path Claude is never told to open, and
+ * nothing anywhere reported it.
  */
 export const MAX_REPORT_BYTES = 10_000;
+
+/**
+ * Cuts `str` to at most `maxBytes` UTF-8 bytes, never mid-character: `end`
+ * is the first byte NOT kept, so while it is a UTF-8 continuation byte
+ * (`10xxxxxx`) the character before it is being split and the cut walks
+ * back. Without this, a multi-byte character straddling the boundary decodes
+ * to U+FFFD — a corrupted last character in the one place a user is reading
+ * for information.
+ */
+function sliceUtf8(str, maxBytes) {
+  const buf = Buffer.from(str, 'utf8');
+  if (buf.length <= maxBytes) return str;
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString('utf8');
+}
 
 /**
  * Bounds `lines` first by count, then by total byte size, and returns the
  * final string to write (without a trailing newline). `header` is
  * prepended before either bound is computed, since it counts toward the
- * byte budget too. Neither hook may write to stderr through any path but
- * this one plus its own single `process.stderr.write` call site — see each
- * hook's own comment on its chokepoint.
+ * byte budget too. No hook may write to its output stream through any path
+ * but this one plus its own single `write` call site — see each hook's own
+ * comment on its chokepoint.
+ *
+ * Whole-branch review, F3: the byte bound used to cut at exactly
+ * `MAX_REPORT_BYTES` and THEN append the truncation notice, so the string
+ * this returned was ~10,050 bytes — over Claude Code's 10,000-character cap
+ * by the length of its own notice, which is precisely the cap this constant
+ * exists to stay under. Two things are fixed here, because a bound that is
+ * fifty bytes over is not a bound at all for the failure mode it exists to
+ * prevent:
+ *
+ *   - the notice is now INSIDE the budget, not appended after it; and
+ *   - one further byte is reserved for the single trailing newline every
+ *     caller adds (all three hooks write `boundReport(...) + '\n'`), so the
+ *     bound holds on what is actually WRITTEN rather than on an
+ *     intermediate string nothing emits.
+ *
+ * Contract, therefore: this returns at most `MAX_REPORT_BYTES - 1` bytes,
+ * and `boundReport(...) + '\n'` is at most `MAX_REPORT_BYTES`.
  */
 export function boundReport(lines, header = '') {
   const shown = lines.slice(0, MAX_REPORT_LINES);
@@ -119,11 +179,69 @@ export function boundReport(lines, header = '') {
   if (lines.length > MAX_REPORT_LINES) {
     report += `\n--- truncated: ${lines.length - MAX_REPORT_LINES} more line(s) ---`;
   }
-  if (Buffer.byteLength(report, 'utf8') > MAX_REPORT_BYTES) {
-    const buf = Buffer.from(report, 'utf8').subarray(0, MAX_REPORT_BYTES);
-    report = buf.toString('utf8') + '\n--- truncated: output exceeded the byte limit ---';
+  const budget = MAX_REPORT_BYTES - 1; // the caller's trailing newline
+  if (Buffer.byteLength(report, 'utf8') > budget) {
+    const notice = '\n--- truncated: output exceeded the byte limit ---';
+    report = sliceUtf8(report, budget - Buffer.byteLength(notice, 'utf8')) + notice;
   }
   return report;
+}
+
+// --- The two facts every hook needs before it can do anything -------------
+
+/**
+ * The repository root, as Claude Code reports it, falling back to the
+ * process's own working directory.
+ *
+ * Whole-branch review, F4, secondary: three hooks, two conventions. This is
+ * what lint-touched.mjs and verify-touched.mjs both already did inline;
+ * session-brief.mjs used a bare `process.cwd()` and DOCUMENTED the
+ * assumption ("Assumes cwd is the repository root at SessionStart") rather
+ * than removing it — so any SessionStart invocation whose cwd was not the
+ * project root printed "no HANDOFF.md in this repository yet" into the
+ * model's context, as a false premise, at the start of every session. One
+ * function, three callers.
+ */
+export function projectRoot() {
+  return process.env.CLAUDE_PROJECT_DIR || process.cwd();
+}
+
+/**
+ * The two conventional locations for a repository's handoff file, in
+ * precedence order, and the one function that resolves them.
+ *
+ * Whole-branch review, F4. `detect-harness.mjs` credited `P4.handoff` from
+ * `existsAny(root, ['HANDOFF.md', 'docs/HANDOFF.md'])` while the hook it
+ * installs read `join(process.cwd(), 'HANDOFF.md')` and nothing else — so a
+ * repository whose handoff lives at `docs/HANDOFF.md` was credited
+ * `declared` by `detect` and then told, by the artefact that same run
+ * installed three lines later, that it had no handoff file at all. Printed
+ * into the model's context, not a terminal: a false premise the agent starts
+ * from, about a file this very tool had already proved exists.
+ *
+ * The direction chosen is THE HOOK LOOKS WHERE DETECTION CREDITED, not the
+ * reverse, for two reasons. First, `docs/HANDOFF.md` is a real convention —
+ * this list is the tool's own admission that repositories put it there — and
+ * narrowing detection to the root would make `P4.handoff` propose CREATING a
+ * root `HANDOFF.md` in a repository that already has one under `docs/`,
+ * which turns a false sentence into a duplicate file and leaves the user
+ * with two handoffs that disagree. A wrong write is worse than a wrong read.
+ * Second, widening the hook costs one extra `existsSync`.
+ *
+ * `detect-harness.mjs` imports THIS function rather than keeping its own
+ * list, so the two sides cannot drift again. That is the only way they can
+ * be shared: the hook is a file copied verbatim into a user's repository,
+ * where the only module beside it is this one, so a constant in
+ * `scripts/lib/` could never reach it. The dependency runs the other way,
+ * at build time, and the installed copy depends on nothing new.
+ */
+export const HANDOFF_CANDIDATES = ['HANDOFF.md', 'docs/HANDOFF.md'];
+
+export function findHandoff(root) {
+  for (const rel of HANDOFF_CANDIDATES) {
+    if (existsSync(join(root, rel))) return rel;
+  }
+  return null;
 }
 
 // --- Session-scoped marker state, shared by both hooks' own bounding -----

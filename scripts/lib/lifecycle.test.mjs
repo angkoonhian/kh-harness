@@ -6,6 +6,15 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
+// Whole-branch review, F2: the two commands can only be held to agree about
+// the capabilities `apply` is actually able to write. A prompt-gated check
+// (P0.recon, P1.instructions, P1.architecture) has no generator at all, so
+// `detect` keeps offering "run the prompt" forever by design and `apply`
+// correctly says it has nothing to do — that asymmetry is not a
+// contradiction. Membership-tested against the real table rather than a
+// hand-maintained id list, so a capability added later is covered with no
+// test edit (same discipline as propose.test.mjs's coherence test).
+import { GENERATORS } from './propose.mjs';
 
 const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
 const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
@@ -886,7 +895,105 @@ test('a repository that gitignores .claude/ still recognises its own hook as dec
 
   // And it must not re-propose on every subsequent run either (the exact
   // "re-proposes on every run" symptom the coordinator described).
+  //
+  // Whole-branch review, F2: this used to read `run(APPLY, d)`, which
+  // structurally CANNOT exhibit the symptom — `propose.mjs` never
+  // re-proposes a file already in the manifest, so `apply` says "already
+  // satisfies" whatever `detect` reports. Run verbatim against the
+  // repository that actually had the defect, this assertion passed. The
+  // symptom lives in DETECT's output, so that is what it reads now, and
+  // both commands are asserted so a future divergence between them is a
+  // failure rather than a thing a reader has to notice.
+  const second = JSON.parse(run(DETECT, d, '--json'));
+  const stillProposing = second.checks.filter(c => c.proposal && c.id in GENERATORS).map(c => c.id);
+  assert.deepEqual(stillProposing, [],
+    `detect must stop proposing anything apply can write: ${JSON.stringify(stillProposing)}`);
   assert.match(run(APPLY, d), /no proposals|already satisfies/i);
+});
+
+// Whole-branch review, F2 — the missing fixture, and the reason the defect
+// survived 647 passing tests: WORKSPACE was tested (LOAD-BEARING-2) and
+// gitignored-`.claude/` was tested (immediately above, on a single-package
+// fixture where P1.pathrules is not decidable at all), and the defect lived
+// only in their INTERSECTION. `P1.pathrules` answered presence from the scan
+// list, so on this repository shape `detect` said `absent → scaffold
+// .claude/rules/` on every run forever while `apply`, a second later on the
+// same tree, said "already satisfies every applicable step" — two commands
+// of one tool contradicting each other about the same repository.
+test('F2: a WORKSPACE that gitignores .claude/ — detect and apply agree about P1.pathrules after apply', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-ws-gitignore-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({
+    name: 'app', workspaces: ['packages/*'], scripts: { lint: 'eslint .', typecheck: 'tsc --noEmit' },
+  }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  writeFileSync(join(d, 'tsconfig.json'), '{}');
+  writeFileSync(join(d, '.gitignore'), '.claude/\n');
+  mkdirSync(join(d, 'packages/api'), { recursive: true });
+  writeFileSync(join(d, 'packages/api/package.json'), JSON.stringify({ name: '@app/api', scripts: {} }));
+  writeFileSync(join(d, 'packages/api/index.ts'), 'export const ok = true;\n');
+  mkdirSync(join(d, 'packages/web'), { recursive: true });
+  writeFileSync(join(d, 'packages/web/package.json'), JSON.stringify({ name: '@app/web', scripts: {} }));
+  writeFileSync(join(d, 'packages/web/index.ts'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  // Stage 1: genuinely absent, and genuinely proposed.
+  const before = JSON.parse(run(DETECT, d, '--json'));
+  const pr0 = before.checks.find(c => c.id === 'P1.pathrules');
+  assert.equal(pr0.state, 'absent', 'fixture sanity: a two-package workspace with no rules yet');
+  assert.ok(pr0.proposal);
+
+  run(APPLY, d, '--yes');
+  assert.ok(existsSync(join(d, '.claude/rules/packages-api.md')), 'the scaffold is genuinely written to disk');
+  assert.ok(existsSync(join(d, '.claude/rules/packages-web.md')));
+
+  // Fixture sanity: `.claude/` really is invisible to the scan list, which
+  // is what made the old scan-list read permanently empty here. Without
+  // this, the test could pass for a reason unrelated to the fix.
+  const after = JSON.parse(run(DETECT, d, '--json'));
+  assert.deepEqual(after.harness.claudeDir.hooks, [],
+    'fixture sanity: .claude/ must be invisible to the file scan for this test to mean anything');
+
+  const pr1 = after.checks.find(c => c.id === 'P1.pathrules');
+  assert.equal(pr1.state, 'declared', 'detect must see the rule files apply just wrote');
+  assert.equal(pr1.proposal, null, 'an unsatisfiable proposal must never be printed again');
+  // Counted and disclosed, never named — the files are gitignored.
+  assert.equal(pr1.evidence.length, 1);
+  assert.match(pr1.evidence[0], /2 rule files under \.claude\/rules\//);
+  assert.equal(pr1.evidence[0].includes('packages-api'), false);
+
+  // The whole point: the two commands now say the same thing about every
+  // capability apply is able to write.
+  const stillProposing = after.checks.filter(c => c.proposal && c.id in GENERATORS).map(c => c.id);
+  assert.deepEqual(stillProposing, [],
+    `detect must stop proposing anything apply can write: ${JSON.stringify(stillProposing)}`);
+  assert.match(run(APPLY, d), /no actions|already satisfies/i);
+});
+
+// Whole-branch review, F2, second half: `under(files, '.claude/rules/')`
+// passed no suffix, so ANY file under `.claude/rules/` credited the
+// capability. Claude Code reads only `.md` there.
+test('F2: a stray non-markdown file under .claude/rules/ does not credit P1.pathrules', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-rules-stray-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', workspaces: ['packages/*'], scripts: { test: 'vitest' } }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  writeFileSync(join(d, 'tsconfig.json'), '{}');
+  mkdirSync(join(d, 'packages/api'), { recursive: true });
+  writeFileSync(join(d, 'packages/api/package.json'), JSON.stringify({ name: '@app/api', scripts: {} }));
+  writeFileSync(join(d, 'packages/api/index.ts'), 'export const ok = true;\n');
+  mkdirSync(join(d, '.claude/rules'), { recursive: true });
+  writeFileSync(join(d, '.claude/rules/.gitkeep'), '');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  const c = JSON.parse(run(DETECT, d, '--json')).checks.find(x => x.id === 'P1.pathrules');
+  assert.equal(c.state, 'absent', 'a .gitkeep is not a rule Claude Code will ever read');
+  assert.ok(c.proposal);
 });
 
 // Coordinator finding (CRITICAL): a forged manifest entry

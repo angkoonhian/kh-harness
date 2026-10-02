@@ -58,6 +58,7 @@ import {
   MAX_BLOCKS_PER_SESSION,
   markerPath,
   maskCredentials,
+  projectRoot,
   readJSONMarker,
   safeSessionId,
   signatureOf,
@@ -271,7 +272,9 @@ async function main() {
   const sessionId = safeSessionId(payload.session_id);
   if (sessionId === null) return 0; // cannot safely track state for this session — see safeSessionId's own comment
 
-  const root = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Shared with session-brief.mjs, which used a bare process.cwd() —
+  // whole-branch review, F4: three hooks, two conventions, one of them wrong.
+  const root = projectRoot();
   const scripts = readScripts(root);
   if (!scripts) return 0; // no package.json, or unreadable — nothing to verify
 

@@ -504,7 +504,7 @@ const CHECKS = [
     // generator). A single-package repository has no sub-directory split
     // worth scaffolding a rule file for, so the honest answer is to ASK,
     // not propose one.
-    check: ({ harness, stack }) => {
+    check: ({ harness, stack, files }) => {
       // Coordinator ruling (Major, reverting an 8b over-correction): a
       // brief attempt here narrowed `declared` to "every target THIS
       // workspace's own layout calls for is present", on the theory that a
@@ -522,8 +522,31 @@ const CHECKS = [
       // the files found named as evidence. This is not an exception to the
       // 8b ruling; it is the ruling applied to an artefact whose value is
       // its CONTENT rather than its presence.
-      if (harness.claudeDir.rules.length) {
-        return { state: 'declared', evidence: harness.claudeDir.rules };
+      //
+      // Whole-branch review, F2: `harness.claudeDir.rules` is now read off
+      // DISK (detect-harness.mjs's `claudeRuleFiles`), like every other
+      // field a check decides from, so a workspace that gitignores
+      // `.claude/` is no longer told forever that the capability `apply`
+      // just installed is absent.
+      //
+      // What is NAMED as evidence is still only what the SCAN list already
+      // surfaced. That is `registeredHook`'s own discipline a few hundred
+      // lines above, for the same reason: a path the scan list shows is one
+      // the user chose to make visible, while a path found by a disk read
+      // alone may be one they deliberately kept out of git — and this
+      // evidence is serialised into `docs/harness/detect.json`, which IS
+      // committed. So a disk-only rule file is COUNTED and DISCLOSED,
+      // exactly as the hook branch discloses its own, and never named.
+      const rules = harness.claudeDir.rules ?? [];
+      if (rules.length) {
+        const visible = new Set(files);
+        const named = rules.filter(r => visible.has(r));
+        const hidden = rules.length - named.length;
+        const evidence = [...named];
+        if (hidden) {
+          evidence.push(`${hidden} rule file${hidden === 1 ? '' : 's'} under .claude/rules/ (not visible to the file scan — .claude/ may be gitignored; confirmed on disk, and not named here because the scan list is what the user chose to make visible)`);
+        }
+        return { state: 'declared', evidence };
       }
       const targets = pathRuleTargets(stack);
       if (targets.length) {

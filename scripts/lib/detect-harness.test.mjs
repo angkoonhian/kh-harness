@@ -424,3 +424,67 @@ test('hookEvents records the resolved script, never the command or its arguments
   assert.equal(serialised.includes(KNOWN), false, 'nor a recognised one');
   assert.equal(serialised.includes('example.invalid'), false, 'nor anything else from the command');
 });
+
+// --- Whole-branch review, F8: the deny-rule pair read ONE settings file
+// --- while `hookEvents`, three fields away, read both ----------------------
+
+test('F8: a deny rule that lives only in settings.local.json is seen, exactly as a hook there already was', () => {
+  const d = repo();
+  write(d, '.claude/settings.local.json', JSON.stringify({
+    permissions: { deny: ['Edit(*-lock.json)'] },
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node nope.mjs' }] }] },
+  }));
+  const h = detectHarness(d, listFiles(d).files);
+  assert.equal(h.claudeDir.settings, false, 'fixture sanity: there is no settings.json at all');
+  assert.equal(h.claudeDir.localSettings, true);
+  // The asymmetry F8 measured: hookEvents saw the local file, the deny pair
+  // did not, so P2.protected reported `absent` with EMPTY evidence and apply
+  // wrote the identical rule a second time into the other file.
+  assert.ok(h.claudeDir.hookEvents.SessionStart, 'fixture sanity: hookEvents always read this file');
+  assert.equal(h.claudeDir.denyRules, 1, 'a rule in settings.local.json is in effect and must be counted');
+  assert.deepEqual(h.claudeDir.denyRuleList, ['Edit(*-lock.json)']);
+});
+
+test('F8: denyRules and denyRuleList are the length and the contents of ONE list, merged across both files and deduped', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(a)', 'Edit(shared)'] } }));
+  write(d, '.claude/settings.local.json', JSON.stringify({ permissions: { deny: ['Edit(shared)', 'Edit(b)'] } }));
+  const h = detectHarness(d, listFiles(d).files);
+  assert.deepEqual(h.claudeDir.denyRuleList, ['Edit(a)', 'Edit(shared)', 'Edit(b)'], 'settings.json order first, then the local file, deduped');
+  assert.equal(h.claudeDir.denyRules, h.claudeDir.denyRuleList.length, 'the count and the list can never report different lengths');
+});
+
+// --- Whole-branch review, F2: claudeDir.rules is read off DISK -------------
+
+test('F2: claudeDir.rules finds a rule file the file scan cannot see (a gitignored .claude/)', () => {
+  const d = repo();
+  write(d, '.claude/rules/packages-api.md', '---\npaths:\n  - "packages/api/**/*"\n---\n');
+  // Exactly what a gitignored `.claude/` produces from the real scan.
+  const h = detectHarness(d, ['README.md']);
+  assert.deepEqual(h.claudeDir.rules, ['.claude/rules/packages-api.md'],
+    'every sibling .claude/ field reads disk; this one used to read the scan list and was therefore permanently empty here');
+});
+
+test('F2: claudeDir.rules counts only .md, and finds one in a subdirectory', () => {
+  const d = repo();
+  write(d, '.claude/rules/.gitkeep', '');
+  write(d, '.claude/rules/.DS_Store', 'junk');
+  write(d, '.claude/rules/nested/web.md', '# web\n');
+  const h = detectHarness(d, listFiles(d).files);
+  assert.deepEqual(h.claudeDir.rules, ['.claude/rules/nested/web.md'],
+    'Claude Code reads only .md under .claude/rules/, and reads it recursively');
+});
+
+test('F2: claudeDir.rules is [] when .claude/rules/ is absent, and never throws', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  assert.doesNotThrow(() => detectHarness(d, listFiles(d).files));
+  assert.deepEqual(detectHarness(d, listFiles(d).files).claudeDir.rules, []);
+});
+
+test('F2: claudeDir.rules is [] when .claude/rules is a plain FILE, not a directory', () => {
+  const d = repo();
+  write(d, '.claude/rules', 'not a directory');
+  assert.doesNotThrow(() => detectHarness(d, listFiles(d).files));
+  assert.deepEqual(detectHarness(d, listFiles(d).files).claudeDir.rules, []);
+});
