@@ -14,9 +14,30 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve, isAbsolute, basename, delimiter } from 'node:path';
 
-const LINT_TIMEOUT_MS = 30_000;
+// Overridable so a test can exercise the timeout path in milliseconds, not
+// minutes; defaults to the real 30s bound otherwise.
+const LINT_TIMEOUT_MS = Number(process.env.HK_LINT_TIMEOUT_MS) || 30_000;
 // Mirrors session-brief.mjs's own bound on what it prints to a session.
 const MAX_REPORT_LINES = 60;
+
+/**
+ * `tool_input.file_path` is attacker-shaped: it is NEVER required to exist
+ * on disk (existsSync below is only ever used to locate the OWNING
+ * package.json, never to validate this path), and it goes straight into a
+ * shell command string. A hand-quoted argument is exactly the kind of thing
+ * that is subtly wrong on one platform — a `"`-escaping scheme that holds on
+ * POSIX can still let a `"` terminate a cmd.exe-quoted argument early,
+ * because `\"` is not an escape to cmd.exe. Rather than trying to make
+ * quoting provably correct on both shells, this allowlist removes the
+ * problem instead: only a path built entirely from these characters is ever
+ * interpolated into the command string at all. Anything else is NEVER
+ * appended — the lint script runs unmodified, and ruling 1's attribution
+ * filter (mentionsFile) still does its job, because that filter is already
+ * required regardless of whether the path was appended (`eslint .` ignores
+ * an appended path anyway). Appending is a performance optimization only;
+ * correctness never depends on it.
+ */
+const SAFE_RELATIVE_PATH = /^[A-Za-z0-9_./-]+$/;
 
 // `.ts/.tsx/.js/.jsx/.mjs/.cjs` are the extensions a package.json-owned
 // project's lint script plausibly covers; `.py` is the pyproject.toml
@@ -65,10 +86,11 @@ function readLintScript(ownerDir) {
   }
 }
 
+// Belt-and-braces quoting for the allowlisted case only — SAFE_RELATIVE_PATH
+// already excludes every character that would need escaping (no space, no
+// quote, no shell metacharacter), so this can never be handed a dangerous
+// value. It is not what makes the append safe; the allowlist is.
 function quoteArg(value) {
-  // Minimal shell-quoting for the one dynamic argument we append (the
-  // touched file's path) — the lint script's own body is never quoted or
-  // modified, only ever forwarded to the shell verbatim.
   return process.platform === 'win32'
     ? `"${value.replace(/"/g, '\\"')}"`
     : `'${value.replace(/'/g, "'\\''")}'`;
@@ -116,12 +138,16 @@ function main() {
 
   // Invoked as the project's own lint script would be by `npm run lint --
   // <file>`, but through a shell directly (see package.json's own
-  // `scripts.lint`): the script body is never altered, only the touched
-  // file is appended, quoted. `scripts.lint`'s TEXT is NEVER printed,
-  // logged, or included in any error message below — only ITS OWN
-  // CAPTURED OUTPUT ever reaches stderr, and only once it is confirmed to
-  // mention the edited file (see mentionsFile / the attribution filter).
-  const fullCommand = `${lintScript} ${quoteArg(filePath)}`;
+  // `scripts.lint`): the script body is never altered. The touched file is
+  // appended ONLY when it matches SAFE_RELATIVE_PATH — see that constant's
+  // comment for why a non-matching path is never appended at all, rather
+  // than escaped. `scripts.lint`'s TEXT is NEVER printed, logged, or
+  // included in any error message below — only ITS OWN CAPTURED OUTPUT ever
+  // reaches stderr, and only once it is confirmed to mention the edited file
+  // (see mentionsFile / the attribution filter).
+  const fullCommand = SAFE_RELATIVE_PATH.test(filePath)
+    ? `${lintScript} ${quoteArg(filePath)}`
+    : lintScript;
   const binDirs = [join(ownerDir, 'node_modules', '.bin'), join(root, 'node_modules', '.bin')];
   const PATH = [...binDirs, process.env.PATH ?? process.env.Path ?? ''].filter(Boolean).join(delimiter);
 

@@ -165,6 +165,40 @@ test('reverts an untouched settings patch and leaves unrelated settings', () => 
   assert.deepEqual(s.permissions, { deny: ['Edit(x)'] }, 'their settings survive');
 });
 
+// --- regression: addHookEntry's optional `matcher` must not move the hash
+// of a matcher-less entry, or every settings patch recorded by an install
+// made before that parameter existed becomes unrevertable (settings.json
+// stays dirty, silently, on uninstall). This hard-codes the hash exactly as
+// the PRE-task-3 addHookEntry(settings, event, entry) — no fourth argument,
+// no conditional — would have computed it, independent of today's
+// settings-merge.mjs, so a future change to canon() or the matcherEntry
+// shape cannot accidentally make this pass by coincidence.
+test('REGRESSION: a settings patch recorded before the matcher parameter existed still reverts', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const entry = { type: 'command', command: 'node .claude/scripts/session-brief.mjs' };
+  const preTask3MatcherEntry = { hooks: [entry] }; // the ONLY shape the old code ever built
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
+    permissions: { deny: ['Edit(x)'] },
+    hooks: { SessionStart: [preTask3MatcherEntry] },
+  }));
+  // sha256(canon({ hooks: [entry] })) — computed independently with the
+  // pre-task-3 formula, not imported from today's settings-merge.mjs.
+  const preTask3Hash = 'ee4263dd5bed2b7437f598ea00501508b42f9467edb4d8ca9d31e772c31238bd';
+  const manifest = emptyManifest('0.2.0');
+  manifest.settingsPatches.push({
+    event: 'SessionStart', container: '/hooks/SessionStart', entrySha256: preTask3Hash,
+    step: 16, checkId: 'P4.sessionbrief', appliedAt: 'then',
+  });
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.revert.length, 1, 'the old patch must still be found and planned for revert');
+  runUninstall({ root: d, manifest, plan });
+  const s = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+  assert.equal(s.hooks, undefined, 'the pre-existing hook is gone — the revert actually ran, not a no-op');
+  assert.deepEqual(s.permissions, { deny: ['Edit(x)'] }, 'unrelated settings survive');
+});
+
 test('keeps a settings patch the user edited', () => {
   const d = repo();
   mkdirSync(join(d, '.claude'), { recursive: true });
