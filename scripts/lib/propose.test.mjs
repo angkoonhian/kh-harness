@@ -1,12 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest } from './manifest.mjs';
 import { buildProposals, GENERATORS } from './propose.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
+import { detectStack } from './detect-stack.mjs';
+import { listFiles } from './scan.mjs';
 
 const root = () => mkdtempSync(join(tmpdir(), 'hk-prop-'));
 const check = (o) => ({ id: 'P4.handoff', step: 16, phase: 4, state: 'absent', decidable: true, evidence: [], proposal: 'create HANDOFF.md', ...o });
@@ -403,9 +405,11 @@ test('P1.pathrules proposes nothing when stack.packages is empty (the default)',
 // with isWorkspace:false. Not a shape detect-stack.mjs's real workspace
 // path ever produces on its own (isWorkspace is false only when no
 // workspace pattern was found, in which case `membersFor` never returns a
-// non-root package either) — built directly to pin the GATE, the same way
-// other tests in this suite inject a field real detection cannot produce
-// (see the SECRET tests' `scriptBodies`) to isolate one specific guard.
+// non-root package either) — built directly to pin the GATE. Note the
+// difference from the three `scriptBodies` tests F13 deleted: this fixture's
+// unreal field (`isWorkspace: false` beside a non-root package) is read by
+// the production line under test, so a mutation to that line fails this
+// test. Theirs was not read by anything at all.
 test('MUTATION GUARD: the isWorkspace gate is consulted explicitly — a non-root package with isWorkspace:false still yields nothing', () => {
   const stack = {
     packages: [{ name: 'api', dir: 'packages/api', manifestPath: 'packages/api/package.json', scripts: [] }],
@@ -992,35 +996,33 @@ test('P1.bootstrap never invents a lint step even when one IS declared on the ro
   assert.equal(/lint/.test(b.contents), false, 'lint is declared but is still never written — only build/test are proven bootstrap steps');
 });
 
-// Ruling 4: Plan 1 shipped a Critical where package.json script BODIES were
-// copied into generated output and leaked a credential. This generator only
-// ever sees script NAMES (detect-stack.mjs strips bodies before the stack
-// object exists at all), but this test proves it directly: even when a
-// token-bearing body is reachable on the stack object (simulating a future
-// detection regression), it never reaches the generated script.
-test('SECRET: a token-bearing script body reachable on the stack object never appears in the generated bootstrap script', () => {
-  const leakedToken = 'sentry-cli releases new --auth-token sk-leaked-TOKEN-should-never-appear';
-  const stack = {
-    languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
-    packages: [{
-      name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'],
-      // Not a real field detect-stack.mjs produces — simulates the exact
-      // leak shape Plan 1 shipped, to prove this generator never reads it.
-      scriptBodies: { build: leakedToken },
-    }],
-    ci: [],
-  };
-  // Sanity first: the fixture must actually carry the token somewhere
-  // reachable, or "it never appears in output" would be true for the wrong
-  // reason (the fixture never crossed the branch under test).
-  assert.ok(JSON.stringify(stack).includes(leakedToken), 'fixture sanity: the token must actually be reachable on the stack object');
-  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['package-lock.json'] }));
-  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
-  assert.ok(b);
-  assert.equal(b.contents.includes(leakedToken), false, 'a script BODY must never be copied into generated output — names only');
-  assert.equal(b.contents.includes('auth-token'), false);
-});
-
+// Whole-branch review, F13: a `SECRET: a token-bearing script body never
+// reaches <X>` test used to sit here. It was unfalsifiable by construction —
+// its fixture put the token in a `scriptBodies` field, and
+// `grep -rn scriptBodies scripts/ assets/` finds ZERO production readers:
+// `detectStack` never emits such a field and nothing consumes one. The test
+// asserted that a token placed in a field no code reads does not come out of
+// code that does not read it, and the `assert.ok(JSON.stringify(stack)
+// .includes(leakedToken), 'fixture sanity: ...')` guard it carried made that
+// harder to see, not easier — it proved the token was on the fixture object,
+// never that it reached the function.
+//
+// Measured, not argued: making `detectStack` actually emit script BODIES —
+// the only way a `scriptBodies` leak could ever happen — is killed by ONE
+// test, and it is not any of the three carrying this label. It is
+// `detect-cli.test.mjs`'s `SECURITY: a package.json script body never
+// reaches stdout or detect.json`, which writes a real `package.json` with
+// `sentry-cli --auth-token <marker>` in a script body, runs the real CLI,
+// and checks stdout, detect.json AND the human summary — then asserts the
+// script's PRESENCE still survives, so the fix cannot be "stop reporting
+// scripts". That test holds this guarantee.
+//
+// Deleted rather than kept, per the rule this branch adopted: a test whose
+// name claims a guarantee it does not provide is worse than no test, because
+// it stops the next person looking. The one surface the real guard did NOT
+// cover — the contents of the files the GENERATORS write — is now pinned by
+// `SECURITY: no generated file contains a package.json script BODY` in
+// propose.test.mjs, through real `detectStack` output from a real fixture.
 test('a declared P1.bootstrap check yields no proposals, even with a full stack present', () => {
   const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: false,
     packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
@@ -1203,4 +1205,75 @@ test('STAMP INVARIANT: every file a generator can produce carries the Generated 
   for (const p of fileProposals) {
     assert.match(p.contents, /Generated by harness-kit/, `${p.path} (from ${p.checkId}) must carry the stamp, or uninstall can never remove it`);
   }
+});
+
+// Whole-branch review, F13, the replacement. The real guarantee the three
+// deleted tests gestured at IS held — by `detect-cli.test.mjs`'s `SECURITY:
+// a package.json script body never reaches stdout or detect.json`, which
+// covers stdout, `detect.json` and the human summary through the real CLI.
+// What it does NOT cover is the contents of the files the GENERATORS write,
+// and nothing else did either: `bootstrapScriptLines` reads
+// `selectProfile(stack).commands(pkg)`, which is built from script NAMES,
+// and a single change there to read a BODY instead would have leaked a
+// credential into a file written to the user's repository with no test
+// noticing.
+//
+// This fixture is a REAL `package.json` through REAL `detectStack`, so the
+// token's only route into a proposal is production code choosing to read it
+// — not a field invented by the fixture that no code reads.
+test('SECURITY: no generated file contains a package.json script BODY (real detectStack, real fixture)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-body-'));
+  const MARKER = 'hk-marker-' + 'Q'.repeat(24);
+  mkdirSync(join(d, 'packages/api'), { recursive: true });
+  writeFileSync(join(d, 'package.json'), JSON.stringify({
+    name: 'app',
+    workspaces: ['packages/*'],
+    scripts: {
+      build: `sentry-cli releases new --auth-token ${MARKER}`,
+      test: `vitest --reporter=json --token ${MARKER}`,
+      lint: `eslint . --token ${MARKER}`,
+      typecheck: `tsc --noEmit # ${MARKER}`,
+    },
+  }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  writeFileSync(join(d, 'packages/api/package.json'), JSON.stringify({ name: '@app/api', scripts: {} }));
+  writeFileSync(join(d, 'packages/api/index.ts'), 'export const ok = true;\n');
+
+  const files = listFiles(d).files;
+  const stack = detectStack(d, files);
+  // Fixture sanity, and the thing the deleted tests never established: the
+  // token is genuinely in the repository the generators are reading, and the
+  // detected stack genuinely carries the script NAMES that make every
+  // generator fire.
+  assert.equal(JSON.stringify(stack).includes(MARKER), false,
+    'detectStack must strip bodies before the stack object exists at all — names only');
+  const rootPkg = stack.packages.find(p => p.dir === '.');
+  assert.deepEqual(rootPkg.scripts, ['build', 'lint', 'test', 'typecheck'],
+    'fixture sanity: the script NAMES must survive, or no generator fires and this test proves nothing');
+
+  const checks = [
+    { id: 'P1.bootstrap', step: 5, state: 'absent', decidable: true, proposal: 'p', evidence: [] },
+    { id: 'P1.pathrules', step: 7, state: 'absent', decidable: true, proposal: 'p', evidence: [] },
+    { id: 'P2.sensor', step: 9, state: 'absent', decidable: true, proposal: 'p', evidence: [] },
+    { id: 'P2.stopgate', step: 10, state: 'absent', decidable: true, proposal: 'p', evidence: [] },
+    { id: 'P4.handoff', step: 16, state: 'absent', decidable: true, proposal: 'p', evidence: [] },
+    { id: 'P4.sessionbrief', step: 16, state: 'absent', decidable: true, proposal: 'p', evidence: [] },
+  ];
+  const proposals = buildProposals({ checks, manifest: null, kitVersion: '0.1.0', harness: {}, root: d, stack, files });
+  const written = proposals.filter(p => p.kind === 'file');
+  assert.ok(written.length >= 6, `fixture sanity: expected most generators to fire, got ${JSON.stringify(written.map(p => p.path))}`);
+
+  for (const p of written) {
+    assert.equal(p.contents.includes(MARKER), false, `${p.path} carries a script BODY`);
+  }
+  // And the bootstrap script specifically still contains the derived
+  // COMMANDS, so the guarantee cannot be satisfied by writing nothing.
+  const bootstrap = written.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(bootstrap, 'the bootstrap generator must have fired');
+  // `auth-token` is checked only here: `harness-redact.mjs` legitimately
+  // contains that word, in its own `CREDENTIAL_RULES` masking pattern.
+  assert.equal(bootstrap.contents.includes('auth-token'), false);
+  assert.match(bootstrap.contents, /npm ci/);
+  assert.match(bootstrap.contents, /npm run build/);
+  assert.match(bootstrap.contents, /npm run test/);
 });

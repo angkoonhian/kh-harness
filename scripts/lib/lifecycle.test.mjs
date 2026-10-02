@@ -1211,3 +1211,62 @@ test('apply names its own count "actions" and discloses the capability-gap count
   assert.match(out, /\d+ actions? to close/, 'apply must name its own count differently');
   assert.match(out, new RegExp(`${gapCount} capability gap`), 'the gap count named here must be the SAME number detect itself reports');
 });
+
+// --- Whole-branch review, F9 ----------------------------------------------
+//
+// `apply` runs `listFiles`, `detectStack`, `detectHarness`, `detectExposures`
+// and `buildGaps` — the same work `detect` does — and printed only proposals
+// and diffs. So a user who runs `apply --yes` without first running `detect`
+// was never told about a live token THIS RUN had just found, the nested
+// repositories it did not descend into, or any of the questions it could not
+// answer. Through the real CLI, and on the DRY RUN path too, since that is
+// the one a cautious user reaches for first.
+test('F9: apply discloses the credential finding, the nested repository and the question count it computed', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-f9-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: {} }));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  // A token this run genuinely finds, in a file the scan genuinely lists.
+  writeFileSync(join(d, 'src/creds.ts'), 'export const T = "ghp_0123456789abcdefghij0123456789";\n');
+  // A nested repository the scan genuinely declines to descend into, found
+  // through the gitignored-directory sweep (gitignoring a vendor tree is
+  // also what keeps `git add -A` from refusing an embedded repository).
+  writeFileSync(join(d, '.gitignore'), 'vendor/\n');
+  mkdirSync(join(d, 'vendor/libx'), { recursive: true });
+  execFileSync('git', ['init', '-q', join(d, 'vendor/libx')]);
+  writeFileSync(join(d, 'vendor/libx/a.txt'), 'hi\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  const dry = run(APPLY, d);
+
+  // 1. The credential sweep it performed and used to discard.
+  assert.match(dry, /same Phase-0 credential sweep/);
+  assert.match(dry, /token-in-tracked-file at src\/creds\.ts/);
+  assert.equal(dry.includes('ghp_0123456789'), false, 'the VALUE is still never printed');
+
+  // 2. The nested repository. `detect`'s own comment calls this disclosure
+  //    load-bearing because "a report that omits it makes a partial scan
+  //    look complete" — which is at least as true of a run about to write.
+  assert.match(dry, /vendor\/libx/);
+  assert.match(dry, /NOT scanned/);
+
+  // 3. The questions, counted by the same function detect uses, with a
+  //    pointer rather than a second copy of the text.
+  assert.match(dry, /questions? this run could not answer/);
+  assert.match(dry, /scripts\/detect\.mjs/);
+
+  // And it still does its actual job afterwards.
+  assert.match(dry, /Dry run — nothing written/);
+
+  // The same disclosure reaches the --yes path, which is the one that writes.
+  assert.match(run(APPLY, d, '--yes'), /token-in-tracked-file at src\/creds\.ts/);
+});
+
+test('F9: apply says nothing extra about a clean repository', () => {
+  const d = fixture();
+  const out = run(APPLY, d);
+  assert.equal(out.includes('credential sweep'), false, 'no finding, no sentence');
+  assert.equal(out.includes('NOT scanned'), false);
+});

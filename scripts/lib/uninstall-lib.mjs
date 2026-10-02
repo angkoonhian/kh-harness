@@ -8,7 +8,7 @@
 // enough.
 import * as fs from 'node:fs';
 import { join } from 'node:path';
-import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline, isAllowedDirectory, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline, isAllowedDirectory, isCanonicalJson, settingsReformattedNote } from './apply-lib.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
@@ -608,13 +608,17 @@ export function runUninstall({ root, manifest, plan }) {
         // appending one — the single most common line of noise left in
         // `git status` after an otherwise content-identical round trip.
         //
-        // `settingsReformatted` mirrors apply.mjs's own `alreadyCanonical`:
-        // it asks whether the ORIGINAL file (before THIS run touched it)
-        // was already in the exact form this tool writes — never whether
-        // removing the reverted patch itself changed anything, which it
-        // always does and would make this fire on every revert.
-        const wasCanonical = validated.raw === (JSON.stringify(validated.object, null, 2) + matchingNewline(validated.raw));
-        if (!wasCanonical) settingsReformatted = true;
+        // `settingsReformatted` asks whether the ORIGINAL file (before THIS
+        // run touched it) was already in the exact form this tool writes —
+        // never whether removing the reverted patch itself changed anything,
+        // which it always does and would make this fire on every revert.
+        //
+        // Whole-branch review, F7: this used to be a second, local copy of
+        // that predicate, and its own comment claimed it "mirrors apply.mjs's
+        // own `alreadyCanonical`" when in fact it CORRECTED it (apply's copy
+        // never got `matchingNewline`). `isCanonicalJson` (apply-lib.mjs) is
+        // the one predicate both callers read now.
+        if (!isCanonicalJson(validated.raw)) settingsReformatted = true;
         const newContent = JSON.stringify(settings, null, 2) + matchingNewline(validated.raw);
         try {
           fs.writeFileSync(join(root, SETTINGS), newContent, 'utf8');

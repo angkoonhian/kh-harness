@@ -287,6 +287,40 @@ function matchingNewline(raw) {
 }
 
 /**
+ * Was this JSON file ALREADY in exactly the form this tool writes — the same
+ * `JSON.stringify(x, null, 2)` plus the same trailing-newline decision? If
+ * so, applying a patch cannot have reformatted anything else, and the
+ * reformat disclosure must not be printed.
+ *
+ * Whole-branch review, F7: this question had two implementations, and they
+ * had drifted. `apply.mjs`'s `alreadyCanonical` compared against
+ * `JSON.stringify(...) + '\n'` unconditionally; `uninstall-lib.mjs`'s
+ * `wasCanonical` used `matchingNewline` — added on this branch precisely so
+ * the tool stops appending a newline to a file that had none. So a
+ * `settings.json` already in exactly the form this tool writes, but without
+ * a trailing newline, was misclassified as non-canonical and `apply` printed
+ * "was reformatted … whitespace/indentation may now differ throughout the
+ * file" over a diff that was 35 insertions and no reformatting at all.
+ *
+ * The comment on the correct copy said it "mirrors apply.mjs's own
+ * `alreadyCanonical`". It did not mirror it; it corrected it. One predicate
+ * now, next to the `matchingNewline` both callers already imported.
+ *
+ * `raw == null` means the file did not exist, so there was nothing to
+ * reformat; an unreadable or unparseable file never reaches a settings write
+ * at all. Both answer `true` — the disclosure's absence is the honest
+ * outcome in both cases.
+ */
+export function isCanonicalJson(raw) {
+  if (raw == null) return true;
+  try {
+    return raw === JSON.stringify(JSON.parse(raw), null, 2) + matchingNewline(raw);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Task 9b (coordinator round 2, finding 3): apply.mjs and uninstall.mjs
  * each rewrite `.claude/settings.json` via `JSON.stringify(x, null, 2)` —
  * applying a patch, and reverting one — and each used to carry its OWN,

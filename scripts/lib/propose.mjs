@@ -127,9 +127,29 @@ function redactAssetProposal(kitVersion) {
  * proposals at all, the same evidence-gated shape as `protectedPathProposal`
  * above, rather than proposing a hook that would always exit 0 unused.
  *
- * `matcher: 'Write|Edit'` scopes the hook to the tools that actually edit a
- * file — PostToolUse fires for every tool otherwise, and the hook has
+ * `matcher: 'Write|Edit'` scopes the hook to the `Write` and `Edit` tools
+ * EXACTLY — PostToolUse fires for every tool otherwise, and the hook has
  * nothing to say about a Bash or Read call.
+ *
+ * Whole-branch review, F11: this comment used to say the matcher covers "the
+ * tools that actually edit a file", which is not what it selects. From the
+ * hooks reference, on matcher evaluation: a matcher containing only letters,
+ * digits, `_`, `-`, spaces, `,` and `|` is an exact string or a `|`/`,`-
+ * separated list of exact strings; only a matcher containing some OTHER
+ * character is treated as an unanchored regular expression. `Write|Edit` is
+ * letters and a pipe, so it is two exact strings, and it therefore does NOT
+ * fire for `NotebookEdit` or for the legacy `MultiEdit`.
+ *
+ * That costs almost nothing today and is NOT changed here, deliberately —
+ * widening a matcher changes what executes in a user's repository, which is
+ * not a comment fix. `NotebookEdit` carries `notebook_path`, not
+ * `file_path`, so lint-touched.mjs would read `undefined` and exit 0 anyway;
+ * and the hook only covers `.ts/.tsx/.js/.jsx/.mjs/.cjs/.py`, none of which
+ * is a notebook. RECOMMENDATION, for whoever picks this up: if notebook
+ * linting is ever wanted, the matcher and `lint-touched.mjs`'s payload
+ * reading must change together — the matcher alone would register a hook
+ * that fires and does nothing, which is the false-assurance shape this
+ * project has already paid for twice.
  */
 function sensorProposal({ kitVersion, stack, check }) {
   if (!hasLintScript(stack)) return [];

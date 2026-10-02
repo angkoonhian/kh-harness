@@ -382,27 +382,33 @@ test('typecheck advice, with neither mypy nor pyright config, mentions no TypeSc
   assert.equal(tcLine.includes('pyproject.toml'), false, 'pyproject.toml must not be named as a script home, even in the fallback');
 });
 
-// SECRET (ruling 5): advice is derived from script NAMES and config-file
-// PRESENCE only — it must never echo a script BODY, even one reachable on
-// the stack object. Same defect shape as Plan 1's leaked sentry-cli token
-// (see propose.test.mjs's matching P1.bootstrap test).
-test('SECRET: a token-bearing script body reachable on the stack object never appears in P2.scripts advice', () => {
-  const leakedToken = 'sentry-cli releases new --auth-token sk-leaked-TOKEN-should-never-appear';
-  const stack = {
-    languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
-    packages: [{
-      name: 'app', dir: '.', manifestPath: 'package.json', scripts: [],
-      // Not a real field detect-stack.mjs produces — simulates the exact
-      // leak shape Plan 1 shipped, to prove this check never reads it.
-      scriptBodies: { build: leakedToken },
-    }],
-    ci: [],
-  };
-  assert.ok(JSON.stringify(stack).includes(leakedToken), 'fixture sanity: the token must actually be reachable on the stack object');
-  const c = byId(gaps(stack, bareHarness), 'P2.scripts');
-  assert.equal(JSON.stringify(c.advice).includes(leakedToken), false);
-});
-
+// Whole-branch review, F13: a `SECRET: a token-bearing script body never
+// reaches <X>` test used to sit here. It was unfalsifiable by construction —
+// its fixture put the token in a `scriptBodies` field, and
+// `grep -rn scriptBodies scripts/ assets/` finds ZERO production readers:
+// `detectStack` never emits such a field and nothing consumes one. The test
+// asserted that a token placed in a field no code reads does not come out of
+// code that does not read it, and the `assert.ok(JSON.stringify(stack)
+// .includes(leakedToken), 'fixture sanity: ...')` guard it carried made that
+// harder to see, not easier — it proved the token was on the fixture object,
+// never that it reached the function.
+//
+// Measured, not argued: making `detectStack` actually emit script BODIES —
+// the only way a `scriptBodies` leak could ever happen — is killed by ONE
+// test, and it is not any of the three carrying this label. It is
+// `detect-cli.test.mjs`'s `SECURITY: a package.json script body never
+// reaches stdout or detect.json`, which writes a real `package.json` with
+// `sentry-cli --auth-token <marker>` in a script body, runs the real CLI,
+// and checks stdout, detect.json AND the human summary — then asserts the
+// script's PRESENCE still survives, so the fix cannot be "stop reporting
+// scripts". That test holds this guarantee.
+//
+// Deleted rather than kept, per the rule this branch adopted: a test whose
+// name claims a guarantee it does not provide is worse than no test, because
+// it stops the next person looking. The one surface the real guard did NOT
+// cover — the contents of the files the GENERATORS write — is now pinned by
+// `SECURITY: no generated file contains a package.json script BODY` in
+// propose.test.mjs, through real `detectStack` output from a real fixture.
 // Coordinator finding (round 2, comment corrected round 3): the "record it
 // in CLAUDE.md, a Makefile, ..." explanation used to repeat verbatim on
 // every derived Python advice line. The original comment here claimed

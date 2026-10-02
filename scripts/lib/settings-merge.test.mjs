@@ -88,11 +88,39 @@ test('revertPatch prunes an emptied event but leaves other events', () => {
   assert.ok(s2.hooks.Stop);
 });
 
-test('revertPatch returns reverted:false when patch missing container without throwing', () => {
-  const patch = { entrySha256: 'abc123' };
+// Whole-branch review, F16: this test's fixture was `{ entrySha256:
+// 'abc123' }`, and `'abc123'` also fails the NEXT guard (the 64-hex-digit
+// check), so it returned `reverted: false` whether or not the `container`
+// type guard existed. Measured: removing that guard left the whole suite at
+// 647/0 — the only production mutation of the nineteen planted that nobody
+// noticed. The hash is a valid 64-hex string now, so the `container` guard
+// is the only thing that can produce this result.
+//
+// The guard is genuinely load-bearing against a forged manifest, which is
+// why the answer is to pin it rather than remove it: `planUninstall` is
+// called UNWRAPPED in uninstall.mjs, so a manifest holding
+// `{ container: 123, entrySha256: "<64 hex>" }` would reach
+// `patch.container.startsWith('/hooks/')`, throw a TypeError and exit 1 —
+// breaking the "the CLI contract is exit 0, 2 or 3 and nothing else" rule
+// that file states in its own first comment.
+const VALID_SHA = 'a'.repeat(64);
+
+test('revertPatch returns reverted:false when patch is missing container, without throwing', () => {
   const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
-  const { reverted } = revertPatch(settings, patch);
-  assert.equal(reverted, false);
+  const { reverted } = revertPatch(settings, { entrySha256: VALID_SHA });
+  assert.equal(reverted, false, 'the hash is valid, so only the missing container can refuse this');
+});
+
+test('F16: revertPatch returns reverted:false for a NON-STRING container, without throwing', () => {
+  // The shape that would actually crash: a forged manifest whose container
+  // is a number, with a hash that passes the next guard. Without the type
+  // guard this reaches `.startsWith` on a number and throws.
+  const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
+  for (const container of [123, null, {}, ['/hooks/SessionStart'], true]) {
+    assert.doesNotThrow(() => revertPatch(settings, { container, entrySha256: VALID_SHA }),
+      `a forged container of type ${typeof container} must never throw — the CLI contract is exit 0/2/3`);
+    assert.equal(revertPatch(settings, { container, entrySha256: VALID_SHA }).reverted, false);
+  }
 });
 
 test('revertPatch returns reverted:false when container does not start with /hooks/', () => {

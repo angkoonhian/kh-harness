@@ -14,8 +14,9 @@ import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps, countProposals } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
+import { deriveCouldNotDerive, exposureSectionLines } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
-import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote } from './lib/apply-lib.mjs';
+import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -145,7 +146,12 @@ if (git.isRepo && hasTrackedChanges(root, ourPaths) && !flags.has('--allow-dirty
   process.exit(3);
 }
 
-const { files } = listFiles(root);
+// Whole-branch review, F9: `nested` was destructured away and discarded.
+// `detect`'s own comment calls this disclosure load-bearing because "a
+// report that omits it makes a partial scan look complete" — which is at
+// least as true of a run that is about to WRITE into the incompletely
+// scanned repository.
+const { files, nested } = listFiles(root);
 const stack = detectStack(root, files);
 const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
@@ -162,6 +168,43 @@ if (manifestResult.state === 'corrupt') {
 }
 const manifest = manifestResult.manifest ?? emptyManifest(KIT_VERSION);
 const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest });
+
+// Whole-branch review, F9: this command runs `listFiles`, `detectStack`,
+// `detectHarness`, `detectExposures` and `buildGaps` — the same work
+// `detect` does — and then printed only proposals and diffs. A user who runs
+// `apply --yes` without first running `detect` was never told about a live
+// token THIS RUN had just found, the nested repositories it did not descend
+// into, or the questions it could not answer. "detect reports, apply writes"
+// is a defensible division of labour, but nothing said so, and `apply` is
+// perfectly usable standalone.
+//
+// Printed BEFORE any write, and before the "no actions" early exit, so it
+// reaches the user on every path. The exposure block comes from the SAME
+// renderer `detect` uses (`exposureSectionLines`, report.mjs), not a second
+// copy of the formatting, and the questions are counted by the SAME
+// function (`deriveCouldNotDerive`) so neither can drift from what `detect`
+// would say.
+function reportWhatDetectionFound() {
+  const out = [];
+  const exposureLines = exposureSectionLines(exposures, nested);
+  if (exposureLines.length) {
+    out.push('harness-kit: this run performed the same Phase-0 credential sweep `detect` does, and it is not clean.');
+    out.push(...exposureLines);
+  }
+  if (nested.length) {
+    const was = nested.length === 1 ? 'y was' : 'ies were';
+    out.push(`harness-kit: ${nested.length} nested repositor${was} detected and NOT scanned (${nested.map(n => n.path).join(', ')}). Everything below covers this repository only; each nested repository must be assessed separately.`);
+    out.push('');
+  }
+  const questions = deriveCouldNotDerive({ stack, checks, nested, profile });
+  if (questions.length) {
+    const s = questions.length === 1 ? '' : 's';
+    out.push(`harness-kit: ${questions.length} question${s} this run could not answer — \`node scripts/detect.mjs ${root}\` prints ${questions.length === 1 ? 'it' : 'them'} in full.`);
+    out.push('');
+  }
+  if (out.length) process.stdout.write(out.join('\n') + '\n');
+}
+reportWhatDetectionFound();
 
 const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });
 
@@ -252,16 +295,20 @@ if (!flags.has('--yes')) {
 // finding 7): preserving the original formatting needs a format-preserving
 // JSON editor — a dependency, or a parser this project would have to
 // maintain — and that is a worse trade than disclosing a reformat.
-function alreadyCanonical(path) {
-  if (!existsSync(path)) return true; // nothing to reformat
-  try {
-    const raw = readFileSync(path, 'utf8');
-    return raw === JSON.stringify(JSON.parse(raw), null, 2) + '\n';
-  } catch {
-    return true; // unreadable/unparseable — never reaches a settings write anyway
-  }
+//
+// Whole-branch review, F7: the predicate itself used to live here, as a
+// second copy that had already drifted from `uninstall-lib.mjs`'s — it
+// compared against `JSON.stringify(...) + '\n'` unconditionally, so a
+// settings.json already in exactly this tool's own form but with no trailing
+// newline was misclassified and this note was printed over a diff with
+// nothing reformatted in it. `isCanonicalJson` (apply-lib.mjs, beside the
+// `matchingNewline` that was the whole difference) is the one predicate both
+// callers read now.
+function readRawIfPresent(path) {
+  if (!existsSync(path)) return null;
+  try { return readFileSync(path, 'utf8'); } catch { return null; }
 }
-const settingsWasCanonical = alreadyCanonical(join(root, SETTINGS_PATH));
+const settingsWasCanonical = isCanonicalJson(readRawIfPresent(join(root, SETTINGS_PATH)));
 
 // applyProposals itself never throws on an I/O failure encountered while
 // applying (see apply-lib.mjs) — a partial batch is returned normally, with

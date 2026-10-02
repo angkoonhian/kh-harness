@@ -118,42 +118,33 @@ test('renderSummary omits the Advice section entirely when no check carries advi
   assert.equal(s.includes('Advice'), false);
 });
 
-// SECRET (ruling 5): Plan 1 shipped a Critical where package.json script
-// BODIES reached generated output and leaked a credential. This test drives
-// the REAL path — detectStack-shaped input through buildGaps, the actual
-// P2.scripts check, into buildReport/renderSummary — rather than a
-// hand-built checks array, so it proves the token never survives to either
-// the advice field or the final rendered text, not merely that a
-// hand-written fixture doesn't happen to contain it.
-test('SECRET: a token-bearing script body never reaches the rendered summary', () => {
-  const leakedToken = 'sentry-cli releases new --auth-token sk-leaked-TOKEN-should-never-appear';
-  const tokenStack = {
-    languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
-    packages: [{
-      name: 'app', dir: '.', manifestPath: 'package.json', scripts: [],
-      scriptBodies: { build: leakedToken },
-    }],
-    ci: [],
-  };
-  assert.ok(JSON.stringify(tokenStack).includes(leakedToken), 'fixture sanity: the token must actually be reachable on the stack object');
-  const harness = {
-    instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-    claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookEvents: {}, agents: [], skills: [], commands: [], rules: [] },
-    otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
-  };
-  const profile = selectProfile(tokenStack);
-  const realChecks = buildGaps({ stack: tokenStack, harness, exposures: [], profile, git: { branch: 'main', isRepo: true }, files: [] });
-  const report = buildReport({ root: '/r', kitVersion: '0.1.0', git: { branch: 'main', isRepo: true }, stack: tokenStack, harness, exposures: [], profile, checks: realChecks });
-  // Scoped to what renderSummary actually surfaces (checks: evidence,
-  // advice, proposal, question) — report.stack itself is an intentional
-  // verbatim echo of whatever was detected (see buildReport), which is a
-  // detect-stack.mjs concern, not this check's: detect-stack.mjs never
-  // produces a real `scriptBodies` field in the first place.
-  const realCheck = realChecks.find(c => c.id === 'P2.scripts');
-  assert.equal(JSON.stringify(realCheck.advice).includes(leakedToken), false, 'the token must not reach the advice field');
-  assert.equal(renderSummary(report).includes(leakedToken), false, 'the token must not reach the rendered summary');
-});
-
+// Whole-branch review, F13: a `SECRET: a token-bearing script body never
+// reaches <X>` test used to sit here. It was unfalsifiable by construction —
+// its fixture put the token in a `scriptBodies` field, and
+// `grep -rn scriptBodies scripts/ assets/` finds ZERO production readers:
+// `detectStack` never emits such a field and nothing consumes one. The test
+// asserted that a token placed in a field no code reads does not come out of
+// code that does not read it, and the `assert.ok(JSON.stringify(stack)
+// .includes(leakedToken), 'fixture sanity: ...')` guard it carried made that
+// harder to see, not easier — it proved the token was on the fixture object,
+// never that it reached the function.
+//
+// Measured, not argued: making `detectStack` actually emit script BODIES —
+// the only way a `scriptBodies` leak could ever happen — is killed by ONE
+// test, and it is not any of the three carrying this label. It is
+// `detect-cli.test.mjs`'s `SECURITY: a package.json script body never
+// reaches stdout or detect.json`, which writes a real `package.json` with
+// `sentry-cli --auth-token <marker>` in a script body, runs the real CLI,
+// and checks stdout, detect.json AND the human summary — then asserts the
+// script's PRESENCE still survives, so the fix cannot be "stop reporting
+// scripts". That test holds this guarantee.
+//
+// Deleted rather than kept, per the rule this branch adopted: a test whose
+// name claims a guarantee it does not provide is worse than no test, because
+// it stops the next person looking. The one surface the real guard did NOT
+// cover — the contents of the files the GENERATORS write — is now pinned by
+// `SECURITY: no generated file contains a package.json script BODY` in
+// propose.test.mjs, through real `detectStack` output from a real fixture.
 test('exposures heading is self-contained and names nested count', () => {
   const nested = [{ path: 'app', kind: 'submodule' }, { path: 'vendor/toolA', kind: 'nested-repo' }];
   const r = buildReport({ ...base, nested, exposures: [{ kind: 'token', location: '.env', severity: 'high' }] });

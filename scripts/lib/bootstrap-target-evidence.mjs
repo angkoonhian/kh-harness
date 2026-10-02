@@ -79,13 +79,39 @@ function justRecipeLine(name, line) {
 /**
  * Looks for a setup-shaped target/recipe in a Makefile or justfile.
  *
- * Never throws, and never reports `found: true` from a bad read — a
- * directory, an empty file, a binary file, or a file this process cannot
- * open all fall through to `{ found: false }` via `readIfPresent`, which
- * already treats every one of those as "nothing to read" rather than an
- * error (the same discipline bootstrap-install.mjs's `yarnFrozenCommand`
- * uses for a yarn.lock it cannot read: fall through to the honest "not
- * found" answer, never guess, never throw).
+ * Never throws, and never reports `found: true` from a bad read. Two
+ * different mechanisms get that result, and the distinction matters because
+ * only one of them is this function's own guard:
+ *
+ *   - `readIfPresent` returns `null` — and it does that for exactly two
+ *     inputs: a MISSING file, and a path that is actually a DIRECTORY
+ *     (`readFileSync` throws `EISDIR`). The `content == null` exit below is
+ *     what handles those, the same discipline bootstrap-install.mjs's
+ *     `yarnFrozenCommand` uses for a yarn.lock it cannot read: fall through
+ *     to the honest "not found" answer, never guess, never throw.
+ *   - everything else falls through because the BYTES match no target name.
+ *     An empty file returns `''`, not `null`; a binary file returns
+ *     mojibake, not `null`. Both end at `{ found: false }`, but by the
+ *     regexes below, not by the guard.
+ *
+ * Whole-branch review, F14: this comment used to claim `readIfPresent`
+ * "already treats every one of those as nothing to read", listing an empty
+ * file and a binary file among them. It does not — it is four lines, with no
+ * binary detection and no empty-file handling:
+ *
+ *     export function readIfPresent(root, rel) {
+ *       const p = join(root, rel);
+ *       if (!existsSync(p)) return null;
+ *       try { return readFileSync(p, 'utf8'); } catch { return null; }
+ *     }
+ *
+ * The RESULT was right, so this was a wrong explanation rather than a wrong
+ * answer — but it is exactly the kind of comment the next person to change
+ * `readIfPresent` would have trusted, and the two tests named after the
+ * claim ("an empty Makefile is not found", "a binary Makefile is not found")
+ * passed for the other reason entirely. Measured: neutering the
+ * `content == null` guard is killed by the MISSING and DIRECTORY tests, and
+ * those two did not fire. They are renamed after what they actually pin.
  *
  * `kind` is `'make'` or `'just'` — the two grammars differ only in whether
  * parameters may sit between the name and the colon.

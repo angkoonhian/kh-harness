@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlin
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
-import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 const fileProposal = (o = {}) => ({ kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r', ...o });
@@ -555,4 +555,43 @@ test('applyProposals never throws on a malformed permissions.deny — skips it a
   assert.equal(r.patched.length, 0);
   assert.equal(r.failed.length, 0, 'this is a refusal, not a write failure');
   assert.equal(r.skipped[0].why, 'unparseable');
+});
+
+// --- Whole-branch review, F7: one canonical-form predicate, not two ------
+//
+// `apply.mjs`'s `alreadyCanonical` and `uninstall-lib.mjs`'s `wasCanonical`
+// asked the same question, and had drifted: only the second used
+// `matchingNewline`, which was added on this branch precisely so the tool
+// stops appending a trailing newline to a file that had none. So a
+// settings.json already in exactly the form this tool writes, minus that one
+// byte, was misclassified as non-canonical and `apply` printed "was
+// reformatted … whitespace/indentation may now differ throughout the file"
+// over a diff that reformatted nothing. The comment on the correct copy
+// claimed it "mirrors apply.mjs's own alreadyCanonical"; it corrected it.
+
+test('F7: a settings.json in this tool\'s own form but WITHOUT a trailing newline is canonical', () => {
+  const raw = JSON.stringify({ permissions: { deny: ['Edit(secrets/**)'] } }, null, 2);
+  assert.equal(raw.endsWith('\n'), false, 'fixture sanity: JSON.stringify never ends in a newline');
+  assert.equal(isCanonicalJson(raw), true,
+    'this is byte-for-byte what the tool writes for a file that had no trailing newline — nothing would be reformatted');
+});
+
+test('F7: the same content WITH a trailing newline is canonical too', () => {
+  const raw = JSON.stringify({ a: 1 }, null, 2) + '\n';
+  assert.equal(isCanonicalJson(raw), true);
+});
+
+test('F7: genuinely non-canonical formatting is still reported as such', () => {
+  for (const raw of [
+    '{"a":1}',                            // compact
+    JSON.stringify({ a: 1 }, null, 4),    // different indent
+    JSON.stringify({ a: 1 }, null, 2) + '\n\n', // extra blank line
+  ]) {
+    assert.equal(isCanonicalJson(raw), false, `must be non-canonical: ${JSON.stringify(raw)}`);
+  }
+});
+
+test('F7: an absent, unreadable or unparseable file reports canonical — there is nothing to reformat', () => {
+  assert.equal(isCanonicalJson(null), true, 'absent');
+  assert.equal(isCanonicalJson('{ not json'), true, 'unparseable never reaches a settings write');
 });
