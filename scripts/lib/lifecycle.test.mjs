@@ -166,6 +166,40 @@ test('C3: a manifest that cannot be written exits 2 with a readable message, nev
   assert.match(out, /HANDOFF\.md/, 'must name what is on disk but untracked');
 });
 
+test('C3b: with a lockfile present (the common real case), the settings-deny write fails FIRST and nothing is written at all — still exits 2 cleanly', () => {
+  // Review finding: C3 above deliberately omits a lockfile so HANDOFF.md
+  // (a 'file' proposal) lands before the failure, pinning "partial work is
+  // reported". But virtually every real repository has a lockfile, which
+  // makes P2.protected's settings-deny proposal the FIRST one attempted
+  // (it sorts before P4.handoff by step number) — and that is the one that
+  // fails here, so NOTHING is ever written. C3's "partial work" coverage
+  // is real but now sits in the less common ordering; this test restores
+  // coverage of the common ordering without reverting C3's fixture.
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  writeFileSync(join(d, 'tsconfig.json'), '{}');
+  writeFileSync(join(d, '.claude'), 'a plain file sitting where a directory needs to go\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  let err;
+  try { run(APPLY, d, '--yes'); } catch (e) { err = e; }
+  assert.ok(err, 'apply must not report success when it could not record what it wrote');
+  assert.equal(err.status, 2, 'the CLI contract is exit 0, 2 or 3 — never 1, never a raw throw');
+
+  const out = String(err.stdout ?? '') + String(err.stderr ?? '');
+  assert.doesNotMatch(out, /node:internal\/|\bat ModuleJob\b|^Node\.js v/m, 'no stack trace may reach the user');
+  assert.match(out, /\.claude[\\/]settings\.json/, 'the message must name the settings write that failed first in this ordering');
+
+  // Nothing after the first failed write is ever attempted — the opposite
+  // half of C3's "partial work" case, and the one real repos actually hit.
+  assert.equal(existsSync(join(d, 'HANDOFF.md')), false, 'nothing written when the first proposal in the batch fails');
+});
+
 test('I3: a deleted settings file lets uninstall finish, clear the manifest, and exit 0', () => {
   const d = fixture();
   run(APPLY, d, '--yes');
@@ -206,4 +240,27 @@ test('apply refuses on a dirty working tree unless told otherwise', () => {
   writeFileSync(join(d, 'package.json'), '{"name":"edited"}');
   assert.throws(() => run(APPLY, d, '--yes'), e => e.status === 3);
   assert.doesNotThrow(() => run(APPLY, d, '--yes', '--allow-dirty'));
+});
+
+test('C4: a malformed permissions.deny does not crash the DEFAULT (dry-run) apply path', () => {
+  // Reproduces the exact live crash the review found: before the
+  // readSettingsResult fix, `renderSettingsDenyDiff` called `addDenyRules`
+  // unguarded on `permissions.deny`, so a dry run against a settings.json
+  // with a non-array deny crashed with a raw TypeError and exit 1 — on the
+  // DEFAULT path (no flag needed), which is the one a cautious user
+  // reaches for first.
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: 'Edit(secrets/**)' } }));
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  const out = run(APPLY, d); // no --yes: the default dry run
+  assert.doesNotMatch(out, /node:internal\/|TypeError|\bat ModuleJob\b|^Node\.js v/m, 'no stack trace may reach the user');
+  assert.match(out, /could not be parsed as a JSON object/, 'the malformed deny must be reported the same way as unparseable JSON');
 });

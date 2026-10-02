@@ -115,13 +115,24 @@ if (proposals.length === 0) {
 }
 
 process.stdout.write(`harness-kit: ${proposals.length} proposal${proposals.length === 1 ? '' : 's'} for ${root}\n\n`);
-for (const p of proposals) {
-  const label = p.kind === 'file' ? p.path
-    : p.kind === 'settings-deny' ? '.claude/settings.json (deny rules)'
-    : `.claude/settings.json (hook: ${p.event})`;
-  process.stdout.write(`--- ${label}  [${p.checkId}]\n`);
-  process.stdout.write(`    ${p.reason}\n`);
-  process.stdout.write(renderDiff(root, p) + '\n\n');
+// renderDiff is read-only, but it is not infallible by construction — it is
+// a backstop, not the primary defence (readSettingsResult's shape checks
+// are), for the same reason applyProposals is wrapped below: the preview is
+// the DEFAULT path, the one a cautious user reaches for first, and it must
+// never escape as a raw stack trace and exit 1. The CLI's contract is exit
+// 0/2/3, nothing else.
+try {
+  for (const p of proposals) {
+    const label = p.kind === 'file' ? p.path
+      : p.kind === 'settings-deny' ? '.claude/settings.json (deny rules)'
+      : `.claude/settings.json (hook: ${p.event})`;
+    process.stdout.write(`--- ${label}  [${p.checkId}]\n`);
+    process.stdout.write(`    ${p.reason}\n`);
+    process.stdout.write(renderDiff(root, p) + '\n\n');
+  }
+} catch (err) {
+  process.stderr.write(`harness-kit: could not render the preview: ${err && err.message ? err.message : String(err)}\n`);
+  process.exit(2);
 }
 
 if (!flags.has('--yes')) {

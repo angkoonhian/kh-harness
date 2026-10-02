@@ -40,6 +40,19 @@ function isExcludedPath(entry) {
 // The tool does not follow symlinks itself to close this gap — that would mean
 // walking outside the index into cycle-prone territory on a hot path — so this
 // is accepted as a rare, disclosed limitation rather than fixed.
+//
+// Third known blind spot, and a deliberate one: EXCLUDE_DIRS unconditionally
+// excludes `dist`, `build` and `__pycache__` on the fallback (non-git) walk —
+// there is no tracked/ignored distinction to read without git, so excluding
+// likely build output by default is the better behaviour there. The git path
+// has no such exclusion; it relies on `--exclude-standard` (.gitignore)
+// instead, so a *tracked* dist/build/__pycache__ (unusual, but real — see
+// propose.mjs's P2.protected comment) is visible to it and a gitignored one
+// is not. The result: the same repository can yield a different
+// `P2.protected` deny-rule proposal depending on whether git is available at
+// all, or whether this scan can see it (per the first blind spot above). A
+// missed proposal in that rare configuration is the acceptable direction for
+// this to fail — it is not fixed here.
 function detectNestedRepositories(root) {
   const nested = [];
   try {

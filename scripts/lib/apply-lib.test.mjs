@@ -307,3 +307,63 @@ test('a secret in an existing deny rule under the same container is not shown ei
   assert.doesNotMatch(diff, /SECRET_SAME_CONTAINER/, 'diffing the whole permissions.deny array would still leak');
   assert.match(diff, /1 existing permissions\.deny entr/, 'the preview must still say it is appending, not replacing');
 });
+
+// --- the preview shows nothing when every proposed rule is already present
+// (not reachable through the CLI — gap-model.mjs flips P2.protected to
+// `declared` once any deny rule exists, so renderDiff is never called on
+// this shape in practice; this documents the defensively-redundant branch
+// directly, by calling renderDiff itself, the way the brief's "report
+// unchanged" exception already covers apply-side at the library level) ---
+
+test('the settings-deny preview shows nothing to add when every proposed rule is already present', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(prisma/migrations/**)'] } }));
+  const diff = renderDiff(d, denySecretProposal); // proposes exactly Edit(prisma/migrations/**), already present
+  assert.match(diff, /every proposed rule is already present — nothing would be added/);
+  assert.doesNotMatch(diff, /^\+"/m, 'nothing may be shown as being added when nothing is new');
+});
+
+// --- a malformed permissions.deny must never crash the dry run -----------
+//
+// Before this fix, readSettingsResult validated only the top-level JSON
+// shape; `renderSettingsDenyDiff` then called `addDenyRules` unguarded,
+// which assumes `permissions.deny` is already an array (`.push(...)`,
+// `new Set(...)`). Any settings.json with a non-array `permissions.deny`,
+// or a non-object `permissions`, crashed `renderDiff` with a raw
+// TypeError — reachable from `apply.mjs`'s DEFAULT (no --yes) path, in
+// violation of the stated exit 0/2/3 contract. Fixed by extending
+// readSettingsResult itself to refuse these shapes exactly like
+// unparseable JSON, so both renderDiff and applyProposals route through
+// the existing 'could not be parsed' / 'unparseable' paths with no new
+// error handling needed at either call site.
+
+const MALFORMED_DENY_SHAPES = [
+  ['deny is a string', { permissions: { deny: 'Edit(secrets/**)' } }],
+  ['deny is an object', { permissions: { deny: { 0: 'Edit(secrets/**)' } } }],
+  ['deny is a number', { permissions: { deny: 3 } }],
+  ['permissions is a string', { permissions: 'nope' }],
+];
+
+test('renderDiff never throws on a malformed permissions.deny — reports it like unparseable JSON instead', () => {
+  for (const [label, shape] of MALFORMED_DENY_SHAPES) {
+    const d = repo();
+    mkdirSync(join(d, '.claude'), { recursive: true });
+    writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(shape));
+    assert.doesNotThrow(() => renderDiff(d, denySecretProposal), label);
+    const diff = renderDiff(d, denySecretProposal);
+    assert.match(diff, /could not be parsed as a JSON object/, `${label}: must report the same way as unparseable JSON`);
+  }
+});
+
+test('applyProposals never throws on a malformed permissions.deny — skips it as unparseable, writes nothing', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const original = JSON.stringify({ permissions: { deny: 'Edit(secrets/**)' } });
+  writeFileSync(join(d, '.claude/settings.json'), original);
+  const r = applyProposals({ root: d, proposals: [denySecretProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), original, 'must not touch a settings.json it cannot safely merge into');
+  assert.equal(r.patched.length, 0);
+  assert.equal(r.failed.length, 0, 'this is a refusal, not a write failure');
+  assert.equal(r.skipped[0].why, 'unparseable');
+});

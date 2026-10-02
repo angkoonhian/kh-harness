@@ -181,3 +181,14 @@ test('P2.protected matches root-level generated-output candidates, not only nest
   assert.ok(deny.globs.includes('Edit(__generated__/**)'), 'root-level __generated__/ is matched');
   assert.ok(deny.globs.includes('Edit(*.generated.*)'), 'root-level foo.generated.ts is matched');
 });
+
+test('buildProposals requires files explicitly — a caller that omits it gets a loud error, not a silent empty result', () => {
+  // `files` has no default (see propose.mjs's comment on buildProposals).
+  // Before this, omitting `files` silently resolved to `[]`, which made
+  // P2.protected's evidence filter find nothing to propose for EVERY
+  // candidate — indistinguishable from "this repository has nothing to
+  // protect." That is exactly the silent-failure shape this task's fix
+  // exists to eliminate, one level up from the glob matching itself.
+  const { files, ...rest } = args([protectedCheck()], { files: ['pnpm-lock.yaml'] });
+  assert.throws(() => buildProposals(rest), /Cannot read properties of undefined|files is not defined|undefined/);
+});

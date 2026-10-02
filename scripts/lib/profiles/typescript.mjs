@@ -24,13 +24,30 @@ function make(id, extra) {
       const js = paths.filter(p => /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(p));
       return js.length ? `npx eslint --no-error-on-unmatched-pattern ${js.join(' ')}` : null;
     },
-    // `**/dist/**` only matches a NESTED `dist/` — `**` requires a literal
-    // `/` before the final segment (see generic.mjs's LOCKFILE_GLOBS comment
-    // for the full explanation), so a root-level `dist/` or `build/` — the
-    // only case a single-package project ever has — would otherwise match
-    // nothing and silently fail to be protected. Both the root-anchored and
-    // `**/`-anchored forms are listed deliberately for each: do not
-    // "simplify" this back down to one, that is what caused the gap.
+    // Root-anchored AND `**/`-anchored forms are both listed deliberately,
+    // and the reason is about OUR OWN matcher, not Claude Code's:
+    // glob.mjs's `globToRegExp` compiles `**` to `.*` with a required
+    // literal `/` before the final segment, so
+    // `hasEvidence('**/dist/**', ['dist/a.js'])` is false and
+    // propose.mjs's evidence filter never PROPOSES a rule for a root-level
+    // `dist/` at all. Claude Code's own `Edit(...)` matcher is wider — per
+    // its permissions docs, `**/` also matches zero directory segments, so
+    // `Edit(**/dist/**)` would have matched a root-level file just fine
+    // once proposed. The duplication exists to satisfy OUR filter, not
+    // Claude Code's matcher. Do not "simplify" this back down to one form.
+    //
+    // Even with both forms present: a rule only gets PROPOSED when the
+    // build output is visible to `listFiles` (scan.mjs) — tracked by git,
+    // or (on the dependency-free fallback walk) not excluded, and that
+    // walk excludes `dist`/`build` unconditionally regardless of this
+    // list. In the common real case — `dist/`/`build/` gitignored, as
+    // virtually every project does — neither form has evidence and no
+    // deny rule is proposed. That is correct, not a bug: a gitignored
+    // directory is regenerable scratch with nothing of the user's to
+    // protect, and a rule with no evidence would be exactly the
+    // opinion-without-basis Plan 1's review struck `**/migrations/**` for.
+    // The root-anchored form is the only reason a *tracked* root-level
+    // `dist/` or `build/` ever gets protected at all.
     protectedGlobs() {
       return [...LOCKFILE_GLOBS, 'dist/**', '**/dist/**', 'build/**', '**/build/**'];
     },

@@ -24,10 +24,24 @@ const BRIEF_PATH = '.claude/scripts/session-brief.mjs';
  * uniformity is safe precisely because the existence filter prunes whatever
  * is absent, and it avoids maintaining a second set of per-language guesses.
  *
- * Root-anchored and `**\/`-anchored forms are both listed for the same
- * reason generic.mjs's lockfile globs needed root-anchored siblings: `**`
- * requires a literal `/` before the final segment, so it only ever matches a
- * NESTED occurrence, never one sitting at the repository root.
+ * Root-anchored and `**\/`-anchored forms are both listed deliberately, for
+ * the same reason as typescript.mjs's dist/build globs (see its comment):
+ * this is about OUR OWN matcher (glob.mjs's `globToRegExp`), not Claude
+ * Code's. `globToRegExp` compiles `**` to `.*` with a required literal `/`
+ * before the final segment, so `hasEvidence('**\/migrations/**', [...])` is
+ * false for a root-level `migrations/` and the rule is never PROPOSED at
+ * all — even though Claude Code's own `Edit(...)` matcher is wider (per its
+ * docs, `**\/` also matches zero directory segments) and would have
+ * honoured `Edit(**\/migrations/**)` against a root-level path just fine
+ * once proposed. The duplication exists to satisfy OUR evidence filter, not
+ * Claude Code's matcher.
+ *
+ * As with every candidate here, a rule is only ever PROPOSED when the path
+ * is visible to `listFiles` (scan.mjs) — tracked by git, or not excluded on
+ * the dependency-free fallback walk. Migration directories are typically
+ * committed, so this rarely bites the way it does for build output (see
+ * typescript.mjs/python.mjs), but the mechanism is the same: no evidence,
+ * no proposal, by design.
  */
 const PROTECTED_PATH_CANDIDATES = [
   'prisma/migrations/**',
@@ -36,11 +50,15 @@ const PROTECTED_PATH_CANDIDATES = [
   '**/migrations/**',
   'drizzle/**',
   'alembic/versions/**',
-  // Root-anchored AND **-anchored, deliberately — same gap as dist/build/
-  // __pycache__ in typescript.mjs/python.mjs: `**/__generated__/**` matches
-  // nothing for a root-level `__generated__/`, and `**/*.generated.*`
-  // matches nothing for a root-level `foo.generated.ts` (verified). Do not
-  // collapse this back to one form.
+  // Root-anchored AND **-anchored, deliberately — same reason as this
+  // file's migrations comment above and typescript.mjs's dist/build
+  // comment: it is OUR `globToRegExp` that requires the literal `/`, not
+  // Claude Code's matcher. `hasEvidence('**/__generated__/**', [...])` is
+  // false for a root-level `__generated__/`, and likewise for
+  // `**/*.generated.*` against a root-level `foo.generated.ts` (both
+  // verified) — so without the root-anchored form, our evidence filter
+  // never proposes a rule for either, regardless of what Claude Code
+  // itself would have matched. Do not collapse this back to one form.
   '__generated__/**',
   '**/__generated__/**',
   '*.generated.*',
@@ -118,8 +136,16 @@ const GENERATORS = {
  * path: `TEST.contextcheck` used to live here and proposed `.context-verified`,
  * a path `assertAllowed` refuses — a crash waiting for a real check to reuse
  * that id, not just a dead test fixture.
+ *
+ * `files` has no default. A caller that forgets it would otherwise get
+ * "no evidence, therefore no proposal" from `P2.protected` — silently, with
+ * no error — which is exactly the failure shape this task's evidence filter
+ * exists to eliminate, recreated one level up. Every caller must pass it
+ * explicitly, including tests (see `args()` in propose.test.mjs); forgetting
+ * it is now a loud `TypeError` inside `hasEvidence`, not a quiet empty
+ * result that looks like "nothing protected here."
  */
-export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files = [], generators = {} }) {
+export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files, generators = {} }) {
   const registry = { ...GENERATORS, ...generators };
   const alreadyWritten = new Set((manifest?.files ?? []).map(f => f.path));
   const out = [];

@@ -212,6 +212,22 @@ function readSettingsResult(root) {
     return { ok: false };
   }
 
+  // `permissions` and `permissions.deny`, when present, must be shapes
+  // addDenyRules can safely mutate — a plain object, and an array,
+  // respectively. Validated HERE, once, rather than inside addDenyRules:
+  // every consumer of this result then sees one validated shape, so
+  // `{"permissions":"nope"}` or `{"permissions":{"deny":3}}` is refused
+  // exactly like unparseable JSON, never passed through to crash a
+  // `.push(...)` or a `new Set(...)` deep inside the merge.
+  const permissions = parsed.permissions;
+  if (permissions !== undefined && (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions))) {
+    return { ok: false };
+  }
+  const deny = permissions?.deny;
+  if (deny !== undefined && !Array.isArray(deny)) {
+    return { ok: false };
+  }
+
   return { ok: true, settings: parsed };
 }
 
