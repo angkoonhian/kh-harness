@@ -10,6 +10,7 @@ import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH } from './propose.mjs';
 import { hasEquivalentHook } from './settings-merge.mjs';
+import { UNREADABLE_KIND, splitExposures } from './detect-exposure.mjs';
 
 const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
@@ -705,27 +706,77 @@ test('a repository with ONLY reference-valued credentials-in-doc hits is verifie
     'the collapsed count must still be disclosed, not silently dropped');
 });
 
-test('one genuine literal finding among many reference hits still fails the check, and the evidence stays short', () => {
+// Whole-branch review, F12: this check's evidence now CITES the rendered
+// Exposures section (one line with a count) instead of reproducing it line
+// for line, so the old assertion that each finding is "named individually"
+// here is gone on purpose. The guarantee that 62 reference hits do not become
+// 62 PRINTED lines is held by report.test.mjs's "renderSummary shows a
+// literal credentials-in-doc hit prominently and collapses reference-valued
+// hits to one count line", which counts the rendered output. What is still
+// this check's own to pin, and is pinned below: the state, the count in the
+// citation, and that the collapsed note survives.
+test('one genuine literal finding among many reference hits still fails the check, and the evidence cites rather than reproduces', () => {
   const exposures = [
     { kind: 'token-in-remote-url', location: 'git remote "origin"', severity: 'high' },
     ...Array.from({ length: 62 }, (_, i) => ({ kind: 'credentials-in-doc', location: `src/f${i}.ts`, severity: 'medium', valueKind: 'reference' })),
   ];
   const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
   assert.equal(c.state, 'failing');
-  // The real finding is named individually...
-  assert.ok(c.evidence.some(e => e.includes('token-in-remote-url')));
-  // ...the 62 reference hits are a single collapsed line, not 62 lines.
-  const perFindingLines = c.evidence.filter(e => e.includes('credentials-in-doc at'));
-  assert.equal(perFindingLines.length, 0, 'no individual reference-valued line may appear in the failing evidence');
+  // The real finding is counted, and the citation names where it is listed...
+  assert.ok(c.evidence.some(e => /^1 credential finding\b/.test(e) && /Exposures/.test(e)),
+    'the one prominent finding must be counted and the Exposures section cited');
+  // ...and no finding's own location is reproduced here, prominent or not.
+  assert.equal(c.evidence.some(e => e.includes('credentials-in-doc at')), false);
+  assert.equal(c.evidence.some(e => e.includes('git remote "origin"')), false);
   assert.ok(c.evidence.some(e => /^62 credential-shaped/.test(e)));
-  assert.equal(c.evidence.length, 2, 'evidence must stay short: the real finding plus one collapsed line');
+  assert.equal(c.evidence.length, 2, 'evidence must stay short: one citation plus one collapsed line');
 });
 
-test('a literal-valued credentials-in-doc hit still fails the check and is named individually', () => {
+test('a literal-valued credentials-in-doc hit still fails the check and is counted in the citation', () => {
   const exposures = [{ kind: 'credentials-in-doc', location: 'docs/db.md', severity: 'medium', valueKind: 'literal' }];
   const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
   assert.equal(c.state, 'failing');
-  assert.ok(c.evidence.some(e => e.includes('credentials-in-doc at docs/db.md')));
+  assert.deepEqual(c.evidence.length, 1);
+  assert.ok(/^1 credential finding\b/.test(c.evidence[0]));
+});
+
+// --- Whole-branch review, F1: a file the sweep could not read -------------
+//
+// The quoting bug was only how an unreadable path reached the scanner. The
+// DEFECT was that an unreadable file was silent and `P0.security` still said
+// `verified`. These pin the contract that replaced that: an `UNREADABLE_KIND`
+// finding can never be collapsed, can never be `verified`, and is reported
+// separately from a credential finding — never conflated with one.
+
+test('F1: a file the sweep could not read makes P0.security failing, never verified', () => {
+  const exposures = [{ kind: UNREADABLE_KIND, location: 'src/café.ts', severity: 'high', reason: 'could not be stat()ed (ENOENT)' }];
+  const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
+  assert.equal(c.state, 'failing', 'an unexamined file must never be reported as a clean sweep');
+  assert.ok(c.evidence.some(e => /1 file named by the file scan could not be read/.test(e) && /INCOMPLETE/.test(e)),
+    'the incompleteness must be stated, not implied');
+  assert.equal(c.evidence.some(e => /credential finding/.test(e)), false,
+    'an unreadable file is not a credential finding and must not be counted as one');
+});
+
+test('F1: an unreadable file is never collapsed into the reference-valued count', () => {
+  const exposures = [
+    { kind: UNREADABLE_KIND, location: 'a.ts', severity: 'high', reason: 'could not be read (EACCES)' },
+    { kind: 'credentials-in-doc', location: 'b.ts', severity: 'medium', valueKind: 'reference' },
+  ];
+  const { prominent, collapsedCount } = splitExposures(exposures);
+  assert.equal(collapsedCount, 1, 'only the reference-valued hit may collapse');
+  assert.deepEqual(prominent.map(e => e.kind), [UNREADABLE_KIND]);
+  const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
+  assert.equal(c.state, 'failing');
+});
+
+test('F1: the clean-sweep sentence claims only what was read, never that the repository is clean', () => {
+  const c = byId(gaps(bareStack, bareHarness, []), 'P0.security');
+  assert.equal(c.state, 'verified');
+  assert.equal(c.evidence.length, 1);
+  assert.ok(/could read/.test(c.evidence[0]), 'the claim must be scoped to the files actually read');
+  assert.equal(/^no credential patterns matched$/.test(c.evidence[0]), false,
+    'an unqualified "no credential patterns matched" is a claim about the repository, not about what was measured');
 });
 
 test('a missing git remote is absent', () => {

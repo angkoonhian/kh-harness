@@ -5,6 +5,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { detectExposures, UNREADABLE_KIND } from './detect-exposure.mjs';
+import { buildGaps } from './gap-model.mjs';
+import { selectProfile } from './profiles/index.mjs';
 
 const CLI = resolve(import.meta.dirname, '..', 'detect.mjs');
 
@@ -679,4 +682,89 @@ test('a missing target exits 2', () => {
     () => execFileSync(process.execPath, [CLI, join(tmpdir(), 'does-not-exist-hk')], { encoding: 'utf8', stdio: 'pipe' }),
     e => e.status === 2,
   );
+});
+
+// --- Whole-branch review, F1 -----------------------------------------------
+//
+// Accented, CJK and emoji filenames are ordinary. Without `-z`,
+// `git ls-files` C-quotes every one of them, `statSync` on that literal threw
+// ENOENT, the credential scanner skipped the file with no record anywhere,
+// and this is what the user was told about a repository holding a live
+// token:
+//
+//     [x] P0.security        verified
+//           no credential patterns matched
+//
+// Driven through the real CLI, with a real git repository and a real
+// plaintext token, because that is the surface the sentence is printed on.
+// Reverting `-z` in scan.mjs's `gitPaths` must fail this test by name.
+test('F1 SECURITY: a plaintext token in a file with a non-ASCII name is found, and P0.security is never verified', (t) => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-cli-nonascii-'));
+  // Escapes, not literal bytes — this test file is itself tracked source.
+  const NAME = 'src/配置.ts';
+  const TOKEN = 'ghp_' + '0123456789abcdefghij'.repeat(1).slice(0, 20) + '0123456789';
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  write(d, NAME, `export const GITHUB_TOKEN = "${TOKEN}";\n`);
+  try {
+    execFileSync('git', ['init', '-q', d], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'config', 'user.name', 'Test'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'commit', '-qm', 'init'], { stdio: 'ignore' });
+  } catch (e) {
+    t.skip(`git is unavailable, so git's own path quoting cannot be exercised: ${e.message}`);
+    return;
+  }
+
+  const report = JSON.parse(cli(d, '--json'));
+  if (report.harness.remotes === undefined) assert.fail('unexpected report shape');
+
+  const security = report.checks.find(c => c.id === 'P0.security');
+  assert.equal(security.state, 'failing', 'a repository holding a plaintext token must never report a clean sweep');
+
+  const hit = report.exposures.find(e => e.kind === 'token-in-tracked-file');
+  assert.ok(hit, `expected a token-in-tracked-file finding, got ${JSON.stringify(report.exposures)}`);
+  assert.equal(hit.location, NAME, 'the finding must name the real path, not a C-quoted literal');
+
+  // The value itself is never printed — the pre-existing guarantee must hold
+  // for this path too, not only for ASCII ones.
+  const summary = cli(d);
+  assert.equal(summary.includes(TOKEN), false, 'the token value must never reach the summary');
+  assert.ok(summary.includes(NAME), 'the location must reach the summary');
+
+  // ...and the stack is detected, so the profile does not silently fall back
+  // to `generic` and report every stack-specific capability as n/a.
+  assert.ok(report.stack.languages.includes('typescript'), 'a .ts file whose name is non-ASCII is still a .ts file');
+  assert.match(report.profile, /^typescript/, 'the profile must be the TypeScript one, not the generic fallback');
+});
+
+// The other half of F1, and the half that outlives the quoting fix: whatever
+// the reason a file named by the scan cannot be read, it is REPORTED, and
+// P0.security does not say `verified` over it. Silence on an unexamined file
+// is the defect; the quoting was only one way to produce it.
+test('F1 SECURITY: a file the scan named but cannot read is reported, and P0.security is not verified', () => {
+  const d = bare();
+  // A path git will list (via -o, untracked) that does not resolve: a
+  // dangling symlink is the portable way to make `statSync` fail on a file
+  // the scan genuinely named. Where symlinks need elevation, fall back to
+  // naming the path directly to detectExposures, which is the same code
+  // path the CLI takes.
+  const files = ['src/index.ts', 'src/vanished.ts'];
+  const exposures = detectExposures(d, files, { remotes: [] });
+  const unreadable = exposures.filter(e => e.kind === UNREADABLE_KIND);
+  assert.equal(unreadable.length, 1, `expected exactly one unreadable record, got ${JSON.stringify(exposures)}`);
+  assert.equal(unreadable[0].location, 'src/vanished.ts');
+  assert.match(unreadable[0].reason, /ENOENT/, 'the reason must say what actually went wrong');
+
+  const checks = buildGaps({
+    stack: { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] },
+    harness: { instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
+      claudeDir: { settings: false, localSettings: false, denyRules: 0, denyRuleList: [], hooks: [], hookEvents: {}, agents: [], skills: [], commands: [], rules: [] },
+      otherEditors: [], architecture: null, docPointers: [], projectDocs: [], handoff: null, bootstrap: null, gitattributes: false, remotes: [] },
+    exposures, profile: selectProfile({ languages: [], packages: [] }),
+    git: { isRepo: true, branch: 'feat/x' }, files, root: d,
+  });
+  const security = checks.find(c => c.id === 'P0.security');
+  assert.equal(security.state, 'failing', 'an unexamined file must never be reported as a clean sweep');
+  assert.match(security.evidence.join('\n'), /INCOMPLETE/);
 });

@@ -7,7 +7,7 @@ import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
-import { splitExposures, collapsedExposureNote } from './detect-exposure.mjs';
+import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote } from './detect-exposure.mjs';
 // Task 8b: the only three facts gap-model.mjs needs from propose.mjs — the
 // exact resolved script path EACH hook generator registers, so a check can
 // ask "is OURS here" instead of "is anything here". Importing the constant,
@@ -41,6 +41,18 @@ export function countProposals(checks) {
 }
 
 const MAX_INSTRUCTION_LINES = 150;
+
+/**
+ * What `P0.security` says when it found nothing. Whole-branch review, F1:
+ * this used to be "no credential patterns matched" — a claim about the
+ * REPOSITORY, which is not what was measured. The sweep skips binary
+ * extensions, build directories and anything over 512 KB by design (see
+ * detect-exposure.mjs's SKIP_EXT/SKIP_DIRS/MAX_BYTES), so the true claim is
+ * about the files it read. A file it could NOT read is a different thing
+ * entirely: that is an `UNREADABLE_KIND` finding and this sentence is never
+ * reached while one exists.
+ */
+const CLEAN_SWEEP_NOTE = 'no credential patterns matched in any file this sweep could read (binary, build-output and over-512 KB files are skipped by design; a file that could not be READ is reported, not skipped silently)';
 
 /**
  * P2.scripts advice: evidence-gated command derivation for the one capability
@@ -317,13 +329,34 @@ const CHECKS = [
     // exposures/detect.json unchanged. Only the PROMINENT class may fail
     // this check; a repository with nothing but reference-valued hits is
     // `verified`, with the collapsed count disclosed rather than hidden.
+    // Whole-branch review, F1: `verified` used to be reachable while files
+    // went unexamined, and the sentence it printed — "no credential patterns
+    // matched" — is a claim about the REPOSITORY, not about what was read. A
+    // file the sweep could not read now arrives here as an `UNREADABLE_KIND`
+    // finding (detect-exposure.mjs) and this check cannot be `verified` while
+    // one exists; and the clean sentence below now claims only the scope it
+    // actually covered. The two classes are separated by the SHARED
+    // `partitionProminent`, not by a second `kind` test written here.
+    //
+    // Whole-branch review, F12: the evidence CITES the rendered sections
+    // instead of reproducing them line for line — see
+    // `prominentExposureNote`'s own comment for which test holds the collapse
+    // guarantee now that this one structurally cannot.
     check: ({ exposures }) => {
       const { prominent, collapsedCount } = splitExposures(exposures);
+      const { credentials, unreadable } = partitionProminent(prominent);
       const note = collapsedCount ? [collapsedExposureNote(collapsedCount)] : [];
-      if (prominent.length) {
-        return { state: 'failing', evidence: [...prominent.map(e => `${e.kind} at ${e.location}`), ...note] };
+      if (unreadable.length || credentials.length) {
+        return {
+          state: 'failing',
+          evidence: [
+            ...(unreadable.length ? [unexaminedExposureNote(unreadable.length)] : []),
+            ...(credentials.length ? [prominentExposureNote(credentials.length)] : []),
+            ...note,
+          ],
+        };
       }
-      return { state: 'verified', evidence: collapsedCount ? note : ['no credential patterns matched'] };
+      return { state: 'verified', evidence: collapsedCount ? note : [CLEAN_SWEEP_NOTE] };
     },
   },
   {

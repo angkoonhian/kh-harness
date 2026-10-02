@@ -95,21 +95,40 @@ const ourPaths = manifestResult.state === 'ok' ? ownedByUs(manifestResult.manife
  * blanket waiver. The gate still exists, and still refuses, for anything
  * genuinely not ours.
  */
+/**
+ * `-z` for the same reason `scan.mjs`'s `gitPaths` uses it, and this is the
+ * third of the three places in the tool that asks git for a path (the other
+ * two are both inside `gitPaths`). This one used to half-know about the
+ * problem — it stripped the surrounding double quotes git adds without ever
+ * un-escaping the octal inside them — which made `.claude/caf\303\251.md`
+ * compare unequal to the `ourPaths` entry for the same file, so this tool's
+ * OWN prior write looked like the user's uncommitted work and the dirty-tree
+ * gate refused with no recourse but `--allow-dirty`. Un-escaping by hand was
+ * never the fix; not asking for escaped output is.
+ *
+ * Porcelain v1 in `-z` mode: each record is `XY<space><path>`, NUL-
+ * terminated, and a rename or copy emits the NEW path in its own record
+ * followed immediately by the ORIGINAL path as a separate record — there is
+ * no ` -> ` form here (verified against git directly on this branch, not
+ * assumed). The status belongs to the pair, and the path that matters is the
+ * new one, so the original-path record is consumed and never tested.
+ */
 function hasTrackedChanges(r, ignorePaths = new Set()) {
   try {
-    const out = execFileSync('git', ['-C', r, 'status', '--porcelain', '--untracked-files=no'], {
+    const out = execFileSync('git', ['-C', r, 'status', '--porcelain', '-z', '--untracked-files=no'], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return out.split('\n').some(line => {
-      if (!line.trim()) return false;
-      // Porcelain v1: 2 status chars, a space, then the path (or, for a
-      // rename, "old -> new" — the path that matters is the new one).
-      let path = line.slice(3);
-      const arrow = path.indexOf(' -> ');
-      if (arrow !== -1) path = path.slice(arrow + 4);
-      if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
-      return !ignorePaths.has(path.split('\\').join('/'));
-    });
+    const records = out.split('\0');
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      if (!record) continue;
+      const status = record.slice(0, 2);
+      const path = record.slice(3);
+      // Rename/copy: skip the original-path record that follows this one.
+      if (status.includes('R') || status.includes('C')) i += 1;
+      if (!ignorePaths.has(path.split('\\').join('/'))) return true;
+    }
+    return false;
   } catch {
     return false;
   }

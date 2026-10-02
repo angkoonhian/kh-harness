@@ -289,3 +289,48 @@ test(
     }
   }
 );
+
+// --- Whole-branch review, F1: git's C-quoting of non-ASCII path names -----
+//
+// `core.quotePath` defaults to `true`, so without `-z` every path git prints
+// that holds a non-ASCII byte arrives as the C-quoted literal
+// `"src/caf\303\251.ts"` — quotes and octal escapes included. `listFiles`
+// handed that literal to every consumer in the tool as if it were a path.
+//
+// This is the test the whole suite did not have: the review's own mutation
+// M25 ("add `-z` to git ls-files", i.e. apply this fix) SURVIVED at
+// 647/0, which is to say nothing anywhere distinguished quoted from
+// unquoted output. Reverting `-z` in scan.mjs's `gitPaths` must fail THIS
+// test by name.
+test('F1: a tracked file with a non-ASCII name is listed under its real name, never git\'s C-quoted literal', (t) => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-quotepath-'));
+  // Written as escapes, never as literal bytes: this file is itself a tracked
+  // source file, and glob.test.mjs's repository-wide guard is about exactly
+  // the class of invisible-byte mistake that applies here.
+  const NAME = 'src/café.ts';
+  writeFileSync(join(d, 'package.json'), '{}');
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, NAME), 'export const a = 1;\n');
+  try {
+    execFileSync('git', ['init', '-q', d], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'config', 'user.name', 'Test'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'commit', '-qm', 'init'], { stdio: 'ignore' });
+  } catch (e) {
+    // A machine-readable skip, not a bare `return` that counts as a pass:
+    // the quoting this test exists to pin is git's, so without git there is
+    // nothing here to assert either way.
+    t.skip(`git is unavailable, so git's own path quoting cannot be exercised: ${e.message}`);
+    return;
+  }
+
+  const { files, source } = listFiles(d);
+  if (source !== 'git') {
+    t.skip('listFiles fell back to the directory walk, which never quotes — nothing to pin');
+    return;
+  }
+  assert.ok(files.includes(NAME), `expected the real name ${JSON.stringify(NAME)}, got ${JSON.stringify(files)}`);
+  assert.equal(files.some(f => f.startsWith('"')), false, 'no entry may be a C-quoted literal');
+  assert.equal(files.some(f => f.includes(String.raw`\303`)), false, 'no entry may carry an octal escape');
+});

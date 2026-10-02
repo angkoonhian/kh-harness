@@ -7,10 +7,18 @@ import { join } from 'node:path';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
+// `-z`, for the same reason scan.mjs's `gitPaths` uses it (whole-branch
+// review, F1): without it git C-quotes any non-ASCII path name, `readFileSync`
+// on that literal throws, and the `catch { return false }` in the filter below
+// turns the throw into "not an offender" — so the one guard that exists to
+// stop a NUL byte reaching a tracked source file would silently stop checking
+// the moment a source file got an accented name. This is a test, not
+// production code, and it is listed here deliberately: it answers the same
+// question `gitPaths` answers, so it gets the same answer.
 function gitTrackedFiles(prefix) {
   try {
-    return execFileSync('git', ['-C', ROOT, 'ls-files', '--', prefix], { encoding: 'utf8' })
-      .split('\n')
+    return execFileSync('git', ['-C', ROOT, 'ls-files', '-z', '--', prefix], { encoding: 'utf8' })
+      .split('\0')
       .filter(Boolean);
   } catch {
     return [];

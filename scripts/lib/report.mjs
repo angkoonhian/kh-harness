@@ -1,4 +1,4 @@
-import { splitExposures, collapsedExposureNote } from './detect-exposure.mjs';
+import { splitExposures, partitionProminent, collapsedExposureNote } from './detect-exposure.mjs';
 import { countProposals } from './gap-model.mjs';
 
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
@@ -77,15 +77,32 @@ export function renderSummary(report) {
     // and P0.security's evidence can never disagree about what counts as
     // noise, because all three read it from one place.
     const { prominent, collapsedCount } = splitExposures(report.exposures);
-    let heading = `Exposures (${prominent.length})`;
-    if (report.nested && report.nested.length) {
-      heading += ` — this repository only; ${report.nested.length} nested repositor${report.nested.length === 1 ? 'y' : 'ies'} not scanned`;
+    // Whole-branch review, F1: a file the sweep could not READ is on the same
+    // list as a credential finding — it is a finding of the same sweep — but
+    // it is not a credential, and the Exposures heading's "values are never
+    // printed; rotate by hand" is not true of it. Partitioned through the
+    // SHARED `partitionProminent` (detect-exposure.mjs), the same function
+    // `P0.security` reads, so the two can never disagree about which section
+    // a finding belongs in or how many are in each.
+    const { credentials, unreadable } = partitionProminent(prominent);
+
+    if (credentials.length || collapsedCount) {
+      let heading = `Exposures (${credentials.length})`;
+      if (report.nested && report.nested.length) {
+        heading += ` — this repository only; ${report.nested.length} nested repositor${report.nested.length === 1 ? 'y' : 'ies'} not scanned`;
+      }
+      heading += ' — values are never printed; rotate by hand:';
+      lines.push(heading);
+      for (const e of credentials) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
+      if (collapsedCount) lines.push(`  ~ ${collapsedExposureNote(collapsedCount)}`);
+      lines.push('');
     }
-    heading += ' — values are never printed; rotate by hand:';
-    lines.push(heading);
-    for (const e of prominent) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
-    if (collapsedCount) lines.push(`  ~ ${collapsedExposureNote(collapsedCount)}`);
-    lines.push('');
+
+    if (unreadable.length) {
+      lines.push(`Not examined (${unreadable.length}) — the credential sweep could NOT read these, so they were never scanned:`);
+      for (const e of unreadable) lines.push(`  ! ${e.location} — ${e.reason ?? 'unknown reason'}`);
+      lines.push('');
+    }
   }
 
   const n = countProposals(report.checks);
