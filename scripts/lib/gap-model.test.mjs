@@ -368,7 +368,15 @@ test('typecheck advice, with neither mypy nor pyright config, mentions no TypeSc
   assert.ok(tcLine);
   assert.equal(/tsconfig|\btsc\b/i.test(tcLine), false, 'a Python repo must never cite a missing TypeScript artefact as the reason');
   assert.match(tcLine, /cannot be derived/);
-  assert.equal(tcLine.includes('pyproject.toml') && /missing a/.test(tcLine), false, 'pyproject.toml must not be named as a script home, even in the fallback');
+  // Coordinator finding (round 3, test quality): this used to be a single
+  // compound assertion (`tcLine.includes('pyproject.toml') && /missing a/
+  // .test(tcLine)`) that could pass — for the wrong reason — even if
+  // pyproject.toml WERE named as a script home in different wording (e.g.
+  // "pyproject.toml has a script table"): the `&& /missing a/` half would
+  // be false, making the whole AND false, satisfying `assert.equal(...,
+  // false)` without the line actually being clean. Split into the one
+  // assertion that is actually load-bearing: no file name at all.
+  assert.equal(tcLine.includes('pyproject.toml'), false, 'pyproject.toml must not be named as a script home, even in the fallback');
 });
 
 // SECRET (ruling 5): advice is derived from script NAMES and config-file
@@ -392,12 +400,21 @@ test('SECRET: a token-bearing script body reachable on the stack object never ap
   assert.equal(JSON.stringify(c.advice).includes(leakedToken), false);
 });
 
-// Coordinator finding (round 2): the "record it in CLAUDE.md, a Makefile,
-// ..." explanation used to repeat verbatim on every derived Python advice
-// line — eight copies of the same paragraph on a four-package repo, which
-// is how a report teaches a reader to skim past it. It must now appear at
-// most ONCE per check, regardless of how many packages derive a command.
-test('P2.scripts repeats the Python command-home explanation only once, across multiple packages', () => {
+// Coordinator finding (round 2, comment corrected round 3): the "record it
+// in CLAUDE.md, a Makefile, ..." explanation used to repeat verbatim on
+// every derived Python advice line. The original comment here claimed
+// "eight copies of the same paragraph on a four-package repo" — but
+// detect-stack.mjs has NO Python workspace concept at all (its python
+// fallback only ever produces a single root package; see its own
+// comment), so a real four-package Python repo cannot be auto-detected and
+// that scenario is UNREACHABLE through the real detection path today. This
+// fixture's two-package `stack` is hand-built specifically to reach past
+// that gap and pin the DEDUPE LOGIC itself in isolation — it is not, and
+// was never meant to be, a claim about what `detect.mjs` can produce from
+// a real repository. The REACHABLE case — one real, auto-detectable Python
+// package whose own pyproject.toml carries both a ruff and a mypy table —
+// is covered separately below, by a test that goes through the real CLI.
+test('DEDUPE LOGIC (not a reachable detection shape): the Python command-home explanation appears only once, across a hand-built multi-package stack', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-py-multi-'));
   writeFileSync(join(d, 'pyproject.toml'), '[tool.ruff]\n');
   mkdirSync(join(d, 'pkg-b'), { recursive: true });
@@ -418,6 +435,27 @@ test('P2.scripts repeats the Python command-home explanation only once, across m
   assert.ok(derivedLines.length >= 2, `fixture sanity: expected >=2 derived lines, got ${JSON.stringify(c.advice)}`);
   const explanationCount = c.advice.filter(a => /no standard script table/.test(a)).length;
   assert.equal(explanationCount, 1, 'the shared explanation must appear exactly once, not once per derived line');
+});
+
+// The REACHABLE case nothing covered before this fix: a single real Python
+// package (the only shape detect-stack.mjs's Python fallback can produce)
+// whose own pyproject.toml carries BOTH a ruff and a mypy table, so lint
+// AND typecheck each derive a real command for the SAME package — two
+// derived lines from ONE package, no hand-built multi-package stack
+// required. This is also exercised end-to-end through the real CLI (see
+// detect-cli.test.mjs's matching test).
+test('DEDUPE, reachable case: one real package with both ruff and mypy config still gets the explanation only once', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-py-tworeal-'));
+  writeFileSync(join(d, 'pyproject.toml'), '[tool.ruff]\nline-length = 100\n\n[tool.mypy]\nstrict = true\n');
+  const stack = { languages: ['python'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const c = byId(gaps(stack, bareHarness, [], undefined, ['pyproject.toml'], d), 'P2.scripts');
+  const derivedLines = c.advice.filter(a => /->/.test(a));
+  assert.equal(derivedLines.length, 2, `fixture sanity: expected exactly 2 derived lines (lint and typecheck), got ${JSON.stringify(c.advice)}`);
+  assert.ok(derivedLines.some(a => a.includes('ruff check .')));
+  assert.ok(derivedLines.some(a => a.includes('mypy .')));
+  const explanationCount = c.advice.filter(a => /no standard script table/.test(a)).length;
+  assert.equal(explanationCount, 1, 'the shared explanation must appear exactly once, even though a single package derived two commands');
 });
 
 test('deny rules present make P2.protected declared', () => {
@@ -585,6 +623,17 @@ test('P1.pathrules proposes when the repository is a genuine workspace with no .
   assert.ok(c.proposal);
 });
 
+// Coordinator finding (round 3): "ship it, but say so" — the reviewer's
+// verdict was that these near-identical stubs still earn their place, but
+// a reader skimming the summary (or /context, once applied) could mistake
+// N listed rules files for N files that already hold real conventions.
+// renderSummary prints `c.proposal` verbatim after the `→` (see
+// report.mjs), so the disclosure belongs in the proposal text itself.
+test('P1.pathrules\' proposal text discloses plainly that the generated files are empty', () => {
+  const c = byId(gaps(workspaceStack, bareHarness), 'P1.pathrules');
+  assert.match(c.proposal, /empty/i);
+});
+
 test('P1.pathrules asks, and proposes nothing, for a single-package repository', () => {
   const c = byId(gaps(bareStack, bareHarness), 'P1.pathrules');
   assert.equal(c.state, 'absent');
@@ -603,6 +652,24 @@ test('lookedFor names both the rules directory and the workspace layout for P1.p
   const lf = byId(gaps(bareStack, bareHarness), 'P1.pathrules').lookedFor.join(' | ');
   assert.match(lf, /\.claude\/rules/);
   assert.match(lf, /workspace/i);
+});
+
+// Coordinator finding (round 3, Minor): same mutation guard as
+// propose.test.mjs's — this check ALSO consults `pathRuleTargets`, whose
+// `isWorkspace` gate every existing fixture reaching the question branch
+// happened to satisfy some OTHER way too (no non-root package at all), so
+// removing the gate would not have failed any test above. This fixture
+// isolates it on the check side: a non-root package with isWorkspace:false
+// must still be undecidable, not a proposal.
+test('MUTATION GUARD: P1.pathrules\' decidability consults stack.isWorkspace explicitly, not just "any non-root package"', () => {
+  const stack = {
+    packages: [{ name: 'api', dir: 'packages/api', manifestPath: 'packages/api/package.json', scripts: [] }],
+    languages: ['typescript'], packageManager: null, isWorkspace: false, ci: [],
+  };
+  const c = byId(gaps(stack, bareHarness), 'P1.pathrules');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false, 'isWorkspace is false, so this must stay undecidable even though a non-root package exists');
+  assert.equal(c.proposal, null);
 });
 
 // --- P1.architecture: the repository's own pointer, and decidability ---

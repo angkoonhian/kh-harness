@@ -33,12 +33,33 @@
 // about what belongs in a file whose CONTENT this tool deliberately never
 // writes either — see pathRuleProposal's own comment in propose.mjs.
 //
-// `path` is the proposed file's location: `.claude/rules/<dir-with-/-as-->
-// .md`, e.g. `packages/api` -> `.claude/rules/packages-api.md`. Slashes are
-// replaced, not nested, so every target lands directly inside `.claude/
-// rules/` (never a subdirectory) and two packages can never collide on a
-// shared leaf name (`packages/api` and `apps/api` would otherwise both want
-// `api.md`).
+// `path` is the proposed file's location: `.claude/rules/<slug>.md`, where
+// `slug` comes from `slugifyDir`, below — every target lands directly
+// inside `.claude/rules/` (never a subdirectory), so slashes must be
+// removed from `dir` somehow.
+//
+// Coordinator finding (round 3): a plain `dir.replace(/\//g, '-')` is NOT
+// collision-free, and the comment that used to sit here claimed otherwise
+// while describing the wrong pair (`packages/api` vs `apps/api` — those
+// never collided). The real collision is a literal `-` in a directory name
+// standing in for an encoded `/`: `packages/a` and a (differently-located)
+// package literally named/dir'd `packages-a` both produce the plain-replace
+// slug `packages-a` — and when two proposals in the same `buildProposals`
+// call land on the identical `path`, `buildProposals`' own dedupe (see its
+// comment on `alreadyWritten` in propose.mjs) silently treats the SECOND as
+// "already written" — the loser is dropped with no error, no warning, and
+// no evidence in the proposal list that it ever existed. `slugifyDir`
+// doubles every literal `-` BEFORE replacing `/`, so a single `-` in the
+// output can only ever have come from a real path separator: `packages/a`
+// -> `packages-a`, but the literal directory `packages-a` -> `packages--a`
+// — the two no longer collide. This is collision-free for every directory
+// path a real file system can produce; the one input shape that could still
+// collide is an EMPTY path segment (a literal double slash, `a//b`), which
+// git and npm never produce as a package.json's own directory.
+function slugifyDir(dir) {
+  return dir.replace(/-/g, '--').replace(/\//g, '-');
+}
+
 export function pathRuleTargets(stack) {
   if (!stack.isWorkspace) return [];
   return stack.packages
@@ -47,6 +68,6 @@ export function pathRuleTargets(stack) {
       name: p.name,
       dir: p.dir,
       glob: `${p.dir}/**/*`,
-      path: `.claude/rules/${p.dir.replace(/\//g, '-')}.md`,
+      path: `.claude/rules/${slugifyDir(p.dir)}.md`,
     }));
 }

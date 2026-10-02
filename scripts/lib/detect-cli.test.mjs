@@ -535,6 +535,27 @@ test('END-TO-END: a repository with a real NOTES.txt (plus requirements.txt) sti
   assert.equal(/requirements\.txt/.test(c.question), false, 'requirements.txt must never appear in the documentation-shaped listing');
 });
 
+// Coordinator finding (round 3, test quality): the reachable shape of the
+// Python advice dedupe — one real, auto-detectable Python package whose
+// own pyproject.toml carries both a ruff and a mypy table — had nothing
+// covering it before this fix; only a hand-built multi-package stack
+// (gap-model.test.mjs, which detect-stack.mjs cannot actually produce for
+// Python) exercised the dedupe at all. This test drives the REAL CLI.
+test('END-TO-END: a Python repo with both ruff and mypy config derives two advice lines, with the shared explanation only once', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-py-dedupe-'));
+  write(d, 'pyproject.toml', '[tool.ruff]\nline-length = 100\n\n[tool.mypy]\nstrict = true\n');
+  write(d, 'app.py', 'x = 1\n');
+  const r = JSON.parse(cli(d, '--json'));
+  const c = r.checks.find(x => x.id === 'P2.scripts');
+  const derivedLines = c.advice.filter(a => /->/.test(a));
+  assert.equal(derivedLines.length, 2, `fixture sanity: expected 2 derived lines, got ${JSON.stringify(c.advice)}`);
+  assert.ok(derivedLines.some(a => a.includes('ruff check .')));
+  assert.ok(derivedLines.some(a => a.includes('mypy .')));
+  assert.equal(c.advice.filter(a => /no standard script table/.test(a)).length, 1, 'the shared explanation must appear exactly once in the real report');
+  const summary = cli(d);
+  assert.equal((summary.match(/no standard script table/g) || []).length, 1, 'and exactly once in the rendered summary text, not once per line');
+});
+
 test('a repository with no documentation at all is still proposed one', () => {
   const r = JSON.parse(cli(bare(), '--json'));
   const c = r.checks.find(x => x.id === 'P1.architecture');

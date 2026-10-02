@@ -332,6 +332,7 @@ test('projectDocs excludes constraints.txt the same way, and the directory form 
   write(d, 'constraints.txt', 'urllib3==2.0\n');
   write(d, 'requirements/base.txt', 'flask==3.0\n');
   assert.ok(listFiles(d).files.includes('constraints.txt'), 'fixture sanity: constraints.txt must actually be present');
+  assert.ok(listFiles(d).files.includes('requirements/base.txt'), 'fixture sanity: requirements/base.txt must actually be present');
   assert.deepEqual(run(d).projectDocs, []);
 });
 

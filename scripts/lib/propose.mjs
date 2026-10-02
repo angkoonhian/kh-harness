@@ -255,6 +255,53 @@ function bootstrapProposal({ kitVersion, stack, files, root }) {
 const PATH_RULE_STEP = 7;
 
 /**
+ * Coordinator finding (round 3, Major, "the serious one"): `pkg.name` —
+ * repository data a dependency or a contributor controls, not something
+ * this tool derived — used to be interpolated unescaped INTO the template's
+ * maintainer comment. A manifest name containing `-->` closes that HTML
+ * comment early, turning everything after it into agent-loadable text:
+ * exactly the "comments, not content" invariant this whole scaffold exists
+ * to uphold, broken by the one piece of untrusted data it carried. The fix
+ * is not escaping `-->` inside the comment — untrusted data inside a
+ * comment delimiter is the wrong SHAPE of fix, because the next delimiter
+ * nobody thought to escape (a stray `<!--` reopening, say) reintroduces the
+ * same hole. Instead: the comment (see path-rule.md.tmpl) is now FULLY
+ * STATIC — it contains no placeholder at all — and `pkg.name` only ever
+ * reaches the template in the two positions that were already data: the
+ * heading and the frontmatter glob (by way of `pkg.dir`, in
+ * pathrules-evidence.mjs). Both positions are sanitised for their own
+ * syntax below, not merely for `-->`.
+ */
+
+/** Markdown ATX headings are single physical lines; a newline in `name`
+ * would end the heading and let whatever came after it become ordinary
+ * (loadable) markdown body text — the same "repository data becomes
+ * loadable content" failure as the comment-breakout this module exists to
+ * close, just via a different character. `<`/`>` are stripped too: Markdown
+ * passes raw HTML through, so a name containing `<!--` would open a NEW,
+ * genuinely unterminated HTML comment right there in the heading (it would
+ * only close at this file's own static comment's `-->`, swallowing
+ * whatever sits between them) — stripping angle brackets removes the
+ * ability to open any HTML construct from this position at all. */
+function sanitizeForHeading(name) {
+  const cleaned = String(name).replace(/[\r\n]+/g, ' ').replace(/[<>]/g, '').trim();
+  return cleaned.length ? cleaned : '(unnamed package)';
+}
+
+/** The glob is embedded as a double-quoted YAML scalar (`paths:\n  - "<glob>"`).
+ * YAML double-quoted scalars use C-style escapes: an unescaped `"` ends the
+ * scalar early (letting whatever follows be parsed as new YAML — a second
+ * key, say) and an unescaped `\` starts an escape sequence that may consume
+ * the following character unexpectedly. Backslashes are escaped FIRST, so
+ * escaping the quote next can never double-escape a quote that was itself
+ * introduced by the backslash step. A literal newline inside a double-quoted
+ * scalar is also significant to a YAML parser, so it is collapsed to a
+ * space, the same defensive choice `sanitizeForHeading` makes. */
+function sanitizeForYamlDoubleQuoted(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ');
+}
+
+/**
  * The path-rule scaffold: one file per non-root workspace package, with the
  * glob `pathRuleTargets` (pathrules-evidence.mjs, shared with gap-model.mjs's
  * P1.pathrules CHECK — see that module's own header for why) derives purely
@@ -295,19 +342,21 @@ const PATH_RULE_STEP = 7;
  * independently confirmed against a running Claude Code session.
  *
  * The body is deliberately NOT a rule: a real heading (the package name) and
- * everything else inside a single HTML comment — a prompt for the human
- * maintaining this file, not content a future read of it could mistake for
- * an instruction. Same discipline as protectedPathProposal and
- * bootstrapProposal above, applied to prose instead of deny rules or
- * install steps: write only what detection proved, and say so.
+ * everything else inside a single, FULLY STATIC HTML comment (see the
+ * sanitization comment immediately above this one for why no interpolation
+ * happens inside it) — a prompt for the human maintaining this file, not
+ * content a future read of it could mistake for an instruction. Same
+ * discipline as protectedPathProposal and bootstrapProposal above, applied
+ * to prose instead of deny rules or install steps: write only what
+ * detection proved, and say so.
  */
 function pathRuleProposal({ kitVersion, stack }) {
   return pathRuleTargets(stack).map(t => ({
     kind: 'file', path: t.path, step: PATH_RULE_STEP,
     contents: render(read('templates/path-rule.md.tmpl'), {
       stamp: versionStamp(kitVersion, PATH_RULE_STEP, '<!--') + ' -->',
-      glob: t.glob,
-      name: t.name,
+      glob: sanitizeForYamlDoubleQuoted(t.glob),
+      name: sanitizeForHeading(t.name),
     }),
     reason: `scaffold a path-scoped rule file for ${t.name} (${t.dir})`,
   }));

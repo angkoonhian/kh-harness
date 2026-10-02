@@ -29,7 +29,8 @@ const MAX_INSTRUCTION_LINES = 150;
  *   JS/TS (manifestPath ends in package.json):
  *     lint:      .eslintrc(.json|.js|.cjs|.yaml|.yml) or
  *                eslint.config.(js|mjs|cjs|ts) -> eslint .
- *     typecheck: tsconfig.json -> tsc --noEmit
+ *     typecheck: tsconfig.json in the package's own directory OR at the
+ *                repository root -> tsc --noEmit
  *   Python (anything else — pyproject.toml, requirements.txt):
  *     lint:      ruff.toml/.ruff.toml, or a [tool.ruff] table in
  *                pyproject.toml -> ruff check .
@@ -135,10 +136,19 @@ function lintAdvice(pkg, files, root) {
 
 function typecheckAdvice(pkg, files, root) {
   if (isJsPackage(pkg)) {
-    if (hasAnyAt(files, pkg.dir, ['tsconfig.json'])) {
-      return { text: `${pkg.name}: add "typecheck": "tsc --noEmit" to ${pkg.manifestPath} — derived from the tsconfig.json found in this repository`, pyDerived: false };
+    // Coordinator finding (round 3, Major): this used to check ONLY the
+    // package's own directory, so the fallback said "no tsconfig.json was
+    // found" for an ordinary monorepo where a SINGLE root tsconfig.json
+    // covers every package (no per-package tsconfig at all) — false, not
+    // merely incomplete: a root tsconfig.json IS real typecheck evidence
+    // for a nested package in that common layout. Same wording defect
+    // round 2 fixed for requirements.txt, now fixed at the SOURCE instead
+    // of only in the sentence: look in both places, and say both were
+    // checked.
+    if (hasAnyAt(files, pkg.dir, ['tsconfig.json']) || files.includes('tsconfig.json')) {
+      return { text: `${pkg.name}: add "typecheck": "tsc --noEmit" to ${pkg.manifestPath} — derived from a tsconfig.json found in this package's directory or at the repository root`, pyDerived: false };
     }
-    return { text: `${pkg.name}: ${pkg.manifestPath} is missing a "typecheck" script — no tsconfig.json was found, so the command cannot be derived`, pyDerived: false };
+    return { text: `${pkg.name}: ${pkg.manifestPath} is missing a "typecheck" script — no tsconfig.json was found in this package's directory or at the repository root, so the command cannot be derived`, pyDerived: false };
   }
   if (hasMypyConfig(files, root, pkg.dir)) {
     return { text: `${pkg.name}: typecheck -> mypy . — derived from the mypy config found in this repository`, pyDerived: true };
@@ -309,12 +319,32 @@ const CHECKS = [
         return { state: 'declared', evidence: harness.claudeDir.rules };
       }
       if (pathRuleTargets(stack).length) {
-        return { state: 'absent', proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout' };
+        // Coordinator finding (round 3): "ship it, but say so" — the
+        // reviewer's verdict was that these four near-identical stubs
+        // still earn their place (right directory, the one key actually
+        // read, the correct glob shape, the compaction caveat a person
+        // reliably gets wrong unaided), but a reader skimming `/context`
+        // would otherwise see N loaded rules files and assume they already
+        // hold real conventions. Say plainly, in the proposal text itself
+        // (which renderSummary prints verbatim after the `→`), that they
+        // do not yet.
+        return { state: 'absent', proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout — each file is generated EMPTY; conventions are added by hand afterward' };
       }
+      // Coordinator finding (round 3, Minor): this evidence/question used
+      // to say "this is a single-package repository" — true for every
+      // REAL input detect-stack.mjs produces when `pathRuleTargets` returns
+      // empty, but not true of every input that reaches this branch: a
+      // hand-built stack with exactly one package whose own `dir` is a
+      // subdirectory (not '.') also lands here once `isWorkspace` is
+      // false, and that repository plainly DOES have a subdirectory — the
+      // one the lone package lives in. The actual criterion this branch
+      // tests is `stack.isWorkspace`, not "how many packages", so the
+      // sentence now describes THAT, true regardless of where the one
+      // package (if any) happens to sit.
       return {
         state: 'absent', decidable: false,
-        evidence: ['this is a single-package repository (stack.isWorkspace is false) — there is no sub-directory split to scope a rule to'],
-        question: 'Path-scoped rules apply here, but this is a single-package repository with no workspace layout to derive a glob from — are there subdirectories with their own conventions that should each get their own .claude/rules/ file, and if so, what glob should scope each one?',
+        evidence: ['this repository is not detected as a multi-package workspace (stack.isWorkspace is false) — there is no cross-package split to scope a rule to'],
+        question: 'Path-scoped rules apply here, but this repository is not detected as a multi-package workspace, so there is no cross-package split to derive a glob from — are there subdirectories with their own conventions that should each get their own .claude/rules/ file, and if so, what glob should scope each one?',
       };
     },
   },
