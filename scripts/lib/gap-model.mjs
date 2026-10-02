@@ -15,18 +15,34 @@ const MAX_INSTRUCTION_LINES = 150;
  * comment on the `P2.scripts` check, below, for why).
  *
  * Ruling (coordinator, Task 7): advice must not invent a command. A missing
- * `lint` or `typecheck` script gets a concrete `"<script>": "<command>"`
- * line ONLY where a config file in the PACKAGE'S OWN directory proves the
- * tool is already in use:
- *   lint:      .eslintrc(.json|.js|.cjs|.yaml|.yml) or eslint.config.(js|mjs|cjs|ts) -> eslint .
- *              ruff.toml/.ruff.toml, or a [tool.ruff] table in
- *              pyproject.toml -> ruff check .
- *   typecheck: tsconfig.json -> tsc --noEmit
- * Where none of these is found, the advice names the missing script and
- * nothing else — never a fabricated command for a tool the repository may
- * not even use (the brief's literal wording, "the exact lines to add",
- * would otherwise mean inventing `"lint": "eslint ."` for a project that
- * might not run ESLint at all — exactly the guessing this project forbids).
+ * `lint` or `typecheck` command gets a concrete derived command ONLY where a
+ * config file in the PACKAGE'S OWN directory proves the tool is already in
+ * use. The evidence consulted must come from the package's OWN ecosystem —
+ * coordinator finding 1 caught `typecheckAdvice` consulting ONLY
+ * `tsconfig.json`, so a Python package was told "no tsconfig.json was
+ * found, so the command cannot be derived" — citing the absence of a
+ * TypeScript artefact as the reason a Python project has no typecheck
+ * command is a confidently WRONG sentence, not merely an unhelpful one.
+ * `isJsPackage`, below, gates every check by the package's own
+ * `manifestPath` (a real detected fact, never a guess) so each ecosystem is
+ * only ever asked about its own tools:
+ *   JS/TS (manifestPath ends in package.json):
+ *     lint:      .eslintrc(.json|.js|.cjs|.yaml|.yml) or
+ *                eslint.config.(js|mjs|cjs|ts) -> eslint .
+ *     typecheck: tsconfig.json -> tsc --noEmit
+ *   Python (anything else — pyproject.toml, requirements.txt):
+ *     lint:      ruff.toml/.ruff.toml, or a [tool.ruff] table in
+ *                pyproject.toml -> ruff check .
+ *     typecheck: mypy.ini, a [tool.mypy] table in pyproject.toml, or a
+ *                [mypy] section in setup.cfg -> mypy .
+ *                [tool.pyright] in pyproject.toml, or pyrightconfig.json
+ *                -> pyright
+ * Where none of a package's OWN ecosystem's config files is found, the
+ * advice names only the missing capability and says the command cannot be
+ * derived — never a fabricated command (the brief's literal wording, "the
+ * exact lines to add", would otherwise mean inventing `"lint": "eslint ."`
+ * for a project that might not run ESLint at all), and never citing a
+ * foreign ecosystem's missing artefact as the reason.
  *
  * Deliberately scoped to the package's OWN directory, not a shared root
  * config: a monorepo's root-level eslint.config.js might cover every
@@ -36,10 +52,15 @@ const MAX_INSTRUCTION_LINES = 150;
  * real evidence would have proven) is the safe failure mode, not over-
  * claiming.
  *
- * Every line names `pkg.manifestPath` (package.json for a JS/TS package,
- * pyproject.toml or requirements.txt for a Python one — see
- * detect-stack.mjs) rather than a hardcoded "package.json", so advice for a
- * Python package never claims the wrong file exists to edit.
+ * Coordinator finding 2: `package.json` has a real `scripts` table, so
+ * naming it as where a JS/TS line belongs is correct — but `pyproject.toml`
+ * has no equivalent standard ( `[tool.poetry.scripts]` is console entry
+ * points, `[tool.pdm.scripts]` is PDM-specific, neither is "a lint script").
+ * So a JS/TS line still names `pkg.manifestPath` as where to add it; a
+ * Python line names ONLY the derived command, plus `PY_COMMAND_HOME`'s
+ * pointer to wherever the project already keeps such commands — the
+ * command is what detection proved, the file is a guess, and this project
+ * does not ship guesses.
  */
 const ESLINT_CONFIG_NAMES = [
   '.eslintrc', '.eslintrc.json', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.yaml', '.eslintrc.yml',
@@ -47,37 +68,75 @@ const ESLINT_CONFIG_NAMES = [
 ];
 const RUFF_CONFIG_NAMES = ['ruff.toml', '.ruff.toml'];
 const RUFF_TABLE_RE = /^\[tool\.ruff(\.[\w-]+)?\]/m;
+const MYPY_TABLE_RE = /^\[tool\.mypy\]/m;
+const MYPY_SETUP_CFG_RE = /^\[mypy\]/m;
+const PYRIGHT_TABLE_RE = /^\[tool\.pyright\]/m;
+
+const PY_COMMAND_HOME = 'a Python project has no standard script table for this — record it in CLAUDE.md, a Makefile, a justfile, or wherever this project already keeps such commands';
 
 function atPkgDir(dir, name) { return dir === '.' ? name : `${dir}/${name}`; }
 function hasAnyAt(files, dir, names) { return names.some(n => files.includes(atPkgDir(dir, n))); }
 
+/** A package is JS/TS precisely when detect-stack.mjs gave it a package.json
+ * manifest — the only other manifests it ever produces are pyproject.toml
+ * and requirements.txt (both Python). A real detected fact, not a guess. */
+function isJsPackage(pkg) { return pkg.manifestPath === 'package.json' || pkg.manifestPath.endsWith('/package.json'); }
+
 /** `files` alone cannot show a TABLE inside a file — pyproject.toml's own
- * content must be read to tell a `[tool.ruff]` project from any other
- * pyproject.toml. `root` is the only thing in this check's context that
- * makes that possible (same reason bootstrap-install.mjs's `yarnFrozenCommand`
- * reads a yarn.lock's own header instead of trusting presence alone); when
- * `root` is not given, this stays honestly `false` rather than guessing. */
-function hasRuffTable(root, dir) {
+ * content must be read to tell a `[tool.ruff]`/`[tool.mypy]`/`[tool.pyright]`
+ * project from any other pyproject.toml. `root` is the only thing in this
+ * check's context that makes that possible (same reason bootstrap-
+ * install.mjs's `yarnFrozenCommand` reads a yarn.lock's own header instead
+ * of trusting presence alone); when `root` is not given, this stays
+ * honestly `false` rather than guessing. */
+function hasPyprojectTable(root, dir, re) {
   if (!root) return false;
   const content = readIfPresent(root, atPkgDir(dir, 'pyproject.toml'));
-  return content != null && RUFF_TABLE_RE.test(content);
+  return content != null && re.test(content);
+}
+
+function hasRuffConfig(files, root, dir) {
+  return hasAnyAt(files, dir, RUFF_CONFIG_NAMES) || hasPyprojectTable(root, dir, RUFF_TABLE_RE);
+}
+
+function hasMypyConfig(files, root, dir) {
+  if (hasAnyAt(files, dir, ['mypy.ini'])) return true;
+  if (hasPyprojectTable(root, dir, MYPY_TABLE_RE)) return true;
+  const setupCfg = root ? readIfPresent(root, atPkgDir(dir, 'setup.cfg')) : null;
+  return setupCfg != null && MYPY_SETUP_CFG_RE.test(setupCfg);
+}
+
+function hasPyrightConfig(files, root, dir) {
+  return hasAnyAt(files, dir, ['pyrightconfig.json']) || hasPyprojectTable(root, dir, PYRIGHT_TABLE_RE);
 }
 
 function lintAdvice(pkg, files, root) {
-  if (hasAnyAt(files, pkg.dir, ESLINT_CONFIG_NAMES)) {
-    return `${pkg.name}: add "lint": "eslint ." to ${pkg.manifestPath} — derived from the ESLint config found in this repository`;
+  if (isJsPackage(pkg)) {
+    if (hasAnyAt(files, pkg.dir, ESLINT_CONFIG_NAMES)) {
+      return `${pkg.name}: add "lint": "eslint ." to ${pkg.manifestPath} — derived from the ESLint config found in this repository`;
+    }
+    return `${pkg.name}: ${pkg.manifestPath} is missing a "lint" script — no ESLint config was found, so the command cannot be derived`;
   }
-  if (hasAnyAt(files, pkg.dir, RUFF_CONFIG_NAMES) || hasRuffTable(root, pkg.dir)) {
-    return `${pkg.name}: add "lint": "ruff check ." to ${pkg.manifestPath} — derived from the ruff config found in this repository`;
+  if (hasRuffConfig(files, root, pkg.dir)) {
+    return `${pkg.name}: lint -> ruff check . — derived from the ruff config found in this repository; ${PY_COMMAND_HOME}`;
   }
-  return `${pkg.name}: ${pkg.manifestPath} is missing a "lint" script — no ESLint or ruff config was found, so the command cannot be derived`;
+  return `${pkg.name}: no lint command declared for this package, and no ruff config was found, so the command cannot be derived`;
 }
 
-function typecheckAdvice(pkg, files) {
-  if (hasAnyAt(files, pkg.dir, ['tsconfig.json'])) {
-    return `${pkg.name}: add "typecheck": "tsc --noEmit" to ${pkg.manifestPath} — derived from the tsconfig.json found in this repository`;
+function typecheckAdvice(pkg, files, root) {
+  if (isJsPackage(pkg)) {
+    if (hasAnyAt(files, pkg.dir, ['tsconfig.json'])) {
+      return `${pkg.name}: add "typecheck": "tsc --noEmit" to ${pkg.manifestPath} — derived from the tsconfig.json found in this repository`;
+    }
+    return `${pkg.name}: ${pkg.manifestPath} is missing a "typecheck" script — no tsconfig.json was found, so the command cannot be derived`;
   }
-  return `${pkg.name}: ${pkg.manifestPath} is missing a "typecheck" script — no tsconfig.json was found, so the command cannot be derived`;
+  if (hasMypyConfig(files, root, pkg.dir)) {
+    return `${pkg.name}: typecheck -> mypy . — derived from the mypy config found in this repository; ${PY_COMMAND_HOME}`;
+  }
+  if (hasPyrightConfig(files, root, pkg.dir)) {
+    return `${pkg.name}: typecheck -> pyright — derived from the pyright config found in this repository; ${PY_COMMAND_HOME}`;
+  }
+  return `${pkg.name}: no typecheck command declared for this package, and neither a mypy nor a pyright config was found, so the command cannot be derived`;
 }
 
 /**
@@ -276,7 +335,7 @@ const CHECKS = [
       const advice = [];
       for (const p of missing) {
         if (lacks(p, 'lint')) advice.push(lintAdvice(p, files, root));
-        if (lacks(p, 'typecheck')) advice.push(typecheckAdvice(p, files));
+        if (lacks(p, 'typecheck')) advice.push(typecheckAdvice(p, files, root));
       }
       return { state: 'absent', decidable: false, evidence, advice };
     },

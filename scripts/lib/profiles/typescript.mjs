@@ -15,15 +15,6 @@ function make(id, extra) {
       const has = name => (pkg.scripts?.includes(name) ? `${runner(pm)} ${name}` : null);
       return { install: INSTALL[pm] ?? 'npm ci', build: has('build'), test: has('test'), lint: has('lint'), typecheck: has('typecheck') };
     },
-    typecheckCommand(pkg) {
-      // pkg.dir is repository-derived and heads for a shell in Plan 2: quote it.
-      const tsconfig = pkg.dir === '.' ? 'tsconfig.json' : `${pkg.dir}/tsconfig.json`;
-      return pkg.scripts?.includes('typecheck') ? null : `npx tsc --noEmit -p "${tsconfig}"`;
-    },
-    lintTouchedCommand(paths) {
-      const js = paths.filter(p => /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(p));
-      return js.length ? `npx eslint --no-error-on-unmatched-pattern ${js.join(' ')}` : null;
-    },
     // Root-anchored AND `**/`-anchored forms are both listed deliberately,
     // and the reason is about OUR OWN matcher, not Claude Code's:
     // glob.mjs's `globToRegExp` compiles `**` to `.*` with a required

@@ -10,11 +10,6 @@ export const python = {
     const pm = stack?.packageManager ?? 'pip';
     return { install: INSTALL[pm] ?? INSTALL.pip, build: null, test: null, lint: null, typecheck: null };
   },
-  typecheckCommand(_pkg, stack) { return null; },
-  lintTouchedCommand(paths) {
-    const py = paths.filter(p => p.endsWith('.py'));
-    return py.length ? `ruff check ${py.join(' ')}` : null;
-  },
   // Root-anchored AND `**/`-anchored forms are both listed deliberately —
   // same two reasons as typescript.mjs's dist/build globs (see its
   // comment for the full explanation):

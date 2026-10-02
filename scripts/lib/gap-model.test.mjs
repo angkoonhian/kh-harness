@@ -275,10 +275,10 @@ test('a package missing only lint produces advice naming the package and the scr
   assert.equal(c.advice.some(a => /typecheck/.test(a)), false, 'typecheck is already declared on this package — no advice for it');
 });
 
-test('lint advice names the derived eslint command only when an ESLint config is present — never an invented tool', () => {
+test('lint advice names the derived eslint command, and package.json, only when an ESLint config is present — never an invented tool', () => {
   const stack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['typecheck'] }] };
   const withConfig = byId(gaps(stack, bareHarness, [], undefined, ['.eslintrc.json']), 'P2.scripts');
-  assert.ok(withConfig.advice.some(a => a.includes('"lint": "eslint .')));
+  assert.ok(withConfig.advice.some(a => a.includes('"lint": "eslint .') && a.includes('package.json')), 'a JS/TS package still names package.json as the script home');
 
   const withoutConfig = byId(gaps(stack, bareHarness, [], undefined, []), 'P2.scripts');
   const lintLine = withoutConfig.advice.find(a => /lint/.test(a));
@@ -290,7 +290,7 @@ test('lint advice names the derived eslint command only when an ESLint config is
   assert.match(lintLine, /cannot be derived/);
 });
 
-test('typecheck advice names tsc --noEmit only when tsconfig.json is present', () => {
+test('typecheck advice names tsc --noEmit only when tsconfig.json is present, for a JS/TS package', () => {
   const stack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint'] }] };
   const withTsconfig = byId(gaps(stack, bareHarness, [], undefined, ['tsconfig.json']), 'P2.scripts');
   assert.ok(withTsconfig.advice.some(a => a.includes('tsc --noEmit')));
@@ -305,13 +305,70 @@ test('typecheck advice names tsc --noEmit only when tsconfig.json is present', (
   assert.match(tcLine, /cannot be derived/);
 });
 
-test('lint advice names the derived ruff command from a [tool.ruff] table in pyproject.toml, read from the real filesystem', () => {
+// Coordinator finding 2: pyproject.toml has no standard script table
+// (`[tool.poetry.scripts]` is console entry points, `[tool.pdm.scripts]` is
+// PDM-specific, neither is "a lint script") — so a Python package's advice
+// must name the derived COMMAND only, never a file to add it to.
+test('lint advice names the derived ruff command, and no file, from a [tool.ruff] table in pyproject.toml, read from the real filesystem', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-ruff-'));
   writeFileSync(join(d, 'pyproject.toml'), '[tool.ruff]\nline-length = 100\n');
   const stack = { languages: ['python'], packageManager: null, isWorkspace: false,
     packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
   const c = byId(gaps(stack, bareHarness, [], undefined, ['pyproject.toml'], d), 'P2.scripts');
-  assert.ok(c.advice.some(a => a.includes('"lint": "ruff check .')));
+  const lintLine = c.advice.find(a => /ruff check/.test(a));
+  assert.ok(lintLine, 'ruff check . is derived');
+  assert.equal(lintLine.includes('pyproject.toml'), false, 'no file is named as a script home — pyproject.toml has no standard script table');
+});
+
+// Symmetric with the mypy/pyright "cannot be derived" case below: with no
+// ruff config either, a Python package's lint fallback must still name no
+// file and invent no command — the fallback shape, not only the derived one.
+test('lint advice, with no ruff config, names no command and no file, for a Python package', () => {
+  const stack = { languages: ['python'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const c = byId(gaps(stack, bareHarness, [], undefined, ['pyproject.toml']), 'P2.scripts');
+  const lintLine = c.advice.find(a => /lint/.test(a));
+  assert.ok(lintLine);
+  assert.equal(/ruff check/.test(lintLine), false, 'no command is invented without ruff config evidence');
+  assert.equal(lintLine.includes('pyproject.toml'), false, 'pyproject.toml must not be named as a script home, even in the fallback');
+  assert.match(lintLine, /cannot be derived/);
+});
+
+// Coordinator finding 1: typecheck advice must consult the package's OWN
+// ecosystem's evidence, not TypeScript's — a Python repo must never be told
+// its typecheck command "cannot be derived" because no tsconfig.json exists.
+test('typecheck advice derives mypy . from a [tool.mypy] table in pyproject.toml, for a Python package, naming no file', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-mypy-'));
+  writeFileSync(join(d, 'pyproject.toml'), '[tool.mypy]\nstrict = true\n');
+  const stack = { languages: ['python'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const c = byId(gaps(stack, bareHarness, [], undefined, ['pyproject.toml'], d), 'P2.scripts');
+  const tcLine = c.advice.find(a => /mypy/.test(a));
+  assert.ok(tcLine, 'mypy . is derived from the [tool.mypy] table');
+  assert.match(tcLine, /mypy \./);
+  assert.equal(tcLine.includes('pyproject.toml'), false, 'no file is named as a script home for a Python package');
+});
+
+test('typecheck advice derives pyright from pyrightconfig.json, for a Python package', () => {
+  const stack = { languages: ['python'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const c = byId(gaps(stack, bareHarness, [], undefined, ['pyproject.toml', 'pyrightconfig.json']), 'P2.scripts');
+  assert.ok(c.advice.some(a => /\bpyright\b/.test(a)));
+});
+
+// The confidently-wrong sentence this finding exists to eliminate: citing
+// TypeScript's own absent artefact as the reason a Python project has no
+// typecheck command. With neither mypy nor pyright evidence, the fallback
+// message must name NO TypeScript artefact at all.
+test('typecheck advice, with neither mypy nor pyright config, mentions no TypeScript artefact for a Python package', () => {
+  const stack = { languages: ['python'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const c = byId(gaps(stack, bareHarness, [], undefined, ['pyproject.toml']), 'P2.scripts');
+  const tcLine = c.advice.find(a => /typecheck|cannot be derived/.test(a));
+  assert.ok(tcLine);
+  assert.equal(/tsconfig|\btsc\b/i.test(tcLine), false, 'a Python repo must never cite a missing TypeScript artefact as the reason');
+  assert.match(tcLine, /cannot be derived/);
+  assert.equal(tcLine.includes('pyproject.toml') && /missing a/.test(tcLine), false, 'pyproject.toml must not be named as a script home, even in the fallback');
 });
 
 // SECRET (ruling 5): advice is derived from script NAMES and config-file

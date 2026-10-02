@@ -50,13 +50,6 @@ test('python profile returns null for guessable commands', () => {
   assert.equal(c.typecheck, null);
 });
 
-test('the derived typecheck command quotes its repository-derived path', () => {
-  const p = selectProfile(tsWorkspace);
-  const cmd = p.typecheckCommand({ name: 'b', dir: 'packages/my app', manifestPath: 'x', scripts: [] });
-  assert.ok(cmd.includes('"packages/my app/tsconfig.json"'),
-    `a path with a space must survive a shell intact; got ${cmd}`);
-});
-
 test('generic declares a reduced step set', () => {
   const steps = selectProfile(nothing).appliesToSteps();
   assert.equal(steps.includes(9), false);   // no per-edit sensor without a stack
@@ -71,8 +64,6 @@ test('no profile encodes a framework or database opinion', () => {
     const surfaces = [
       JSON.stringify(profile.protectedGlobs()),
       JSON.stringify(profile.commands({ name: 'test', dir: '.', manifestPath: 'package.json', scripts: [] })),
-      JSON.stringify(profile.typecheckCommand({ name: 'test', dir: '.', manifestPath: 'package.json', scripts: [] })),
-      JSON.stringify(profile.lintTouchedCommand(['file.ts', 'file.py'])),
     ];
     for (const surface of surfaces) {
       assert.equal(forbidden.test(surface), false, `Profile ${profile.id} contains forbidden pattern in: ${surface.substring(0, 100)}`);
