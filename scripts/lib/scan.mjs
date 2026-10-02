@@ -5,15 +5,44 @@ import { join, relative } from 'node:path';
 const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
 
 /**
- * Run a git command and return its output as trimmed, non-empty lines.
- * Returns null — not [] — when git fails, so callers can tell "nothing found"
- * from "could not look".
+ * Run a path-listing git command with `-z` and return its NUL-terminated
+ * records. Returns null — not [] — when git fails, so callers can tell
+ * "nothing found" from "could not look".
+ *
+ * `-z` IS NOT OPTIONAL, and nothing in this file may ask git for a path
+ * without it. With `core.quotePath` at its default (`true`) git applies
+ * C-quoting to every path it prints, so a name holding any non-ASCII byte —
+ * `src/café.ts`, a CJK filename, an emoji in a documentation tree — arrives
+ * as the literal `"src/caf\303\251.ts"`, surrounding double quotes and octal
+ * escapes included, and a path holding a literal newline is split across two
+ * records. Every consumer in this tool then treats that literal as a path:
+ * `detect-exposure.mjs`'s `statSync` threw ENOENT, the credential scanner
+ * skipped the file with no record anywhere that it had, and `P0.security`
+ * reported `verified / no credential patterns matched` over a plaintext
+ * token (whole-branch review, F1). `languages()` missed it too, because the
+ * quoted form ends in `.ts"`, so the profile silently fell back to
+ * `generic`.
+ *
+ * That was the fourth, and by far the worst, of the blind spots enumerated
+ * below: the only one that disarmed a security check rather than narrowing a
+ * proposal. It is fixed here, at the one place paths enter the tool, rather
+ * than un-escaped at each consumer — un-escaping is a second, driftable
+ * answer to a question `-z` removes outright. `-c core.quotePath=false`
+ * would also stop the quoting but would still break on a path containing a
+ * newline, so it is not used.
+ *
+ * Note for anyone splitting these records: the NUL is a terminator, not a
+ * separator, so the last element is always `''` and `filter(Boolean)` is what
+ * drops it. The split character is written as the escape `'\0'`; a literal
+ * 0x00 byte typed into a source file makes git treat the whole file as
+ * binary (see glob.test.mjs's repository-wide guard, and glob.mjs's own
+ * comment on `PLACEHOLDER` — this project has shipped that defect twice).
  */
-function gitLines(root, args) {
+function gitPaths(root, args) {
   try {
-    return execFileSync('git', ['-C', root, ...args], {
+    return execFileSync('git', ['-C', root, ...args, '-z'], {
       encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-    }).split('\n').map(s => s.trim()).filter(Boolean);
+    }).split('\0').filter(Boolean);
   } catch {
     return null;
   }
@@ -40,14 +69,36 @@ function isExcludedPath(entry) {
 // The tool does not follow symlinks itself to close this gap — that would mean
 // walking outside the index into cycle-prone territory on a hot path — so this
 // is accepted as a rare, disclosed limitation rather than fixed.
+//
+// Third known blind spot, and a deliberate one: EXCLUDE_DIRS unconditionally
+// excludes `dist`, `build` and `__pycache__` on the fallback (non-git) walk —
+// there is no tracked/ignored distinction to read without git, so excluding
+// likely build output by default is the better behaviour there. The git path
+// has no such exclusion; it relies on `--exclude-standard` (.gitignore)
+// instead, so a *tracked* dist/build/__pycache__ (unusual, but real — see
+// propose.mjs's P2.protected comment) is visible to it and a gitignored one
+// is not. The result: the same repository can yield a different
+// `P2.protected` deny-rule proposal depending on whether git is available at
+// all, or whether this scan can see it (per the first blind spot above). A
+// missed proposal in that rare configuration is the acceptable direction for
+// this to fail — it is not fixed here.
+//
+// There WAS a fourth, undisclosed blind spot, and unlike these three it was
+// not a trade-off: git's C-quoting of non-ASCII path names made every file
+// with such a name invisible to the credential scanner while `P0.security`
+// still reported `verified`. It is gone — see `gitPaths` above, which is now
+// the only way this file asks git for a path. It is named here, in the same
+// list, because the list is where the next person will look to find out what
+// this scan cannot see, and an enumeration that silently omits the one entry
+// that mattered is how a reader concludes the list is exhaustive.
 function detectNestedRepositories(root) {
   const nested = [];
   try {
     // Untracked entries. Used twice below; git is asked once.
-    const untracked = gitLines(root, ['ls-files', '-o', '--exclude-standard']);
+    const untracked = gitPaths(root, ['ls-files', '-o', '--exclude-standard']);
 
     // Detect submodules: entries with mode 160000 in git ls-files -s
-    for (const line of gitLines(root, ['ls-files', '-s']) ?? []) {
+    for (const line of gitPaths(root, ['ls-files', '-s']) ?? []) {
       const parts = line.split(/\s+/);
       if (parts[0] === '160000' && parts[3]) {
         nested.push({ path: parts[3], kind: 'submodule' });
@@ -68,7 +119,7 @@ function detectNestedRepositories(root) {
 
     // Detect nested repositories in gitignored directories
     try {
-      for (const entry of gitLines(root, ['ls-files', '-o', '-i', '--exclude-standard', '--directory']) ?? []) {
+      for (const entry of gitPaths(root, ['ls-files', '-o', '-i', '--exclude-standard', '--directory']) ?? []) {
         // node_modules and friends are never nested projects: `npm install
         // git+https://…` leaves a real .git inside an installed package, and
         // reporting it is both wrong and one existsSync per installed package.
@@ -138,14 +189,20 @@ function detectNestedRepositories(root) {
 /**
  * Prefer `git ls-files`: it respects .gitignore and is dramatically faster than
  * a directory walk on NTFS repositories containing node_modules.
+ *
+ * Goes through `gitPaths`, like every other path question in this file, so
+ * `-z` cannot be dropped from one call site and kept at the others — which is
+ * exactly how F1 happened (`apply.mjs`'s `hasTrackedChanges` half-knew about
+ * git's quoting and stripped the surrounding quotes without un-escaping the
+ * octal; this module did not know at all). `gitPaths` returning `null` is the
+ * one signal that distinguishes "git could not look" from "git found
+ * nothing", and only the former may fall through to the walk.
  */
 export function listFiles(root) {
   const nested = detectNestedRepositories(root);
-  try {
-    const out = execFileSync('git', ['-C', root, 'ls-files', '-co', '--exclude-standard'], {
-      encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    let files = out.split('\n').map(s => s.trim()).filter(Boolean)
+  const tracked = gitPaths(root, ['ls-files', '-co', '--exclude-standard']);
+  if (tracked !== null) {
+    let files = tracked
       .filter(f => !f.startsWith('node_modules/') && !f.includes('/node_modules/') && !f.endsWith('/'));
 
     // Filter out files beneath nested repositories
@@ -154,30 +211,30 @@ export function listFiles(root) {
     }
 
     return { files, source: 'git', nested };
-  } catch {
-    // Fallback: recursive directory walk using stable readdirSync (Node 20.1+)
-    const files = [];
-    try {
-      const entries = readdirSync(root, { recursive: true, withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile()) continue;
-
-        const fullPath = join(entry.parentPath, entry.name);
-        const relPath = relative(root, fullPath);
-        const pathComponents = relPath.split(/[\\\/]/);
-
-        // Skip if any directory component is excluded
-        if (pathComponents.slice(0, -1).some(p => EXCLUDE_DIRS.has(p))) continue;
-
-        // Convert to POSIX separators
-        files.push(relPath.split('\\').join('/'));
-      }
-    } catch {
-      // If walk fails, return empty list rather than throwing
-      return { files: [], source: 'walk', nested };
-    }
-    return { files, source: 'walk', nested };
   }
+
+  // Fallback: recursive directory walk using stable readdirSync (Node 20.1+)
+  const files = [];
+  try {
+    const entries = readdirSync(root, { recursive: true, withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+
+      const fullPath = join(entry.parentPath, entry.name);
+      const relPath = relative(root, fullPath);
+      const pathComponents = relPath.split(/[\\\/]/);
+
+      // Skip if any directory component is excluded
+      if (pathComponents.slice(0, -1).some(p => EXCLUDE_DIRS.has(p))) continue;
+
+      // Convert to POSIX separators
+      files.push(relPath.split('\\').join('/'));
+    }
+  } catch {
+    // If walk fails, return empty list rather than throwing
+    return { files: [], source: 'walk', nested };
+  }
+  return { files, source: 'walk', nested };
 }
 
 export function readIfPresent(root, rel) {

@@ -1,3 +1,6 @@
+import { splitExposures, partitionProminent, collapsedExposureNote } from './detect-exposure.mjs';
+import { countProposals } from './gap-model.mjs';
+
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
 const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 4: 'Continuity' };
 
@@ -18,6 +21,20 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   }
   if (!stack.packageManager) {
     out.push('No lockfile found, so the package manager is unknown. Confirm which one this project uses.');
+  }
+  // Coordinator ruling (post-review, concern 1): a workspace pattern this
+  // tool REFUSED to interpret must be reported, not absorbed. `glob.mjs`
+  // already fails closed on it — a refused pattern compiles to a
+  // never-matching source — but a pattern that silently matches nothing is
+  // indistinguishable from a workspace with no members, which is exactly the
+  // confident-and-wrong shape this report exists to avoid. The pattern's own
+  // text is never echoed: it is repository-controlled and holds a control
+  // character by definition, so the index is what is named.
+  const rejected = stack.rejectedWorkspacePatterns ?? [];
+  if (rejected.length) {
+    const s = rejected.length === 1 ? '' : 's';
+    const is = rejected.length === 1 ? 'is' : 'are';
+    out.push(`${rejected.length} workspace pattern${s} (at index ${rejected.join(', ')} of this repository's own \`workspaces\` list) ${is} not a usable glob — ${rejected.length === 1 ? 'it contains' : 'they contain'} a NUL character, so ${rejected.length === 1 ? 'it was' : 'they were'} refused rather than interpreted, and any package ${rejected.length === 1 ? 'it' : 'they'} would have matched is NOT in this report. The value is not printed here because it is repository-controlled and holds a control character. What should ${rejected.length === 1 ? 'that entry' : 'those entries'} be?`);
   }
   if (checks.some(c => c.id === 'P1.instructions' && c.state === 'declared')) {
     out.push('An instruction file already exists. Which of its rules are decisions that cannot be re-derived from source? Those must survive any regeneration.');
@@ -44,6 +61,58 @@ export function buildReport({ root, kitVersion, git, stack, harness, exposures, 
   };
 }
 
+/**
+ * The Exposures and "Not examined" sections, as lines, with their trailing
+ * blank separator — or `[]` when there is nothing to report.
+ *
+ * Exported and shared because `apply.mjs` performs the identical Phase-0
+ * credential sweep and used to print NONE of it (whole-branch review, F9).
+ * The fix had to not be a second renderer: two places formatting the same
+ * findings is precisely the duplicated-predicate shape this branch's review
+ * found five times over. `detect` and `apply` now print the same bytes for
+ * the same exposures because they call the same function.
+ *
+ * Task 9b, finding 1: the prominent/collapsed split is the SAME one
+ * `P0.security`'s own check applies (gap-model.mjs, via the shared
+ * detect-exposure.mjs helpers) — the heading count, the listed findings and
+ * `P0.security`'s evidence can never disagree about what counts as noise,
+ * because all of them read it from one place.
+ *
+ * Whole-branch review, F1: a file the sweep could not READ is on the same
+ * list as a credential finding — it is a finding of the same sweep — but it
+ * is not a credential, and the Exposures heading's "values are never
+ * printed; rotate by hand" is not true of it. Partitioned through the SHARED
+ * `partitionProminent`, the same function `P0.security` reads, so the two
+ * can never disagree about which section a finding belongs in, or how many
+ * are in each.
+ */
+export function exposureSectionLines(exposures, nested = []) {
+  if (!exposures || exposures.length === 0) return [];
+  const lines = [];
+  const { prominent, collapsedCount } = splitExposures(exposures);
+  const { credentials, unreadable } = partitionProminent(prominent);
+
+  if (credentials.length || collapsedCount) {
+    let heading = `Exposures (${credentials.length})`;
+    if (nested.length) {
+      heading += ` — this repository only; ${nested.length} nested repositor${nested.length === 1 ? 'y' : 'ies'} not scanned`;
+    }
+    heading += ' — values are never printed; rotate by hand:';
+    lines.push(heading);
+    for (const e of credentials) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
+    if (collapsedCount) lines.push(`  ~ ${collapsedExposureNote(collapsedCount)}`);
+    lines.push('');
+  }
+
+  if (unreadable.length) {
+    lines.push(`Not examined (${unreadable.length}) — the credential sweep could NOT read these, so they were never scanned:`);
+    for (const e of unreadable) lines.push(`  ! ${e.location} — ${e.reason ?? 'unknown reason'}`);
+    lines.push('');
+  }
+
+  return lines;
+}
+
 export function renderSummary(report) {
   const lines = [];
   lines.push(`harness-kit ${report.kitVersion} — ${report.repo.root}`);
@@ -67,19 +136,22 @@ export function renderSummary(report) {
     lines.push('');
   }
 
-  if (report.exposures.length) {
-    let heading = `Exposures (${report.exposures.length})`;
-    if (report.nested && report.nested.length) {
-      heading += ` — this repository only; ${report.nested.length} nested repositor${report.nested.length === 1 ? 'y' : 'ies'} not scanned`;
-    }
-    heading += ' — values are never printed; rotate by hand:';
-    lines.push(heading);
-    for (const e of report.exposures) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
-    lines.push('');
-  }
+  lines.push(...exposureSectionLines(report.exposures, report.nested ?? []));
 
-  const n = report.checks.filter(c => c.proposal).length;
+  const n = countProposals(report.checks);
   lines.push(n === 0 ? 'No proposals — this repository already satisfies every applicable step.' : `${n} proposal${n === 1 ? '' : 's'}. Nothing has been written except docs/harness/detect.json.`);
+
+  // Distinct from proposals, deliberately: a proposal is "the tool will do
+  // this"; advice is "you should do this, but harness-kit will not" (e.g.
+  // P2.scripts — see gap-model.mjs's own comment on why package.json is
+  // never written). Folding these into the `→` proposal lines above would
+  // blur a line a reader must be able to trust without re-deriving it.
+  const advice = report.checks.flatMap(c => c.advice ?? []);
+  if (advice.length) {
+    lines.push('');
+    lines.push('Advice — reported only; harness-kit will not write these:');
+    for (const a of advice) lines.push(`  * ${a}`);
+  }
 
   if (report.couldNotDerive.length) {
     lines.push('');

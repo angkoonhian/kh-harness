@@ -12,5 +12,5 @@ export function selectProfile(stack) {
   }
   if (!best || score < 0.5) return generic;
   // Bind the stack so callers need only pass a package.
-  return { ...best, commands: pkg => best.commands(pkg, stack), typecheckCommand: pkg => best.typecheckCommand(pkg, stack) };
+  return { ...best, commands: pkg => best.commands(pkg, stack) };
 }

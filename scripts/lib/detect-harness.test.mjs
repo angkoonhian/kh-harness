@@ -77,6 +77,30 @@ test('detects other editors', () => {
   assert.ok(h.otherEditors.some(p => p.startsWith('.cursor/rules')));
 });
 
+// --- Task 9b, finding 6: claudeDir.settings must agree with its siblings -
+
+test('claudeDir.settings and localSettings are true even when the file list cannot see them (e.g. gitignored .claude/), matching the siblings that already read the real file', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  write(d, '.claude/settings.local.json', JSON.stringify({ hooks: {} }));
+  // The defect: a `files` list that does NOT include either settings file —
+  // exactly what a gitignored `.claude/` produces from the real scan — must
+  // not make `settings`/`localSettings` disagree with denyRules/denyRuleList,
+  // which are read straight off disk regardless of what `files` says.
+  const filesAsIfGitignored = ['README.md'];
+  const h = detectHarness(d, filesAsIfGitignored);
+  assert.equal(h.claudeDir.settings, true, 'settings must be read the SAME way denyRules was, not from the (gitignored) file list');
+  assert.equal(h.claudeDir.localSettings, true);
+  assert.equal(h.claudeDir.denyRules, 1, 'fixture sanity: the sibling field this one must agree with really is non-zero');
+});
+
+test('claudeDir.settings is false when no settings file exists at all', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  assert.equal(run(d).claudeDir.settings, false);
+  assert.equal(run(d).claudeDir.localSettings, false);
+});
+
 test('denyRules is 0 when there is no settings file', () => {
   const d = repo();
   write(d, 'README.md', '# x');
@@ -106,6 +130,37 @@ test('denyRules is 0 for malformed JSON, and detectHarness does not throw', () =
   write(d, '.claude/settings.json', '{ this is not json');
   assert.doesNotThrow(() => run(d));
   assert.equal(run(d).claudeDir.denyRules, 0);
+});
+
+// --- denyRuleList: Task 8b's gap-model.mjs needs the actual rule STRINGS
+// (not just a count) to tell "our own derived rules are present" from
+// "something is present". Safely filtered the same way `hookEvents` is:
+// `harness` is serialised wholesale into docs/harness/detect.json on every
+// run, and a `Bash(...)` deny rule can embed a literal credential as its
+// argument (see apply-lib.mjs's own comment on `renderSettingsDenyDiff`).
+
+test('denyRuleList keeps a path-taking permission rule verbatim', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(secrets/**)', 'Read(./.env)'] } }));
+  assert.deepEqual(run(d).claudeDir.denyRuleList, ['Edit(secrets/**)', 'Read(./.env)']);
+});
+
+test('denyRuleList redacts a Bash(...) rule to null, never the raw string', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ["Bash(curl -H 'PRIVATE-TOKEN: ghp_SECRET')"] } }));
+  const list = run(d).claudeDir.denyRuleList;
+  assert.deepEqual(list, [null]);
+  const full = JSON.stringify(run(d));
+  assert.equal(full.includes('ghp_SECRET'), false, 'the credential must never reach the serialised harness');
+});
+
+test('denyRuleList is [] when there is no settings file, and does not throw on malformed JSON', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  assert.deepEqual(run(d).claudeDir.denyRuleList, []);
+  write(d, '.claude/settings.json', '{ not json');
+  assert.doesNotThrow(() => run(d));
+  assert.deepEqual(run(d).claudeDir.denyRuleList, []);
 });
 
 // --- hookEvents: the registry, not the filenames ---
@@ -275,6 +330,74 @@ test('projectDocs lists docs/ markdown that is not the kit\'s own output', () =>
   assert.deepEqual(run(d).projectDocs, ['docs/wiki/README.md', 'docs/wiki/services.md']);
 });
 
+// --- F1: projectDocs must find documentation-shaped files anywhere in the
+// repository, not only docs/*.md — see gap-model.mjs's P1.architecture,
+// which trusts an empty projectDocs to mean "no documentation anywhere".
+// docs/ + .md was three filenames' worth of assumption, not an enumeration.
+
+test('projectDocs finds documentation living outside docs/, e.g. under wiki/', () => {
+  const d = repo();
+  write(d, 'wiki/overview.md', '# overview\n');
+  write(d, 'wiki/api.md', '# api\n');
+  const h = run(d);
+  assert.deepEqual(h.projectDocs, ['wiki/api.md', 'wiki/overview.md']);
+});
+
+test('projectDocs recognizes non-markdown documentation shapes: .rst, .adoc, .txt', () => {
+  const d = repo();
+  write(d, 'docs/index.rst', 'index\n');
+  write(d, 'docs/guide.adoc', 'guide\n');
+  write(d, 'notes.txt', 'notes\n');
+  const h = run(d);
+  assert.deepEqual(h.projectDocs, ['docs/guide.adoc', 'docs/index.rst', 'notes.txt']);
+});
+
+test('projectDocs still excludes the kit\'s own outputs wherever they are found', () => {
+  const d = repo();
+  write(d, 'CLAUDE.md', '# instructions\n');
+  write(d, 'HANDOFF.md', '# handoff\n');
+  write(d, 'docs/harness/recon.md', '# recon\n');
+  write(d, '.claude/skills/foo/SKILL.md', '# skill\n');
+  const h = run(d);
+  assert.deepEqual(h.projectDocs, []);
+});
+
+// Coordinator finding (round 2): the wide net for .txt stays wide — that
+// is correct, see this file's own PROJECT_DOC_EXTENSIONS comment — but
+// requirements.txt/constraints.txt are Python DEPENDENCY MANIFESTS, not
+// documentation, a fact this codebase already holds elsewhere (gap-model.mjs's
+// P1.bootstrap comment, protected-evidence.mjs's pairedRequirementsFiles).
+// Excluding these two already-classified names is not guessing by
+// extension — projectDocs still treats every OTHER .txt as documentation-
+// shaped, proven by the NOTES.txt case right below.
+
+test('projectDocs excludes requirements.txt and requirements-dev.txt — Python dependency manifests, not documentation', () => {
+  const d = repo();
+  write(d, 'requirements.txt', 'flask==3.0\n');
+  write(d, 'requirements-dev.txt', 'pytest\n');
+  // Fixture sanity: both files must actually exist on disk before asserting
+  // they are excluded, or "excluded" would be true for the wrong reason.
+  assert.ok(listFiles(d).files.includes('requirements.txt'), 'fixture sanity: requirements.txt must actually be present');
+  assert.ok(listFiles(d).files.includes('requirements-dev.txt'), 'fixture sanity: requirements-dev.txt must actually be present');
+  assert.deepEqual(run(d).projectDocs, []);
+});
+
+test('projectDocs excludes constraints.txt the same way, and the directory form requirements/base.txt', () => {
+  const d = repo();
+  write(d, 'constraints.txt', 'urllib3==2.0\n');
+  write(d, 'requirements/base.txt', 'flask==3.0\n');
+  assert.ok(listFiles(d).files.includes('constraints.txt'), 'fixture sanity: constraints.txt must actually be present');
+  assert.ok(listFiles(d).files.includes('requirements/base.txt'), 'fixture sanity: requirements/base.txt must actually be present');
+  assert.deepEqual(run(d).projectDocs, []);
+});
+
+test('projectDocs still includes a REAL .txt doc (NOTES.txt) alongside an excluded requirements.txt', () => {
+  const d = repo();
+  write(d, 'requirements.txt', 'flask==3.0\n');
+  write(d, 'NOTES.txt', 'design notes\n');
+  assert.deepEqual(run(d).projectDocs, ['NOTES.txt'], 'the wide net for .txt stays wide for anything not already classified as a dependency manifest');
+});
+
 // Never the command string, only the script it runs. Secrets live in
 // arguments, and .claude/settings.local.json — one of the two files this
 // registry is read from — is gitignored and on the credential scanner's
@@ -300,4 +423,68 @@ test('hookEvents records the resolved script, never the command or its arguments
   assert.equal(serialised.includes(UNKNOWN), false, 'an unrecognised secret must not survive');
   assert.equal(serialised.includes(KNOWN), false, 'nor a recognised one');
   assert.equal(serialised.includes('example.invalid'), false, 'nor anything else from the command');
+});
+
+// --- Whole-branch review, F8: the deny-rule pair read ONE settings file
+// --- while `hookEvents`, three fields away, read both ----------------------
+
+test('F8: a deny rule that lives only in settings.local.json is seen, exactly as a hook there already was', () => {
+  const d = repo();
+  write(d, '.claude/settings.local.json', JSON.stringify({
+    permissions: { deny: ['Edit(*-lock.json)'] },
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node nope.mjs' }] }] },
+  }));
+  const h = detectHarness(d, listFiles(d).files);
+  assert.equal(h.claudeDir.settings, false, 'fixture sanity: there is no settings.json at all');
+  assert.equal(h.claudeDir.localSettings, true);
+  // The asymmetry F8 measured: hookEvents saw the local file, the deny pair
+  // did not, so P2.protected reported `absent` with EMPTY evidence and apply
+  // wrote the identical rule a second time into the other file.
+  assert.ok(h.claudeDir.hookEvents.SessionStart, 'fixture sanity: hookEvents always read this file');
+  assert.equal(h.claudeDir.denyRules, 1, 'a rule in settings.local.json is in effect and must be counted');
+  assert.deepEqual(h.claudeDir.denyRuleList, ['Edit(*-lock.json)']);
+});
+
+test('F8: denyRules and denyRuleList are the length and the contents of ONE list, merged across both files and deduped', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(a)', 'Edit(shared)'] } }));
+  write(d, '.claude/settings.local.json', JSON.stringify({ permissions: { deny: ['Edit(shared)', 'Edit(b)'] } }));
+  const h = detectHarness(d, listFiles(d).files);
+  assert.deepEqual(h.claudeDir.denyRuleList, ['Edit(a)', 'Edit(shared)', 'Edit(b)'], 'settings.json order first, then the local file, deduped');
+  assert.equal(h.claudeDir.denyRules, h.claudeDir.denyRuleList.length, 'the count and the list can never report different lengths');
+});
+
+// --- Whole-branch review, F2: claudeDir.rules is read off DISK -------------
+
+test('F2: claudeDir.rules finds a rule file the file scan cannot see (a gitignored .claude/)', () => {
+  const d = repo();
+  write(d, '.claude/rules/packages-api.md', '---\npaths:\n  - "packages/api/**/*"\n---\n');
+  // Exactly what a gitignored `.claude/` produces from the real scan.
+  const h = detectHarness(d, ['README.md']);
+  assert.deepEqual(h.claudeDir.rules, ['.claude/rules/packages-api.md'],
+    'every sibling .claude/ field reads disk; this one used to read the scan list and was therefore permanently empty here');
+});
+
+test('F2: claudeDir.rules counts only .md, and finds one in a subdirectory', () => {
+  const d = repo();
+  write(d, '.claude/rules/.gitkeep', '');
+  write(d, '.claude/rules/.DS_Store', 'junk');
+  write(d, '.claude/rules/nested/web.md', '# web\n');
+  const h = detectHarness(d, listFiles(d).files);
+  assert.deepEqual(h.claudeDir.rules, ['.claude/rules/nested/web.md'],
+    'Claude Code reads only .md under .claude/rules/, and reads it recursively');
+});
+
+test('F2: claudeDir.rules is [] when .claude/rules/ is absent, and never throws', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  assert.doesNotThrow(() => detectHarness(d, listFiles(d).files));
+  assert.deepEqual(detectHarness(d, listFiles(d).files).claudeDir.rules, []);
+});
+
+test('F2: claudeDir.rules is [] when .claude/rules is a plain FILE, not a directory', () => {
+  const d = repo();
+  write(d, '.claude/rules', 'not a directory');
+  assert.doesNotThrow(() => detectHarness(d, listFiles(d).files));
+  assert.deepEqual(detectHarness(d, listFiles(d).files).claudeDir.rules, []);
 });
