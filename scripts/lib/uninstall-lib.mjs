@@ -8,7 +8,7 @@
 // enough.
 import * as fs from 'node:fs';
 import { join } from 'node:path';
-import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline } from './apply-lib.mjs';
+import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline, isAllowedDirectory, settingsReformattedNote } from './apply-lib.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
@@ -71,7 +71,8 @@ function isGeneratorProducible(relPath) {
 }
 
 /**
- * Task 9b, finding 4: the same allowlist-and-containment discipline
+ * Task 9b, finding 4 (and coordinator round 2, finding 2 — "the one I care
+ * most about"): the same allowlist-and-containment discipline
  * `guardRemoval` applies to a FILE, applied to a DIRECTORY this tool's own
  * manifest (`dirsCreated`, recorded by apply-lib.mjs's `recordCreatedDirs`
  * at the moment of creation) says it created. The manifest is a file in
@@ -80,15 +81,17 @@ function isGeneratorProducible(relPath) {
  * entry such as `"../../important"` must be refused the same way a forged
  * file entry is, before `rmdirSync` ever sees it.
  *
- * Deliberately its own small allowlist, not `assertAllowed` (apply-
- * lib.mjs): that function's prefixes are string prefixes WITH a trailing
- * slash (`'scripts/'`), which a bare directory path (`'scripts'` itself,
- * no trailing slash) never starts with — reusing it as-is would refuse the
- * exact top-level directories this cleanup most needs to remove.
+ * `isAllowedDirectory` (apply-lib.mjs) is the allowlist question, read
+ * from the SAME `ALLOWED_EXACT`/`ALLOWED_PREFIXES` constants `assertAllowed`
+ * uses for writes — this file used to carry its own, separately-maintained
+ * copy of that list, which is exactly the shape of defect this project has
+ * removed before: two pieces of code answering the same question
+ * independently, each looking harmless on the day it was written. Only the
+ * path-syntax safety check (absolute path, `..`) is still done here,
+ * directly — that part has no "allowed" question to share, and
+ * `assertContained` below is the same filesystem-containment check
+ * `applyProposals` runs before every write.
  */
-const DIR_REMOVAL_ALLOWED_EXACT = new Set(['.claude', 'scripts', 'docs', 'docs/harness']);
-const DIR_REMOVAL_ALLOWED_PREFIXES = ['.claude/', 'scripts/', 'docs/harness/'];
-
 function assertDirRemovable(root, relDir) {
   const normalized = relDir.split('\\').join('/');
   if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
@@ -97,24 +100,42 @@ function assertDirRemovable(root, relDir) {
   if (normalized.split('/').includes('..')) {
     throw new Error(`not allowed: path traversal: ${relDir}`);
   }
-  const allowed = DIR_REMOVAL_ALLOWED_EXACT.has(normalized) || DIR_REMOVAL_ALLOWED_PREFIXES.some(p => normalized.startsWith(p));
-  if (!allowed) {
+  if (!isAllowedDirectory(normalized)) {
     throw new Error(`not allowed: "${relDir}" is outside the directory-removal allowlist`);
   }
   assertContained(root, normalized);
 }
 
 /**
- * Removes every directory in `dirsCreated` that is STILL genuinely empty,
- * deepest first (a shallower directory can only become removable once
- * everything recorded under it is already gone) — never one that is
- * missing already (fine, nothing to do), and never one that still holds
- * ANYTHING, ours or the user's. Returns the subset actually removed, so
- * the caller can prune the manifest to match reality rather than its own
- * stale guess.
+ * Task 9b (coordinator round 2, finding 1): the read-only PREDICTION
+ * (`planUninstall`, for the dry-run preview) and the real REMOVAL
+ * (`runUninstall`) must decide "is this directory removable" the exact
+ * same way, or the preview can promise a cleanup `--yes` doesn't actually
+ * perform (or the reverse). This is that one shared decision, structured
+ * so the two callers cannot drift: it NEVER touches the filesystem itself
+ * — it only reads (`existsSync`/`readdirSync`) and decides.
+ *
+ * `gone` is the set of relative paths — files AND, as this function finds
+ * them, directories — that are to be treated as already removed. For a
+ * REAL run that is the actual outcome of every earlier step (file removals,
+ * the settings-file cleanup, the manifest's own fate), queried against the
+ * real, still-mutating filesystem. For a PREDICTION it is the plan's own
+ * best guess at that same set, queried against the filesystem as it stands
+ * right now — which is why a prediction can go stale between plan and run
+ * the same way `plan.revert`/`plan.remove` already can (see this file's own
+ * comments on `revertPatch`/`classify` being re-derived, never replayed).
+ *
+ * Processes deepest-first (a shallower directory can only become removable
+ * once everything recorded under it already is) and mutates `gone` by
+ * adding each directory it finds removable, so a shallower ancestor in the
+ * SAME pass correctly sees it as gone too. Returns the ordered list of
+ * directories decided removable — never one that is missing already
+ * (nothing to do), never one outside the allowlist or that escapes the
+ * repository (`assertDirRemovable`), and never one still holding anything,
+ * ours or the user's, that isn't ALSO already in `gone`.
  */
-function removeEmptyCreatedDirs(root, dirsCreated) {
-  const removedDirs = [];
+function sweepRemovableDirs(root, dirsCreated, gone) {
+  const removable = [];
   const sorted = [...dirsCreated].sort((a, b) => b.split('/').length - a.split('/').length);
   for (const dir of sorted) {
     try {
@@ -123,14 +144,40 @@ function removeEmptyCreatedDirs(root, dirsCreated) {
       continue; // a forged or out-of-scope entry is never acted on
     }
     const abs = join(root, dir);
+    let entries;
     try {
-      if (!fs.existsSync(abs)) continue;
-      if (fs.readdirSync(abs).length > 0) continue; // never remove a non-empty directory
-      fs.rmdirSync(abs);
+      if (!fs.existsSync(abs)) continue; // already gone; nothing to predict or remove
+      entries = fs.readdirSync(abs);
+    } catch {
+      continue;
+    }
+    const allAccountedFor = entries.every(name => gone.has(`${dir}/${name}`));
+    if (!allAccountedFor) continue; // still holds something not already accounted for
+    gone.add(dir);
+    removable.push(dir);
+  }
+  return removable;
+}
+
+/**
+ * The REAL removal: calls `sweepRemovableDirs` against `gone` built from
+ * this run's own ACTUAL outcomes (never the plan's prediction — see that
+ * function's own comment), then physically removes each directory it
+ * names, in the same deepest-first order, skipping (never throwing on) a
+ * `rmdirSync` failure — the same safe-failure direction every other
+ * removal guard in this module already takes. Returns the subset actually
+ * removed, so the caller can prune the manifest to match reality rather
+ * than its own stale guess.
+ */
+function removeEmptyCreatedDirs(root, dirsCreated, gone) {
+  const candidates = sweepRemovableDirs(root, dirsCreated, gone);
+  const removedDirs = [];
+  for (const dir of candidates) {
+    try {
+      fs.rmdirSync(join(root, dir));
       removedDirs.push(dir);
     } catch {
-      // Leave it — the same safe-failure direction every other removal
-      // guard in this module already takes.
+      // Leave it.
     }
   }
   return removedDirs;
@@ -245,6 +292,12 @@ export function planUninstall({ root, manifest }) {
   }
 
   const validated = validateSettings(join(root, SETTINGS));
+  // Chained, not re-applied independently per patch: this is the SAME
+  // cumulative revert `runUninstall` performs (see its own step 2), done
+  // here read-only so the PREDICTION of the settings file's final content
+  // — below, `removeSettingsFile` — asks the identical question the real
+  // run answers, rather than guessing from patch count alone.
+  let simulatedSettings = validated.valid ? validated.object : null;
   for (const p of manifest?.settingsPatches ?? []) {
     if (validated.reason === 'settings-missing') {
       // No settings file means no hook is registered: there is nothing to
@@ -256,14 +309,48 @@ export function planUninstall({ root, manifest }) {
       gonePatches.push({ ...p, why: validated.reason });
     } else if (!validated.valid) {
       keepPatches.push({ ...p, why: validated.reason });
-    } else if (revertPatch(validated.object, p).reverted) {
-      revert.push(p);
     } else {
-      keepPatches.push({ ...p, why: 'patch-modified' });
+      const r = revertPatch(simulatedSettings, p);
+      if (r.reverted) {
+        simulatedSettings = r.settings;
+        revert.push(p);
+      } else {
+        keepPatches.push({ ...p, why: 'patch-modified' });
+      }
     }
   }
 
-  return { remove, keep, revert, keepPatches, gonePatches };
+  // Task 9b (coordinator round 2, finding 1): the dry-run preview used to
+  // stop at the file/patch level — it never predicted the settings.json
+  // cleanup (finding 4/5) or the directory cleanup (finding 4) that `--yes`
+  // actually performs, so a cautious user approving the PLAN got a
+  // DIFFERENT, larger result than what they reviewed. Both predictions
+  // below ask the exact same questions `runUninstall` asks of its own real
+  // outcome (`settingsCreated` + "is the reverted object now empty";
+  // `sweepRemovableDirs`, the one function both the plan and the real run
+  // call) — never a second, independently-reasoned guess.
+  const removeSettingsFile = Boolean(manifest?.settingsCreated) && validated.valid &&
+    typeof simulatedSettings === 'object' && simulatedSettings !== null && !Array.isArray(simulatedSettings) &&
+    Object.keys(simulatedSettings).length === 0;
+
+  // Mirrors runUninstall's own `hasKept` (step 4): true when nothing this
+  // run can already see would be left behind. `changedSincePlan` cannot be
+  // predicted here — it only exists once a real run observes the
+  // filesystem changed between plan and run, the same staleness every
+  // other field in this plan already accepts (see `revert`'s own comment
+  // in runUninstall on why it is re-derived, never replayed).
+  const predictedManifestGone = keep.length === 0 && keepPatches.length === 0;
+
+  const gone = new Set(remove.map(r => r.path));
+  if (removeSettingsFile) gone.add(SETTINGS);
+  if (predictedManifestGone) gone.add(MANIFEST_PATH);
+  const removeDirs = sweepRemovableDirs(root, manifest?.dirsCreated ?? [], gone);
+
+  return {
+    remove, keep, revert, keepPatches, gonePatches,
+    removeSettingsFile: removeSettingsFile ? SETTINGS : null,
+    removeDirs,
+  };
 }
 
 export function runUninstall({ root, manifest, plan }) {
@@ -470,15 +557,25 @@ export function runUninstall({ root, manifest, plan }) {
   const dirsCreated = manifest?.dirsCreated ?? [];
   let removedDirs = [];
 
+  // `gone` starts empty on the REAL path, deliberately: by this point in
+  // the run, every file this run is going to remove (step 1), the settings
+  // file (step 2.5), and — in the branch below — the manifest file itself
+  // have ALL already been physically removed from disk, so `readdirSync`
+  // already reflects their absence directly. `gone` only needs to carry
+  // directories `sweepRemovableDirs` itself decides are removable WITHIN
+  // this same pass, so a shallower directory correctly sees a deeper one
+  // as accounted for before either is actually touched — see that
+  // function's own comment for why determining the whole set first, then
+  // acting on it in order, is correct and matches `removeEmptyCreatedDirs`.
   if (!hasKept && !hasFailures) {
     try {
       fs.rmSync(join(root, MANIFEST_PATH));
     } catch (e) {
       manifestDeleteFailed = true;
     }
-    if (dirsCreated.length) removedDirs = removeEmptyCreatedDirs(root, dirsCreated);
+    if (dirsCreated.length) removedDirs = removeEmptyCreatedDirs(root, dirsCreated, new Set());
   } else {
-    if (dirsCreated.length) removedDirs = removeEmptyCreatedDirs(root, dirsCreated);
+    if (dirsCreated.length) removedDirs = removeEmptyCreatedDirs(root, dirsCreated, new Set());
     const updatedManifest = {
       ...manifest,
       files: keptFiles,

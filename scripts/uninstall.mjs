@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readManifest } from './lib/manifest.mjs';
 import { planUninstall, runUninstall } from './lib/uninstall-lib.mjs';
+import { settingsReformattedNote } from './lib/apply-lib.mjs';
 
 const root = process.argv[2];
 const doYes = process.argv.includes('--yes');
@@ -64,6 +65,25 @@ if (plan.gonePatches.length) {
   }
 }
 
+// Task 9b (coordinator round 2, finding 1): the preview is the path a
+// cautious user reaches for first, and a preview that under-reports what
+// --yes will actually do is worse than no preview — they approve one
+// thing and get a different, larger one. These two predictions come from
+// the exact same questions runUninstall's own real outcome asks (see
+// planUninstall's own comments on `removeSettingsFile` and `removeDirs`),
+// not a second, independently-reasoned guess at what the real run will do.
+if (plan.removeSettingsFile) {
+  console.log('Will remove (now empty, created by harness-kit):');
+  console.log(`  ${plan.removeSettingsFile}`);
+}
+
+if (plan.removeDirs.length) {
+  console.log('Will remove empty directories it created:');
+  for (const dir of plan.removeDirs) {
+    console.log(`  ${dir}`);
+  }
+}
+
 if (!doYes) {
   console.log('');
   console.log('Run with --yes to apply.');
@@ -92,12 +112,7 @@ if (result.removed.length > 0) {
 // the same file the same way while reverting a patch, and must disclose it
 // the same way rather than leaving a user to discover the diff unannounced.
 if (result.settingsReformatted) {
-  console.log(
-    'note       .claude/settings.json was reformatted while reverting the patch(es) above — its content is ' +
-    'unchanged beyond what was reverted, but whitespace/indentation may now differ throughout the file ' +
-    '(this tool always rewrites it as JSON.stringify(settings, null, 2); it does not preserve the ' +
-    'original formatting).',
-  );
+  console.log(settingsReformattedNote('reverting the patch(es) above'));
 }
 
 // Task 9b, finding 4: directories this tool itself created (never one that

@@ -15,7 +15,7 @@ import { buildGaps, countProposals } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
-import { applyProposals, renderDiff, SETTINGS_PATH } from './lib/apply-lib.mjs';
+import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote } from './lib/apply-lib.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const DEFAULT_BRANCHES = new Set(['main', 'master']);
@@ -283,12 +283,7 @@ try {
 for (const w of result.written) process.stdout.write(`wrote      ${w.path}\n`);
 for (const p of result.patched) process.stdout.write(`patched    .claude/settings.json (${p.event})\n`);
 if (result.patched.length > 0 && !settingsWasCanonical) {
-  process.stdout.write(
-    `note       .claude/settings.json was reformatted while applying the patch above — its content is ` +
-    `unchanged beyond what was listed, but whitespace/indentation may now differ throughout the file ` +
-    `(this tool always rewrites it as JSON.stringify(settings, null, 2); it does not preserve the ` +
-    `original formatting).\n`,
-  );
+  process.stdout.write(settingsReformattedNote('applying the patch above') + '\n');
 }
 for (const r of result.redirected) process.stdout.write(`redirected ${r.from} -> ${r.to}\n`);
 for (const s of result.skipped) process.stdout.write(`skipped    ${s.path} (${s.why})\n`);

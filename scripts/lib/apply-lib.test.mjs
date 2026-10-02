@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlin
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
-import { assertAllowed, applyProposals, renderDiff } from './apply-lib.mjs';
+import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 const fileProposal = (o = {}) => ({ kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r', ...o });
@@ -19,6 +19,57 @@ test('the allowlist REFUSES anything else', () => {
   for (const p of ['src/index.ts', 'package.json', '../escape.md', '/etc/passwd', 'docs/README.md', '.git/config']) {
     assert.throws(() => assertAllowed(p), /not allowed/i, p);
   }
+});
+
+// --- Coordinator round 2, finding 2 ("the one I care most about"):
+// uninstall-lib.mjs's directory-removal allowlist must be the SAME
+// allowlist `assertAllowed` reads for writes, not a second,
+// independently-maintained list that can silently diverge from it.
+
+test('isAllowedDirectory admits the bare directories a real write would create', () => {
+  for (const dir of ['.claude', 'scripts', 'docs/harness', '.claude/scripts', '.claude/rules', 'docs']) {
+    assert.equal(isAllowedDirectory(dir), true, dir);
+  }
+});
+
+test('isAllowedDirectory refuses a directory no write is ever allowed under', () => {
+  for (const dir of ['src', 'node_modules', '.git', 'vendor']) {
+    assert.equal(isAllowedDirectory(dir), false, dir);
+  }
+});
+
+test('MUTATION: assertAllowed and isAllowedDirectory read the SAME allowlist — a path added to it is recognised by both, or neither', () => {
+  const probe = 'tmp-shared-allowlist-probe';
+  // Sanity: neither function accepts this made-up prefix YET.
+  assert.throws(() => assertAllowed(`${probe}/file.txt`));
+  assert.equal(isAllowedDirectory(probe), false);
+
+  ALLOWED_PREFIXES.push(`${probe}/`);
+  try {
+    // If these two functions read two independent lists, this mutation
+    // would only ever affect one of them. Both must change together,
+    // because both read the one array this test just mutated.
+    assert.doesNotThrow(() => assertAllowed(`${probe}/file.txt`), 'assertAllowed must see the mutation');
+    assert.equal(isAllowedDirectory(probe), true, 'isAllowedDirectory must see the SAME mutation');
+  } finally {
+    ALLOWED_PREFIXES.pop(); // restore — other tests in this process must not see the probe entry
+  }
+
+  // Reverted: both refuse it again.
+  assert.throws(() => assertAllowed(`${probe}/file.txt`));
+  assert.equal(isAllowedDirectory(probe), false);
+});
+
+test('settingsReformattedNote names the behaviour and accepts the caller\'s own verb clause', () => {
+  const applying = settingsReformattedNote('applying the patch above');
+  const reverting = settingsReformattedNote('reverting the patch(es) above');
+  assert.match(applying, /applying the patch above/);
+  assert.match(reverting, /reverting the patch\(es\) above/);
+  // Same sentence otherwise — only the verb clause differs.
+  assert.equal(
+    applying.replace('applying the patch above', 'X'),
+    reverting.replace('reverting the patch(es) above', 'X'),
+  );
 });
 
 test('writes a proposed file and records it in the manifest', () => {

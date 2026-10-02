@@ -67,6 +67,45 @@ export function assertAllowed(relPath) {
 }
 
 /**
+ * Task 9b (coordinator round 2, finding 2 — "the one I care most about"):
+ * uninstall-lib.mjs's directory cleanup used to carry its OWN, hand-
+ * maintained allowlist of directories it may remove — a second list
+ * answering the same question `assertAllowed` already answers for writes.
+ * Two lists of what this tool may touch diverge eventually, and when they
+ * do here the consequence is a file-removal mistake (removing something
+ * apply could never write, or refusing to remove something it did), which
+ * is worse than a duplicated predicate anywhere else in this codebase.
+ *
+ * `isAllowedDirectory` is not a second list: it is the SAME `ALLOWED_EXACT`
+ * / `ALLOWED_PREFIXES` constants `assertAllowed` reads, reinterpreted for a
+ * directory rather than a file. A directory is allowed exactly when it:
+ *   - equals one of `ALLOWED_PREFIXES` with its trailing slash stripped
+ *     (`.claude`, `scripts`, `docs/harness`) — the directories this tool's
+ *     OWN generators write directly under; or
+ *   - sits UNDER one of those prefixes (`.claude/scripts`, `.claude/rules`,
+ *     `.claude/scripts/`); or
+ *   - is the PARENT directory of one of `ALLOWED_EXACT`'s own file paths
+ *     (`docs`, the parent of `docs/ARCHITECTURE.md`) — a directory no
+ *     prefix names, but one a real write can still bring into existence.
+ *
+ * Deliberately does not duplicate `assertAllowed`'s absolute-path/`..`/`.git`
+ * checks — a directory path reaching this function has already cleared
+ * those as plain path-syntax safety (uninstall-lib.mjs's own guard, and
+ * `assertContained` afterward); this function answers only the allowlist
+ * question, the one that must never drift from what writes are allowed.
+ */
+export function isAllowedDirectory(relDir) {
+  const normalized = relDir.split('\\').join('/');
+  if (ALLOWED_PREFIXES.some(p => p === `${normalized}/`)) return true;
+  if (ALLOWED_PREFIXES.some(p => normalized.startsWith(p))) return true;
+  for (const f of ALLOWED_EXACT) {
+    const parent = dirname(f);
+    if (parent !== '.' && parent === normalized) return true;
+  }
+  return false;
+}
+
+/**
  * The allowlist is a string check on the *proposed* relative path. This is
  * the filesystem check: where does that path actually resolve on disk, right
  * now? A pre-existing symlink or junction anywhere along the chain — down to
@@ -245,6 +284,25 @@ function readSettingsResult(root) {
  */
 function matchingNewline(raw) {
   return raw != null && !raw.endsWith('\n') ? '' : '\n';
+}
+
+/**
+ * Task 9b (coordinator round 2, finding 3): apply.mjs and uninstall.mjs
+ * each rewrite `.claude/settings.json` via `JSON.stringify(x, null, 2)` —
+ * applying a patch, and reverting one — and each used to carry its OWN,
+ * near-identical sentence disclosing that the rest of the file may have
+ * been reformatted along with it. Two independently-worded copies of the
+ * same disclosure drift: this project's verification already caught the
+ * two differ in a small way ("beyond what was listed" vs. "beyond what
+ * was reverted"). One sentence, one place; `verb` is the only thing that
+ * legitimately differs between the two callers ("applying the patch
+ * above" / "reverting the patch(es) above").
+ */
+export function settingsReformattedNote(verb) {
+  return `note       .claude/settings.json was reformatted while ${verb} — its content is ` +
+    `unchanged beyond what was listed, but whitespace/indentation may now differ throughout the file ` +
+    `(this tool always rewrites it as JSON.stringify(settings, null, 2); it does not preserve the ` +
+    `original formatting).`;
 }
 
 /**
@@ -657,4 +715,10 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   return { written, patched, skipped, redirected, failed, manifest: nextManifest };
 }
 
-export { SETTINGS_PATH, CLAUDE_REDIRECT_PATH, matchingNewline };
+// `ALLOWED_PREFIXES`/`ALLOWED_EXACT` are exported for exactly one purpose:
+// a test proving `assertAllowed` and `isAllowedDirectory` read the SAME
+// list, not two that happen to agree today — see apply-lib.test.mjs. No
+// production caller should import these to re-derive its own allowlist
+// logic; `assertAllowed`/`isAllowedDirectory` are the two sanctioned
+// readers of them.
+export { SETTINGS_PATH, CLAUDE_REDIRECT_PATH, matchingNewline, ALLOWED_PREFIXES, ALLOWED_EXACT };

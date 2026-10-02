@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classify, emptyManifest, sha256, writeManifest, MANIFEST_PATH } from './manifest.mjs';
-import { applyProposals } from './apply-lib.mjs';
+import { applyProposals, SETTINGS_PATH } from './apply-lib.mjs';
 import { planUninstall, runUninstall } from './uninstall-lib.mjs';
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-uninst-'));
@@ -615,4 +615,60 @@ test('I5: a run that reverts nothing leaves settings.json byte-identical', () =>
   assert.equal(result.settingsWriteFailed, false);
   assert.equal(readFileSync(settingsPath, 'utf8'), theirs,
     'a run that reverts nothing has no business rewriting or re-indenting the user\'s file');
+});
+
+// --- Coordinator round 2, finding 1: the dry-run plan must predict EXACTLY
+// what --yes actually removes (settings.json cleanup + directory cleanup),
+// never less — a cautious user approving the plan must not get a larger,
+// different result. Compared as DATA (the predicted set vs. the actual
+// set), not by re-deriving each half independently.
+
+test('PARITY: planUninstall predicts the settings.json + directory removal that runUninstall actually performs, on a repo with no prior .claude/', () => {
+  const d = repo(); // no .claude/ at all before this
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  // Fixture sanity: this really did create settings.json fresh, inside a
+  // freshly-created .claude/ — otherwise there would be nothing for either
+  // prediction to be about.
+  assert.equal(manifest.settingsCreated, true, 'fixture sanity: settings.json must have been created fresh by this apply');
+  assert.deepEqual(manifest.dirsCreated, ['.claude'], 'fixture sanity: .claude/ must be recorded as created by this apply');
+
+  const plan = planUninstall({ root: d, manifest });
+  // The PREDICTION.
+  assert.equal(plan.removeSettingsFile, SETTINGS_PATH, 'the plan must predict the now-empty settings.json will be removed');
+  assert.deepEqual(plan.removeDirs, ['.claude'], 'the plan must predict .claude/ itself will end up empty and removed');
+
+  const result = runUninstall({ root: d, manifest, plan });
+  // The ACTUAL outcome.
+  assert.ok(result.removed.includes(SETTINGS_PATH), 'fixture sanity: the real run must actually remove settings.json');
+  assert.deepEqual(result.removedDirs, ['.claude'], 'fixture sanity: the real run must actually remove .claude/');
+
+  // THE PARITY CHECK ITSELF: the predicted set equals the actual set.
+  assert.equal(plan.removeSettingsFile, result.removed.includes(SETTINGS_PATH) ? SETTINGS_PATH : null);
+  assert.deepEqual(plan.removeDirs, result.removedDirs);
+});
+
+test('PARITY: a repository where something is kept predicts NO settings.json or directory removal, and the real run agrees', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  // The user's own, pre-existing settings.json — never created by us, so
+  // settingsCreated stays false, and `.claude/` itself predates this tool.
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  const { manifest } = applyProposals({ root: d, proposals: [fileProposal(), hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(manifest.settingsCreated, undefined, 'fixture sanity: settings.json pre-existed, so this must never be set');
+
+  // The user edits what we wrote, so it will be KEPT, not removed.
+  writeFileSync(join(d, 'HANDOFF.md'), 'edited by the user\n');
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.equal(plan.removeSettingsFile, null, 'a pre-existing settings.json must never be predicted for removal');
+  assert.deepEqual(plan.removeDirs, [], 'a pre-existing .claude/ must never be predicted for removal');
+
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.equal(result.removed.includes(SETTINGS_PATH), false);
+  assert.deepEqual(result.removedDirs, []);
+  assert.equal(existsSync(join(d, '.claude')), true, 'the pre-existing directory must survive');
+
+  // THE PARITY CHECK.
+  assert.equal(plan.removeSettingsFile, result.removed.includes(SETTINGS_PATH) ? SETTINGS_PATH : null);
+  assert.deepEqual(plan.removeDirs, result.removedDirs);
 });

@@ -1003,6 +1003,45 @@ test('a complete uninstall removes every directory and the empty settings.json a
   assert.match(out, /Removed/, 'the cleanup must be disclosed, not silent');
 });
 
+// Coordinator round 2, finding 1: the dry-run preview is the path a
+// cautious user reaches for first, and it used to under-report what --yes
+// actually does (it never predicted the settings.json/directory cleanup at
+// all). This drives the REAL CLI twice — once without --yes, once with —
+// on the SAME fixture, and asserts the predicted set equals the actual set,
+// rather than asserting facts about each run independently.
+function linesAfter(out, heading) {
+  const idx = out.indexOf(heading);
+  if (idx === -1) return [];
+  const rest = out.slice(idx + heading.length).split('\n').slice(1);
+  const collected = [];
+  for (const line of rest) {
+    if (!line.startsWith('  ')) break;
+    collected.push(line.trim());
+  }
+  return collected;
+}
+
+test('PARITY: the dry-run preview predicts exactly the settings.json/directory cleanup --yes performs, through the real CLI (Task 9b, coordinator round 2 finding 1)', () => {
+  const d = freshFixtureNoClaudeDir();
+  run(APPLY, d, '--yes');
+
+  const dry = run(UNINSTALL, d);
+  const predictedSettings = linesAfter(dry, 'Will remove (now empty, created by harness-kit):');
+  const predictedDirs = linesAfter(dry, 'Will remove empty directories it created:');
+  assert.deepEqual(predictedSettings, ['.claude/settings.json'], 'fixture sanity: the dry run must predict the settings.json cleanup');
+  assert.ok(predictedDirs.length > 0, 'fixture sanity: the dry run must predict at least one directory removal');
+
+  const real = run(UNINSTALL, d, '--yes');
+  const actualDirs = linesAfter(real, 'Removed empty directories it created:');
+  const actuallyRemoved = linesAfter(real, 'Removed:');
+
+  assert.deepEqual(
+    predictedSettings.every(p => actuallyRemoved.includes(p)), true,
+    'everything the dry run predicted for settings.json must actually have been removed',
+  );
+  assert.deepEqual(predictedDirs.sort(), actualDirs.sort(), 'the predicted directory set must equal the actual directory set');
+});
+
 test('a directory that existed before apply is never removed by uninstall, even once it is empty again (Task 9b finding 4)', () => {
   const d = freshFixtureNoClaudeDir();
   // The user's own, pre-existing `scripts/` directory with their own file —
