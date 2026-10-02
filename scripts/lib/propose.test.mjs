@@ -131,6 +131,39 @@ test('P2.stopgate proposes nothing when stack.packages is empty (the default)', 
   assert.deepEqual(ps, []);
 });
 
+// Coordinator finding: the gate used to accept a typecheck/test script
+// declared by ANY package (the same loose shape as P2.sensor's own lint
+// gate) — but verify-touched.mjs only ever reads CLAUDE_PROJECT_DIR's own
+// (root) package.json, with no per-file owning-package resolution the way
+// lint-touched.mjs has. A monorepo where only a NESTED package declares
+// `typecheck`/`test` would otherwise get a gate that reports `declared`
+// and a hook that silently finds nothing at root and exits 0 forever —
+// false assurance: the capability installs, reports as present, and never
+// fires.
+test('P2.stopgate proposes nothing in a monorepo where only a NESTED package declares typecheck/test — the hook only ever reads the root manifest', () => {
+  const monorepoNoRootVerify = {
+    packages: [
+      { name: 'root', dir: '.', manifestPath: 'package.json', scripts: ['build'] },
+      { name: 'api', dir: 'packages/api', manifestPath: 'packages/api/package.json', scripts: ['typecheck', 'test'] },
+    ],
+    languages: ['typescript'], isWorkspace: true, packageManager: null, ci: [],
+  };
+  const ps = buildProposals(args([stopgateCheck()], { stack: monorepoNoRootVerify }));
+  assert.deepEqual(ps, [], 'no root-level verification command exists, so the honest outcome is no proposal at all');
+});
+
+test('P2.stopgate still proposes in a monorepo when the ROOT package itself declares typecheck, regardless of what nested packages declare', () => {
+  const monorepoRootVerify = {
+    packages: [
+      { name: 'root', dir: '.', manifestPath: 'package.json', scripts: ['typecheck'] },
+      { name: 'api', dir: 'packages/api', manifestPath: 'packages/api/package.json', scripts: [] },
+    ],
+    languages: ['typescript'], isWorkspace: true, packageManager: null, ci: [],
+  };
+  const ps = buildProposals(args([stopgateCheck()], { stack: monorepoRootVerify }));
+  assert.ok(ps.some(p => p.kind === 'file' && p.path === '.claude/scripts/verify-touched.mjs'));
+});
+
 test('a declared P2.stopgate check yields no proposals, even with a typecheck script present', () => {
   const ps = buildProposals(args([check({ id: 'P2.stopgate', step: 10, state: 'declared', proposal: null })], { stack: typecheckStack }));
   assert.deepEqual(ps, []);

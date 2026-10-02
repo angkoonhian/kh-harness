@@ -43,6 +43,33 @@ function repo(scripts = {}) {
   return d;
 }
 
+/**
+ * For the signature/cap tests below, the distinguishing failure text is
+ * read from a FILE at runtime, never embedded in the `typecheck` command
+ * string itself — the `typecheck` script is byte-for-byte IDENTICAL across
+ * every fixture this builds. This is deliberate: layer 1's redaction
+ * (dropCommandFragments, in harness-redact.mjs) drops any output line
+ * containing a fragment of the command it was given, so a fixture whose
+ * failure text is a command-line argument can have that text silently
+ * stripped before the signature is ever computed over it — two genuinely
+ * different failures would both reduce to the same near-empty redacted
+ * output, and a test built that way would stay green even if signature
+ * comparison were deleted entirely (verified separately: this project has
+ * now hit that exact confound four times). Reading the text from a file
+ * the identical script opens at runtime means the command string never
+ * varies, so redaction can never be what makes two fixtures look alike.
+ */
+function failingRepoWithMessage(message) {
+  const d = mkdtempSync(join(tmpdir(), 'hk-stop-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { typecheck: 'node verify.cjs' } }));
+  writeFileSync(join(d, 'problem.txt'), message);
+  writeFileSync(
+    join(d, 'verify.cjs'),
+    "console.error('typecheck: ' + require('fs').readFileSync('problem.txt', 'utf8').trim()); process.exit(1);\n",
+  );
+  return d;
+}
+
 const payload = (overrides = {}) => ({ hook_event_name: 'Stop', session_id: sid(), tool_calls_in_turn: [], ...overrides });
 
 // --- Brief's required behaviour --------------------------------------------
@@ -248,26 +275,36 @@ test('SECURITY: a missing session_id never blocks', () => {
 
 test('a different failure in the same session still blocks', () => {
   const s = sid();
-  const dA = repo({ typecheck: 'node -e "console.error(\'typecheck: problem-A\'); process.exit(1)"' });
-  const dB = repo({ typecheck: 'node -e "console.error(\'typecheck: problem-B\'); process.exit(1)"' });
+  // See failingRepoWithMessage's comment: the `typecheck` command is
+  // IDENTICAL for dA and dB — only problem.txt's content differs — so
+  // redaction (which strips fragments of the command string) cannot be
+  // what makes r1's and r2's reported text differ.
+  const dA = failingRepoWithMessage('problem-A');
+  const dB = failingRepoWithMessage('problem-B');
   const r1 = run(dA, payload({ session_id: s }));
   assert.equal(r1.code, 2, 'sanity: the first distinct failure blocks');
+  assert.match(r1.stderr, /problem-A/, 'sanity: the distinguishing text actually survives redaction and reaches stderr');
   const r2 = run(dB, payload({ session_id: s }));
   assert.equal(r2.code, 2, 'a genuinely different failure must still block, even though this session already blocked once');
+  assert.match(r2.stderr, /problem-B/, 'sanity: the SECOND failure\'s own distinguishing text survives too — this is a real block, not a fluke');
 });
 
 test('CAP: a fourth distinct failure in the same session does not block — the 3-block cap is reached', () => {
   const s = sid();
-  const failing = msg => repo({ typecheck: `node -e "console.error('typecheck: ${msg}'); process.exit(1)"` });
-
-  const r1 = run(failing('problem-A'), payload({ session_id: s }));
-  const r2 = run(failing('problem-B'), payload({ session_id: s }));
-  const r3 = run(failing('problem-C'), payload({ session_id: s }));
+  // Same shape as the test above: `failingRepoWithMessage` runs the exact
+  // same `node verify.cjs` command every time, varying only problem.txt.
+  const r1 = run(failingRepoWithMessage('problem-A'), payload({ session_id: s }));
+  const r2 = run(failingRepoWithMessage('problem-B'), payload({ session_id: s }));
+  const r3 = run(failingRepoWithMessage('problem-C'), payload({ session_id: s }));
   // Sanity: the fixture genuinely crosses the cap threshold (3 DISTINCT
-  // blocks) before asserting anything about what happens once it does —
-  // otherwise this test could pass whether or not the cap exists at all.
+  // blocks, each reporting ITS OWN distinguishing text) before asserting
+  // anything about what happens once it does — otherwise this test could
+  // pass whether or not the cap exists at all.
   assert.deepEqual([r1.code, r2.code, r3.code], [2, 2, 2], 'three distinct failures must each block, reaching the cap');
+  assert.match(r1.stderr, /problem-A/);
+  assert.match(r2.stderr, /problem-B/);
+  assert.match(r3.stderr, /problem-C/);
 
-  const r4 = run(failing('problem-D'), payload({ session_id: s }));
+  const r4 = run(failingRepoWithMessage('problem-D'), payload({ session_id: s }));
   assert.equal(r4.code, 0, 'a fourth distinct failure must not block once the session has already blocked 3 times');
 });

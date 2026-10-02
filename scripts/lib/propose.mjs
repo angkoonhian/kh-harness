@@ -166,24 +166,33 @@ function sensorProposal({ kitVersion, stack }) {
  * The Stop gate: runs the repository's own verification command (its
  * `typecheck` script, falling back to `test`) when a turn ends, and blocks
  * once per distinct failure — see verify-touched.mjs's own header comment
- * for the full rationale. Decidable only when at least one package
- * declares a `typecheck` or `test` script — the same evidence-gated shape
- * as `sensorProposal`: a gate with nothing to run is noise.
+ * for the full rationale.
  *
- * No `matcher`: a Stop event has no "which tool ran" to scope against, and
- * the whole point is to run on every Stop, not a subset of them.
- *
- * The cost this accepts is stated plainly in `reason`, not hidden in the
- * installed script: falling back to `test` means a full test-suite run, up
- * to the hook's own 120s bound, at the end of every turn. That is a real
- * tradeoff the user is accepting, not a side effect to discover later —
- * and it never names the command ITSELF (`scripts.test`'s value can carry a
- * credential, same as `scripts.lint`'s has, twice, in this project's own
- * history), only what kind of cost it is.
+ * Decidable only when the ROOT package (`dir === '.'`) itself declares a
+ * `typecheck` or `test` script — deliberately NOT "any package", unlike
+ * `sensorProposal`'s looser gate. The two are not equivalent: lint-touched.mjs
+ * resolves the OWNING package for whichever file was edited (see its
+ * `findAncestorWith`), so a lint script declared anywhere in the tree is
+ * real evidence that the sensor will find and run something. verify-touched.mjs
+ * has no file to anchor on — a Stop event fires once per turn, not once per
+ * file — so it only ever reads CLAUDE_PROJECT_DIR's own package.json. A
+ * monorepo where only `packages/api` declares `typecheck` would otherwise
+ * get a gate that reports `declared` and a hook that silently finds nothing
+ * at root and exits 0 forever: the capability installs, reports as
+ * present, and never fires — the same false-assurance shape a loose deny-
+ * rule evidence filter already cost a round on. Running every package's
+ * own command instead of widening the gate is not an option either: a
+ * `Stop` hook is not tied to a file, so there is no single owning package
+ * to resolve, and running N packages' worth of typecheck/test in sequence
+ * is both ambiguous (which one explains the block?) and multiplies the
+ * cost `reason` is supposed to be disclosing truthfully. If a monorepo has
+ * no single repo-level verification command, the honest answer is not to
+ * propose one.
  */
 function stopgateProposal({ kitVersion, stack }) {
-  const hasTypecheck = stack.packages.some(p => p.scripts?.includes('typecheck'));
-  const hasTest = stack.packages.some(p => p.scripts?.includes('test'));
+  const rootPkg = stack.packages.find(p => p.dir === '.');
+  const hasTypecheck = rootPkg?.scripts?.includes('typecheck') ?? false;
+  const hasTest = rootPkg?.scripts?.includes('test') ?? false;
   if (!hasTypecheck && !hasTest) return [];
   const reason = hasTypecheck
     ? 'no Stop hook registered — runs the repository\'s typecheck script, bounded at 120s, at the end of every turn'
