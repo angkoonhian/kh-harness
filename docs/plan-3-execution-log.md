@@ -615,8 +615,8 @@ missed it: the emitted line is neither `lintScript` nor `fullCommand` but a
 FRAGMENT of the lint script — everything after `-e "` — with the appended path
 tacked on by the shell's word-splitting. Whole-substring redaction cannot see
 it. Verbatim:
-  scripts.lint = node -e "console.log('x  --token=sk-live-REALLEAK0001
-  hook stderr  = console.log('x  --token=sk-live-REALLEAK0001 src/a.ts
+  scripts.lint = node -e "console.log('x  --token=<redacted>
+  hook stderr  = console.log('x  --token=<redacted> src/a.ts
 
 The lesson rather than the bug: three of four paths pass, so any test matrix
 sampling one or two failure modes calls this fixed. The leak lives in the single
@@ -628,8 +628,8 @@ Round 3 ruling, two layers required:
   any output line containing a token of length >= 8 that is not the appended
   path or basename.
   Layer 2, credential masking — mask credential-shaped values (sk-, glpat-,
-  ghp_, github_pat_, AKIA, xox[abprs]-, Bearer, --token=/--auth-token=/
-  --api-key=/password=/api_key=) wherever they appear, MASKING THE VALUE rather
+  ghp_, github_pat_, AKIA, xox[abprs]-, Bearer, --token=<redacted>
+  `--api-key=`, `password=`, `api_key=`) wherever they appear, MASKING THE VALUE rather
   than dropping the line, so a genuine diagnostic containing one still reaches
   Claude redacted. Layer 1 is the denylist for what provably came from the
   command; layer 2 catches a credential arriving from anywhere else, including
@@ -652,7 +652,7 @@ credential modes now 0 occurrences, all six containment escapes inert, auto-fix
 detection intact. Both Criticals closed.
 
 The implementer's concern 2 is worth keeping: layer 2 alone already masked the
-`--token=`-shaped payload, so the layer-1 test needed a non-vendor-prefixed
+`--token=<redacted> payload, so the layer-1 test needed a non-vendor-prefixed
 value to isolate it. A test that passes because a DIFFERENT layer caught the
 payload is coverage theatre — it would have stayed green if layer 1 were deleted.
 Correct instinct, unprompted.
@@ -1583,7 +1583,7 @@ Rulings carried beyond the briefs:
    tsconfig.json -> tsc --noEmit); with no config, advice names the missing
    script and says the command cannot be derived.
 4. Advice must never quote script BODIES — Plan 1's Critical leaked a
-   sentry-cli --auth-token from exactly there. Token-bearing test required.
+   sentry-cli --auth-token <redacted> exactly there. Token-bearing test required.
 5. Task 7's Step 4 flagged as the most valuable step in either task: assert
    buildProposals returns nothing for P2.scripts even with state forced absent
    AND decidable forced true, so the write allowlist is not the only thing
@@ -2193,7 +2193,8 @@ signal-to-noise problem I deferred before compaction with an explicit
 instruction not to weaken the placeholder guard. On a real repository
 `credentials-in-doc` produced 66 of 67 exposures, and 62 of those match a
 credential-shaped key whose value is a CODE REFERENCE, not a literal —
-`password: config.get(...)`, `token: process.env.TOKEN`. The one genuine high
+a `password:` key whose value is `config.get(...)`, or a `token:` whose value is
+`process.env.TOKEN`. The one genuine high
 finding and four plausible hits are buried in that list, and P0.security reads
 `failing` because of the noise. A security report that cries wolf 62 times trains
 its reader to ignore it, which is worse than no report, and it is the first thing
@@ -2320,7 +2321,7 @@ same pass." 1 Critical, 5 Major, 10 Minor. 1444-line review.
 F1 CRITICAL, reproduced by me:
   git ls-files  ->  "src/caf\303\251.ts"   (git's C-quoted literal)
   P0.security   ->  verified / no credential patterns matched
-...over a plaintext `password: "hunter2-actual-literal-secret"`. Any non-ASCII
+...over a plaintext `password: "<redacted-literal>"`. Any non-ASCII
 filename — accents, CJK, emoji — reaches the whole tool as a quoted, octal-escaped
 literal; the scanner statSyncs a path that does not exist and skips it SILENTLY.
 This is the product's doctrine exactly inverted: a security check reporting
@@ -2599,3 +2600,35 @@ NOTE ON WHAT I WILL NOT DO WITHOUT ASKING: the finishing step merges or pushes,
 which is a side effect outside this worktree and one of the four things that stop
 execution. I will present the options and wait rather than merge, push, or open a
 PR on my own initiative.
+
+---
+
+## Postscript: this document failed the project's own check
+
+Committing the log above turned `P0.security` red on harness-kit itself, one
+commit after the `DOGFOOD` test was added to make the project's own green
+meaningful. The guard's first catch was the controller.
+
+Three causes, all in prose rather than code:
+
+1. Fabricated probe credentials quoted verbatim (`sk-live-…`, `glpat-…`,
+   `--token=…`). Redacted. Committing a document full of credential-shaped
+   literals is poor hygiene even when every value is invented.
+2. A line listing the detector's own patterns, written as
+   `--api-key=/password=/api_key=)`, which parses as a credential key with the
+   literal value `/api_key=)`. Reformatted so no key sits against a value.
+3. An illustrative example whose value genuinely *is* a code reference, but
+   where an adjoining markdown backtick put a character outside the reference
+   charset — so the classifier correctly read it as a literal. Reworded.
+
+Worth recording because the implementer predicted exactly this when the guard
+was built: *"a contributor adding a legitimate new detector pattern may make the
+suite fail on harness-kit's own prose — correct direction, but it will surprise
+someone."* It surprised the person who ordered it, within one commit.
+
+The cost is real: this guard constrains how the repository may write about
+credentials. That is the right trade — a security tool that cannot pass its own
+check has no standing to ask anyone to run it — but it is a cost, not a free
+win, and `plan-1-execution-log.md` and `plan-2-execution-log.md` carry zero
+matches only because they discuss credential *detection* far less than this one
+does.
