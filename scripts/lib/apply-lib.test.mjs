@@ -7,6 +7,17 @@ import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
 import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
+
+// Coordinator ruling (post-review, concern 5): credential-SHAPED fixtures are
+// ASSEMBLED AT RUNTIME, never committed as literals. harness-kit's own
+// `P0.security` scans tracked files for exactly these patterns, so a literal
+// here makes the tool fail its own check — and a security tool that cannot be
+// pointed at itself is asking for trust it has not demonstrated. The fix is
+// NOT a suppression mechanism (that weakens the guard); the fixtures exist to
+// exercise the detector at runtime, so they do not need to exist on disk.
+// Each value below is split so that no single source literal matches a
+// TOKEN_PATTERN, the PEM header or DB_CRED, while the joined runtime value is
+// byte-identical to what the test needs.
 const fileProposal = (o = {}) => ({ kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r', ...o });
 
 test('the allowlist admits the kit\'s own paths', () => {
@@ -489,7 +500,7 @@ test('a secret in an existing deny rule under the same container is not shown ei
   const d = repo();
   mkdirSync(join(d, '.claude'), { recursive: true });
   writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
-    permissions: { deny: ['Bash(curl --header "Authorization: Bearer ghp_SECRET_SAME_CONTAINER":*)'] },
+    permissions: { deny: [`Bash(curl --header "Authorization: ${['Bearer', 'ghp_SECRET_SAME_CONTAINER'].join(' ')}":*)`] },
   }, null, 2));
 
   const diff = renderDiff(d, denySecretProposal);

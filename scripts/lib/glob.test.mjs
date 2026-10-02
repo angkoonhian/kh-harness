@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { globToRegExp, globToRegExpSource } from './glob.mjs';
+import { globToRegExp, globToRegExpSource, isRejectableGlob } from './glob.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -130,4 +130,61 @@ test('globToRegExp: the match is anchored — a glob never matches a substring o
   assert.equal(globToRegExp('*.lock').test('yarn.lock.bak'), false);
   assert.equal(globToRegExp('src/*.ts').test('vendor/src/a.ts'), false);
   assert.equal(globToRegExpSource('*.lock'), '[^/]*\\.lock', 'the SOURCE is deliberately unanchored; callers anchor');
+});
+
+// --- Coordinator ruling (post-review, concern 1): a glob is REFUSED at the
+// --- boundary, not tolerated by the machinery -----------------------------
+//
+// `PLACEHOLDER` is a NUL and step 4 replaces EVERY occurrence of it, so a
+// pattern that already contains one had that NUL turned into `.*`. Measured
+// before the fix: `globToRegExpSource('a' + NUL + 'b')` was `"a.*b"` — a
+// glob that matches everything, derived from repository-controlled data
+// (a `package.json` `workspaces` entry, via JSON's own `\u0000` escape).
+//
+// The NUL is built with `String.fromCharCode(0)` in every test below, never
+// typed: a literal 0x00 in this file would make git treat it as binary,
+// which is precisely what the guard at the top of this file exists to catch
+// — and it caught exactly that mistake once while this test was being
+// written.
+const NUL = String.fromCharCode(0);
+
+test('CONCERN 1: a glob that is nothing but a NUL matches nothing — it used to match everything', () => {
+  assert.equal(isRejectableGlob(NUL), true);
+  assert.equal(globToRegExpSource(NUL), '(?!)', 'a refused pattern compiles to a never-matching source');
+  const re = globToRegExp(NUL);
+  for (const candidate of ['', 'a', 'packages/api/package.json', 'src/index.ts', NUL]) {
+    assert.equal(re.test(candidate), false, `must match nothing, matched ${JSON.stringify(candidate)}`);
+  }
+});
+
+test('CONCERN 1: a NUL embedded MID-GLOB is refused too, not just a bare one', () => {
+  const pattern = 'packages/' + NUL + '/src';
+  assert.equal(isRejectableGlob(pattern), true);
+  const re = globToRegExp(pattern);
+  // Before the fix this was `packages/.*/src`, which is a perfectly usable
+  // glob the repository never asked for.
+  assert.equal(re.test('packages/api/src'), false);
+  assert.equal(re.test('packages/anything/at/all/src'), false);
+});
+
+test('CONCERN 1: the refusal is the ONLY thing that changed — every legitimate pattern is untouched', () => {
+  // The transformation itself is not adjusted, so the four ordered steps and
+  // the 69 tests that depend on them indirectly are unaffected.
+  for (const [pattern, hit] of [
+    ['packages/*', 'packages/api'],
+    ['**/*-lock.json', 'a/b/package-lock.json'],
+    ['prisma/migrations/**', 'prisma/migrations/0001/x.sql'],
+    ['*.lock', 'yarn.lock'],
+  ]) {
+    assert.equal(isRejectableGlob(pattern), false, `${pattern} must not be refused`);
+    assert.equal(globToRegExp(pattern).test(hit), true, `${pattern} must still match ${hit}`);
+  }
+});
+
+test('CONCERN 1: a non-string pattern is refused rather than throwing', () => {
+  for (const bad of [undefined, null, 42, {}, ['packages/*']]) {
+    assert.equal(isRejectableGlob(bad), true);
+    assert.doesNotThrow(() => globToRegExpSource(bad));
+    assert.equal(globToRegExpSource(bad), '(?!)');
+  }
 });

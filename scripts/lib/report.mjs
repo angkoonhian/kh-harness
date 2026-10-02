@@ -22,6 +22,20 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   if (!stack.packageManager) {
     out.push('No lockfile found, so the package manager is unknown. Confirm which one this project uses.');
   }
+  // Coordinator ruling (post-review, concern 1): a workspace pattern this
+  // tool REFUSED to interpret must be reported, not absorbed. `glob.mjs`
+  // already fails closed on it — a refused pattern compiles to a
+  // never-matching source — but a pattern that silently matches nothing is
+  // indistinguishable from a workspace with no members, which is exactly the
+  // confident-and-wrong shape this report exists to avoid. The pattern's own
+  // text is never echoed: it is repository-controlled and holds a control
+  // character by definition, so the index is what is named.
+  const rejected = stack.rejectedWorkspacePatterns ?? [];
+  if (rejected.length) {
+    const s = rejected.length === 1 ? '' : 's';
+    const is = rejected.length === 1 ? 'is' : 'are';
+    out.push(`${rejected.length} workspace pattern${s} (at index ${rejected.join(', ')} of this repository's own \`workspaces\` list) ${is} not a usable glob — ${rejected.length === 1 ? 'it contains' : 'they contain'} a NUL character, so ${rejected.length === 1 ? 'it was' : 'they were'} refused rather than interpreted, and any package ${rejected.length === 1 ? 'it' : 'they'} would have matched is NOT in this report. The value is not printed here because it is repository-controlled and holds a control character. What should ${rejected.length === 1 ? 'that entry' : 'those entries'} be?`);
+  }
   if (checks.some(c => c.id === 'P1.instructions' && c.state === 'declared')) {
     out.push('An instruction file already exists. Which of its rules are decisions that cannot be re-derived from source? Those must survive any regeneration.');
   }

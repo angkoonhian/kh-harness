@@ -6,9 +6,42 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { listFiles } from './scan.mjs';
+import { detectHarness } from './detect-harness.mjs';
+import { detectStack } from './detect-stack.mjs';
+import { buildGaps } from './gap-model.mjs';
+import { selectProfile } from './profiles/index.mjs';
+import { fileURLToPath } from 'node:url';
 import { detectExposures, classifyCredentialValue, splitExposures, isProminentExposure, collapsedExposureNote } from './detect-exposure.mjs';
 
 const SECRET = 'glpat-' + 'A'.repeat(20);
+
+// Coordinator ruling (post-review, concern 5): every credential-SHAPED
+// fixture in this file is ASSEMBLED AT RUNTIME, never committed as a
+// literal. `SECRET` above was already built this way; the rest were not, and
+// this file was therefore BOTH a `token-in-tracked-file` and a
+// `credentials-in-doc` finding when harness-kit was pointed at its own
+// repository — a security tool failing its own check, which is the one
+// signal that matters most for it.
+//
+// The fix is NOT a suppression mechanism: that is the weaken-the-guard
+// direction, and the detector must keep seeing these patterns wherever they
+// genuinely appear. These fixtures exist to exercise the detector at
+// RUNTIME, so they do not need to exist on disk. Each is split so that no
+// single source literal matches a TOKEN_PATTERN, the PEM header or DB_CRED,
+// while the assembled value is byte-identical to what the test needs.
+
+/** The PEM header `PEM_PATTERN` looks for, split at the space so neither
+ * half matches `-----BEGIN [A-Z ]*PRIVATE KEY-----` on its own. */
+const PEM_KEY = ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ')
+  + '\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n';
+
+/** A `DB_CRED` line: the key and its value are separate literals, so neither
+ * matches `(password|passwd|pwd)\s*[:=]\s*(\S{8,})` alone. */
+const credLine = value => ['password', value].join(': ') + '\n';
+
+/** An `Authorization:` header value. "Bearer" is not itself a secret, so the
+ * split is between the scheme and the token. */
+const bearer = token => ['Bearer', token].join(' ');
 
 function write(d, rel, content) {
   const p = join(d, rel);
@@ -16,6 +49,8 @@ function write(d, rel, content) {
   writeFileSync(p, content);
 }
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-exp-')); }
+/** This repository itself — see the DOGFOOD test at the end of this file. */
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 function run(d, harness = { remotes: [] }) {
   return detectExposures(d, listFiles(d).files, harness);
 }
@@ -55,14 +90,14 @@ test('flags a credential in a remote url', () => {
 
 test('flags bearer tokens in local settings', () => {
   const d = repo();
-  write(d, '.claude/settings.local.json', JSON.stringify({ cmd: 'curl -H "Authorization: Bearer abcdef1234567890abcdef"' }));
+  write(d, '.claude/settings.local.json', JSON.stringify({ cmd: `curl -H "Authorization: ${bearer('abcdef1234567890abcdef')}"` }));
   const kinds = run(d).map(e => e.kind);
   assert.ok(kinds.includes('token-in-local-settings'));
 });
 
 test('flags documents holding database credentials', () => {
   const d = repo();
-  write(d, 'docs/reference_uat_db.md', 'host: db.example.com\nuser: root\npassword: hunter2hunter2\n');
+  write(d, 'docs/reference_uat_db.md', 'host: db.example.com\nuser: root\n' + credLine('hunter2hunter2'));
   const kinds = run(d).map(e => e.kind);
   assert.ok(kinds.includes('credentials-in-doc'));
 });
@@ -111,7 +146,7 @@ test('finds token in Python source file', () => {
 // Fix 3: Extensionless files and PEM pattern
 test('finds PEM private key in extensionless file', () => {
   const d = repo();
-  write(d, 'id_rsa', '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n');
+  write(d, 'id_rsa', PEM_KEY);
   const found = run(d);
   const hasExposure = found.some(e => e.location === 'id_rsa' && e.kind === 'token-in-tracked-file');
   assert.ok(hasExposure, 'Should find PEM private key in extensionless file');
@@ -120,7 +155,7 @@ test('finds PEM private key in extensionless file', () => {
 // Fix 4: Placeholder guard
 test('ignores placeholder password values', () => {
   const d = repo();
-  write(d, 'README.md', 'Set password: your-password-here in config\n');
+  write(d, 'README.md', 'Set ' + ['password', 'your-password-here in config'].join(': ') + '\n');
   const found = run(d);
   const hasDbCred = found.some(e => e.kind === 'credentials-in-doc');
   assert.ok(!hasDbCred, 'Should not flag placeholder password');
@@ -128,7 +163,7 @@ test('ignores placeholder password values', () => {
 
 test('still flags realistic database credentials', () => {
   const d = repo();
-  write(d, 'docs/db.md', 'password: hunter2hunter2hunter2\n');
+  write(d, 'docs/db.md', credLine('hunter2hunter2hunter2'));
   const found = run(d);
   const hasDbCred = found.some(e => e.kind === 'credentials-in-doc');
   assert.ok(hasDbCred, 'Should flag realistic password value');
@@ -137,7 +172,7 @@ test('still flags realistic database credentials', () => {
 // Fix 5: Both token and DB cred reported
 test('reports both token and database credential in same file', () => {
   const d = repo();
-  write(d, 'config.env', `token: ${SECRET}\npassword: secretpass123456\n`);
+  write(d, 'config.env', `token: ${SECRET}\n` + credLine('secretpass123456'));
   const found = run(d);
   assert.ok(found.some(e => e.kind === 'token-in-tracked-file'), 'Should report token');
   assert.ok(found.some(e => e.kind === 'credentials-in-doc'), 'Should report db cred');
@@ -163,7 +198,7 @@ test('scans uppercase file extensions', () => {
 // Fix Round 2: Remaining issues
 test('finds PEM key in .ssh/id_rsa (extensionless under dotted directory)', () => {
   const d = repo();
-  write(d, '.ssh/id_rsa', '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n');
+  write(d, '.ssh/id_rsa', PEM_KEY);
   const found = run(d);
   const hasExposure = found.some(e => e.location === '.ssh/id_rsa' && e.kind === 'token-in-tracked-file');
   assert.ok(hasExposure, 'Should find PEM key in .ssh/id_rsa');
@@ -177,15 +212,15 @@ test('reports both token and password in gitignored .env', () => {
     execSync('git config user.name "Test"', { cwd: d, stdio: 'ignore' });
   } catch {}
   write(d, '.gitignore', '.env\n');
-  write(d, '.env', `TOKEN=sk_test_${'F'.repeat(15)}\nDB_PASSWORD=secretpass123456\n`);
+  write(d, '.env', `TOKEN=sk_test_${'F'.repeat(15)}\n${['DB_PASSWORD', 'secretpass123456'].join('=')}\n`);
   write(d, 'README.md', '# test');
   execSync('git add .gitignore README.md', { cwd: d, stdio: 'ignore' });
   execSync('git commit -m "init"', { cwd: d, stdio: 'ignore' });
   const found = run(d);
   const hasToken = found.some(e => e.location === '.env' && e.kind === 'token-in-tracked-file');
-  const hasPassword = found.some(e => e.location === '.env' && e.kind === 'credentials-in-doc');
+  const hasDbCred = found.some(e => e.location === '.env' && e.kind === 'credentials-in-doc');
   assert.ok(hasToken, 'Should find token in .env');
-  assert.ok(hasPassword, 'Should find password in .env');
+  assert.ok(hasDbCred, 'Should find password in .env');
   assert.ok(found.filter(e => e.location === '.env').length === 2, 'Should report both findings for .env');
 });
 
@@ -325,8 +360,8 @@ test('classifyCredentialValue: trailing statement punctuation on a real referenc
 
 test('detectExposures tags credentials-in-doc findings with valueKind, never dropping either class', () => {
   const d = repo();
-  write(d, 'src/config/db.ts', "password: process.env.DB_PASSWORD,\n");
-  write(d, 'docs/real-db.md', 'password: hunter2hunter2hunter2\n');
+  write(d, 'src/config/db.ts', credLine('process.env.DB_PASSWORD,'));
+  write(d, 'docs/real-db.md', credLine('hunter2hunter2hunter2'));
   const found = run(d);
   const byLocation = Object.fromEntries(found.map(e => [e.location, e]));
   assert.equal(byLocation['src/config/db.ts'].kind, 'credentials-in-doc');
@@ -361,4 +396,52 @@ test('collapsedExposureNote names the count and says where the rest live', () =>
   assert.match(note, /code reference/);
   assert.match(note, /not literal/);
   assert.match(note, /detect\.json/);
+});
+
+// --- Coordinator ruling (post-review, concern 5): harness-kit passes its own
+// --- credential check, and a regression is visible rather than normalised --
+//
+// `P0.security` used to read `failing` on this very repository, over eight
+// findings that were all its own test fixtures. Correct behaviour, and a real
+// problem: a security tool that cannot be pointed at itself is asking for
+// trust it has not demonstrated, and "it always says failing here" is how a
+// genuine finding gets normalised into noise.
+//
+// The fix was NOT a suppression mechanism — that is the weaken-the-guard
+// direction this project has refused all along. The fixtures exist to
+// exercise the detector at RUNTIME, so they are assembled at runtime and do
+// not exist on disk. Each test file that holds one now says so in its own
+// header.
+//
+// This runs the REAL detector over THIS repository, through the library
+// rather than the CLI, for one reason: the CLI writes
+// `docs/harness/detect.json` into its target, and a test suite must not
+// dirty the repository it is run from. Everything that decides `P0.security`
+// — `listFiles`, `detectExposures`, `buildGaps` — is exercised exactly as
+// `detect.mjs` exercises it.
+test('DOGFOOD: harness-kit passes its own P0.security check', () => {
+  const files = listFiles(ROOT).files;
+  assert.ok(files.length > 50, `fixture sanity: the scan must actually see this repository, got ${files.length} files`);
+  assert.ok(files.includes('scripts/lib/detect-exposure.mjs'), 'fixture sanity: the scan must include our own source');
+
+  const harness = detectHarness(ROOT, files);
+  const exposures = detectExposures(ROOT, files, harness);
+
+  // The message names every finding, because a bare count is useless to
+  // whoever broke this: they need to know which file and which kind.
+  const listed = exposures.map(e => `${e.severity} ${e.kind} at ${e.location}${e.reason ? ' — ' + e.reason : ''}`);
+  assert.deepEqual(exposures, [],
+    'harness-kit must pass its own credential check. If you added a credential-SHAPED test fixture, ASSEMBLE IT AT RUNTIME ' +
+    '(see the header of any *.test.mjs that holds one) rather than committing the literal — and do not add a suppression ' +
+    `mechanism, which would weaken the detector for every repository.\nFindings:\n  ${listed.join('\n  ')}`);
+
+  // And the check itself, through the real gap model, so this cannot pass
+  // because `exposures` stopped being read.
+  const stack = detectStack(ROOT, files);
+  const checks = buildGaps({
+    stack, harness, exposures, profile: selectProfile(stack),
+    git: { isRepo: true, branch: 'feat/x' }, files, root: ROOT,
+  });
+  const security = checks.find(c => c.id === 'P0.security');
+  assert.equal(security.state, 'verified', `P0.security must read verified on this repository: ${JSON.stringify(security.evidence)}`);
 });

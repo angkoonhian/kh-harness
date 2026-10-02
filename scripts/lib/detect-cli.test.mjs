@@ -768,3 +768,54 @@ test('F1 SECURITY: a file the scan named but cannot read is reported, and P0.sec
   assert.equal(security.state, 'failing', 'an unexamined file must never be reported as a clean sweep');
   assert.match(security.evidence.join('\n'), /INCOMPLETE/);
 });
+
+// --- Coordinator ruling (post-review, concern 1) --------------------------
+//
+// The end of the chain glob.test.mjs pins at the unit level: a hostile or
+// broken `package.json` supplies a `workspaces` entry containing JSON's own
+// `\u0000` escape, which parses to a real NUL. Before the boundary refusal that
+// pattern became `.*` and matched EVERY package.json in the tree, so every
+// one of them was detected as a workspace member — repository-controlled
+// data producing a glob that matches everything.
+//
+// The NUL is built with `String.fromCharCode(0)`, never typed, for the same
+// reason glob.test.mjs's own guard exists.
+test('CONCERN 1: a workspaces entry containing a NUL matches no package, and is reported as a question', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-cli-nulglob-'));
+  const NUL = String.fromCharCode(0);
+  write(d, 'package.json', JSON.stringify({
+    name: 'app',
+    // Entry 0 is the hostile one; entry 1 is legitimate and must still work,
+    // so the refusal is proven to be per-pattern rather than per-repository.
+    workspaces: [NUL, 'packages/*'],
+    scripts: { test: 'vitest' },
+  }));
+  write(d, 'package-lock.json', '{}');
+  write(d, 'tsconfig.json', '{}');
+  write(d, 'packages/api/package.json', JSON.stringify({ name: '@app/api', scripts: {} }));
+  write(d, 'packages/api/index.ts', 'export const ok = true;');
+  // A manifest NO legitimate pattern reaches. Before the fix the NUL glob
+  // matched it; after, only `packages/*` is interpreted, and it does not.
+  write(d, 'vendor/sneaky/package.json', JSON.stringify({ name: 'sneaky', scripts: {} }));
+
+  const r = JSON.parse(cli(d, '--json'));
+
+  // 1. Refused, by index, never by value.
+  assert.deepEqual(r.stack.rejectedWorkspacePatterns, [0]);
+
+  // 2. The refusal matched nothing: the legitimate member is present, the
+  //    one only the NUL glob could have reached is not.
+  const dirs = r.stack.packages.map(p => p.dir).sort();
+  assert.deepEqual(dirs, ['.', 'packages/api'],
+    `a refused glob must match no package, got ${JSON.stringify(dirs)}`);
+
+  // 3. Reported, not absorbed — and the value is never printed.
+  const question = r.couldNotDerive.find(q => /workspace pattern/.test(q));
+  assert.ok(question, `the refusal must reach couldNotDerive: ${JSON.stringify(r.couldNotDerive)}`);
+  assert.match(question, /index 0/);
+  assert.match(question, /NUL/);
+  const summary = cli(d);
+  assert.match(summary, /workspace pattern/);
+  assert.equal(summary.includes(NUL), false, 'the control character must never reach the output');
+  assert.equal(JSON.stringify(r).includes(NUL), false, 'nor detect.json');
+});

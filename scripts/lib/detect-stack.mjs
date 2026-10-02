@@ -1,5 +1,5 @@
 import { readIfPresent } from './scan.mjs';
-import { globToRegExpSource } from './glob.mjs';
+import { globToRegExpSource, isRejectableGlob } from './glob.mjs';
 
 // `bun.lock` (text) is Bun's default since 1.2; `bun.lockb` (binary) is the
 // legacy format Bun wrote through 1.1. Both are tracked — a real review
@@ -29,15 +29,41 @@ function languages(files) {
   return [...out];
 }
 
-/** Expand a workspace glob like "packages/*" into the manifests it matches. */
+/**
+ * Expand a workspace glob like "packages/*" into the manifests it matches.
+ *
+ * `patterns` is REPOSITORY DATA — a `package.json`'s own `workspaces` array,
+ * or a `pnpm-workspace.yaml`'s list — so it is the one input to `glob.mjs`
+ * an attacker or a broken tool controls. `isRejectableGlob` refuses a
+ * pattern containing a literal NUL (JSON's `\u0000` parses to one), which
+ * would otherwise have been transformed into `.*` and matched EVERY
+ * package.json in the tree — see that function's own comment for the
+ * measurement and for why the refusal lives at the boundary rather than in
+ * the transformation.
+ *
+ * Refused patterns are RETURNED, not swallowed: `globToRegExpSource` would
+ * already fail closed on its own (a refused pattern compiles to a
+ * never-matching source), but a workspace pattern that silently matches
+ * nothing looks exactly like a workspace with no members, which is the
+ * "confident and wrong" shape this project reports rather than absorbs.
+ * `detectStack` carries them out on `stack.rejectedWorkspacePatterns`, and
+ * report.mjs turns them into a question.
+ */
 function membersFor(patterns, files) {
   const manifests = files.filter(f => f.endsWith('package.json') && f !== 'package.json');
   const hits = new Set();
+  const rejected = [];
   for (const pattern of patterns) {
+    if (isRejectableGlob(pattern)) {
+      // Never echoed verbatim: the value is repository-controlled and holds
+      // a control character by definition. Its INDEX is enough to find it.
+      rejected.push(patterns.indexOf(pattern));
+      continue;
+    }
     const re = new RegExp('^' + globToRegExpSource(pattern) + '/package\\.json$');
     for (const m of manifests) if (re.test(m)) hits.add(m);
   }
-  return [...hits];
+  return { manifests: [...hits], rejected };
 }
 
 function workspacePatterns(root, rootPkg) {
@@ -58,7 +84,12 @@ export function detectStack(root, files) {
 
   const manifestPaths = [];
   if (files.includes('package.json')) manifestPaths.push('package.json');
-  if (patterns) manifestPaths.push(...membersFor(patterns, files));
+  let rejectedWorkspacePatterns = [];
+  if (patterns) {
+    const members = membersFor(patterns, files);
+    manifestPaths.push(...members.manifests);
+    rejectedWorkspacePatterns = members.rejected;
+  }
 
   const packages = manifestPaths.map(manifestPath => {
     const pkg = parseJson(readIfPresent(root, manifestPath)) ?? {};
@@ -93,5 +124,9 @@ export function detectStack(root, files) {
     isWorkspace: Boolean(patterns) && packages.length > 1,
     packages,
     ci: files.filter(f => CI_PATTERNS.some(re => re.test(f))).sort(),
+    // Workspace patterns refused before transformation — INDICES only, never
+    // the values, which are repository-controlled and contain a control
+    // character by definition. Empty on every ordinary repository.
+    rejectedWorkspacePatterns,
   };
 }

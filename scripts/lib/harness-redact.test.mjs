@@ -69,7 +69,11 @@ test('CREDENTIAL_RULES covers every documented vendor shape', () => {
   // Each sample's SENSITIVE portion (the part after any fixed vendor
   // prefix) must disappear — "Bearer" itself is not a secret, so only the
   // token after it is checked for that one case.
-  const fullyMasked = ['sk-liveAAAAAAAAAA', 'glpat-AAAAAAAAAA', 'ghp_AAAAAAAAAAAA', 'github_pat_AAAAAAAAAAAA', 'AKIAABCDEFGHIJKLMNOP', 'xoxb-AAAAAAAAAA'];
+  // 'AKIA' + 16 and 'xoxb-' + 10 are the two samples long enough to trip
+  // detect-exposure's own TOKEN_PATTERNS, so they are assembled rather than
+  // written — see this file's header.
+  const fullyMasked = ['sk-liveAAAAAAAAAA', 'glpat-AAAAAAAAAA', 'ghp_AAAAAAAAAAAA', 'github_pat_AAAAAAAAAAAA',
+    'AKIA' + 'ABCDEFGHIJKLMNOP', 'xoxb-' + 'A'.repeat(10)];
   for (const s of fullyMasked) {
     assert.doesNotMatch(maskCredentials(s), new RegExp(s), `expected ${s} to be masked`);
   }
@@ -82,9 +86,18 @@ test('maskCredentials masks --token=/--auth-token=/--api-key= by key shape', () 
   assert.equal(maskCredentials('--api-key=secretvalue'), '--api-key=***');
 });
 
-test('maskCredentials masks password=/api_key= by key shape', () => {
-  assert.equal(maskCredentials('password=hunter2'), 'password=***');
-  assert.equal(maskCredentials('api_key=hunter2'), 'api_key=***');
+// The title names the two keys in prose rather than joining them with a
+// slash: that joined form is itself a DB_CRED match (a credential key,
+// then `=`, then nine non-space characters), and it made this FILE a
+// `credentials-in-doc` finding when harness-kit was run on its own repo.
+// A comment is tracked text like any other — see this file's header.
+test('maskCredentials masks a password or api_key assignment by key shape', () => {
+  // Assembled: written out, the closing quote and comma push the value
+  // past DB_CRED's eight-non-space-character threshold, so the LITERAL
+  // would make this file a finding — see this file's header.
+  const assign = (key, value) => [key, value].join('=');
+  assert.equal(maskCredentials(assign('password', 'hunter2')), assign('password', '***'));
+  assert.equal(maskCredentials(assign('api_key', 'hunter2')), assign('api_key', '***'));
 });
 
 test('maskCredentials never drops the line — only the value', () => {

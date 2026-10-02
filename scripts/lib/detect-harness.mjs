@@ -2,14 +2,40 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { readIfPresent, existsAny } from './scan.mjs';
-// Whole-branch review, F4: the ONE function that answers "where is this
-// repository's handoff file", imported from the shared asset rather than
-// kept as a second list here. The dependency runs this way round because
-// `session-brief.mjs` is copied verbatim into a user's `.claude/scripts/`,
-// where `harness-redact.mjs` is the only module beside it — a constant in
-// `scripts/lib/` could never reach it, so the shared home has to be the
-// asset. See `findHandoff`'s own comment for why the hook was widened to
-// match detection rather than detection narrowed to match the hook.
+// THIS IMPORT DIRECTION IS DELIBERATE. DO NOT "FIX" IT BY COPYING THE
+// FUNCTION BACK INTO scripts/lib/.
+//
+// Everywhere else in this codebase, `assets/` is DATA that `scripts/lib/`
+// reads and ships; nothing in `scripts/lib/` imports from it. So this line
+// looks like a mistake, and the obvious correction — duplicate `findHandoff`
+// here — would reintroduce F4 from the final whole-branch review, which is
+// the finding this import exists to make impossible.
+//
+// Why it has to run this way. `findHandoff` answers "where is this
+// repository's handoff file", and TWO things must answer it identically:
+// `detect-harness.mjs` (which credits `P4.handoff`) and
+// `assets/scripts/session-brief.mjs` (the SessionStart hook that reads the
+// file). The hook is copied verbatim into a user's `.claude/scripts/`, where
+// the only module beside it is `harness-redact.mjs` — so a constant or
+// function living in `scripts/lib/` could NEVER reach it. The only possible
+// shared home is the asset, and therefore the only possible direction is
+// this one.
+//
+// What duplicating it cost last time, measured: `detect` reported
+// `P4.handoff declared / docs/HANDOFF.md`, and three lines later installed a
+// hook that printed `harness-kit: no HANDOFF.md in this repository yet.`
+// into every session — a falsehood the same tool had just disproved, placed
+// in the model's own context as a premise to reason from. The two lists had
+// not been written to disagree; they were written once each, by different
+// hands, which is all it takes.
+//
+// It costs nothing at runtime: `harness-redact.mjs` imports only node
+// builtins and has no side effects at import, and the copy installed in a
+// user's repository gains no new dependency from this.
+//
+// See `findHandoff`'s own comment for the other half of F4 — why the HOOK
+// was widened to look where detection credits, rather than detection
+// narrowed to look only where the hook did.
 import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 
 const BOOTSTRAP_CANDIDATES = [

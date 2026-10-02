@@ -56,6 +56,17 @@ A file it could **not read** is reported as a finding of its own and the check
 cannot say `verified` while one exists — a sweep that skipped a file in silence
 is the one failure this check must never have.
 
+**This repository passes its own check.** `node scripts/detect.mjs .` reports
+`P0.security verified` on harness-kit itself, and a test (`DOGFOOD:
+harness-kit passes its own P0.security check`) fails if that ever stops being
+true. It is worth stating because it was not always so: the detector's own
+test fixtures used to be committed as credential-shaped literals, so the tool
+failed on itself, and "it always says failing here" is exactly how a real
+finding gets normalised into noise. The fix was to assemble those fixtures at
+runtime, not to add a suppression mechanism — there is no ignore list, and
+there will not be one, because an exclusion that silences the check on this
+repository silences it on yours too.
+
 ### `apply`
 
 Writes the files and settings patches `detect` proposed. Nothing else, ever:

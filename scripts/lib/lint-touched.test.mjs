@@ -789,23 +789,29 @@ test('LAYER 2 ONLY: a credential-shaped value in a genuine diagnostic (not echoe
 // --- Layer 2's own pattern coverage, beyond the sk- prefix already proven -
 
 test('MASK: a GitHub PAT (ghp_...) in a genuine diagnostic is masked, not dropped', () => {
+  // Assembled, not written — see this file's header on concern 5.
+  const PAT = 'ghp_' + 'AAAABBBBCCCCDDDDEEEEFFFFGGGG';
   const d = repo(
-    'node -e "console.error([\'src/a.ts:1\',\'leaked\',\'ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGG\'].join(String.fromCharCode(32))); process.exit(1)"',
+    `node -e "console.error(['src/a.ts:1','leaked','${PAT}'].join(String.fromCharCode(32))); process.exit(1)"`,
   );
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 2);
-  assert.doesNotMatch(r.stderr, /ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGG/);
+  assert.doesNotMatch(r.stderr, new RegExp(PAT));
   assert.match(r.stderr, /\*\*\*/);
 });
 
 test('MASK: a generic --auth-token=/password= style value is masked by key shape, not by vendor prefix', () => {
+  // `password=` plus a long value is a DB_CRED match, so it is assembled.
+  const ASSIGNMENT = ['password', 'hunter2plaintext'].join('=');
   const d = repo(
-    'node -e "console.error([\'src/a.ts:1\',\'config\',\'dump:\',\'password=hunter2plaintext\'].join(String.fromCharCode(32))); process.exit(1)"',
+    `node -e "console.error(['src/a.ts:1','config','dump:','${ASSIGNMENT}'].join(String.fromCharCode(32))); process.exit(1)"`,
   );
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 2);
   assert.doesNotMatch(r.stderr, /hunter2plaintext/, 'the value after password= must be masked even with no known vendor prefix');
-  assert.match(r.stderr, /password=\*\*\*/);
+  // Assembled for the same reason the fixture above is: written out, this
+  // regex literal is itself a DB_CRED match.
+  assert.match(r.stderr, new RegExp(['password', String.raw`\*\*\*`].join('=')));
 });
 
 // --- Layer 1 must not over-redact: the file's own (possibly long) name ---

@@ -25,6 +25,17 @@ const run = (script, d, ...a) => execFileSync(process.execPath, [script, d, ...a
 const settings = d => JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
 const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/harness-kit.manifest.json'), 'utf8'));
 
+// Coordinator ruling (post-review, concern 5): credential-SHAPED fixtures are
+// ASSEMBLED AT RUNTIME, never committed as literals. harness-kit's own
+// `P0.security` scans tracked files for exactly these patterns, so a literal
+// here makes the tool fail its own check — and a security tool that cannot be
+// pointed at itself is asking for trust it has not demonstrated. The fix is
+// NOT a suppression mechanism (that weakens the guard); the fixtures exist to
+// exercise the detector at runtime, so they do not need to exist on disk.
+// Each value is split so no single source literal matches a TOKEN_PATTERN,
+// the PEM header or DB_CRED, while the joined runtime value is byte-identical
+// to what the test needs.
+
 function fixture() {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
@@ -1226,7 +1237,9 @@ test('F9: apply discloses the credential finding, the nested repository and the 
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: {} }));
   mkdirSync(join(d, 'src'), { recursive: true });
   // A token this run genuinely finds, in a file the scan genuinely lists.
-  writeFileSync(join(d, 'src/creds.ts'), 'export const T = "ghp_0123456789abcdefghij0123456789";\n');
+  // Assembled, not written — see this file's header on concern 5.
+  const LEAKED_PAT = 'ghp_' + '0123456789abcdefghij0123456789';
+  writeFileSync(join(d, 'src/creds.ts'), `export const T = "${LEAKED_PAT}";\n`);
   // A nested repository the scan genuinely declines to descend into, found
   // through the gitignored-directory sweep (gitignoring a vendor tree is
   // also what keeps `git add -A` from refusing an embedded repository).
@@ -1244,7 +1257,7 @@ test('F9: apply discloses the credential finding, the nested repository and the 
   // 1. The credential sweep it performed and used to discard.
   assert.match(dry, /same Phase-0 credential sweep/);
   assert.match(dry, /token-in-tracked-file at src\/creds\.ts/);
-  assert.equal(dry.includes('ghp_0123456789'), false, 'the VALUE is still never printed');
+  assert.equal(dry.includes(LEAKED_PAT), false, 'the VALUE is still never printed');
 
   // 2. The nested repository. `detect`'s own comment calls this disclosure
   //    load-bearing because "a report that omits it makes a partial scan
