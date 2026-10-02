@@ -60,6 +60,26 @@ test('python via pyproject and uv lock', () => {
   assert.equal(s.packageManager, 'uv');
 });
 
+// A pip-only repository (requirements.txt, no pyproject.toml) must still get
+// a package entry — otherwise `stack.packages.length` stays 0, python's own
+// `confidence()` returns 0 (it requires packages.length > 0), profile
+// selection falls back to `generic`, and every phase-1/2 python-specific
+// check (P1.bootstrap included) reports `n/a` even though the install
+// command (`pip install -r requirements.txt`) is plainly derivable from
+// requirements.txt's own presence. This was a real defect: a prior ruling's
+// verbatim install-command list omitted pip, and this is the detection-level
+// half of what made it invisible even once pip was added back.
+test('python via requirements.txt alone (no pyproject.toml) still yields a package', () => {
+  const d = repo();
+  write(d, 'requirements.txt', 'requests==2.31.0\n');
+  write(d, 'app.py', 'print("hi")\n');
+  const s = run(d);
+  assert.ok(s.languages.includes('python'));
+  assert.equal(s.packageManager, 'pip');
+  assert.equal(s.packages.length, 1, 'a pip-only repo must still get a package entry, or profile selection falls back to generic');
+  assert.equal(s.packages[0].dir, '.');
+});
+
 test('typescript is detected from tsconfig', () => {
   const d = repo();
   write(d, 'package.json', '{}');

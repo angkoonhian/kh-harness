@@ -186,6 +186,21 @@ export function buildGaps({ stack, harness, exposures, profile, git, checkDefs =
   const applicable = new Set(profile.appliesToSteps());
   return checkDefs.map(def => {
     if (!applicable.has(def.step)) {
+      // DELIBERATE, for P1.bootstrap specifically on a `generic` profile (no
+      // package manager, no packages at all — nothing to install): an
+      // earlier plan draft specified `absent` + `decidable: false` for this
+      // exact case, asking a question instead of proposing. This code
+      // reports `n/a` instead, and that is the considered, correct answer,
+      // not a gap to "fix" back toward the plan's text. "Not applicable" is
+      // a true statement about a repository with nothing to install;
+      // "absent but undecidable" implies there IS something missing that
+      // might yet be answered into existence, which is not true here — the
+      // generic profile's own `appliesToSteps()` (profiles/generic.mjs)
+      // already excludes step 5 for exactly this reason. See
+      // detect-cli.test.mjs's end-to-end test pinning this through the real
+      // CLI, and propose.test.mjs's hand-constructed `decidable: false` test
+      // (kept as a generator-level unit guard, not a claim that the real
+      // path ever produces that combination for this check).
       return { id: def.id, step: def.step, phase: def.phase, state: 'n/a',
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
         decidable: true, question: null, proposal: null };

@@ -66,6 +66,17 @@ export function detectStack(root, files) {
 
   if (packages.length === 0 && files.includes('pyproject.toml')) {
     packages.push({ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: [] });
+  } else if (packages.length === 0 && files.includes('requirements.txt')) {
+    // Same reasoning as the pyproject.toml fallback immediately above: a
+    // pip-only repository (requirements.txt, no pyproject.toml) must still
+    // get a package entry, or `stack.packages.length` stays 0, python's own
+    // `confidence()` (which requires packages.length > 0) returns 0, profile
+    // selection falls back to `generic`, and P1.bootstrap — along with every
+    // other phase-1/2 python-specific check — reports `n/a` even though an
+    // install command is plainly derivable from requirements.txt's own
+    // presence. `scripts: []` for the same reason as the pyproject.toml
+    // case: there is no script-NAME convention to read here either.
+    packages.push({ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] });
   }
 
   let packageManager = null;

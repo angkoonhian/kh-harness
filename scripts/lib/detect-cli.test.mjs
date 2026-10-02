@@ -104,6 +104,58 @@ test('an empty repo falls back to the generic profile and does not crash', () =>
   assert.ok(r.checks.some(c => c.state === 'n/a'));
 });
 
+// END-TO-END, through the REAL detection path (detectStack -> selectProfile
+// -> buildGaps), not a hand-built check object. Pins the coordinator's
+// finding directly: a generic repository with nothing to install reports
+// P1.bootstrap as `n/a` — not `absent` + `decidable: false`, which an
+// earlier plan draft specified but which this implementation deliberately
+// supersedes (see gap-model.mjs's own comment at the point this state is
+// set). If this is ever "fixed" back toward the plan's framing, this test
+// fails.
+test('END-TO-END: a generic repo with nothing to install reports P1.bootstrap as n/a, with no proposal', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-generic-bootstrap-'));
+  write(d, 'README.md', '# nothing to detect here — no package manager, no language\n');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.profile, 'generic');
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'n/a', 'a repository with nothing to install correctly reports n/a, not absent');
+  assert.equal(c.proposal, null);
+  assert.match(cli(d), /P1\.bootstrap\s+n\/a/, 'the human summary must mark it n/a');
+});
+
+// END-TO-END pip case, companion to the test above: a repository that DOES
+// have evidence (requirements.txt) must NOT fall into the same n/a bucket.
+// This is the defect the coordinator found: an earlier ruling's verbatim
+// install-command list omitted pip, which (combined with detect-stack.mjs
+// never giving a pip-only repo a package entry) made this report n/a
+// instead of a proposal, even though pip install -r requirements.txt is
+// plainly derivable from requirements.txt's own presence.
+test('END-TO-END: a pip repo with requirements.txt reports P1.bootstrap as absent, with a proposal', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-pip-'));
+  write(d, 'requirements.txt', 'requests==2.31.0\n');
+  write(d, 'app.py', 'print("hi")\n');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.stack.packageManager, 'pip');
+  assert.notEqual(r.profile, 'generic', 'a pip-only repo must select the python profile, not fall back to generic');
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal, 'requirements.txt is evidence — this must be proposed, not asked about');
+  assert.match(cli(d), /P1\.bootstrap/);
+});
+
+// Companion to the pip case above: a python repo with NO requirements.txt
+// (and no pyproject.toml) has no evidence for any install form at all, and
+// must stay n/a — exactly like the fully generic case, not a guess.
+test('END-TO-END: a python repo with no requirements.txt and no pyproject.toml still reports P1.bootstrap as n/a', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-py-no-evidence-'));
+  write(d, 'app.py', 'print("hi")\n');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.stack.packageManager, null);
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'n/a', 'no lockfile evidence at all, so this stays n/a rather than asking or guessing');
+  assert.equal(c.proposal, null);
+});
+
 // A package.json script body is repository-derived text that routinely holds a
 // hardcoded token (`sentry-cli --auth-token …`). The report records that a
 // script exists, never what it says. This asserts the value never reaches

@@ -256,13 +256,17 @@ const BOOTSTRAP_STEP = 5;
  * silently rewrite the lockfile on a clean checkout, which is exactly the
  * kind of surprise a script that "will be run and trusted" must not carry.
  *
- * `pip` is deliberately NOT in this table. `requirements.txt` has no
- * frozen/plain distinction the way a real lockfile does (there is no
- * `pip install --frozen` form), so there is no verbatim reproducible
- * command to use for it — inventing one would be exactly the guessed step
- * this generator exists to refuse. A pip-only stack therefore derives no
- * install command at all (see `installCommand` below) and gets no bootstrap
- * proposal, same as a stack with no package manager detected.
+ * `pip` IS included, but it is not a frozen/plain PAIR the way the other six
+ * are — `plain: null` marks that there is no `pip install --frozen` form
+ * and no reasonable plain guess either. An earlier ruling's six-command
+ * list omitted pip entirely, and this generator correctly refused to invent
+ * a seventh form rather than guess — but the omission was the defect, not
+ * the refusal: `pip install -r requirements.txt` IS derivable, from
+ * requirements.txt's own presence, exactly like every other lockfile here.
+ * Without requirements.txt there is no evidence for ANY install form —
+ * `pip install -e .` from a bare pyproject.toml would be a guess about
+ * library-vs-application intent — so `plain: null` here means "stay
+ * undecidable", not "fall back"; see `installCommand` below.
  */
 const INSTALL_COMMANDS = {
   npm: { lockfile: 'package-lock.json', frozen: 'npm ci', plain: 'npm install' },
@@ -271,12 +275,13 @@ const INSTALL_COMMANDS = {
   bun: { lockfile: 'bun.lockb', frozen: 'bun install --frozen-lockfile', plain: 'bun install' },
   poetry: { lockfile: 'poetry.lock', frozen: 'poetry install --sync', plain: 'poetry install' },
   uv: { lockfile: 'uv.lock', frozen: 'uv sync --frozen', plain: 'uv sync' },
+  pip: { lockfile: 'requirements.txt', frozen: 'pip install -r requirements.txt', plain: null },
 };
 
 /**
  * Returns `{ command, fallback }`, or `null` when no install command can be
- * derived at all (an undetected package manager, or one with no verbatim
- * reproducible form — see the table above).
+ * derived at all — an undetected package manager, or one (pip, with no
+ * requirements.txt) whose table entry has no plain form to fall back to.
  *
  * The lockfile's PRESENCE in `files` — not `stack.packageManager` alone —
  * is what licenses the deterministic form. The two happen to move together
@@ -291,6 +296,7 @@ function installCommand(packageManager, files) {
   const spec = INSTALL_COMMANDS[packageManager];
   if (!spec) return null;
   if (files.includes(spec.lockfile)) return { command: spec.frozen, fallback: false, lockfile: spec.lockfile };
+  if (spec.plain == null) return null; // no lockfile, and no plain form to guess (pip) — stay undecidable
   return { command: spec.plain, fallback: true, lockfile: spec.lockfile };
 }
 

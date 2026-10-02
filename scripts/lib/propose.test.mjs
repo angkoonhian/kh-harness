@@ -346,7 +346,17 @@ test('P1.bootstrap writes only steps detection proved', () => {
   assert.equal(/lint/.test(b.contents), false, 'no lint script was declared, so none is invented');
 });
 
-test('P1.bootstrap proposes nothing for a generic stack', () => {
+// UNIT-LEVEL GUARD ONLY — this hand-constructs a check object with
+// `decidable: false`, which pins `buildProposals`'s own central gate
+// (`if (c.state !== 'absent' || c.decidable === false) continue;`). It does
+// NOT exercise the real detection path: gap-model.mjs's actual check for a
+// generic stack reports `state: 'n/a'`, never `absent` + `decidable: false`
+// — see its own comment on why `n/a` is the more honest answer, and the
+// end-to-end test in detect-cli.test.mjs that pins THAT behaviour through
+// the real CLI. This test is kept because the generator-level gate it pins
+// is still real: a future caller (or a future check definition) COULD pass
+// `decidable: false`, and this proves buildProposals honours it correctly.
+test('UNIT: an absent-but-undecidable check proposes nothing (generator-level gate, not the real P1.bootstrap path)', () => {
   const stack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
   const ps = buildProposals(args([check({ id: 'P1.bootstrap', step: 5, decidable: false })], { stack }));
   assert.deepEqual(ps, [], 'an undecidable check proposes nothing');
@@ -388,6 +398,12 @@ const DETERMINISTIC = [
   ['bun', 'bun.lockb', 'bun install --frozen-lockfile'],
   ['poetry', 'poetry.lock', 'poetry install --sync'],
   ['uv', 'uv.lock', 'uv sync --frozen'],
+  // pip is not a "frozen vs plain" pair the way the other six are — there is
+  // no `pip install --frozen` form — but `pip install -r requirements.txt`
+  // IS derivable verbatim from requirements.txt's own presence, which is
+  // exactly the evidence this table requires. See the dedicated pip tests
+  // below for the no-requirements.txt case, which this loop does not cover.
+  ['pip', 'requirements.txt', 'pip install -r requirements.txt'],
 ];
 
 for (const [pm, lockfile, command] of DETERMINISTIC) {
@@ -424,11 +440,32 @@ test('P1.bootstrap proposes nothing when no install command is derivable, even t
   assert.deepEqual(ps, []);
 });
 
-test('P1.bootstrap proposes nothing for pip — requirements.txt carries no frozen/plain distinction in the verbatim command list', () => {
+// Coordinator finding: the original ruling's six-command list omitted pip
+// entirely, and this generator correctly refused to invent a seventh form —
+// but the ruling's list, not the refusal, was the defect. `pip install -r
+// requirements.txt` IS derivable: requirements.txt's own presence is the
+// evidence, exactly like every other lockfile in this table. There is no
+// frozen/plain PAIR for pip (no `pip install --frozen`), so the gate is
+// simply "does requirements.txt exist", not "is it the reproducible form".
+test('P1.bootstrap proposes pip install -r requirements.txt when requirements.txt is present', () => {
   const stack = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
-    packages: [{ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+    packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] };
   const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['requirements.txt'] }));
-  assert.deepEqual(ps, [], 'pip has no verbatim reproducible form in this list, so nothing is guessed');
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b, 'requirements.txt is present, so the install command is derivable');
+  assert.match(b.contents, /pip install -r requirements\.txt/);
+});
+
+// pip has no plain fallback: without requirements.txt there is no evidence
+// at all for what to install (unlike npm/pnpm/etc, where the PLAIN form is
+// still a reasonable guess even without the lockfile). `pip install -e .`
+// from a bare pyproject.toml would be a guess about library-vs-application
+// intent — exactly what this generator exists to refuse. The commented
+// question in the generated template is what covers this case honestly.
+test('P1.bootstrap proposes nothing for pip when requirements.txt is absent — there is no evidence-based form to fall back to', () => {
+  const stack = { languages: ['python'], packageManager: 'pip', isWorkspace: false, packages: [], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: [] }));
+  assert.deepEqual(ps, [], 'no requirements.txt means no evidence for any install form, frozen or plain');
 });
 
 test('P1.bootstrap derives build/test only from the ROOT package — a nested package\'s scripts are not the repository\'s own bootstrap', () => {
