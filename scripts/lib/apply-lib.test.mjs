@@ -59,6 +59,18 @@ test('a settings-hook proposal merges and records a hash-identified patch', () =
   assert.match(manifest.settingsPatches[0].entrySha256, /^[0-9a-f]{64}$/);
 });
 
+test('a settings-hook proposal carrying a matcher (the per-edit sensor, on PostToolUse) writes it to settings.json', () => {
+  const d = repo();
+  const p = {
+    kind: 'settings-hook', event: 'PostToolUse', step: 9, matcher: 'Write|Edit',
+    entry: { type: 'command', command: 'node .claude/scripts/lint-touched.mjs' },
+    checkId: 'P2.sensor', reason: 'r',
+  };
+  applyProposals({ root: d, proposals: [p], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const s = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+  assert.deepEqual(s.hooks.PostToolUse[0], { matcher: 'Write|Edit', hooks: [p.entry] });
+});
+
 test('applying twice is a no-op', () => {
   const d = repo();
   const r1 = applyProposals({ root: d, proposals: [fileProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
@@ -192,6 +204,22 @@ test('C2: a settings-hook preview never prints the user\'s own settings', () => 
   // Still a useful preview: it shows exactly what will be added, and where.
   assert.match(diff, /^\+\s*"command": "node x\.mjs"$/m, 'the entry that will actually be added must be shown');
   assert.match(diff, /hooks\.SessionStart/, 'and the preview must say where it goes');
+});
+
+test('C2: a settings-hook preview with a matcher shows the matcher, still without the user\'s own settings', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(SECRET_SETTINGS, null, 2));
+
+  const p = {
+    kind: 'settings-hook', event: 'PostToolUse', step: 9, matcher: 'Write|Edit',
+    entry: { type: 'command', command: 'node .claude/scripts/lint-touched.mjs' },
+    checkId: 'P2.sensor', reason: 'r',
+  };
+  const diff = renderDiff(d, p);
+  assert.doesNotMatch(diff, /SECRET-IN-ENV|SECRET_IN_HOOK/, 'no part of the user\'s settings belongs in this preview either');
+  assert.match(diff, /"matcher": "Write\|Edit"/, 'the matcher being added is shown');
+  assert.match(diff, /hooks\.PostToolUse/);
 });
 
 test('C2: a secret in an existing entry under the same event is not shown either', () => {

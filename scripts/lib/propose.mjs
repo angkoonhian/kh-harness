@@ -7,6 +7,7 @@ const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
 
 const BRIEF_PATH = '.claude/scripts/session-brief.mjs';
+const LINT_TOUCHED_PATH = '.claude/scripts/lint-touched.mjs';
 
 /**
  * Evidence-based protected-path candidates for conventions that are NOT
@@ -103,6 +104,37 @@ function protectedPathProposal({ stack, files }) {
   }];
 }
 
+/**
+ * The per-edit sensor: a PostToolUse hook that lints the file an Edit/Write
+ * tool just touched. Decidable only when at least one package in the
+ * repository actually declares a `lint` script — `p.scripts` is a sorted
+ * list of script NAMES, never bodies (see detect-stack.mjs), so this check
+ * never risks echoing a credential-bearing script body. A sensor with
+ * nothing to run is noise: when no package qualifies, this returns no
+ * proposals at all, the same evidence-gated shape as `protectedPathProposal`
+ * above, rather than proposing a hook that would always exit 0 unused.
+ *
+ * `matcher: 'Write|Edit'` scopes the hook to the tools that actually edit a
+ * file — PostToolUse fires for every tool otherwise, and the hook has
+ * nothing to say about a Bash or Read call.
+ */
+function sensorProposal({ kitVersion, stack }) {
+  if (!stack.packages.some(p => p.scripts?.includes('lint'))) return [];
+  return [{
+    kind: 'file', path: LINT_TOUCHED_PATH, step: 9,
+    contents: read('scripts/lint-touched.mjs').replace(
+      '#!/usr/bin/env node\n',
+      `#!/usr/bin/env node\n${versionStamp(kitVersion, 9, '//')}\n`,
+    ),
+    reason: 'no PostToolUse hook registered',
+  }, {
+    kind: 'settings-hook', event: 'PostToolUse', step: 9,
+    matcher: 'Write|Edit',
+    entry: { type: 'command', command: `node ${LINT_TOUCHED_PATH}` },
+    reason: 'no PostToolUse hook registered in .claude/settings.json',
+  }];
+}
+
 /** Generators receive the full detection context and return proposals.
  * { kitVersion, harness, root, stack, checks, files } are available to all
  * generators. A generator yields nothing by returning an empty array or not
@@ -126,6 +158,7 @@ const GENERATORS = {
     reason: 'no SessionStart hook registered in .claude/settings.json',
   }],
   'P2.protected': protectedPathProposal,
+  'P2.sensor': sensorProposal,
 };
 
 /**
@@ -162,4 +195,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
   return out;
 }
 
-export { BRIEF_PATH };
+export { BRIEF_PATH, LINT_TOUCHED_PATH };

@@ -260,7 +260,12 @@ function renderSettingsHookDiff(root, proposal) {
     : 0;
 
   // Exactly the element addHookEntry will push — see its `matcherEntry`.
-  const added = JSON.stringify({ hooks: [proposal.entry] }, null, 2);
+  // `matcher` is optional (SessionStart never carries one; PostToolUse's
+  // per-edit sensor does, so it would otherwise fire on every tool call).
+  const matcherEntry = proposal.matcher === undefined
+    ? { hooks: [proposal.entry] }
+    : { matcher: proposal.matcher, hooks: [proposal.entry] };
+  const added = JSON.stringify(matcherEntry, null, 2);
 
   const lines = [`--- a/${SETTINGS_PATH}`, `+++ b/${SETTINGS_PATH}`, `@@ ${container} @@`];
   for (const line of splitLines(added)) lines.push(`+${line}`);
@@ -415,7 +420,7 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
     return;
   }
 
-  const { settings: next, patch } = addHookEntry(settings, proposal.event, proposal.entry);
+  const { settings: next, patch } = addHookEntry(settings, proposal.event, proposal.entry, proposal.matcher);
   writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + '\n', SETTINGS_PATH);
 
   nextManifest.settingsPatches.push({

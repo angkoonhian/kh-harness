@@ -14,11 +14,21 @@ function canon(entry) {
   });
 }
 
-export function addHookEntry(settings, event, entry) {
+/**
+ * `matcher` is optional and omitted by default — SessionStart (the only
+ * event this shipped against until now) never needed one, since omitting
+ * it means "match everything" and that is exactly what a session-brief
+ * hook wants. PostToolUse is different: without a matcher it fires for
+ * every tool, not just an edit, so the per-edit sensor passes one
+ * ('Write|Edit') explicitly. Passing it changes `matcherEntry` and
+ * therefore its hash — by design, since a matcher-bearing entry and a
+ * matcher-less one for the same command are different objects on disk.
+ */
+export function addHookEntry(settings, event, entry, matcher) {
   const next = clone(settings);
   next.hooks ??= {};
   next.hooks[event] ??= [];
-  const matcherEntry = { hooks: [entry] };
+  const matcherEntry = matcher === undefined ? { hooks: [entry] } : { matcher, hooks: [entry] };
   next.hooks[event].push(matcherEntry);
   return {
     settings: next,

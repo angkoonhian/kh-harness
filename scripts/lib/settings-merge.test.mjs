@@ -35,6 +35,35 @@ test('hasEquivalentHook detects an existing command', () => {
   assert.equal(hasEquivalentHook({}, 'SessionStart', ENTRY.command), false);
 });
 
+// --- optional matcher (PostToolUse needs one; SessionStart never has) -----
+
+test('addHookEntry with no matcher argument omits the matcher key entirely (unchanged behaviour)', () => {
+  const { settings } = addHookEntry({}, 'SessionStart', ENTRY);
+  assert.equal('matcher' in settings.hooks.SessionStart[0], false);
+});
+
+test('addHookEntry with a matcher writes it alongside hooks on the SAME entry', () => {
+  const postToolUseEntry = { type: 'command', command: 'node .claude/scripts/lint-touched.mjs' };
+  const { settings, patch } = addHookEntry({}, 'PostToolUse', postToolUseEntry, 'Write|Edit');
+  assert.deepEqual(settings.hooks.PostToolUse[0], { matcher: 'Write|Edit', hooks: [postToolUseEntry] });
+  assert.match(patch.entrySha256, /^[0-9a-f]{64}$/);
+});
+
+test('a matcher changes the entry hash, so reverting without it does not find the matcher-bearing entry', () => {
+  const entry = { type: 'command', command: 'x' };
+  const withMatcher = addHookEntry({}, 'PostToolUse', entry, 'Write|Edit');
+  const withoutMatcher = addHookEntry({}, 'PostToolUse', entry);
+  assert.notEqual(withMatcher.patch.entrySha256, withoutMatcher.patch.entrySha256);
+});
+
+test('revertPatch removes a matcher-bearing entry by hash, same as any other', () => {
+  const entry = { type: 'command', command: 'node .claude/scripts/lint-touched.mjs' };
+  const { settings: s1, patch } = addHookEntry({}, 'PostToolUse', entry, 'Write|Edit');
+  const { settings: s2, reverted } = revertPatch(s1, patch);
+  assert.equal(reverted, true);
+  assert.equal(s2.hooks, undefined);
+});
+
 test('revertPatch removes by hash, not by index', () => {
   const { settings: s1, patch } = addHookEntry({}, 'SessionStart', ENTRY);
   // The user then adds their own hook ABOVE ours.

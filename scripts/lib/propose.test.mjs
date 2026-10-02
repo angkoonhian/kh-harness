@@ -57,6 +57,38 @@ test('a declared session-brief check yields no proposals (hook already registere
   assert.deepEqual(ps, []);
 });
 
+// --- P2.sensor: the per-edit lint hook, gated on an actual lint script ----
+
+const lintStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+const noLintStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['test'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+const sensorCheck = () => check({ id: 'P2.sensor', step: 9, proposal: 'install scripts/lint-touched.mjs and register a PostToolUse hook' });
+
+test('P2.sensor proposes the script and a PostToolUse settings hook when a package declares a lint script', () => {
+  const ps = buildProposals(args([sensorCheck()], { stack: lintStack }));
+  const kinds = ps.map(p => p.kind).sort();
+  assert.deepEqual(kinds, ['file', 'settings-hook']);
+  assert.equal(ps.find(p => p.kind === 'file').path, '.claude/scripts/lint-touched.mjs');
+  const hook = ps.find(p => p.kind === 'settings-hook');
+  assert.equal(hook.event, 'PostToolUse');
+  assert.equal(hook.matcher, 'Write|Edit');
+  assert.equal(hook.entry.command, 'node .claude/scripts/lint-touched.mjs');
+});
+
+test('P2.sensor proposes nothing when no package declares a lint script — a sensor with nothing to run is noise', () => {
+  const ps = buildProposals(args([sensorCheck()], { stack: noLintStack }));
+  assert.deepEqual(ps, []);
+});
+
+test('P2.sensor proposes nothing when stack.packages is empty (the default)', () => {
+  const ps = buildProposals(args([sensorCheck()]));
+  assert.deepEqual(ps, []);
+});
+
+test('a declared P2.sensor check yields no proposals, even with a lint script present', () => {
+  const ps = buildProposals(args([check({ id: 'P2.sensor', step: 9, state: 'declared', proposal: null })], { stack: lintStack }));
+  assert.deepEqual(ps, []);
+});
+
 test('a check with no registered generator is skipped without throwing', () => {
   assert.doesNotThrow(() => buildProposals(args([check({ id: 'P9.unknown', step: 99 })])));
   assert.deepEqual(buildProposals(args([check({ id: 'P9.unknown', step: 99 })])), []);
