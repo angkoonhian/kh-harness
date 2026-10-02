@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { globToRegExp, globToRegExpSource, isRejectableGlob } from './glob.mjs';
+import { globToRegExp, globToRegExpSource, isRejectableGlob, RESERVED_SENTINELS } from './glob.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -186,5 +186,67 @@ test('CONCERN 1: a non-string pattern is refused rather than throwing', () => {
     assert.equal(isRejectableGlob(bad), true);
     assert.doesNotThrow(() => globToRegExpSource(bad));
     assert.equal(globToRegExpSource(bad), '(?!)');
+  }
+});
+
+// --- Coordinator ruling (post-review, concern 1, round 2): the refusal is
+// --- DERIVED from the sentinel list, and a new sentinel cannot be forgotten
+//
+// The refusal used to be tied to `PLACEHOLDER` by a comment. Both tests
+// below exist because a comment is not a coupling:
+//
+//   - the first ITERATES `RESERVED_SENTINELS`, so adding an entry is covered
+//     with no test edit at all;
+//   - the second is the one that catches the mistake the first cannot — a
+//     sentinel introduced in the transformation WITHOUT being added to the
+//     list. It does not read the list; it tests the transformation itself
+//     against the property that makes a sentinel dangerous.
+
+test('CONCERN 1: every RESERVED_SENTINELS entry is refused — iterated, so a new one needs no test edit', () => {
+  assert.ok(RESERVED_SENTINELS.length > 0, "fixture sanity: the list must not be empty");
+  for (const sentinel of RESERVED_SENTINELS) {
+    const where = { bare: sentinel, leading: sentinel + "packages/*", mid: "packages/" + sentinel + "/src", trailing: "packages/*" + sentinel };
+    for (const [position, pattern] of Object.entries(where)) {
+      assert.equal(isRejectableGlob(pattern), true, `sentinel ${JSON.stringify(sentinel)} must be refused ${position}`);
+      assert.equal(globToRegExpSource(pattern), '(?!)', `and must compile to a never-matching source ${position}`);
+      const re = globToRegExp(pattern);
+      for (const candidate of ['', 'packages/api', 'packages/api/src', 'anything/at/all']) {
+        assert.equal(re.test(candidate), false, `must match nothing, matched ${JSON.stringify(candidate)}`);
+      }
+    }
+  }
+});
+
+test('CONCERN 1 INVARIANT: no single character may expand to a wildcard unless it is `*` — a sentinel added without a refusal fails HERE', () => {
+  // What makes a sentinel dangerous is precisely this: the transformation
+  // turns that one character into something that matches text it is not.
+  // So the property to pin is not "the list is complete" (unknowable from
+  // the list) but "no character behaves like a wildcard". A new sentinel
+  // introduced in the four steps without being added to RESERVED_SENTINELS
+  // breaks this, whatever character it is, with nobody extending this test.
+  //
+  // The scan covers every C0 control character and DEL — the only plausible
+  // sentinel choices, since a sentinel must be a character a real glob
+  // cannot contain — plus a few printable characters as a control group.
+  const suspects = [];
+  for (let code = 0; code <= 0x1f; code++) suspects.push(String.fromCharCode(code));
+  suspects.push(String.fromCharCode(0x7f));
+  suspects.push(...['a', '-', '_', '.', '/', '{', '}', '[', ']', '(', ')', '+', '?', '^', '$', '|', String.fromCharCode(92)]);
+
+  for (const ch of suspects) {
+    const pattern = "a" + ch + "b";
+    if (isRejectableGlob(pattern)) continue; // refused: safe by construction
+    const re = globToRegExp(pattern);
+    // Not refused, so it must behave as a LITERAL: it matches itself and
+    // nothing a wildcard would also have matched.
+    assert.equal(re.test(pattern), true,
+      `${JSON.stringify(ch)} is neither refused nor literal — it does not even match itself`);
+    for (const wildcardish of ['aXb', 'aXXXXb', 'ab', 'a/b', 'aXX/XXb']) {
+      if (wildcardish === pattern) continue;
+      assert.equal(re.test(wildcardish), false,
+        `${JSON.stringify(ch)} expands to a WILDCARD but is not in RESERVED_SENTINELS — it matched ${JSON.stringify(wildcardish)}. ` +
+        "If you introduced a new internal sentinel, add it to RESERVED_SENTINELS in glob.mjs: the refusal is derived from that list, " +
+        "so a sentinel that is not in it silently turns repository-controlled data into a glob that matches everything.");
+    }
   }
 });

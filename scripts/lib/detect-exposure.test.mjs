@@ -430,10 +430,31 @@ test('DOGFOOD: harness-kit passes its own P0.security check', () => {
   // The message names every finding, because a bare count is useless to
   // whoever broke this: they need to know which file and which kind.
   const listed = exposures.map(e => `${e.severity} ${e.kind} at ${e.location}${e.reason ? ' — ' + e.reason : ''}`);
-  assert.deepEqual(exposures, [],
-    'harness-kit must pass its own credential check. If you added a credential-SHAPED test fixture, ASSEMBLE IT AT RUNTIME ' +
-    '(see the header of any *.test.mjs that holds one) rather than committing the literal — and do not add a suppression ' +
-    `mechanism, which would weaken the detector for every repository.\nFindings:\n  ${listed.join('\n  ')}`);
+  const WHAT_TO_DO = [
+    'harness-kit must pass its own credential check — see the README section that states it does.',
+    '',
+    'IF YOU ADDED A CREDENTIAL-SHAPED TEST FIXTURE: assemble it at RUNTIME instead of committing the literal.',
+    '  Split the value so no single source literal matches a pattern, e.g.',
+    "    const PAT = 'ghp_' + 'AAAABBBBCCCCDDDDEEEE';",
+    "    const line = ['password', 'hunter2hunter2'].join(': ');",
+    '  Every *.test.mjs that holds one has a header explaining this; detect-exposure.test.mjs',
+    '  has `credLine`, `bearer` and `PEM_KEY` helpers you can reuse.',
+    '',
+    'IF YOU ADDED A DETECTOR PATTERN and it now matches harness-kit’s OWN PROSE: that is this',
+    '  check working, and the fix is in the prose, not the detector. Four of the eight findings',
+    '  this check was built to clear were not fixtures at all — a test title, a variable name',
+    '  (a variable whose name ends in the word password, assigned anything eight characters or longer,',
+    '  is a DB_CRED match), an assertion’s own regex literal,',
+    '  and a comment. Rename the identifier, reword the sentence, or assemble the string.',
+    '',
+    'WHAT NOT TO DO: do not add a suppression mechanism, an ignore list, or a path exclusion.',
+    '  An exclusion that silences this check on THIS repository silences it on the user’s too,',
+    '  and "it always says failing here" is exactly how a real finding becomes noise.',
+    '',
+    'Findings:',
+    ...listed.map(l => '  ' + l),
+  ].join('\n');
+  assert.deepEqual(exposures, [], WHAT_TO_DO);
 
   // And the check itself, through the real gap model, so this cannot pass
   // because `exposures` stopped being read.

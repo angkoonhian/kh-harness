@@ -10,14 +10,36 @@
 // copies" is a failure mode this extraction removes structurally, not by
 // convention.
 //
-// It is named for the first thing it shared (stderr redaction) and now
-// carries four: the two redaction layers, the output BOUNDS, the
-// session-marker machinery, and — whole-branch review, F3/F4 — the two
-// facts every hook needs before it can do anything at all: where the
-// repository root is, and where this repository's handoff file lives. The
-// name is kept rather than widened because `REDACT_PATH` is recorded in
-// every manifest this tool has ever written, and a rename would orphan
-// those entries; the scope is stated here instead.
+// THE NAME DESCRIBES ONE OF FIVE THINGS THIS MODULE NOW CARRIES. It is
+// named for the first one it shared, stderr redaction, and the full list is:
+//
+//   1. REDACTION — `dropCommandFragments` (layer 1, a denylist of command
+//      fragments) and `maskCredentials` (layer 2, a credential-shape
+//      allowlist). The only part the name covers.
+//   2. OUTPUT BOUNDS — `MAX_REPORT_LINES`, `MAX_REPORT_BYTES` and
+//      `boundReport`, which keep a hook's output inside Claude Code's
+//      10,000-character cap so it actually ARRIVES (see F3 below).
+//   3. SESSION-MARKER STATE — `safeSessionId`, `markerPath`,
+//      `readJSONMarker`/`writeJSONMarker`, `signatureOf`,
+//      `MAX_BLOCKS_PER_SESSION`: the per-session bookkeeping both process
+//      hooks bound themselves with.
+//   4. THE PROJECT ROOT — `projectRoot`, the one answer all three hooks
+//      use (whole-branch review, F4: there were two).
+//   5. THE HANDOFF LOCATION — `HANDOFF_CANDIDATES` and `findHandoff`,
+//      shared with `scripts/lib/detect-harness.mjs` so detection and the
+//      hook cannot disagree about where the file is (F4 again).
+//
+// Coordinator ruling (post-review, concern 3): the name is KEPT, and the
+// mismatch is disclosed here rather than left for the next reader to
+// discover. Renaming is not available: `REDACT_PATH`
+// (`.claude/scripts/harness-redact.mjs`) is recorded in every manifest this
+// tool has ever written, and `uninstall` reads that manifest to decide what
+// it may remove — so a rename orphans every existing install's record of
+// this file, permanently, with no notice. A name that under-describes its
+// module is survivable; one that under-describes it SILENTLY sends the next
+// reader looking in the wrong file for `findHandoff` or `boundReport`.
+// If this is ever renamed, the manifest needs a migration first, not a
+// `git mv`.
 //
 // Whole-branch review, F3: session-brief.mjs is the reason the bound below
 // has a byte limit at all — `MAX_REPORT_LINES`' own comment cited it as the

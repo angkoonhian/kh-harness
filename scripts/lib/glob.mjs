@@ -21,12 +21,39 @@
 //      separators) — now that no real `*` is left to confuse it with.
 // Reordering any of these silently breaks single- or double-star patterns.
 //
-// PLACEHOLDER must be the ESCAPE SEQUENCE '\u0000', never a literal NUL
-// byte typed into this file: a real 0x00 makes git's binary-detection heuristic
-// treat the whole file as binary, which breaks `git diff`/`git grep`/3-way
-// merge on it (this exact defect shipped once before, in detect-stack.mjs,
-// pre-extraction — see scripts/lib/glob.test.mjs's binary-file guard).
-const PLACEHOLDER = '\u0000';
+/**
+ * EVERY character this module uses as an internal sentinel, in one list,
+ * from which both the transformation and the refusal are derived. Adding a
+ * sentinel here automatically extends `isRejectableGlob`; introducing one
+ * anywhere else is the mistake this list exists to make impossible.
+ *
+ * Coordinator ruling (post-review, concern 1, round 2): the refusal used to
+ * be tied to `PLACEHOLDER` by a COMMENT — "if you change this, remember to
+ * change that". A comment telling the next person to remember something is
+ * a coupling that fails silently the first time someone is in a hurry, and
+ * this plan has already ruled three times that the SHAPE gets removed
+ * rather than the hazard documented. So: one list, one derivation, and a
+ * property test (glob.test.mjs's INVARIANT) that fails if a sentinel is
+ * ever introduced without being added here.
+ *
+ * Each entry must be written as an ESCAPE SEQUENCE ('\u0000'), never as the
+ * literal byte: a real 0x00 makes git treat the whole file as binary, which
+ * breaks `git diff`/`git grep`/3-way merge on it. That defect has shipped
+ * twice in this project (detect-stack.mjs pre-extraction, then glob.mjs
+ * itself) and was caught twice more by the guard below while this module
+ * was being fixed.
+ *
+ * Why a sentinel needs a refusal at all: step 4 above replaces EVERY
+ * occurrence of the placeholder, not only the ones step 2 put there, so a
+ * pattern that ALREADY contains one has it turned into `.*`. Measured, with
+ * the NUL built at runtime so this file stays text:
+ * `globToRegExpSource('a' + String.fromCharCode(0) + 'b')` was `"a.*b"` —
+ * repository-controlled data (a `package.json` `workspaces` entry, via
+ * JSON's own escape) producing a glob that matches everything.
+ */
+export const RESERVED_SENTINELS = Object.freeze(['\u0000']);
+
+const [PLACEHOLDER] = RESERVED_SENTINELS;
 
 /**
  * A regex source that can never match anything, not even the empty string.
@@ -38,13 +65,12 @@ const NEVER_MATCHES = '(?!)';
 const ESCAPE_RE = /[.+?^${}()|[\]\\]/g;
 
 /**
- * True for a pattern this module REFUSES to transform.
+ * True for a pattern this module REFUSES to transform: a non-string, or a
+ * string containing any `RESERVED_SENTINELS` entry.
  *
- * `PLACEHOLDER` is a NUL, and step 4 above replaces EVERY occurrence of it,
- * not only the ones step 2 put there — so a pattern that already contains a
- * literal NUL has that NUL turned into `.*`. Measured, with the NUL built at
- * runtime so this file stays text:
- * `globToRegExpSource('a' + String.fromCharCode(0) + 'b')` was `"a.*b"`.
+ * DERIVED from that list, never a hand-maintained copy of it — see the
+ * list's own comment for why a comment was not enough. A sentinel added
+ * there is refused here with no further edit.
  *
  * It is reachable from REPOSITORY DATA, which is what makes it a defect
  * rather than a curiosity: workspace patterns come from a `package.json`'s
@@ -68,7 +94,8 @@ const ESCAPE_RE = /[.+?^${}()|[\]\\]/g;
  * the glob" step; widening it would start rejecting patterns that work.
  */
 export function isRejectableGlob(pattern) {
-  return typeof pattern !== 'string' || pattern.includes(PLACEHOLDER);
+  if (typeof pattern !== 'string') return true;
+  return RESERVED_SENTINELS.some(sentinel => pattern.includes(sentinel));
 }
 
 /**
