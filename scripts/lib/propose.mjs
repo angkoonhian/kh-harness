@@ -8,6 +8,12 @@ const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
 
 const BRIEF_PATH = '.claude/scripts/session-brief.mjs';
 const LINT_TOUCHED_PATH = '.claude/scripts/lint-touched.mjs';
+const VERIFY_TOUCHED_PATH = '.claude/scripts/verify-touched.mjs';
+// Shared by lint-touched.mjs (PostToolUse) and verify-touched.mjs (Stop) —
+// see harness-redact.mjs's own comment for why a shared chokepoint exists
+// at all. Both scripts import it via a relative `./harness-redact.mjs`, so
+// it must always land in the SAME directory as each of them.
+const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
 
 /**
  * Evidence-based protected-path candidates for conventions that are NOT
@@ -105,6 +111,27 @@ function protectedPathProposal({ stack, files }) {
 }
 
 /**
+ * The shared redaction module both process-output hooks (lint-touched.mjs's
+ * PostToolUse sensor and verify-touched.mjs's Stop gate) import — see
+ * harness-redact.mjs's own comment for why a shared chokepoint exists at
+ * all. Returned by EITHER sensorProposal or stopgateProposal's own
+ * generator, independently — not only by whichever happens to run first —
+ * so that satisfying just one of the two checks (the other already
+ * `declared`, or installed by an earlier run) still brings this file along.
+ * `buildProposals`' own dedupe (see its comment on `alreadyWritten`) is what
+ * keeps it from being proposed twice when BOTH generators fire in the same
+ * batch, and from being re-proposed once a prior run already recorded it in
+ * the manifest.
+ */
+function redactAssetProposal(kitVersion, step) {
+  return {
+    kind: 'file', path: REDACT_PATH, step,
+    contents: versionStamp(kitVersion, step, '//') + '\n' + read('scripts/harness-redact.mjs'),
+    reason: 'shared redaction module required by the PostToolUse/Stop hooks',
+  };
+}
+
+/**
  * The per-edit sensor: a PostToolUse hook that lints the file an Edit/Write
  * tool just touched. Decidable only when at least one package in the
  * repository actually declares a `lint` script — `p.scripts` is a sorted
@@ -127,11 +154,51 @@ function sensorProposal({ kitVersion, stack }) {
       `#!/usr/bin/env node\n${versionStamp(kitVersion, 9, '//')}\n`,
     ),
     reason: 'no PostToolUse hook registered',
-  }, {
+  }, redactAssetProposal(kitVersion, 9), {
     kind: 'settings-hook', event: 'PostToolUse', step: 9,
     matcher: 'Write|Edit',
     entry: { type: 'command', command: `node ${LINT_TOUCHED_PATH}` },
     reason: 'no PostToolUse hook registered in .claude/settings.json',
+  }];
+}
+
+/**
+ * The Stop gate: runs the repository's own verification command (its
+ * `typecheck` script, falling back to `test`) when a turn ends, and blocks
+ * once per distinct failure — see verify-touched.mjs's own header comment
+ * for the full rationale. Decidable only when at least one package
+ * declares a `typecheck` or `test` script — the same evidence-gated shape
+ * as `sensorProposal`: a gate with nothing to run is noise.
+ *
+ * No `matcher`: a Stop event has no "which tool ran" to scope against, and
+ * the whole point is to run on every Stop, not a subset of them.
+ *
+ * The cost this accepts is stated plainly in `reason`, not hidden in the
+ * installed script: falling back to `test` means a full test-suite run, up
+ * to the hook's own 120s bound, at the end of every turn. That is a real
+ * tradeoff the user is accepting, not a side effect to discover later —
+ * and it never names the command ITSELF (`scripts.test`'s value can carry a
+ * credential, same as `scripts.lint`'s has, twice, in this project's own
+ * history), only what kind of cost it is.
+ */
+function stopgateProposal({ kitVersion, stack }) {
+  const hasTypecheck = stack.packages.some(p => p.scripts?.includes('typecheck'));
+  const hasTest = stack.packages.some(p => p.scripts?.includes('test'));
+  if (!hasTypecheck && !hasTest) return [];
+  const reason = hasTypecheck
+    ? 'no Stop hook registered — runs the repository\'s typecheck script, bounded at 120s, at the end of every turn'
+    : 'no Stop hook registered — no typecheck script was found, so this falls back to the full test script, bounded at 120s, at the end of every turn';
+  return [{
+    kind: 'file', path: VERIFY_TOUCHED_PATH, step: 10,
+    contents: read('scripts/verify-touched.mjs').replace(
+      '#!/usr/bin/env node\n',
+      `#!/usr/bin/env node\n${versionStamp(kitVersion, 10, '//')}\n`,
+    ),
+    reason: 'no Stop hook registered',
+  }, redactAssetProposal(kitVersion, 10), {
+    kind: 'settings-hook', event: 'Stop', step: 10,
+    entry: { type: 'command', command: `node ${VERIFY_TOUCHED_PATH}` },
+    reason,
   }];
 }
 
@@ -159,6 +226,7 @@ const GENERATORS = {
   }],
   'P2.protected': protectedPathProposal,
   'P2.sensor': sensorProposal,
+  'P2.stopgate': stopgateProposal,
 };
 
 /**
@@ -177,6 +245,16 @@ const GENERATORS = {
  * explicitly, including tests (see `args()` in propose.test.mjs); forgetting
  * it is now a loud `TypeError` inside `hasEvidence`, not a quiet empty
  * result that looks like "nothing protected here."
+ *
+ * `alreadyWritten` starts from the manifest (files a PRIOR run already
+ * installed) but is also updated as THIS run's own proposals accumulate —
+ * not only seeded once. Without that, `P2.sensor` and `P2.stopgate` (which
+ * each independently propose the shared `harness-redact.mjs`, see
+ * `redactAssetProposal`) would both add it to `out` whenever both checks
+ * are absent in the same batch, writing the identical file twice. Checking
+ * the growing set, not only the manifest snapshot, is what keeps a shared
+ * asset proposed exactly once per run regardless of how many generators
+ * want it.
  */
 export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files, generators = {} }) {
   const registry = { ...GENERATORS, ...generators };
@@ -190,9 +268,10 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
     for (const p of gen({ kitVersion, harness, root, stack, checks, files })) {
       if (p.kind === 'file' && alreadyWritten.has(p.path)) continue;
       out.push({ ...p, checkId: c.id });
+      if (p.kind === 'file') alreadyWritten.add(p.path);
     }
   }
   return out;
 }
 
-export { BRIEF_PATH, LINT_TOUCHED_PATH };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH };

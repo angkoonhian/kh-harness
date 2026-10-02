@@ -98,6 +98,37 @@ test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall'
   assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)'] });
 });
 
+test('STOPGATE: apply installs verify-touched.mjs, the shared redaction asset, and a matcher-less Stop hook; uninstall removes all three', () => {
+  // fixture() declares a `test` script and no existing Stop hook, so
+  // P2.stopgate is absent and decidable — and, unlike the LOAD-BEARING test
+  // above, this fixture has no `lint` script, so P2.sensor never fires.
+  // That isolates this test to P2.stopgate's OWN responsibility for
+  // installing (and, on uninstall, removing) the shared redaction asset —
+  // see task-4 ruling 3: a shared module that apply installs but uninstall
+  // leaves behind is a defect in its own right, not merely untested.
+  const d = fixture();
+
+  const before = JSON.parse(run(DETECT, d, '--json'));
+  assert.equal(before.checks.find(c => c.id === 'P2.stopgate').state, 'absent');
+
+  run(APPLY, d, '--yes');
+  assert.ok(existsSync(join(d, '.claude/scripts/verify-touched.mjs')), 'the Stop gate script is installed');
+  assert.ok(existsSync(join(d, '.claude/scripts/harness-redact.mjs')), 'the shared redaction asset is installed');
+  const stopHooks = settings(d).hooks.Stop;
+  assert.equal(stopHooks.length, 1);
+  assert.equal(stopHooks[0].matcher, undefined, 'the Stop entry takes no matcher');
+  assert.equal(stopHooks[0].hooks[0].command, 'node .claude/scripts/verify-touched.mjs');
+
+  const after = JSON.parse(run(DETECT, d, '--json'));
+  assert.equal(after.checks.find(c => c.id === 'P2.stopgate').state, 'declared');
+
+  run(UNINSTALL, d, '--yes');
+  assert.equal(existsSync(join(d, '.claude/scripts/verify-touched.mjs')), false, 'the Stop gate script is removed');
+  assert.equal(existsSync(join(d, '.claude/scripts/harness-redact.mjs')), false,
+    'the shared redaction asset is removed too, not left behind — the install/uninstall asymmetry this ruling exists to prevent');
+  assert.equal(settings(d).hooks, undefined, 'the Stop hook is reverted');
+});
+
 test('C2: a secret anywhere in settings.json reaches no part of a dry run\'s output', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
@@ -129,7 +160,14 @@ test('C2: a secret anywhere in settings.json reaches no part of a dry run\'s out
 
 test('C3: a manifest that cannot be written exits 2 with a readable message, never a stack trace', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
-  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  // No `test`/`typecheck` script here (deliberately): Task 4's P2.stopgate
+  // generator would otherwise find evidence for a Stop-gate proposal and,
+  // sorting before P4.handoff by step number (10 < 16), hit the
+  // `.claude`-is-a-file write failure FIRST — before HANDOFF.md is ever
+  // attempted — which is exactly the ordering this fixture must NOT have
+  // (see the lockfile comment immediately below, which already documents
+  // the same hazard for P2.protected).
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: {} }));
   // No lockfile here (deliberately, unlike the other fixtures in this file):
   // Task 2's P2.protected check would find evidence for a deny-rule
   // proposal and, sorting before P4.handoff by step number, hit the
@@ -176,7 +214,12 @@ test('C3b: with a lockfile present (the common real case), the settings-deny wri
   // is real but now sits in the less common ordering; this test restores
   // coverage of the common ordering without reverting C3's fixture.
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
-  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  // No `test`/`typecheck` script (deliberately, same reason as C3 above):
+  // Task 4's P2.stopgate sorts BEFORE P2.protected (step 10 < 11), and this
+  // test is specifically about P2.protected's settings-deny write being the
+  // first failure — a Stop-gate proposal here would shadow it by failing
+  // first instead.
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: {} }));
   writeFileSync(join(d, 'package-lock.json'), '{}');
   writeFileSync(join(d, 'tsconfig.json'), '{}');
   writeFileSync(join(d, '.claude'), 'a plain file sitting where a directory needs to go\n');

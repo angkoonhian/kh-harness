@@ -63,11 +63,12 @@ const lintStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.j
 const noLintStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['test'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
 const sensorCheck = () => check({ id: 'P2.sensor', step: 9, proposal: 'install scripts/lint-touched.mjs and register a PostToolUse hook' });
 
-test('P2.sensor proposes the script and a PostToolUse settings hook when a package declares a lint script', () => {
+test('P2.sensor proposes the script, the shared redaction asset, and a PostToolUse settings hook when a package declares a lint script', () => {
   const ps = buildProposals(args([sensorCheck()], { stack: lintStack }));
   const kinds = ps.map(p => p.kind).sort();
-  assert.deepEqual(kinds, ['file', 'settings-hook']);
-  assert.equal(ps.find(p => p.kind === 'file').path, '.claude/scripts/lint-touched.mjs');
+  assert.deepEqual(kinds, ['file', 'file', 'settings-hook']);
+  const files = ps.filter(p => p.kind === 'file').map(p => p.path).sort();
+  assert.deepEqual(files, ['.claude/scripts/harness-redact.mjs', '.claude/scripts/lint-touched.mjs']);
   const hook = ps.find(p => p.kind === 'settings-hook');
   assert.equal(hook.event, 'PostToolUse');
   assert.equal(hook.matcher, 'Write|Edit');
@@ -87,6 +88,71 @@ test('P2.sensor proposes nothing when stack.packages is empty (the default)', ()
 test('a declared P2.sensor check yields no proposals, even with a lint script present', () => {
   const ps = buildProposals(args([check({ id: 'P2.sensor', step: 9, state: 'declared', proposal: null })], { stack: lintStack }));
   assert.deepEqual(ps, []);
+});
+
+// --- P2.stopgate: the Stop gate, gated on a typecheck or test script ------
+
+const typecheckStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['typecheck'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+const testOnlyStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['test'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+const noVerifyStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+const stopgateCheck = () => check({ id: 'P2.stopgate', step: 10, proposal: 'install scripts/verify-touched.mjs and register a Stop hook' });
+
+test('P2.stopgate proposes the script, the shared redaction asset, and a matcher-less Stop settings hook when a typecheck script exists', () => {
+  const ps = buildProposals(args([stopgateCheck()], { stack: typecheckStack }));
+  const kinds = ps.map(p => p.kind).sort();
+  assert.deepEqual(kinds, ['file', 'file', 'settings-hook']);
+  const files = ps.filter(p => p.kind === 'file').map(p => p.path).sort();
+  assert.deepEqual(files, ['.claude/scripts/harness-redact.mjs', '.claude/scripts/verify-touched.mjs']);
+  const hook = ps.find(p => p.kind === 'settings-hook');
+  assert.equal(hook.event, 'Stop');
+  assert.equal(hook.matcher, undefined, 'the Stop entry takes no matcher');
+  assert.equal(hook.entry.command, 'node .claude/scripts/verify-touched.mjs');
+});
+
+test('P2.stopgate proposes the script when only a test script exists (typecheck absent)', () => {
+  const ps = buildProposals(args([stopgateCheck()], { stack: testOnlyStack }));
+  assert.ok(ps.some(p => p.kind === 'file' && p.path === '.claude/scripts/verify-touched.mjs'));
+});
+
+test('P2.stopgate\'s reason discloses the fallback-to-test cost plainly, without naming the command itself', () => {
+  const ps = buildProposals(args([stopgateCheck()], { stack: testOnlyStack }));
+  const hook = ps.find(p => p.kind === 'settings-hook');
+  assert.match(hook.reason, /test/i);
+  assert.match(hook.reason, /120s|every turn/i, 'the cost being accepted must be stated plainly');
+});
+
+test('P2.stopgate proposes nothing when neither a typecheck nor a test script exists', () => {
+  const ps = buildProposals(args([stopgateCheck()], { stack: noVerifyStack }));
+  assert.deepEqual(ps, []);
+});
+
+test('P2.stopgate proposes nothing when stack.packages is empty (the default)', () => {
+  const ps = buildProposals(args([stopgateCheck()]));
+  assert.deepEqual(ps, []);
+});
+
+test('a declared P2.stopgate check yields no proposals, even with a typecheck script present', () => {
+  const ps = buildProposals(args([check({ id: 'P2.stopgate', step: 10, state: 'declared', proposal: null })], { stack: typecheckStack }));
+  assert.deepEqual(ps, []);
+});
+
+test('the shared redaction asset is proposed only once when both P2.sensor and P2.stopgate are absent in the same run', () => {
+  const combinedStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'typecheck'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+  const ps = buildProposals(args([sensorCheck(), stopgateCheck()], { stack: combinedStack }));
+  const redact = ps.filter(p => p.kind === 'file' && p.path === '.claude/scripts/harness-redact.mjs');
+  assert.equal(redact.length, 1, 'the shared asset must not be proposed twice in a single batch');
+  // Sanity: both generators genuinely fired (otherwise "proposed once"
+  // would be true for the wrong reason — nobody but one generator ever
+  // asked for it).
+  assert.ok(ps.some(p => p.path === '.claude/scripts/lint-touched.mjs'));
+  assert.ok(ps.some(p => p.path === '.claude/scripts/verify-touched.mjs'));
+});
+
+test('the shared redaction asset is not re-proposed when a prior run already recorded it in the manifest', () => {
+  const manifest = { ...emptyManifest('0.2.0'), files: [{ path: '.claude/scripts/harness-redact.mjs', sha256: 'x', step: 9, writtenAt: new Date().toISOString() }] };
+  const ps = buildProposals({ ...args([stopgateCheck()], { stack: typecheckStack }), manifest });
+  assert.equal(ps.some(p => p.path === '.claude/scripts/harness-redact.mjs'), false);
+  assert.ok(ps.some(p => p.path === '.claude/scripts/verify-touched.mjs'), 'the hook script itself is still proposed');
 });
 
 test('a check with no registered generator is skipped without throwing', () => {

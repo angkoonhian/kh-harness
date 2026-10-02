@@ -19,6 +19,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve, isAbsolute, basename, delimiter, relative, sep } from 'node:path';
+import { dropCommandFragments, maskCredentials } from './harness-redact.mjs';
 
 // Overridable so a test can exercise the timeout path in milliseconds, not
 // minutes; defaults to the real 30s bound otherwise.
@@ -276,72 +277,14 @@ function hasChanged(before, after) {
 }
 
 /**
- * Layer 1 of ruling 2's redaction: fragment denylist. A shell echoes the
- * WHOLE failing command line on its own syntax error (sh/bash do this;
- * cmd.exe does not) — but a THIRD PARTY the command invokes can echo an
- * arbitrary FRAGMENT of it instead. Confirmed: `node -e` with an
- * unbalanced quote reports a SyntaxError whose message prints the
- * offending source text — everything after `-e "`, which is not the whole
- * `lintScript` or `fullCommand` string, with the appended path tacked
- * onto the end by the shell's own word-splitting. Whole-string matching
- * (`l.includes(lintScript)`) cannot see a fragment, so this also
- * tokenizes the command on whitespace and drops any surviving line that
- * contains one of its own tokens — long enough not to be noise (`< 8`
- * chars skipped), and never the appended path itself or its basename,
- * which legitimately belongs in a real diagnostic.
+ * Ruling 2's two-layer redaction (fragment denylist + credential masking)
+ * now lives in harness-redact.mjs, shared verbatim with verify-touched.mjs —
+ * see that file's own comment for what each layer catches and why a shared
+ * chokepoint exists at all. `dropCommandFragments` is called below with
+ * `[lintScript, fullCommand]` and an exemption set built from the appended
+ * path, exactly reproducing this file's previous (lintScript, fullCommand,
+ * appendedPath)-shaped call.
  */
-function commandTokens(command, exemptions) {
-  const seen = new Set();
-  const tokens = [];
-  for (const raw of command.split(/\s+/)) {
-    const t = raw.replace(/^['"]+|['"]+$/g, '');
-    if (t.length < 8 || exemptions.has(t) || seen.has(t)) continue;
-    seen.add(t);
-    tokens.push(t);
-  }
-  return tokens;
-}
-
-function dropCommandFragments(lines, lintScript, fullCommand, appendedPath) {
-  const exemptions = new Set([appendedPath, basename(appendedPath)]);
-  const tokens = [
-    ...new Set([...commandTokens(lintScript, exemptions), ...commandTokens(fullCommand, exemptions)]),
-  ];
-  return lines.filter(l => {
-    if (l.includes(lintScript) || l.includes(fullCommand)) return false; // the whole-string case, still checked
-    return !tokens.some(t => l.includes(t));
-  });
-}
-
-/**
- * Layer 2 of ruling 2's redaction: credential masking, independent of
- * layer 1. Layer 1 is a denylist against what is KNOWN to have come from
- * the command this hook itself built; this catches a credential-shaped
- * value arriving from ANYWHERE in the output, including the linted
- * file's own content — a vendor-prefixed secret (`sk-`, `ghp_`,
- * `glpat-`, `github_pat_`, `AKIA`, Slack's `xox[abprs]-`, a `Bearer`
- * header) or a generic `--token=`/`--auth-token=`/`--api-key=`/
- * `password=`/`api_key=`. Masks the VALUE and never drops the line — a
- * genuine diagnostic that happens to mention a credential should still
- * reach Claude, with the secret starred out, not disappear entirely.
- */
-const CREDENTIAL_RULES = [
-  [/\bsk-[A-Za-z0-9_-]{6,}/g, '***'],
-  [/\bglpat-[A-Za-z0-9_-]{6,}/g, '***'],
-  [/\bghp_[A-Za-z0-9]{6,}/g, '***'],
-  [/\bgithub_pat_[A-Za-z0-9_]{6,}/g, '***'],
-  [/\bAKIA[A-Za-z0-9]{12,}/g, '***'],
-  [/\bxox[abprs]-[A-Za-z0-9-]{6,}/g, '***'],
-  [/\bBearer\s+\S+/gi, 'Bearer ***'],
-  [/(--(?:token|auth-token|api-key)=)\S+/gi, '$1***'],
-  [/\b(password|api_key)=\S+/gi, '$1=***'],
-];
-
-function maskCredentials(line) {
-  let masked = line;
-  for (const [re, replacement] of CREDENTIAL_RULES) masked = masked.replace(re, replacement);
-  return masked;
-}
 
 /**
  * The single chokepoint every byte reported to Claude passes through —
@@ -472,7 +415,8 @@ async function main() {
   const base = basename(filePath);
   const combined = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   const attributed = extractAttributedBlocks(combined.split(/\r?\n/), filePath, base);
-  const survived = dropCommandFragments(attributed, lintScript, fullCommand, relToOwner);
+  const exemptions = new Set([relToOwner, basename(relToOwner)]);
+  const survived = dropCommandFragments(attributed, [lintScript, fullCommand], exemptions);
   return writeReport(survived.map(maskCredentials));
 }
 
