@@ -17,15 +17,43 @@ export function emptyManifest(kitVersion) {
   return { schema: 1, kitVersion, installedAt: new Date().toISOString(), files: [], settingsPatches: [] };
 }
 
-export function readManifest(root) {
+/**
+ * Distinguishes "no manifest file" (nothing installed yet — a common,
+ * entirely legitimate state) from "a manifest file exists but could not
+ * be read as our schema" (corrupt — hand-edited, truncated by a crash
+ * mid-write, merge-conflict markers left in, ...). The two are NOT the
+ * same fact: silently treating a corrupt manifest as "nothing installed"
+ * is how `apply` used to orphan every file it had previously written —
+ * the manifest is overwritten with a fresh empty one, and the record of
+ * what to `uninstall` is gone, permanently, with no notice to the user
+ * (coordinator finding, Major). `readManifest`, below, still collapses
+ * both to `null` for `detect.mjs` (which correctly fails safe either way
+ * — it never writes anything) and `uninstall.mjs` (which already refuses
+ * on either); `apply.mjs` uses this directly so it can refuse ONLY on the
+ * corrupt case, exactly like it already refuses on a dirty tree or a
+ * default branch, rather than silently starting over.
+ */
+export function readManifestResult(root) {
   const p = join(root, MANIFEST_PATH);
-  if (!existsSync(p)) return null;
+  if (!existsSync(p)) return { state: 'missing', manifest: null };
+  let raw;
   try {
-    const m = JSON.parse(readFileSync(p, 'utf8'));
-    if (m?.schema !== 1 || !Array.isArray(m.files)) return null;
+    raw = readFileSync(p, 'utf8');
+  } catch {
+    return { state: 'corrupt', manifest: null };
+  }
+  try {
+    const m = JSON.parse(raw);
+    if (m?.schema !== 1 || !Array.isArray(m.files)) return { state: 'corrupt', manifest: null };
     m.settingsPatches ??= [];
-    return m;
-  } catch { return null; }
+    return { state: 'ok', manifest: m };
+  } catch {
+    return { state: 'corrupt', manifest: null };
+  }
+}
+
+export function readManifest(root) {
+  return readManifestResult(root).manifest;
 }
 
 export function writeManifest(root, manifest) {

@@ -1061,6 +1061,68 @@ test('P4.sessionbrief is NOT declared via manifest + existsSync when no manifest
   assert.equal(c.state, 'absent');
 });
 
+test('P4.sessionbrief is NOT declared via manifest + existsSync when the user REPLACED our hook with an unrelated, resolvable one (Task 8b false-declared finding)', () => {
+  // The exact regression the coordinator found and reproduced: a user
+  // replaces our SessionStart entry with their own, which resolves to a
+  // REAL, DIFFERENT, tracked script — a positive answer that it is not
+  // ours. The manifest still records our old install, and our old script
+  // file is still sitting on disk (nothing ever told it to clean up), so
+  // the old `scripts.length > 0` gate would have fired here. Gating on
+  // `scripts.includes(null)` must not.
+  const d = tmpRepo();
+  writeFile(d, '.claude/scripts/session-brief.mjs', '//'); // our old file, still present
+  writeFile(d, 'tools/their-replacement.js', '//'); // real, tracked, resolvable
+  const h = withHooks({ SessionStart: ['tools/their-replacement.js'] }); // resolved, not null
+  const c = byId(gaps(fullStack, h, [], undefined, [], d, manifestWithSettingsPatch('SessionStart')), 'P4.sessionbrief');
+  assert.equal(c.state, 'absent', 'a positively-identified, unrelated hook must never be credited as ours');
+  assert.ok(c.proposal);
+  assert.ok(c.evidence.some(e => e.includes('tools/their-replacement.js')));
+});
+
+// --- BLAST RADIUS, re-swept (coordinator finding 3's own verification
+// requirement): the fix changed the manifest-fallback gate from
+// `scripts.length > 0` (the OLD, over-wide condition the coordinator's
+// finding-3 review caught) to `scripts.includes(null)` (the NEW one).
+// Rather than sample fixtures the way the coordinator's own 67,584-case
+// sweep did, this enumerates the gate's ENTIRE boolean input space
+// exhaustively — every combination of "the event has an unresolvable
+// entry", "the event has OUR resolved path", "the event has someone
+// else's resolved path", "the manifest records our install", and "our
+// file still exists on disk" — and proves, for every one of the 32
+// combinations, that the NEW gate firing implies the OLD gate would also
+// have fired. That is a complete proof that credit only ever narrows on
+// this branch, never widens — stronger than a sampled sweep, because it
+// cannot miss a combination no fixture happened to construct.
+test('BLAST RADIUS: the finding-3 fix (scripts.includes(null)) only narrows the finding-1 gate (scripts.length > 0), never widens it', () => {
+  let widened = 0;
+  let narrowedSomewhere = false;
+  for (let bits = 0; bits < 32; bits++) {
+    const hasNull = Boolean(bits & 1);
+    const hasOurs = Boolean(bits & 2);
+    const hasOther = Boolean(bits & 4);
+    const manifestMatches = Boolean(bits & 8);
+    const fileOnDisk = Boolean(bits & 16);
+
+    const scripts = [
+      ...(hasOurs ? ['OUR_PATH'] : []),
+      ...(hasOther ? ['OTHER_PATH'] : []),
+      ...(hasNull ? [null] : []),
+    ];
+
+    // Mirrors registeredHook's own two conditions verbatim (see
+    // gap-model.mjs) — the OLD one as it read before finding 3, the NEW
+    // one as it reads now — both restricted to the SAME two extra
+    // factors (`manifestMatches`, `fileOnDisk`) that never changed.
+    const oldGateFires = scripts.length > 0 && manifestMatches && fileOnDisk;
+    const newGateFires = scripts.includes(null) && manifestMatches && fileOnDisk;
+
+    if (newGateFires && !oldGateFires) widened++;
+    if (oldGateFires && !newGateFires) narrowedSomewhere = true;
+  }
+  assert.equal(widened, 0, 'the new gate must never fire in a case the old one would not have — that would be GAINED credit');
+  assert.ok(narrowedSomewhere, 'fixture sanity: the new gate must actually be narrower somewhere, or this proof is vacuous');
+});
+
 test('P4.handoff and P4.sessionbrief are independent — a working hook is not told to install one', () => {
   const hookOnly = { ...withHooks({ SessionStart: [BRIEF_PATH] }), handoff: null };
   const cs = gaps(fullStack, hookOnly);

@@ -14,7 +14,7 @@ import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
-import { readManifest, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
+import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, renderDiff, SETTINGS_PATH } from './lib/apply-lib.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -77,7 +77,26 @@ const profile = selectProfile(stack);
 // confirm OUR OWN hook is present via the install record plus a direct
 // file check when a gitignored `.claude/` makes it invisible to the file
 // scan (see registeredHook's own comment in gap-model.mjs).
-const manifest = readManifest(root) ?? emptyManifest(KIT_VERSION);
+//
+// Coordinator finding (Major): a manifest file that EXISTS but cannot be
+// read as our schema must refuse the run, not be silently treated as "no
+// manifest" — acting on that assumption writes a fresh EMPTY manifest at
+// the end of this run (see writeManifest below), permanently losing the
+// record of every file a prior install wrote. Those files become
+// invisible to `uninstall` forever, with no notice. Same contract as the
+// default-branch and dirty-tree refusals above: exit 3, name the file,
+// no automatic repair.
+const manifestResult = readManifestResult(root);
+if (manifestResult.state === 'corrupt') {
+  process.stderr.write(
+    `harness-kit: ${join(root, MANIFEST_PATH)} exists but could not be read as a valid harness-kit manifest. ` +
+    `Continuing would overwrite it with a fresh, empty one and permanently lose the record of what this tool ` +
+    `previously installed — refusing instead. Restore the file from git history (or from a backup) and re-run; ` +
+    `there is no automatic repair.\n`,
+  );
+  process.exit(3);
+}
+const manifest = manifestResult.manifest ?? emptyManifest(KIT_VERSION);
 const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest });
 
 const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });

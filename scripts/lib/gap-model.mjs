@@ -234,7 +234,22 @@ function registeredHook(harness, event, ourPath, proposal, { manifest, root } = 
   // already surfaced is safe because the user chose to make it visible;
   // naming anything `existsSync` alone would admit risks naming a path
   // the user deliberately kept out of git.
-  if (scripts.length > 0 && root && manifest?.settingsPatches?.some(p => p.event === event) && existsSync(join(root, ourPath))) {
+  //
+  // Coordinator finding (Major, this fix's own false `declared`): this
+  // used to gate on `scripts.length > 0` — the event being OCCUPIED by
+  // ANYTHING — not on whether the occupant could plausibly be ours. If a
+  // user replaces our hook entry with an unrelated one that DOES resolve
+  // (a real, different, tracked script), `scripts` is `['their/script']`
+  // — a positive, certain answer that it is NOT ours — yet the manifest
+  // and our old script file (never cleaned up, because nothing told it
+  // to) would still make this branch fire. Gating on `scripts.includes(null)`
+  // restricts this to the one case it exists for: the event has something
+  // registered that COULD be ours, but the scan list cannot say either way
+  // because it is unresolvable (gitignored) — never a registration we can
+  // already positively identify as someone else's. This is the Task 8b
+  // ruling itself ("ours", not "occupied"), applied to the branch THIS
+  // fix added.
+  if (scripts.includes(null) && root && manifest?.settingsPatches?.some(p => p.event === event) && existsSync(join(root, ourPath))) {
     return { state: 'declared', evidence: [`${event} hook: ${ourPath} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] };
   }
   if (scripts.length === 0) return { state: 'absent', proposal, evidence: [] };

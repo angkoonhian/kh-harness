@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { sha256, emptyManifest, readManifest, writeManifest, classify } from './manifest.mjs';
+import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify } from './manifest.mjs';
 
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-man-')); }
 function write(d, rel, content) {
@@ -20,6 +20,57 @@ test('sha256 is stable and distinguishes content', () => {
 
 test('readManifest returns null when absent', () => {
   assert.equal(readManifest(repo()), null);
+});
+
+// --- readManifestResult: distinguishes "missing" from "corrupt" (Task 8b
+// Major finding) — readManifest itself still collapses both to null, for
+// detect.mjs (fails safe either way) and uninstall.mjs (already refuses on
+// either); apply.mjs needs the distinction to refuse ONLY on the corrupt
+// case, rather than silently starting over with an empty manifest.
+
+test('readManifestResult: missing file', () => {
+  assert.deepEqual(readManifestResult(repo()), { state: 'missing', manifest: null });
+});
+
+test('readManifestResult: a valid manifest reads back ok', () => {
+  const d = repo();
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: 'HANDOFF.md', sha256: sha256('x'), step: 16, writtenAt: '2026-09-29T00:00:00Z' });
+  writeManifest(d, m);
+  const r = readManifestResult(d);
+  assert.equal(r.state, 'ok');
+  assert.equal(r.manifest.files.length, 1);
+});
+
+test('readManifestResult: unparseable JSON is corrupt, not missing', () => {
+  const d = repo();
+  write(d, '.claude/harness-kit.manifest.json', '{ not json');
+  assert.deepEqual(readManifestResult(d), { state: 'corrupt', manifest: null });
+});
+
+test('readManifestResult: valid JSON but the wrong schema (e.g. an array, or missing `files`) is corrupt', () => {
+  const d = repo();
+  write(d, '.claude/harness-kit.manifest.json', JSON.stringify({ schema: 1 })); // no `files` array
+  assert.deepEqual(readManifestResult(d), { state: 'corrupt', manifest: null });
+
+  const d2 = repo();
+  write(d2, '.claude/harness-kit.manifest.json', JSON.stringify([1, 2, 3]));
+  assert.deepEqual(readManifestResult(d2), { state: 'corrupt', manifest: null });
+});
+
+test('readManifest and readManifestResult agree on every case', () => {
+  // readManifest is defined IN TERMS OF readManifestResult now — pinned so
+  // a future edit cannot let the two drift back apart silently.
+  const missing = repo();
+  assert.equal(readManifest(missing), readManifestResult(missing).manifest);
+
+  const corrupt = repo();
+  write(corrupt, '.claude/harness-kit.manifest.json', '{ not json');
+  assert.equal(readManifest(corrupt), readManifestResult(corrupt).manifest);
+
+  const ok = repo();
+  writeManifest(ok, emptyManifest('0.1.0'));
+  assert.deepEqual(readManifest(ok), readManifestResult(ok).manifest);
 });
 
 test('a written manifest round-trips', () => {
