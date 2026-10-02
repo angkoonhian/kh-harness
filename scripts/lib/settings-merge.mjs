@@ -23,12 +23,22 @@ function canon(entry) {
  * ('Write|Edit') explicitly. Passing it changes `matcherEntry` and
  * therefore its hash — by design, since a matcher-bearing entry and a
  * matcher-less one for the same command are different objects on disk.
+ *
+ * Exported so `apply-lib.mjs`'s settings-hook preview can build the exact
+ * same object `addHookEntry` is about to push, rather than a second,
+ * independent copy of this ternary — a preview that silently drifted from
+ * what apply actually writes is exactly the shape this is meant to rule
+ * out structurally, not just by comment.
  */
+export function buildMatcherEntry(entry, matcher) {
+  return matcher === undefined ? { hooks: [entry] } : { matcher, hooks: [entry] };
+}
+
 export function addHookEntry(settings, event, entry, matcher) {
   const next = clone(settings);
   next.hooks ??= {};
   next.hooks[event] ??= [];
-  const matcherEntry = matcher === undefined ? { hooks: [entry] } : { matcher, hooks: [entry] };
+  const matcherEntry = buildMatcherEntry(entry, matcher);
   next.hooks[event].push(matcherEntry);
   return {
     settings: next,

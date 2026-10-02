@@ -14,7 +14,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { classify, emptyManifest, sha256 } from './manifest.mjs';
-import { addDenyRules, addHookEntry, hasEquivalentHook } from './settings-merge.mjs';
+import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
 
 const SETTINGS_PATH = '.claude/settings.json';
 const CLAUDE_REDIRECT_PATH = 'docs/harness/CLAUDE.proposed.md';
@@ -259,12 +259,11 @@ function renderSettingsHookDiff(root, proposal) {
     ? result.settings.hooks[proposal.event].length
     : 0;
 
-  // Exactly the element addHookEntry will push — see its `matcherEntry`.
-  // `matcher` is optional (SessionStart never carries one; PostToolUse's
-  // per-edit sensor does, so it would otherwise fire on every tool call).
-  const matcherEntry = proposal.matcher === undefined
-    ? { hooks: [proposal.entry] }
-    : { matcher: proposal.matcher, hooks: [proposal.entry] };
+  // The EXACT element addHookEntry will push — built by the SAME function
+  // (buildMatcherEntry), not a second independently-maintained copy of its
+  // ternary, so a preview/write mismatch is structurally impossible rather
+  // than merely commented against.
+  const matcherEntry = buildMatcherEntry(proposal.entry, proposal.matcher);
   const added = JSON.stringify(matcherEntry, null, 2);
 
   const lines = [`--- a/${SETTINGS_PATH}`, `+++ b/${SETTINGS_PATH}`, `@@ ${container} @@`];

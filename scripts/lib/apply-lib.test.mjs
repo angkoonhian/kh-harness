@@ -71,6 +71,31 @@ test('a settings-hook proposal carrying a matcher (the per-edit sensor, on PostT
   assert.deepEqual(s.hooks.PostToolUse[0], { matcher: 'Write|Edit', hooks: [p.entry] });
 });
 
+// Minor 10: renderDiff's preview and applyProposals's actual write build the
+// matcherEntry independently unless both go through buildMatcherEntry — a
+// preview that lies about what apply will write is worse than no preview.
+// This parses the `+` lines BACK out of the rendered diff and asserts they
+// deep-equal what actually landed on disk, so the two cannot silently drift.
+test('the settings-hook preview and the actual write agree on the matcherEntry shape', () => {
+  const d = repo();
+  const p = {
+    kind: 'settings-hook', event: 'PostToolUse', step: 9, matcher: 'Write|Edit',
+    entry: { type: 'command', command: 'node .claude/scripts/lint-touched.mjs' },
+    checkId: 'P2.sensor', reason: 'r',
+  };
+  const diff = renderDiff(d, p);
+  const addedJson = diff.split('\n')
+    .filter(l => l.startsWith('+') && !l.startsWith('+++')) // exclude the `+++ b/...` diff header
+    .map(l => l.slice(1))
+    .join('\n');
+  const previewed = JSON.parse(addedJson);
+
+  applyProposals({ root: d, proposals: [p], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const written = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks.PostToolUse[0];
+
+  assert.deepEqual(previewed, written, 'the preview must describe EXACTLY what apply writes');
+});
+
 test('applying twice is a no-op', () => {
   const d = repo();
   const r1 = applyProposals({ root: d, proposals: [fileProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
