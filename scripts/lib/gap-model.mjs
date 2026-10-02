@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { readIfPresent } from './scan.mjs';
 import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
@@ -206,12 +208,36 @@ function typecheckAdvice(pkg, files, root) {
  * `absent` + the proposal, with evidence naming what else is already there,
  * so adding a second entry to the same event is never a surprise.
  */
-function registeredHook(harness, event, ourPath, proposal) {
+function registeredHook(harness, event, ourPath, proposal, { manifest, root } = {}) {
   const scripts = harness.claudeDir.hookEvents?.[event] ?? [];
   if (scripts.includes(ourPath)) {
-    return { state: 'declared', evidence: scripts.map(s => (s ? `${event} hook: ${s}` : `${event} hook registered`)) };
+    // Coordinator finding (Minor): this used to list EVERY resolved script
+    // on the event, presenting a user's own, unrelated hook as part of
+    // OUR credit. List only ours — if theirs is worth mentioning, it is
+    // mentioned as theirs, in the `absent` branches below, never folded
+    // into what we are claiming as declared.
+    return { state: 'declared', evidence: [`${event} hook: ${ourPath}`] };
   }
-  if (scripts.length === 0) return { state: 'absent', proposal };
+  // Major (coordinator, post-8b review): `commandScript` (detect-harness.mjs)
+  // resolves a hook's script only against the SCAN list (listFiles —
+  // tracked, or fallback-walk-visible) — so a repository that gitignores
+  // `.claude/` makes OUR OWN hook's script permanently unresolvable there,
+  // even though it is genuinely registered and genuinely on disk. Without
+  // this branch, such a repository is told forever, on every run, that the
+  // harness it just installed is absent and not its own.
+  //
+  // The manifest — OUR OWN record of what we installed, already the
+  // authority `uninstall` trusts to decide what to remove — plus a direct
+  // `existsSync` (never the scan list) is the right way to answer "is OURS
+  // present" here. The scan list stays reserved for the USER's own
+  // content (the `theirs` evidence below): naming a path the scan list
+  // already surfaced is safe because the user chose to make it visible;
+  // naming anything `existsSync` alone would admit risks naming a path
+  // the user deliberately kept out of git.
+  if (scripts.length > 0 && root && manifest?.settingsPatches?.some(p => p.event === event) && existsSync(join(root, ourPath))) {
+    return { state: 'declared', evidence: [`${event} hook: ${ourPath} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] };
+  }
+  if (scripts.length === 0) return { state: 'absent', proposal, evidence: [] };
   return {
     state: 'absent', proposal,
     evidence: scripts.map(s => s
@@ -390,26 +416,28 @@ const CHECKS = [
     // worth scaffolding a rule file for, so the honest answer is to ASK,
     // not propose one.
     check: ({ harness, stack }) => {
+      // Coordinator ruling (Major, reverting an 8b over-correction): a
+      // brief attempt here narrowed `declared` to "every target THIS
+      // workspace's own layout calls for is present", on the theory that a
+      // user's rule file for a DIFFERENT package shouldn't satisfy this
+      // one — the same shape as the P2.sensor/P2.stopgate/P4.sessionbrief
+      // fix. It is not the same shape. For a hook, OUR artefact provides
+      // BEHAVIOUR the user's own hook may lack, so the two coexist and we
+      // propose alongside, disclosing what we found. For a path rule, OUR
+      // artefact is an EMPTY SCAFFOLD — its only value is being a place
+      // for the user to write conventions. A user who has already written
+      // their OWN rule files under `.claude/rules/` has fully satisfied
+      // that goal; proposing an empty stub beside real conventions would
+      // be noise, not disclosure. So — restored — ANY file under
+      // `.claude/rules/` credits this check, exactly as before 8b, with
+      // the files found named as evidence. This is not an exception to the
+      // 8b ruling; it is the ruling applied to an artefact whose value is
+      // its CONTENT rather than its presence.
+      if (harness.claudeDir.rules.length) {
+        return { state: 'declared', evidence: harness.claudeDir.rules };
+      }
       const targets = pathRuleTargets(stack);
       if (targets.length) {
-        // Task 8b: this used to credit `declared` from
-        // `harness.claudeDir.rules.length` alone — ANY file under
-        // `.claude/rules/`, regardless of whose layout it was scaffolded
-        // for. `.claude/rules/` is a directory, not a single purpose-built
-        // path like HANDOFF.md: a user's own rule file for an unrelated
-        // package satisfied this check for a DIFFERENT workspace member
-        // that had none at all. `declared` now means every target THIS
-        // workspace's own layout calls for (`pathRuleTargets`, the same
-        // derivation propose.mjs's generator uses) is actually present.
-        const ours = targets.map(t => t.path);
-        const present = new Set(harness.claudeDir.rules);
-        if (ours.every(p => present.has(p))) {
-          return { state: 'declared', evidence: ours };
-        }
-        const theirs = harness.claudeDir.rules.filter(p => !ours.includes(p));
-        const evidence = theirs.length
-          ? [`existing .claude/rules/ file(s) that do not match this workspace's own layout, so are not credited here: ${theirs.join(', ')}`]
-          : [];
         // Coordinator finding (round 3): "ship it, but say so" — the
         // reviewer's verdict was that these four near-identical stubs
         // still earn their place (right directory, the one key actually
@@ -419,7 +447,7 @@ const CHECKS = [
         // hold real conventions. Say plainly, in the proposal text itself
         // (which renderSummary prints verbatim after the `→`), that they
         // do not yet.
-        return { state: 'absent', evidence, proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout — each file is generated EMPTY; conventions are added by hand afterward' };
+        return { state: 'absent', proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout — each file is generated EMPTY; conventions are added by hand afterward' };
       }
       // Coordinator finding (round 3, Minor): this evidence/question used
       // to say "this is a single-package repository" — true for every
@@ -512,14 +540,19 @@ const CHECKS = [
     // P2.protected below, where the subject itself can be genuinely
     // absent), so the honest answer when no package declares `lint` is to
     // ASK, not propose.
-    check: ({ harness, stack }) => {
+    check: ({ harness, stack, manifest, root }) => {
       const hook = registeredHook(harness, 'PostToolUse', LINT_TOUCHED_PATH,
-        'install scripts/lint-touched.mjs and register a PostToolUse hook');
+        'install scripts/lint-touched.mjs and register a PostToolUse hook', { manifest, root });
       if (hook.state === 'declared') return hook;
       if (hasLintScript(stack)) return hook;
+      // Coordinator finding (Minor): occupant evidence (what registeredHook
+      // found registered on this event that isn't ours) used to be dropped
+      // here — the one place a confused user needs it most, since the
+      // question below gives no other hint that something is ALREADY
+      // registered on PostToolUse.
       return {
         state: 'absent', decidable: false,
-        evidence: ['no package declares a lint script'],
+        evidence: [...(hook.evidence ?? []), 'no package declares a lint script'],
         question: 'A sensor hook applies here, but no package declares a lint script — what command lints a single file in this repository?',
       };
     },
@@ -532,14 +565,16 @@ const CHECKS = [
     // Same shape as P2.sensor immediately above, for the Stop gate:
     // `rootVerifyScript` (stopgate-evidence.mjs) is the SAME root-only
     // typecheck/test derivation propose.mjs's stopgateProposal uses.
-    check: ({ harness, stack }) => {
+    check: ({ harness, stack, manifest, root }) => {
       const hook = registeredHook(harness, 'Stop', VERIFY_TOUCHED_PATH,
-        'install scripts/verify-touched.mjs and register a Stop hook');
+        'install scripts/verify-touched.mjs and register a Stop hook', { manifest, root });
       if (hook.state === 'declared') return hook;
       if (rootVerifyScript(stack)) return hook;
+      // Same Minor as P2.sensor immediately above: occupant evidence must
+      // not be dropped just because this also needs to ask a question.
       return {
         state: 'absent', decidable: false,
-        evidence: ['the root package declares neither a typecheck nor a test script'],
+        evidence: [...(hook.evidence ?? []), 'the root package declares neither a typecheck nor a test script'],
         question: 'A stop gate applies here, but the root package declares neither a typecheck nor a test script — what command verifies this repository?',
       };
     },
@@ -607,6 +642,15 @@ const CHECKS = [
       const theirs = denyList.filter(rule => rule !== null && !ours.includes(rule));
       const redactedCount = denyList.filter(rule => rule === null).length;
       const evidence = [];
+      // Coordinator finding (Minor): silence here let a top-up (most of
+      // our rules already present, one missing) look identical to a
+      // fresh install — a user who has already added two of three rules
+      // this repository needs gets no signal that the proposal below is
+      // small, not the full set.
+      const alreadyPresent = ours.filter(rule => denyList.includes(rule));
+      if (alreadyPresent.length) {
+        evidence.push(`${alreadyPresent.length} of ${ours.length} deny rule(s) this repository needs ${alreadyPresent.length === 1 ? 'is' : 'are'} already present: ${alreadyPresent.join(', ')}`);
+      }
       if (theirs.length) evidence.push(`existing deny rule(s) that do not match a protected path this repository has evidence for: ${theirs.join(', ')}`);
       if (redactedCount) evidence.push(`plus ${redactedCount} existing deny rule(s) not shown here (not a path-taking permission)`);
       return { state: 'absent', evidence, proposal: 'create .claude/settings.json with deny rules for protected paths' };
@@ -640,8 +684,8 @@ const CHECKS = [
   {
     id: 'P4.sessionbrief', step: 16, phase: 4,
     lookedFor: ['a SessionStart hook in .claude/settings.json'],
-    check: ({ harness }) => registeredHook(harness, 'SessionStart', BRIEF_PATH,
-      'install scripts/session-brief.mjs and register a SessionStart hook'),
+    check: ({ harness, manifest, root }) => registeredHook(harness, 'SessionStart', BRIEF_PATH,
+      'install scripts/session-brief.mjs and register a SessionStart hook', { manifest, root }),
   },
 ];
 
@@ -662,7 +706,7 @@ const CHECKS = [
 // only ever uses it to read a yarn.lock's own header, falling back to the
 // honest plain form when it is not given — never the dangerous direction of
 // a false positive, so no caller is forced to supply it.
-export function buildGaps({ stack, harness, exposures, profile, git, files, root, checkDefs = CHECKS }) {
+export function buildGaps({ stack, harness, exposures, profile, git, files, root, manifest = null, checkDefs = CHECKS }) {
   if (files === undefined) {
     throw new TypeError('buildGaps: `files` is required — P1.bootstrap and P2.protected both decide a capability\'s reported state from it, and a silently-defaulted `[]` used to flip P2.protected to `n/a` for a caller that merely forgot to pass it.');
   }
@@ -706,7 +750,7 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
         decidable: true, question: null, proposal: null, advice: [] };
     }
-    const r = def.check({ stack, harness, exposures, profile, git, files, root });
+    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest });
     // The second axis, enforced in the same place and for the same reason.
     // `absent` means two incompatible things: "I enumerated the complete space
     // and it is not there" (decidable — the bootstrap script, the deny rules,

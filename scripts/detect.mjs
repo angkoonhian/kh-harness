@@ -11,6 +11,7 @@ import { buildGaps } from './lib/gap-model.mjs';
 import { buildReport, renderSummary } from './lib/report.mjs';
 import { verifyCommands } from './lib/verify.mjs';
 import { gitInfo } from './lib/git-info.mjs';
+import { readManifest } from './lib/manifest.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
@@ -43,7 +44,12 @@ const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
 const exposures = detectExposures(root, files, harness);
 const profile = selectProfile(stack);
-const checks = buildGaps({ stack, harness, exposures, profile, git, files, root });
+// Read-only here — detect never writes the manifest. Passed through so
+// gap-model.mjs can confirm OUR OWN hook is present via the install record
+// plus a direct file check when a gitignored `.claude/` makes it invisible
+// to the file scan (see registeredHook's own comment).
+const manifest = readManifest(root);
+const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest });
 
 const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested });
 

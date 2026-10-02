@@ -29,8 +29,8 @@ const richHarness = {
 };
 const fullStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'test', 'typecheck'] }] };
 
-function gaps(stack, harness, exposures = [], git = { branch: 'main', isRepo: true }, files = [], root) {
-  return buildGaps({ stack, harness, exposures, profile: selectProfile(stack), git, files, root });
+function gaps(stack, harness, exposures = [], git = { branch: 'main', isRepo: true }, files = [], root, manifest) {
+  return buildGaps({ stack, harness, exposures, profile: selectProfile(stack), git, files, root, manifest });
 }
 const byId = (cs, id) => cs.find(c => c.id === id);
 
@@ -740,28 +740,24 @@ test('P1.pathrules asks, and proposes nothing, for a single-package repository',
   assert.ok(c.question, 'the honest answer for a single package is a question, not silence');
 });
 
-// Task 8b: the test this replaces asserted `declared` from `bareStack`
-// (NOT a workspace at all) purely because `.claude/rules/` was non-empty —
-// "workspace or not" was the defect's own title: `.claude/rules/` is a
-// directory that can hold rule files for many unrelated packages, and a
-// user's own file for some OTHER project satisfied this check for a
-// workspace that does not even have a target yet. `declared` now means
-// every target THIS workspace's own layout calls for (`pathRuleTargets`)
-// is actually present.
+// Coordinator ruling: an 8b change here briefly narrowed `declared` to
+// "every target THIS workspace's own layout calls for is present",
+// replacing the test below with two others asserting that narrower
+// behaviour — the exact test a later sweep found missing, since the
+// behaviour it covered (38,016 of 67,584 swept `buildGaps` combinations)
+// is the LARGEST single movement the change made, and reverting it still
+// left the suite green with no test to say so. Restored verbatim, per the
+// ruling: for THIS check, OUR artefact is an empty scaffold whose only
+// value is being a place for the user to write conventions, so a user's
+// own rule files — for ANY package, not only this workspace's own targets
+// — fully satisfy the capability (see the check's own comment on why this
+// is not an exception to the 8b principle, but the principle applied to a
+// content-valued artefact instead of a behaviour-valued one).
 
-test('P1.pathrules is declared when .claude/rules/ holds OUR OWN file for every workspace member (Task 8b)', () => {
-  const ours = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, rules: ['.claude/rules/packages-api.md', '.claude/rules/packages-web.md'] } };
-  const c = byId(gaps(workspaceStack, ours), 'P1.pathrules');
+test('P1.pathrules is declared when .claude/rules/ already holds a file, workspace or not', () => {
+  const c = byId(gaps(bareStack, richHarness), 'P1.pathrules');
   assert.equal(c.state, 'declared');
-  assert.deepEqual(c.evidence, ['.claude/rules/packages-api.md', '.claude/rules/packages-web.md']);
-});
-
-test('P1.pathrules is NOT satisfied by an unrelated rule file for a package this workspace does not have (Task 8b)', () => {
-  const theirs = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, rules: ['.claude/rules/some-other-thing.md'] } };
-  const c = byId(gaps(workspaceStack, theirs), 'P1.pathrules');
-  assert.equal(c.state, 'absent');
-  assert.ok(c.proposal, 'their rule file says nothing about this workspace\'s own layout');
-  assert.ok(c.evidence.some(e => e.includes('some-other-thing.md')), `evidence must name what of theirs was found; got ${JSON.stringify(c.evidence)}`);
+  assert.deepEqual(c.evidence, richHarness.claudeDir.rules);
 });
 
 test('lookedFor names both the rules directory and the workspace layout for P1.pathrules', () => {
@@ -955,6 +951,114 @@ test('a registered hook whose command names no repository path is NOT assumed to
   assert.equal(c.state, 'absent');
   assert.ok(c.proposal);
   assert.deepEqual(c.evidence, ['Stop hook already registered, but not ours (its script could not be resolved)']);
+});
+
+// --- Coordinator review (post-8b), finding 4: declared evidence names
+// only OUR OWN hook, never a sibling's. ---
+
+test('registeredHook\'s declared evidence lists only OUR OWN hook, never a sibling\'s (Task 8b finding 4)', () => {
+  // Previously this mapped EVERY resolved script on the event into
+  // evidence, so a sibling the user registered alongside ours leaked into
+  // what we claim as OUR credit.
+  const h = withHooks({ PostToolUse: ['tools/unrelated-sibling.js', LINT_TOUCHED_PATH] });
+  const c = byId(gaps(fullStack, h), 'P2.sensor');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [`PostToolUse hook: ${LINT_TOUCHED_PATH}`],
+    'the sibling must not appear in what we are claiming as declared');
+});
+
+// --- Coordinator review (post-8b), finding 3: occupant evidence must
+// survive into the UNDECIDABLE branch too, not just the decidable
+// absent+proposal branch — "we found your hook and are proposing ours
+// anyway" is the whole point of that row. ---
+
+test('P2.sensor: occupant evidence survives into the undecidable "no lint script" branch (Task 8b finding 3)', () => {
+  const noLintStack = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] };
+  const h = withHooks({ PostToolUse: ['tools/unrelated.js'] });
+  const c = byId(gaps(noLintStack, h), 'P2.sensor');
+  assert.equal(c.decidable, false, 'fixture sanity: no lint script anywhere, so this must still be a question');
+  assert.ok(c.evidence.some(e => e.includes('tools/unrelated.js')),
+    `occupant evidence must not be dropped just because this also has to ask; got ${JSON.stringify(c.evidence)}`);
+  assert.ok(c.evidence.some(e => /no package declares a lint script/.test(e)));
+});
+
+test('P2.stopgate: occupant evidence survives into the undecidable "no typecheck/test script" branch (Task 8b finding 3)', () => {
+  const noVerifyStack = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] };
+  const h = withHooks({ Stop: ['tools/unrelated.js'] });
+  const c = byId(gaps(noVerifyStack, h), 'P2.stopgate');
+  assert.equal(c.decidable, false, 'fixture sanity: no typecheck/test script, so this must still be a question');
+  assert.ok(c.evidence.some(e => e.includes('tools/unrelated.js')),
+    `occupant evidence must not be dropped just because this also has to ask; got ${JSON.stringify(c.evidence)}`);
+  assert.ok(c.evidence.some(e => /declares neither a typecheck nor a test script/.test(e)));
+});
+
+// --- Coordinator review (post-8b), finding 5: P2.protected's absent
+// evidence must disclose a TOP-UP (some of ours already present) rather
+// than reading identical to a fresh install. ---
+
+test('P2.protected discloses when some of our rules are already present (a top-up, not a fresh install) (Task 8b finding 5)', () => {
+  const f = typescriptFullFixture(); // real evidence: package-lock.json, tracked dist/ -> ours = ['Edit(*-lock.json)', 'Edit(dist/**)']
+  const h = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, denyRules: 1, denyRuleList: ['Edit(*-lock.json)'] } };
+  const c = byId(buildGaps({ ...f, harness: h }), 'P2.protected');
+  assert.equal(c.state, 'absent');
+  assert.match(c.evidence.join(' '), /1 of 2 deny rule\(s\).*already present.*Edit\(\*-lock\.json\)/,
+    `the evidence must say this is a top-up, not silence; got ${JSON.stringify(c.evidence)}`);
+});
+
+test('P2.protected says nothing about a top-up when NONE of our rules are present yet (a genuinely fresh install)', () => {
+  const f = typescriptFullFixture();
+  const h = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, denyRules: 1, denyRuleList: ['Edit(secrets/**)'] } };
+  const c = byId(buildGaps({ ...f, harness: h }), 'P2.protected');
+  assert.equal(c.state, 'absent');
+  assert.doesNotMatch(c.evidence.join(' '), /already present/, 'no top-up to disclose when none of ours exists yet');
+});
+
+// --- Coordinator review (post-8b), finding 1 (Major): gitignored
+// `.claude/` must not make OUR OWN hook permanently unresolvable. Driven
+// through buildGaps directly (not only the CLI-level test in
+// lifecycle.test.mjs), with a real file on disk (existsSync) and a
+// hand-built manifest recording the patch — the two things `registeredHook`
+// now consults instead of the scan list.
+
+function manifestWithSettingsPatch(event) {
+  return {
+    schema: 1, kitVersion: '0.0.0', installedAt: new Date().toISOString(), files: [],
+    settingsPatches: [{ event, container: `/hooks/${event}`, entrySha256: '0'.repeat(64), step: 16, checkId: 'P4.sessionbrief', appliedAt: new Date().toISOString() }],
+  };
+}
+
+test('P4.sessionbrief is declared via the manifest + existsSync when .claude/ is gitignored (Task 8b finding 1)', () => {
+  const d = tmpRepo();
+  writeFile(d, '.claude/scripts/session-brief.mjs', '//');
+  // hookEvents.SessionStart is [null] here precisely because `files` does
+  // not include the gitignored script — the exact shape `commandScript`
+  // (detect-harness.mjs) produces for a repository that gitignores
+  // `.claude/`, reproduced directly rather than via a real git repo.
+  const h = withHooks({ SessionStart: [null] });
+  const c = byId(gaps(fullStack, h, [], undefined, [], d, manifestWithSettingsPatch('SessionStart')), 'P4.sessionbrief');
+  assert.equal(c.state, 'declared');
+  assert.match(c.evidence.join(' '), /not visible to the file scan/);
+});
+
+test('P4.sessionbrief is NOT declared via manifest + existsSync once the script is actually gone from disk', () => {
+  const d = tmpRepo(); // no script written this time
+  const h = withHooks({ SessionStart: [null] });
+  const c = byId(gaps(fullStack, h, [], undefined, [], d, manifestWithSettingsPatch('SessionStart')), 'P4.sessionbrief');
+  assert.equal(c.state, 'absent', 'the manifest alone is not enough — the file must still genuinely exist');
+});
+
+test('P4.sessionbrief is NOT declared via manifest + existsSync when no manifest is passed at all (the default)', () => {
+  const d = tmpRepo();
+  writeFile(d, '.claude/scripts/session-brief.mjs', '//');
+  const h = withHooks({ SessionStart: [null] });
+  // `manifest` omitted entirely — buildGaps defaults it to null, and the
+  // gitignore branch must not fire without one (a caller that never reads
+  // a manifest, like every hand-built fixture above this point in the
+  // file, must see exactly the pre-finding-1 behaviour).
+  const c = byId(gaps(fullStack, h, [], undefined, [], d), 'P4.sessionbrief');
+  assert.equal(c.state, 'absent');
 });
 
 test('P4.handoff and P4.sessionbrief are independent — a working hook is not told to install one', () => {

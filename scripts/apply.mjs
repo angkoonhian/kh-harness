@@ -15,7 +15,7 @@ import { buildGaps } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
 import { readManifest, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
-import { applyProposals, renderDiff } from './lib/apply-lib.mjs';
+import { applyProposals, renderDiff, SETTINGS_PATH } from './lib/apply-lib.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const DEFAULT_BRANCHES = new Set(['main', 'master']);
@@ -73,9 +73,13 @@ const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
 const exposures = detectExposures(root, files, harness);
 const profile = selectProfile(stack);
-const checks = buildGaps({ stack, harness, exposures, profile, git, files, root });
-
+// Read before buildGaps (not after, as before) — gap-model.mjs needs it to
+// confirm OUR OWN hook is present via the install record plus a direct
+// file check when a gitignored `.claude/` makes it invisible to the file
+// scan (see registeredHook's own comment in gap-model.mjs).
 const manifest = readManifest(root) ?? emptyManifest(KIT_VERSION);
+const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest });
+
 const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });
 
 // Files this kit previously wrote whose content on disk no longer matches
@@ -141,6 +145,27 @@ if (!flags.has('--yes')) {
   process.exit(0);
 }
 
+// Coordinator finding (Minor): a settings-hook/deny write rewrites the
+// WHOLE file via JSON.stringify(settings, null, 2) — if the user's own
+// settings.json was not already in exactly that form (compact, a
+// different indent width, a different key order, ...), applying a patch
+// reformats everything else in the file too, not just what is listed
+// above. Captured BEFORE applyProposals runs, since that call may rewrite
+// the very file this checks. Ruled, not fixed (see docs/task-8b-report.md,
+// finding 7): preserving the original formatting needs a format-preserving
+// JSON editor — a dependency, or a parser this project would have to
+// maintain — and that is a worse trade than disclosing a reformat.
+function alreadyCanonical(path) {
+  if (!existsSync(path)) return true; // nothing to reformat
+  try {
+    const raw = readFileSync(path, 'utf8');
+    return raw === JSON.stringify(JSON.parse(raw), null, 2) + '\n';
+  } catch {
+    return true; // unreadable/unparseable — never reaches a settings write anyway
+  }
+}
+const settingsWasCanonical = alreadyCanonical(join(root, SETTINGS_PATH));
+
 // applyProposals itself never throws on an I/O failure encountered while
 // applying (see apply-lib.mjs) — a partial batch is returned normally, with
 // `failed` naming what stopped it, so the manifest below always reflects
@@ -182,6 +207,14 @@ try {
 
 for (const w of result.written) process.stdout.write(`wrote      ${w.path}\n`);
 for (const p of result.patched) process.stdout.write(`patched    .claude/settings.json (${p.event})\n`);
+if (result.patched.length > 0 && !settingsWasCanonical) {
+  process.stdout.write(
+    `note       .claude/settings.json was reformatted while applying the patch above — its content is ` +
+    `unchanged beyond what was listed, but whitespace/indentation may now differ throughout the file ` +
+    `(this tool always rewrites it as JSON.stringify(settings, null, 2); it does not preserve the ` +
+    `original formatting).\n`,
+  );
+}
 for (const r of result.redirected) process.stdout.write(`redirected ${r.from} -> ${r.to}\n`);
 for (const s of result.skipped) process.stdout.write(`skipped    ${s.path} (${s.why})\n`);
 for (const f of result.failed) process.stderr.write(`failed     ${f.path}: ${f.error}\n`);

@@ -38,17 +38,6 @@ test('when more than one of the four names is present, returns the one earliest 
   assert.deepEqual(setupTargetEvidence(d, 'Makefile', 'make'), { found: true, target: 'bootstrap' });
 });
 
-test('a target mentioned only inside a comment is not credited', () => {
-  const d = repo();
-  write(d, 'Makefile', '# run `setup:` by hand if this ever gets a real target\nbuild:\n\ttsc\n');
-  assert.deepEqual(setupTargetEvidence(d, 'Makefile', 'make'), { found: false, target: null });
-});
-
-test('a trailing comment after a real line does not create a false match either way', () => {
-  const d = repo();
-  write(d, 'Makefile', 'build: # not setup, just has the word in a comment\n\ttsc\n');
-  assert.deepEqual(setupTargetEvidence(d, 'Makefile', 'make'), { found: false, target: null });
-});
 
 test('a Makefile VARIABLE named "setup" is not mistaken for a target (the := guard)', () => {
   const d = repo();

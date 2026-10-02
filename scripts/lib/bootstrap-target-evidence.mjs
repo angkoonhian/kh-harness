@@ -28,17 +28,23 @@ const SETUP_TARGET_NAMES = ['setup', 'bootstrap', 'init', 'install'];
 /** Makefile/justfile comments both start with `#` and run to end of line.
  * Stripped before matching so a name mentioned only in a comment (or in a
  * trailing comment after a real, unrelated line) is never credited. */
-function stripComment(line) {
-  const i = line.indexOf('#');
-  return i === -1 ? line : line.slice(0, i);
-}
-
 /**
  * True if `line` declares a Makefile RULE for `name` — `name:` or the
  * double-colon form `name::`, at the start of the line (target lines are
  * never indented; a recipe's own command lines are, conventionally with a
  * tab, but this does not need to rely on that — a target name can only
  * ever be followed by `:` here, never by `=`).
+ *
+ * No separate comment-stripping step: every pattern here is anchored at
+ * the start of the line (`^\s*name`), so a whole-line comment (`# ...`)
+ * can never match it — the line does not start with `name` — and a
+ * TRAILING comment sits after the point the regex already stopped caring
+ * about (it is not anchored at the end). An earlier version stripped `#…`
+ * before matching; a mutation replacing that step with a no-op left every
+ * test in this module still passing, proving the anchor alone already
+ * carries the "ignore comments" guarantee. Removed, rather than kept as
+ * inert insurance — this project does not keep code a mutation cannot
+ * detect (see the project's own retrospective on this exact shape).
  *
  * The `(?!=)` guard is load-bearing: `setup := value` and `setup = value`
  * are Makefile VARIABLE assignments, not a `setup` target, and both put an
@@ -48,7 +54,7 @@ function stripComment(line) {
  * would be mistaken for a real bootstrap target.
  */
 function makeTargetLine(name, line) {
-  return new RegExp(`^\\s*${name}\\s*::?(?!=)`).test(stripComment(line));
+  return new RegExp(`^\\s*${name}\\s*::?(?!=)`).test(line);
 }
 
 /**
@@ -63,10 +69,11 @@ function makeTargetLine(name, line) {
  * not a false `absent` either way: it only means this one recipe-naming
  * form is not recognised, not that a real one is misread as satisfied.
  * The same `(?!=)` guard excludes just's own `name := value` variable
- * assignment form.
+ * assignment form. No comment-stripping, for the same reason as
+ * `makeTargetLine` above: the start-of-line anchor already makes it moot.
  */
 function justRecipeLine(name, line) {
-  return new RegExp(`^\\s*${name}(?:\\s+[A-Za-z_][\\w-]*)*\\s*:(?!=)`).test(stripComment(line));
+  return new RegExp(`^\\s*${name}(?:\\s+[A-Za-z_][\\w-]*)*\\s*:(?!=)`).test(line);
 }
 
 /**
