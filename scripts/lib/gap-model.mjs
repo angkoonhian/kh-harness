@@ -4,6 +4,7 @@ import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
+import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 // Task 8b: the only three facts gap-model.mjs needs from propose.mjs — the
 // exact resolved script path EACH hook generator registers, so a check can
 // ask "is OURS here" instead of "is anything here". Importing the constant,
@@ -272,13 +273,49 @@ const CHECKS = [
     // split; see this file's own comment in `buildGaps`, at the `n/a`
     // branch, for the other two.
     check: ({ harness, stack, files, root }) => {
-      if (harness.bootstrap) return { state: 'declared', evidence: [harness.bootstrap] };
+      // Task 8b (coordinator ruling): a Makefile or justfile is a
+      // general-purpose build tool, unlike every OTHER name in
+      // BOOTSTRAP_CANDIDATES (detect-harness.mjs) — `scripts/bootstrap.sh`,
+      // `setup.sh`, etc. are purpose-named, so their mere existence is real
+      // evidence of what they do, but a Makefile with only a `build:`
+      // target is not evidence that dependencies get installed. Confirmed
+      // live: that exact Makefile reported `declared` with evidence
+      // `["Makefile"]`. `setupTargetEvidence` (bootstrap-target-evidence.mjs)
+      // reads a TARGET NAME, never a target's body — the same "a name is
+      // evidence, a body is a guess" rule this file already applies to
+      // declared script names (detect-stack.mjs) and advice (see
+      // lintAdvice/typecheckAdvice above).
+      const isMakeOrJust = harness.bootstrap === 'Makefile' || harness.bootstrap === 'justfile';
+      let occupantEvidence = null;
+      if (harness.bootstrap && !isMakeOrJust) {
+        return { state: 'declared', evidence: [harness.bootstrap] };
+      }
+      if (isMakeOrJust) {
+        const kind = harness.bootstrap === 'justfile' ? 'just' : 'make';
+        const target = setupTargetEvidence(root, harness.bootstrap, kind);
+        if (target.found) {
+          return { state: 'declared', evidence: [`${harness.bootstrap}: found a setup-shaped target ("${target.target}:")`] };
+        }
+        // Not found: fall through to the SAME derivation as "no bootstrap
+        // file at all" (below) — the coordinator's ruling is a proposal
+        // here, not a question, exactly like the hooks' own third row: we
+        // still offer to write scripts/bootstrap.sh, and we say what of
+        // theirs we saw, so the choice (keep the Makefile's own mechanism,
+        // or also accept this one) is theirs, not assumed.
+        occupantEvidence = `${harness.bootstrap} exists but declares no setup-shaped target (looked for setup:/bootstrap:/init:/install:)`;
+      }
       if (installCommand(stack.packageManager, files, root)) {
-        return { state: 'absent', proposal: 'create scripts/bootstrap.sh from template' };
+        return {
+          state: 'absent', proposal: 'create scripts/bootstrap.sh from template',
+          evidence: occupantEvidence ? [occupantEvidence] : [],
+        };
       }
       return {
         state: 'absent', decidable: false,
-        evidence: ['no install command could be derived from stack.packageManager or any lockfile among the detected files'],
+        evidence: [
+          ...(occupantEvidence ? [occupantEvidence] : []),
+          'no install command could be derived from stack.packageManager or any lockfile among the detected files',
+        ],
         question: 'A bootstrap script applies here, but no install command could be derived from a lockfile or declared package manager — how are this project\'s dependencies installed?',
       };
     },

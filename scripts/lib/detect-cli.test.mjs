@@ -229,6 +229,53 @@ test('END-TO-END: a pyproject-only python repo (no requirements.txt, no lockfile
   assert.equal(/create scripts\/bootstrap\.sh/.test(cli(d)), false, 'the human summary must not propose a script detection cannot derive');
 });
 
+// --- Task 8b, through the real CLI: a Makefile only counts for
+// P1.bootstrap when it declares a setup-shaped target. Confirmed live by
+// the coordinator: a Makefile with only a `build:` target used to report
+// `declared` with evidence `["Makefile"]` — a repository with a
+// build-only Makefile was told bootstrap was handled. These three pin the
+// exact repository shapes verified by hand before this task existed.
+
+test('END-TO-END (Task 8b): a build-only Makefile does NOT satisfy P1.bootstrap — it still proposes, naming the Makefile', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-makefile-buildonly-'));
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  write(d, 'package-lock.json', '{}');
+  write(d, 'src/index.ts', 'export const a = 1;\n');
+  write(d, 'Makefile', 'build:\n\ttsc\n\ntest:\n\tjest\n');
+  const r = JSON.parse(cli(d, '--json'));
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'absent', 'the exact live defect: this used to be declared from the Makefile\'s mere existence');
+  assert.ok(c.proposal, 'npm ci is derivable from the tracked lockfile; the proposal is not suppressed');
+  assert.match(c.evidence.join(' '), /Makefile exists but declares no setup-shaped target/);
+  assert.match(cli(d), /create scripts\/bootstrap\.sh/, 'the human summary must offer the proposal, not defer to the Makefile');
+});
+
+test('END-TO-END (Task 8b): a Makefile with a setup: target DOES satisfy P1.bootstrap, naming the target', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-makefile-setup-'));
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  write(d, 'package-lock.json', '{}');
+  write(d, 'src/index.ts', 'export const a = 1;\n');
+  write(d, 'Makefile', 'build:\n\ttsc\n\nsetup:\n\tnpm ci\n');
+  const r = JSON.parse(cli(d, '--json'));
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'declared');
+  assert.equal(c.proposal, null);
+  assert.match(c.evidence.join(' '), /setup/);
+  assert.equal(/create scripts\/bootstrap\.sh/.test(cli(d)), false, 'a real setup-shaped target must not also be proposed a duplicate');
+});
+
+test('END-TO-END (Task 8b): no Makefile at all still proposes, exactly as before this fix', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-no-makefile-'));
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  write(d, 'package-lock.json', '{}');
+  write(d, 'src/index.ts', 'export const a = 1;\n');
+  const r = JSON.parse(cli(d, '--json'));
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal);
+  assert.doesNotMatch(c.evidence.join(' '), /Makefile/, 'there is no Makefile here to name');
+});
+
 // --- Task 5b, through the real CLI: P2.sensor/P2.stopgate/P2.protected
 // must each now either deliver what they advertise or advertise nothing.
 // These pin the exact two repository shapes verified by hand before this

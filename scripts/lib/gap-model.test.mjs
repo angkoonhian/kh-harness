@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildGaps, STATES } from './gap-model.mjs';
@@ -9,6 +9,7 @@ import { deriveCouldNotDerive } from './report.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH } from './propose.mjs';
+import { hasEquivalentHook } from './settings-merge.mjs';
 
 const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
@@ -594,6 +595,78 @@ test('P1.bootstrap stays n/a on a generic profile when no lockfile backs it eith
   assert.equal(c.proposal, null);
 });
 
+// --- P1.bootstrap: a Makefile/justfile only counts when it declares a
+// setup-shaped target (Task 8b). Confirmed live by the coordinator: a
+// Makefile with only a `build:` target reported `declared` with evidence
+// `["Makefile"]` — this repeats that exact fixture through the real check,
+// driven from real files (tmpRepo/writeFile, defined below), since the new
+// branch reads the Makefile's own content via `root`, not merely `harness`.
+
+test('P1.bootstrap is declared when a Makefile declares a setup-shaped target', () => {
+  const d = tmpRepo();
+  writeFile(d, 'Makefile', 'build:\n\ttsc\n\nsetup:\n\tnpm install\n');
+  const h = { ...bareHarness, bootstrap: 'Makefile' };
+  const c = byId(gaps(fullStack, h, [], undefined, ['package-lock.json'], d), 'P1.bootstrap');
+  assert.equal(c.state, 'declared');
+  assert.match(c.evidence.join(' '), /setup/);
+});
+
+test('P1.bootstrap: a build-only Makefile is NOT declared — it still proposes, and names what it found', () => {
+  const d = tmpRepo();
+  writeFile(d, 'Makefile', 'build:\n\ttsc\n\ntest:\n\tjest\n');
+  const h = { ...bareHarness, bootstrap: 'Makefile' };
+  const c = byId(gaps(fullStack, h, [], undefined, ['package-lock.json'], d), 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal, 'a lockfile is real install evidence; the proposal is not suppressed by the Makefile\'s presence');
+  assert.match(c.evidence.join(' '), /Makefile exists but declares no setup-shaped target/);
+});
+
+test('P1.bootstrap: a build-only Makefile with no derivable install command asks, naming the Makefile too', () => {
+  const d = tmpRepo();
+  writeFile(d, 'Makefile', 'build:\n\ttsc\n');
+  // packageManager: null and no lockfile — same shape as the
+  // pyproject-only fixture above, so installCommand genuinely returns null.
+  const pyprojectOnlyStack = { languages: ['python'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const h = { ...bareHarness, bootstrap: 'Makefile' };
+  const c = byId(gaps(pyprojectOnlyStack, h, [], undefined, ['pyproject.toml'], d), 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null);
+  assert.match(c.evidence.join(' '), /Makefile exists but declares no setup-shaped target/);
+  assert.ok(c.question);
+});
+
+test('P1.bootstrap is declared when a justfile declares a setup-shaped recipe', () => {
+  const d = tmpRepo();
+  writeFile(d, 'justfile', 'build:\n    tsc\n\nsetup:\n    npm install\n');
+  const h = { ...bareHarness, bootstrap: 'justfile' };
+  const c = byId(gaps(fullStack, h, [], undefined, ['package-lock.json'], d), 'P1.bootstrap');
+  assert.equal(c.state, 'declared');
+  assert.match(c.evidence.join(' '), /setup/);
+});
+
+test('P1.bootstrap: a build-only justfile is NOT declared', () => {
+  const d = tmpRepo();
+  writeFile(d, 'justfile', 'build:\n    tsc\n');
+  const h = { ...bareHarness, bootstrap: 'justfile' };
+  const c = byId(gaps(fullStack, h, [], undefined, ['package-lock.json'], d), 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal);
+  assert.match(c.evidence.join(' '), /justfile exists but declares no setup-shaped target/);
+});
+
+test('P1.bootstrap: a purpose-named bootstrap file is unaffected — mere existence is still enough', () => {
+  // scripts/bootstrap.sh, scripts/setup.sh, etc. are not general-purpose
+  // build tools the way a Makefile/justfile is — their NAME is already the
+  // evidence (same reasoning the check's own comment gives). Only the
+  // Makefile/justfile branch reads file content.
+  const h = { ...bareHarness, bootstrap: 'scripts/bootstrap.sh' };
+  const c = byId(gaps(fullStack, h), 'P1.bootstrap');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, ['scripts/bootstrap.sh']);
+});
+
 // Review Minor: P1.bootstrap, P2.sensor and P2.stopgate each ask a
 // question about a declared SCRIPT (or lockfile/package-manager) source,
 // but `lookedFor` used to name only the other evidence location (the file
@@ -994,4 +1067,66 @@ test('a question from a DECIDABLE check is not routed — the axis is what carri
   const c = byId(cs, 'ROGUE.chatty');
   assert.equal(c.proposal, 'kept');
   assert.equal(c.question, null);
+});
+
+// --- TWO-PATH AGREEMENT (coordinator ruling) ---
+//
+// gap-model.mjs identifies "our hook" via the REDACTED hookEvents
+// representation — a resolved script path, never the raw command (see
+// registeredHook's own comment for why: `harness` is serialised wholesale
+// into docs/harness/detect.json on every run, and stashing raw settings
+// there to reuse apply-lib.mjs's `hasEquivalentHook` directly would undo
+// that redaction). apply-lib.mjs identifies it via the RAW settings object
+// and an exact command string. These are two DIFFERENT data paths that
+// cannot share code — the exact drift risk the coherence work earlier in
+// this plan existed to remove. If they ever disagree about the SAME real
+// settings.json, one of them is lying about whether the harness is
+// installed, and this is the only test that would catch it.
+//
+// Driven from a REAL repository (tmpRepo/writeFile — a hand-built harness
+// object cannot stand in for the raw settings.json hasEquivalentHook
+// itself reads), with the resolved script physically present so the
+// redacted path's own resolution (commandScript, detect-harness.mjs) has
+// real evidence to resolve against, not a contrived gap of its own.
+const BRIEF_COMMAND = `node ${BRIEF_PATH}`;
+
+function twoPathVerdict(command) {
+  const d = tmpRepo();
+  writeFile(d, 'package.json', JSON.stringify({ name: 'app', scripts: {} }));
+  writeFile(d, '.claude/scripts/session-brief.mjs', '//');
+  writeFile(d, 'tools/unrelated.js', '//');
+  writeFile(d, '.claude/settings.json', JSON.stringify({
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command }] }] },
+  }));
+  const files = listFiles(d).files;
+
+  // The RAW path: exactly what applySettingsHookProposal/hasEquivalentHook
+  // itself reads before deciding whether to add a settings patch.
+  const rawSettings = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+  const raw = hasEquivalentHook(rawSettings, 'SessionStart', BRIEF_COMMAND);
+
+  // The REDACTED path: the real detect pipeline, through buildGaps, the
+  // same way detect.mjs/apply.mjs actually call it.
+  const stack = { languages: ['typescript'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
+  const harness = detectHarness(d, files);
+  const checks = buildGaps({ stack, harness, exposures: [], profile: selectProfile(stack),
+    git: { branch: 'main', isRepo: true }, files, root: d });
+  const redacted = byId(checks, 'P4.sessionbrief').state === 'declared';
+
+  return { raw, redacted };
+}
+
+test('TWO-PATH AGREEMENT: the redacted comparison and hasEquivalentHook agree when the hook IS ours', () => {
+  const { raw, redacted } = twoPathVerdict(BRIEF_COMMAND);
+  assert.equal(raw, true, 'fixture sanity: the raw path must actually see this as ours');
+  assert.equal(redacted, true, 'fixture sanity: the redacted path must actually see this as ours');
+  assert.equal(raw, redacted, 'the raw and redacted identification of "our own hook" must never disagree');
+});
+
+test('TWO-PATH AGREEMENT: the redacted comparison and hasEquivalentHook agree when the hook is NOT ours', () => {
+  const { raw, redacted } = twoPathVerdict('node tools/unrelated.js');
+  assert.equal(raw, false, 'fixture sanity: the raw path must actually see this as not ours');
+  assert.equal(redacted, false, 'fixture sanity: the redacted path must actually see this as not ours');
+  assert.equal(raw, redacted, 'the raw and redacted identification of "our own hook" must never disagree');
 });

@@ -1,0 +1,97 @@
+// scripts/lib/bootstrap-target-evidence.mjs
+//
+// Shared by gap-model.mjs's P1.bootstrap CHECK for its Makefile/justfile
+// branch. Task 8b (coordinator ruling): the mere EXISTENCE of a Makefile or
+// justfile was being credited as "a bootstrap mechanism exists", even when
+// the file's only targets had nothing to do with installing dependencies —
+// confirmed live: a Makefile containing only a `build:` target reported
+// `declared` with evidence `["Makefile"]`. A repository with a build-only
+// Makefile was told bootstrap was handled.
+//
+// Parsing or running the file to learn what a target DOES would be a guess
+// this project does not make (the same doctrine gap-model.mjs's own
+// P2.scripts comment states for advice: a command this tool cannot verify
+// is never invented). But reading a TARGET NAME off a line is evidence,
+// exactly the same kind of fact a lockfile's presence or a declared script
+// NAME already is elsewhere in this codebase — never a body, never an
+// inference about behaviour.
+//
+// `setup`, `bootstrap`, `init` and `install` are the well-known convention
+// names for "take a clean checkout to a working state" across Makefiles and
+// justfiles alike; this looks for exactly those four, in that order, and no
+// others — widening the list would be the same shape of guess this module
+// exists to avoid.
+import { readIfPresent } from './scan.mjs';
+
+const SETUP_TARGET_NAMES = ['setup', 'bootstrap', 'init', 'install'];
+
+/** Makefile/justfile comments both start with `#` and run to end of line.
+ * Stripped before matching so a name mentioned only in a comment (or in a
+ * trailing comment after a real, unrelated line) is never credited. */
+function stripComment(line) {
+  const i = line.indexOf('#');
+  return i === -1 ? line : line.slice(0, i);
+}
+
+/**
+ * True if `line` declares a Makefile RULE for `name` — `name:` or the
+ * double-colon form `name::`, at the start of the line (target lines are
+ * never indented; a recipe's own command lines are, conventionally with a
+ * tab, but this does not need to rely on that — a target name can only
+ * ever be followed by `:` here, never by `=`).
+ *
+ * The `(?!=)` guard is load-bearing: `setup := value` and `setup = value`
+ * are Makefile VARIABLE assignments, not a `setup` target, and both put an
+ * `=` immediately after the point this regex's own `:` would need to
+ * match (immediately for `=`, or after the `:` for `:=`). Without the
+ * guard, a variable that merely happens to share one of these four names
+ * would be mistaken for a real bootstrap target.
+ */
+function makeTargetLine(name, line) {
+  return new RegExp(`^\\s*${name}\\s*::?(?!=)`).test(stripComment(line));
+}
+
+/**
+ * True if `line` declares a just RECIPE for `name` — `name:`, or
+ * `name param1 param2:` (just recipes may take bare parameters between the
+ * name and the colon). Deliberately does not attempt a parameter's own
+ * DEFAULT value (`param='default'`): a default can itself contain `:` or
+ * `=` inside quotes, and distinguishing that from the recipe's own
+ * terminating colon without a real parser is exactly the kind of guess
+ * this module exists to avoid — a recipe with a defaulted parameter is
+ * read as "not found" here, the safe direction (never a false `declared`),
+ * not a false `absent` either way: it only means this one recipe-naming
+ * form is not recognised, not that a real one is misread as satisfied.
+ * The same `(?!=)` guard excludes just's own `name := value` variable
+ * assignment form.
+ */
+function justRecipeLine(name, line) {
+  return new RegExp(`^\\s*${name}(?:\\s+[A-Za-z_][\\w-]*)*\\s*:(?!=)`).test(stripComment(line));
+}
+
+/**
+ * Looks for a setup-shaped target/recipe in a Makefile or justfile.
+ *
+ * Never throws, and never reports `found: true` from a bad read — a
+ * directory, an empty file, a binary file, or a file this process cannot
+ * open all fall through to `{ found: false }` via `readIfPresent`, which
+ * already treats every one of those as "nothing to read" rather than an
+ * error (the same discipline bootstrap-install.mjs's `yarnFrozenCommand`
+ * uses for a yarn.lock it cannot read: fall through to the honest "not
+ * found" answer, never guess, never throw).
+ *
+ * `kind` is `'make'` or `'just'` — the two grammars differ only in whether
+ * parameters may sit between the name and the colon.
+ */
+export function setupTargetEvidence(root, relPath, kind) {
+  const content = readIfPresent(root, relPath);
+  if (content == null) return { found: false, target: null };
+  const lineMatches = kind === 'just' ? justRecipeLine : makeTargetLine;
+  const lines = content.split(/\r?\n/);
+  for (const name of SETUP_TARGET_NAMES) {
+    if (lines.some(line => lineMatches(name, line))) return { found: true, target: name };
+  }
+  return { found: false, target: null };
+}
+
+export { SETUP_TARGET_NAMES };
