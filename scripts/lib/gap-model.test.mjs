@@ -246,6 +246,95 @@ test('scripts present are declared; missing scripts are absent', () => {
   assert.equal(byId(gaps(bareStack, bareHarness), 'P2.scripts').state, 'absent');
 });
 
+// --- P2.scripts: reported only — package.json is outside the write
+// allowlist, so this capability is never applied, only advised. Ruling
+// (coordinator, Task 7): the check keeps reporting `absent`, but carries
+// `decidable: false` (so buildProposals' central gate never turns this into
+// a write) plus an `advice` field naming the exact line to add, per
+// package, per missing script — but only where a config file PROVES the
+// tool is in use; see the check's own comment in gap-model.mjs.
+
+test('P2.scripts is absent and decidable:false, never a proposal, when scripts are missing', () => {
+  const c = byId(gaps(bareStack, bareHarness), 'P2.scripts');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null);
+});
+
+test('a package with both lint and typecheck produces neither advice nor a proposal', () => {
+  const c = byId(gaps(fullStack, richHarness), 'P2.scripts');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.advice, []);
+});
+
+test('a package missing only lint produces advice naming the package and the script, and no proposal', () => {
+  const stack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['typecheck'] }] };
+  const c = byId(gaps(stack, bareHarness), 'P2.scripts');
+  assert.equal(c.proposal, null);
+  assert.ok(c.advice.some(a => a.includes('app') && a.includes('lint')), 'advice must name both the package and the missing script');
+  assert.equal(c.advice.some(a => /typecheck/.test(a)), false, 'typecheck is already declared on this package — no advice for it');
+});
+
+test('lint advice names the derived eslint command only when an ESLint config is present — never an invented tool', () => {
+  const stack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['typecheck'] }] };
+  const withConfig = byId(gaps(stack, bareHarness, [], undefined, ['.eslintrc.json']), 'P2.scripts');
+  assert.ok(withConfig.advice.some(a => a.includes('"lint": "eslint .')));
+
+  const withoutConfig = byId(gaps(stack, bareHarness, [], undefined, []), 'P2.scripts');
+  const lintLine = withoutConfig.advice.find(a => /lint/.test(a));
+  assert.ok(lintLine);
+  // No COMMAND is fabricated — the line may say which tools were checked
+  // for (that is honest disclosure, not a guess), but it must never read as
+  // though a `"lint": "eslint ."`/`"lint": "ruff check ."` line was derived.
+  assert.equal(/"lint":\s*"(eslint|ruff)/i.test(lintLine), false, 'no command is invented without config evidence');
+  assert.match(lintLine, /cannot be derived/);
+});
+
+test('typecheck advice names tsc --noEmit only when tsconfig.json is present', () => {
+  const stack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint'] }] };
+  const withTsconfig = byId(gaps(stack, bareHarness, [], undefined, ['tsconfig.json']), 'P2.scripts');
+  assert.ok(withTsconfig.advice.some(a => a.includes('tsc --noEmit')));
+
+  const withoutTsconfig = byId(gaps(stack, bareHarness, [], undefined, []), 'P2.scripts');
+  const tcLine = withoutTsconfig.advice.find(a => /typecheck/.test(a));
+  assert.ok(tcLine);
+  // No COMMAND is fabricated (mentioning "tsconfig.json" itself, to explain
+  // what was checked for and not found, is fine — it is "tsc" as a DERIVED
+  // COMMAND that must never appear without real evidence).
+  assert.equal(/"typecheck":\s*"tsc/i.test(tcLine), false);
+  assert.match(tcLine, /cannot be derived/);
+});
+
+test('lint advice names the derived ruff command from a [tool.ruff] table in pyproject.toml, read from the real filesystem', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-ruff-'));
+  writeFileSync(join(d, 'pyproject.toml'), '[tool.ruff]\nline-length = 100\n');
+  const stack = { languages: ['python'], packageManager: null, isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] };
+  const c = byId(gaps(stack, bareHarness, [], undefined, ['pyproject.toml'], d), 'P2.scripts');
+  assert.ok(c.advice.some(a => a.includes('"lint": "ruff check .')));
+});
+
+// SECRET (ruling 5): advice is derived from script NAMES and config-file
+// PRESENCE only — it must never echo a script BODY, even one reachable on
+// the stack object. Same defect shape as Plan 1's leaked sentry-cli token
+// (see propose.test.mjs's matching P1.bootstrap test).
+test('SECRET: a token-bearing script body reachable on the stack object never appears in P2.scripts advice', () => {
+  const leakedToken = 'sentry-cli releases new --auth-token sk-leaked-TOKEN-should-never-appear';
+  const stack = {
+    languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
+    packages: [{
+      name: 'app', dir: '.', manifestPath: 'package.json', scripts: [],
+      // Not a real field detect-stack.mjs produces — simulates the exact
+      // leak shape Plan 1 shipped, to prove this check never reads it.
+      scriptBodies: { build: leakedToken },
+    }],
+    ci: [],
+  };
+  assert.ok(JSON.stringify(stack).includes(leakedToken), 'fixture sanity: the token must actually be reachable on the stack object');
+  const c = byId(gaps(stack, bareHarness), 'P2.scripts');
+  assert.equal(JSON.stringify(c.advice).includes(leakedToken), false);
+});
+
 test('deny rules present make P2.protected declared', () => {
   const c = byId(gaps(fullStack, richHarness), 'P2.protected');
   assert.equal(c.state, 'declared');

@@ -759,6 +759,25 @@ test('a declared P1.bootstrap check yields no proposals, even with a full stack 
   assert.deepEqual(ps, []);
 });
 
+// --- P2.scripts: no generator exists, by construction -----------------------
+//
+// Ruling (coordinator, Task 7, step 4 — "the most valuable step in either
+// task"): adding a missing lint/typecheck script means writing to
+// package.json, deliberately outside apply-lib.mjs's write allowlist. The
+// FIRST guard is gap-model.mjs always reporting P2.scripts as
+// `decidable: false` (buildProposals' central gate never proposes it). This
+// test defeats that guard ON PURPOSE — forcing `state: 'absent'` AND
+// `decidable: true` — to prove a SECOND, independent guard still holds: no
+// entry for 'P2.scripts' is registered in GENERATORS at all. The write
+// allowlist must not be the only thing standing between this check and the
+// user's package.json, the file a user is most likely to have hand-tuned.
+test('SECRET: P2.scripts has no registered generator — forcing state absent and decidable:true still yields nothing', () => {
+  assert.equal('P2.scripts' in GENERATORS, false, 'no generator may ever be registered for P2.scripts');
+  const forced = check({ id: 'P2.scripts', step: 8, state: 'absent', decidable: true, proposal: 'add lint/typecheck scripts to 1 package(s)' });
+  const ps = buildProposals(args([forced]));
+  assert.deepEqual(ps, [], 'package.json must never be written, even when the decidability gate is forced open');
+});
+
 // --- COHERENCE: detect and propose must agree ------------------------------
 //
 // Major, caught by a coordinator review: gap-model.mjs's P1.bootstrap check

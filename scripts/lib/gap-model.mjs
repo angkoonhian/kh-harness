@@ -1,3 +1,4 @@
+import { readIfPresent } from './scan.mjs';
 import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
@@ -7,6 +8,77 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
 const MAX_INSTRUCTION_LINES = 150;
+
+/**
+ * P2.scripts advice: evidence-gated command derivation for the one capability
+ * this kit deliberately reports but never applies (see this file's own
+ * comment on the `P2.scripts` check, below, for why).
+ *
+ * Ruling (coordinator, Task 7): advice must not invent a command. A missing
+ * `lint` or `typecheck` script gets a concrete `"<script>": "<command>"`
+ * line ONLY where a config file in the PACKAGE'S OWN directory proves the
+ * tool is already in use:
+ *   lint:      .eslintrc(.json|.js|.cjs|.yaml|.yml) or eslint.config.(js|mjs|cjs|ts) -> eslint .
+ *              ruff.toml/.ruff.toml, or a [tool.ruff] table in
+ *              pyproject.toml -> ruff check .
+ *   typecheck: tsconfig.json -> tsc --noEmit
+ * Where none of these is found, the advice names the missing script and
+ * nothing else — never a fabricated command for a tool the repository may
+ * not even use (the brief's literal wording, "the exact lines to add",
+ * would otherwise mean inventing `"lint": "eslint ."` for a project that
+ * might not run ESLint at all — exactly the guessing this project forbids).
+ *
+ * Deliberately scoped to the package's OWN directory, not a shared root
+ * config: a monorepo's root-level eslint.config.js might cover every
+ * package, but crediting a NESTED package with a tool its own directory
+ * shows no evidence of would be the same shape of guess this function
+ * exists to refuse — under-deriving (asking the user to confirm something
+ * real evidence would have proven) is the safe failure mode, not over-
+ * claiming.
+ *
+ * Every line names `pkg.manifestPath` (package.json for a JS/TS package,
+ * pyproject.toml or requirements.txt for a Python one — see
+ * detect-stack.mjs) rather than a hardcoded "package.json", so advice for a
+ * Python package never claims the wrong file exists to edit.
+ */
+const ESLINT_CONFIG_NAMES = [
+  '.eslintrc', '.eslintrc.json', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.yaml', '.eslintrc.yml',
+  'eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs', 'eslint.config.ts',
+];
+const RUFF_CONFIG_NAMES = ['ruff.toml', '.ruff.toml'];
+const RUFF_TABLE_RE = /^\[tool\.ruff(\.[\w-]+)?\]/m;
+
+function atPkgDir(dir, name) { return dir === '.' ? name : `${dir}/${name}`; }
+function hasAnyAt(files, dir, names) { return names.some(n => files.includes(atPkgDir(dir, n))); }
+
+/** `files` alone cannot show a TABLE inside a file — pyproject.toml's own
+ * content must be read to tell a `[tool.ruff]` project from any other
+ * pyproject.toml. `root` is the only thing in this check's context that
+ * makes that possible (same reason bootstrap-install.mjs's `yarnFrozenCommand`
+ * reads a yarn.lock's own header instead of trusting presence alone); when
+ * `root` is not given, this stays honestly `false` rather than guessing. */
+function hasRuffTable(root, dir) {
+  if (!root) return false;
+  const content = readIfPresent(root, atPkgDir(dir, 'pyproject.toml'));
+  return content != null && RUFF_TABLE_RE.test(content);
+}
+
+function lintAdvice(pkg, files, root) {
+  if (hasAnyAt(files, pkg.dir, ESLINT_CONFIG_NAMES)) {
+    return `${pkg.name}: add "lint": "eslint ." to ${pkg.manifestPath} — derived from the ESLint config found in this repository`;
+  }
+  if (hasAnyAt(files, pkg.dir, RUFF_CONFIG_NAMES) || hasRuffTable(root, pkg.dir)) {
+    return `${pkg.name}: add "lint": "ruff check ." to ${pkg.manifestPath} — derived from the ruff config found in this repository`;
+  }
+  return `${pkg.name}: ${pkg.manifestPath} is missing a "lint" script — no ESLint or ruff config was found, so the command cannot be derived`;
+}
+
+function typecheckAdvice(pkg, files) {
+  if (hasAnyAt(files, pkg.dir, ['tsconfig.json'])) {
+    return `${pkg.name}: add "typecheck": "tsc --noEmit" to ${pkg.manifestPath} — derived from the tsconfig.json found in this repository`;
+  }
+  return `${pkg.name}: ${pkg.manifestPath} is missing a "typecheck" script — no tsconfig.json was found, so the command cannot be derived`;
+}
 
 /**
  * Credit an event from `.claude/settings.json`'s hook registry rather than from
@@ -172,15 +244,41 @@ const CHECKS = [
   },
   {
     id: 'P2.scripts', step: 8, phase: 2,
-    lookedFor: ['a lint and typecheck script in every package'],
-    check: ({ stack }) => {
+    lookedFor: ['a lint and typecheck script in every package', 'an ESLint, ruff or tsconfig.json config to derive a command from'],
+    // Ruling (coordinator, Task 7): adding a missing lint/typecheck script
+    // means writing to a package's own manifest (package.json,
+    // pyproject.toml, ...) — deliberately OUTSIDE apply-lib.mjs's write
+    // allowlist (see that module's own comment: a user's manifest is the
+    // file most likely to be hand-tuned, and the one this tool must never
+    // touch). So this capability is reported, never applied:
+    // `decidable: false` keeps buildProposals' central gate (see its own
+    // comment on that invariant) from ever turning this into a write, and —
+    // independently — propose.mjs's GENERATORS table has, and must keep,
+    // NO entry for this id at all. That second guard is deliberate, not an
+    // oversight: the write allowlist must not be the only thing standing
+    // between this check and package.json (propose.test.mjs's "SECRET:
+    // P2.scripts has no registered generator..." pins it by forcing
+    // `decidable: true` and proving the generator table alone still
+    // refuses).
+    //
+    // `advice` (see lintAdvice/typecheckAdvice above) carries the concrete
+    // line to add, per missing script, per package — but only where a
+    // config file actually proves which tool to name; this is deliberately
+    // not a `question`, because the gap itself is not a missing FACT (it is
+    // fully known), only a write this tool will not make.
+    check: ({ stack, files, root }) => {
       // `p.scripts` is a sorted list of script NAMES — see detect-stack.mjs.
       const lacks = (p, name) => !p.scripts?.includes(name);
-      const missing = stack.packages.filter(p => lacks(p, 'lint') || lacks(p, 'typecheck'))
-        .map(p => `${p.name}: missing ${[lacks(p, 'lint') && 'lint', lacks(p, 'typecheck') && 'typecheck'].filter(Boolean).join(' + ')}`);
-      return missing.length
-        ? { state: 'absent', evidence: missing, proposal: `add lint/typecheck scripts to ${missing.length} package(s)` }
-        : { state: 'declared', evidence: ['every package has lint and typecheck'] };
+      const missing = stack.packages.filter(p => lacks(p, 'lint') || lacks(p, 'typecheck'));
+      if (missing.length === 0) return { state: 'declared', evidence: ['every package has lint and typecheck'] };
+
+      const evidence = missing.map(p => `${p.name}: missing ${[lacks(p, 'lint') && 'lint', lacks(p, 'typecheck') && 'typecheck'].filter(Boolean).join(' + ')}`);
+      const advice = [];
+      for (const p of missing) {
+        if (lacks(p, 'lint')) advice.push(lintAdvice(p, files, root));
+        if (lacks(p, 'typecheck')) advice.push(typecheckAdvice(p, files));
+      }
+      return { state: 'absent', decidable: false, evidence, advice };
     },
   },
   {
@@ -358,12 +456,12 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
         if (install) {
           return { id: def.id, step: def.step, phase: def.phase, state: 'absent',
             lookedFor: def.lookedFor, evidence: [], decidable: true, question: null,
-            proposal: 'create scripts/bootstrap.sh from template' };
+            proposal: 'create scripts/bootstrap.sh from template', advice: [] };
         }
       }
       return { id: def.id, step: def.step, phase: def.phase, state: 'n/a',
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
-        decidable: true, question: null, proposal: null };
+        decidable: true, question: null, proposal: null, advice: [] };
     }
     const r = def.check({ stack, harness, exposures, profile, git, files, root });
     // The second axis, enforced in the same place and for the same reason.
@@ -379,6 +477,13 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
       state: r.state, lookedFor: def.lookedFor, evidence: r.evidence ?? [],
       decidable,
       question: decidable ? null : (r.question ?? null),
+      // `advice` is orthogonal to the proposal/question axis above: P2.scripts
+      // is `decidable: false` (so it never proposes) yet the gap is fully
+      // KNOWN, not a missing fact to ask about — `advice` is what a check
+      // uses for that third shape ("I know exactly what's missing, but this
+      // tool will not write it"). Defaults to `[]`, like `evidence`, so every
+      // check's returned shape is uniform whether or not it ever sets this.
+      advice: r.advice ?? [],
       // The invariant, enforced centrally: only a decidable `absent` may propose.
       proposal: (r.state === 'absent' && decidable) ? (r.proposal ?? null) : null,
     };
