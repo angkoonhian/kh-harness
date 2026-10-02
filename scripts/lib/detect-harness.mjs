@@ -124,8 +124,22 @@ const PROJECT_DOC_EXTENSIONS = ['.md', '.markdown', '.rst', '.adoc', '.txt'];
 const KIT_OUTPUT_PREFIXES = ['docs/harness/', '.claude/'];
 const KIT_OUTPUT_FILES = new Set(['CLAUDE.md', 'AGENTS.md', 'HANDOFF.md', 'docs/HANDOFF.md']);
 
+// Coordinator finding: `requirements.txt`/`constraints.txt` are Python
+// dependency manifests, not documentation — this codebase already treats
+// `requirements*.txt` this way (see gap-model.mjs's P1.bootstrap comment
+// and protected-evidence.mjs's `pairedRequirementsFiles`, both keyed on the
+// same pip naming convention). Excluding these specific, already-classified
+// names is NOT narrowing `PROJECT_DOC_EXTENSIONS` by guessing an extension
+// is unlikely to be docs — `.txt` stays wide for every genuinely unknown
+// file. It is using a fact this project already holds about one pip-
+// specific name, the same way `isKitOutput` already excludes files this
+// kit itself writes. Matches both the flat form (`requirements.txt`,
+// `requirements-dev.txt`) and the directory form (`requirements/base.txt`),
+// same two shapes `protected-evidence.mjs`'s own regex covers.
+const DEPENDENCY_MANIFEST_RE = /(^|\/)(requirements|constraints)[^/]*\.txt$|(^|\/)(requirements|constraints)\/[^/]*\.txt$/;
+
 const isDoc = f => DOC_EXTENSIONS.some(e => f.toLowerCase().endsWith(e));
-const isProjectDocShaped = f => PROJECT_DOC_EXTENSIONS.some(e => f.toLowerCase().endsWith(e));
+const isProjectDocShaped = f => PROJECT_DOC_EXTENSIONS.some(e => f.toLowerCase().endsWith(e)) && !DEPENDENCY_MANIFEST_RE.test(f);
 const isKitOutput = f => KIT_OUTPUT_FILES.has(f) || KIT_OUTPUT_PREFIXES.some(p => f.startsWith(p));
 
 /**

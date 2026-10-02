@@ -489,6 +489,52 @@ test('an undecidable architecture check proposes nothing and asks instead', () =
   assert.match(summary, /Is one of these the architecture document\?/);
 });
 
+// Coordinator finding (round 2): projectDocs' wide net for .txt files is
+// correct — restricting it by extension would be exactly the assumption
+// its own comment already rejects — but requirements.txt/constraints.txt
+// are Python DEPENDENCY MANIFESTS, not documentation (this codebase
+// already treats requirements.txt this way: see gap-model.mjs's
+// P1.bootstrap comment and protected-evidence.mjs's
+// pairedRequirementsFiles, both keyed on the same pip naming convention).
+// Before the fix, a repository whose only .txt file was requirements.txt
+// got asked "the repository holds 1 documentation file (requirements.txt)
+// — is one of these the architecture document?", which asserted something
+// never measured: nothing confirmed requirements.txt IS documentation.
+test('END-TO-END: a repository whose only .txt file is requirements.txt gets no documentation-shaped architecture question', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-reqtxt-only-'));
+  write(d, 'requirements.txt', 'flask==3.0\n');
+  write(d, 'app.py', 'print("hi")\n');
+  const r = JSON.parse(cli(d, '--json'));
+  // Fixture sanity: detect-stack.mjs only adds this package entry when
+  // `files.includes('requirements.txt')`, so this proves requirements.txt
+  // was actually seen by detection — without it, "no question" below would
+  // be true for the wrong reason (an irrelevant or empty fixture).
+  assert.ok(r.stack.packages.some(p => p.manifestPath === 'requirements.txt'), 'fixture sanity: requirements.txt must actually be detected');
+  assert.deepEqual(r.harness.projectDocs, [], 'requirements.txt must not be classified as a documentation-shaped file');
+  const c = r.checks.find(x => x.id === 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true, 'no documentation-shaped file exists, so this really is the empty case');
+  assert.ok(c.proposal, 'the honest answer is a proposal to write one — not a question about requirements.txt');
+  assert.equal(r.couldNotDerive.some(q => /documentation-shaped name/.test(q)), false);
+});
+
+test('END-TO-END: a repository with a real NOTES.txt (plus requirements.txt) still gets the documentation-shaped architecture question, naming only NOTES.txt', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-notestxt-'));
+  write(d, 'requirements.txt', 'flask==3.0\n');
+  write(d, 'NOTES.txt', 'Design notes for this service.\n');
+  write(d, 'app.py', 'print("hi")\n');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.ok(r.stack.packages.some(p => p.manifestPath === 'requirements.txt'), 'fixture sanity: requirements.txt must actually be detected');
+  assert.deepEqual(r.harness.projectDocs, ['NOTES.txt'], 'NOTES.txt is real documentation-shaped evidence; requirements.txt is excluded from the same list');
+  const c = r.checks.find(x => x.id === 'P1.architecture');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.ok(c.question, 'a genuine documentation-shaped file still prompts the question');
+  assert.match(c.question, /1 file with a documentation-shaped name/);
+  assert.match(c.question, /NOTES\.txt/);
+  assert.equal(/requirements\.txt/.test(c.question), false, 'requirements.txt must never appear in the documentation-shaped listing');
+});
+
 test('a repository with no documentation at all is still proposed one', () => {
   const r = JSON.parse(cli(bare(), '--json'));
   const c = r.checks.find(x => x.id === 'P1.architecture');

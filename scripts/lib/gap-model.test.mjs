@@ -392,6 +392,34 @@ test('SECRET: a token-bearing script body reachable on the stack object never ap
   assert.equal(JSON.stringify(c.advice).includes(leakedToken), false);
 });
 
+// Coordinator finding (round 2): the "record it in CLAUDE.md, a Makefile,
+// ..." explanation used to repeat verbatim on every derived Python advice
+// line — eight copies of the same paragraph on a four-package repo, which
+// is how a report teaches a reader to skim past it. It must now appear at
+// most ONCE per check, regardless of how many packages derive a command.
+test('P2.scripts repeats the Python command-home explanation only once, across multiple packages', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-py-multi-'));
+  writeFileSync(join(d, 'pyproject.toml'), '[tool.ruff]\n');
+  mkdirSync(join(d, 'pkg-b'), { recursive: true });
+  writeFileSync(join(d, 'pkg-b', 'pyproject.toml'), '[tool.mypy]\n');
+  const stack = {
+    languages: ['python'], packageManager: null, isWorkspace: true,
+    packages: [
+      { name: 'a', dir: '.', manifestPath: 'pyproject.toml', scripts: [] },
+      { name: 'b', dir: 'pkg-b', manifestPath: 'pkg-b/pyproject.toml', scripts: [] },
+    ],
+    ci: [],
+  };
+  const c = byId(gaps(stack, bareHarness, [], undefined, ['pyproject.toml', 'pkg-b/pyproject.toml'], d), 'P2.scripts');
+  // Fixture sanity: at least two DERIVED lines must actually fire, or
+  // "exactly once" would be true for the wrong reason (nothing to
+  // deduplicate in the first place).
+  const derivedLines = c.advice.filter(a => /->/.test(a));
+  assert.ok(derivedLines.length >= 2, `fixture sanity: expected >=2 derived lines, got ${JSON.stringify(c.advice)}`);
+  const explanationCount = c.advice.filter(a => /no standard script table/.test(a)).length;
+  assert.equal(explanationCount, 1, 'the shared explanation must appear exactly once, not once per derived line');
+});
+
 test('deny rules present make P2.protected declared', () => {
   const c = byId(gaps(fullStack, richHarness), 'P2.protected');
   assert.equal(c.state, 'declared');
@@ -596,7 +624,7 @@ test('P1.architecture yields no proposal but a question when docs/ holds markdow
   assert.equal(c.decidable, false, 'three filenames is not an enumeration of the space');
   assert.equal(c.proposal, null, 'an undecidable absent must not propose');
   assert.ok(c.question, 'it must ask instead');
-  assert.match(c.question, /4 documentation files/, 'the question must say how many were found');
+  assert.match(c.question, /4 files with a documentation-shaped name/, 'the question must say how many were found, and say "shaped", not assert they ARE documentation');
   assert.match(c.question, /docs\/wiki\/README\.md/, 'and name them');
   assert.match(c.question, /…/, 'eliding the tail of a long list');
 });

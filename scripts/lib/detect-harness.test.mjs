@@ -307,6 +307,41 @@ test('projectDocs still excludes the kit\'s own outputs wherever they are found'
   assert.deepEqual(h.projectDocs, []);
 });
 
+// Coordinator finding (round 2): the wide net for .txt stays wide — that
+// is correct, see this file's own PROJECT_DOC_EXTENSIONS comment — but
+// requirements.txt/constraints.txt are Python DEPENDENCY MANIFESTS, not
+// documentation, a fact this codebase already holds elsewhere (gap-model.mjs's
+// P1.bootstrap comment, protected-evidence.mjs's pairedRequirementsFiles).
+// Excluding these two already-classified names is not guessing by
+// extension — projectDocs still treats every OTHER .txt as documentation-
+// shaped, proven by the NOTES.txt case right below.
+
+test('projectDocs excludes requirements.txt and requirements-dev.txt — Python dependency manifests, not documentation', () => {
+  const d = repo();
+  write(d, 'requirements.txt', 'flask==3.0\n');
+  write(d, 'requirements-dev.txt', 'pytest\n');
+  // Fixture sanity: both files must actually exist on disk before asserting
+  // they are excluded, or "excluded" would be true for the wrong reason.
+  assert.ok(listFiles(d).files.includes('requirements.txt'), 'fixture sanity: requirements.txt must actually be present');
+  assert.ok(listFiles(d).files.includes('requirements-dev.txt'), 'fixture sanity: requirements-dev.txt must actually be present');
+  assert.deepEqual(run(d).projectDocs, []);
+});
+
+test('projectDocs excludes constraints.txt the same way, and the directory form requirements/base.txt', () => {
+  const d = repo();
+  write(d, 'constraints.txt', 'urllib3==2.0\n');
+  write(d, 'requirements/base.txt', 'flask==3.0\n');
+  assert.ok(listFiles(d).files.includes('constraints.txt'), 'fixture sanity: constraints.txt must actually be present');
+  assert.deepEqual(run(d).projectDocs, []);
+});
+
+test('projectDocs still includes a REAL .txt doc (NOTES.txt) alongside an excluded requirements.txt', () => {
+  const d = repo();
+  write(d, 'requirements.txt', 'flask==3.0\n');
+  write(d, 'NOTES.txt', 'design notes\n');
+  assert.deepEqual(run(d).projectDocs, ['NOTES.txt'], 'the wide net for .txt stays wide for anything not already classified as a dependency manifest');
+});
+
 // Never the command string, only the script it runs. Secrets live in
 // arguments, and .claude/settings.local.json — one of the two files this
 // registry is read from — is gitignored and on the credential scanner's

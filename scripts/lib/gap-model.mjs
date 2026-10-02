@@ -57,10 +57,20 @@ const MAX_INSTRUCTION_LINES = 150;
  * has no equivalent standard ( `[tool.poetry.scripts]` is console entry
  * points, `[tool.pdm.scripts]` is PDM-specific, neither is "a lint script").
  * So a JS/TS line still names `pkg.manifestPath` as where to add it; a
- * Python line names ONLY the derived command, plus `PY_COMMAND_HOME`'s
- * pointer to wherever the project already keeps such commands — the
- * command is what detection proved, the file is a guess, and this project
- * does not ship guesses.
+ * Python line names ONLY the derived command — the command is what
+ * detection proved, the file is a guess, and this project does not ship
+ * guesses.
+ *
+ * Coordinator finding (round 2): `PY_COMMAND_HOME`'s explanation of WHERE
+ * to record a Python command used to repeat verbatim on every derived
+ * Python line — eight copies of the same paragraph on a four-package repo,
+ * which is how a report teaches a reader to skim past it. `lintAdvice`/
+ * `typecheckAdvice` now return `{ text, pyDerived }` instead of a bare
+ * string, carrying no explanation inline; the `P2.scripts` check below
+ * appends `PY_COMMAND_HOME` exactly ONCE, only when at least one line in
+ * THIS check's own advice actually derived a Python command (`pyDerived`),
+ * never when every Python line was a "cannot be derived" fallback with no
+ * command to record anywhere.
  */
 const ESLINT_CONFIG_NAMES = [
   '.eslintrc', '.eslintrc.json', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.yaml', '.eslintrc.yml',
@@ -72,7 +82,7 @@ const MYPY_TABLE_RE = /^\[tool\.mypy\]/m;
 const MYPY_SETUP_CFG_RE = /^\[mypy\]/m;
 const PYRIGHT_TABLE_RE = /^\[tool\.pyright\]/m;
 
-const PY_COMMAND_HOME = 'a Python project has no standard script table for this — record it in CLAUDE.md, a Makefile, a justfile, or wherever this project already keeps such commands';
+const PY_COMMAND_HOME = 'a Python project has no standard script table for lint/typecheck commands — record them in CLAUDE.md, a Makefile, a justfile, or wherever this project already keeps such commands';
 
 function atPkgDir(dir, name) { return dir === '.' ? name : `${dir}/${name}`; }
 function hasAnyAt(files, dir, names) { return names.some(n => files.includes(atPkgDir(dir, n))); }
@@ -113,30 +123,30 @@ function hasPyrightConfig(files, root, dir) {
 function lintAdvice(pkg, files, root) {
   if (isJsPackage(pkg)) {
     if (hasAnyAt(files, pkg.dir, ESLINT_CONFIG_NAMES)) {
-      return `${pkg.name}: add "lint": "eslint ." to ${pkg.manifestPath} — derived from the ESLint config found in this repository`;
+      return { text: `${pkg.name}: add "lint": "eslint ." to ${pkg.manifestPath} — derived from the ESLint config found in this repository`, pyDerived: false };
     }
-    return `${pkg.name}: ${pkg.manifestPath} is missing a "lint" script — no ESLint config was found, so the command cannot be derived`;
+    return { text: `${pkg.name}: ${pkg.manifestPath} is missing a "lint" script — no ESLint config was found, so the command cannot be derived`, pyDerived: false };
   }
   if (hasRuffConfig(files, root, pkg.dir)) {
-    return `${pkg.name}: lint -> ruff check . — derived from the ruff config found in this repository; ${PY_COMMAND_HOME}`;
+    return { text: `${pkg.name}: lint -> ruff check . — derived from the ruff config found in this repository`, pyDerived: true };
   }
-  return `${pkg.name}: no lint command declared for this package, and no ruff config was found, so the command cannot be derived`;
+  return { text: `${pkg.name}: no lint command declared for this package, and no ruff config was found, so the command cannot be derived`, pyDerived: false };
 }
 
 function typecheckAdvice(pkg, files, root) {
   if (isJsPackage(pkg)) {
     if (hasAnyAt(files, pkg.dir, ['tsconfig.json'])) {
-      return `${pkg.name}: add "typecheck": "tsc --noEmit" to ${pkg.manifestPath} — derived from the tsconfig.json found in this repository`;
+      return { text: `${pkg.name}: add "typecheck": "tsc --noEmit" to ${pkg.manifestPath} — derived from the tsconfig.json found in this repository`, pyDerived: false };
     }
-    return `${pkg.name}: ${pkg.manifestPath} is missing a "typecheck" script — no tsconfig.json was found, so the command cannot be derived`;
+    return { text: `${pkg.name}: ${pkg.manifestPath} is missing a "typecheck" script — no tsconfig.json was found, so the command cannot be derived`, pyDerived: false };
   }
   if (hasMypyConfig(files, root, pkg.dir)) {
-    return `${pkg.name}: typecheck -> mypy . — derived from the mypy config found in this repository; ${PY_COMMAND_HOME}`;
+    return { text: `${pkg.name}: typecheck -> mypy . — derived from the mypy config found in this repository`, pyDerived: true };
   }
   if (hasPyrightConfig(files, root, pkg.dir)) {
-    return `${pkg.name}: typecheck -> pyright — derived from the pyright config found in this repository; ${PY_COMMAND_HOME}`;
+    return { text: `${pkg.name}: typecheck -> pyright — derived from the pyright config found in this repository`, pyDerived: true };
   }
-  return `${pkg.name}: no typecheck command declared for this package, and neither a mypy nor a pyright config was found, so the command cannot be derived`;
+  return { text: `${pkg.name}: no typecheck command declared for this package, and neither a mypy nor a pyright config was found, so the command cannot be derived`, pyDerived: false };
 }
 
 /**
@@ -264,7 +274,14 @@ const CHECKS = [
           state: 'absent',
           decidable: false,
           evidence: [`no canonical architecture path, and the instruction file points at none`],
-          question: `No docs/ARCHITECTURE.md found, but the repository holds ${docs.length} documentation file${docs.length === 1 ? '' : 's'} (${shown}). Is one of these the architecture document?`,
+          // Coordinator finding: this used to assert these files ARE
+          // documentation ("the repository holds N documentation
+          // file(s)") — but projectDocs only found files with a
+          // documentation-SHAPED name (an extension .md/.rst/.adoc/.txt
+          // conventionally used for docs); it never opened one to confirm
+          // its content. Say what was actually measured, not what was
+          // merely likely — the question still prompts the same answer.
+          question: `No docs/ARCHITECTURE.md found, but the repository holds ${docs.length} file${docs.length === 1 ? '' : 's'} with a documentation-shaped name (${shown}). Is one of these the architecture document?`,
         };
       }
 
@@ -324,7 +341,10 @@ const CHECKS = [
     // line to add, per missing script, per package — but only where a
     // config file actually proves which tool to name; this is deliberately
     // not a `question`, because the gap itself is not a missing FACT (it is
-    // fully known), only a write this tool will not make.
+    // fully known), only a write this tool will not make. `PY_COMMAND_HOME`
+    // is appended at most ONCE, at the end — see this file's header comment
+    // on `lintAdvice`/`typecheckAdvice` for why a per-line explanation was
+    // wrong (coordinator, round 2).
     check: ({ stack, files, root }) => {
       // `p.scripts` is a sorted list of script NAMES — see detect-stack.mjs.
       const lacks = (p, name) => !p.scripts?.includes(name);
@@ -333,10 +353,20 @@ const CHECKS = [
 
       const evidence = missing.map(p => `${p.name}: missing ${[lacks(p, 'lint') && 'lint', lacks(p, 'typecheck') && 'typecheck'].filter(Boolean).join(' + ')}`);
       const advice = [];
+      let anyPyDerived = false;
       for (const p of missing) {
-        if (lacks(p, 'lint')) advice.push(lintAdvice(p, files, root));
-        if (lacks(p, 'typecheck')) advice.push(typecheckAdvice(p, files, root));
+        if (lacks(p, 'lint')) {
+          const r = lintAdvice(p, files, root);
+          advice.push(r.text);
+          anyPyDerived ||= r.pyDerived;
+        }
+        if (lacks(p, 'typecheck')) {
+          const r = typecheckAdvice(p, files, root);
+          advice.push(r.text);
+          anyPyDerived ||= r.pyDerived;
+        }
       }
+      if (anyPyDerived) advice.push(PY_COMMAND_HOME);
       return { state: 'absent', decidable: false, evidence, advice };
     },
   },
