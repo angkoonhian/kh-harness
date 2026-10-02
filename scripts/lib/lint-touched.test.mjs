@@ -5,6 +5,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, sep } from 'node:path';
 import { markerPath } from '../../assets/scripts/harness-redact.mjs';
+import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
+
+// Session markers go in a per-run directory that is removed afterwards, so
+// this file leaves nothing in the real one. See test-marker-sandbox.mjs for
+// the measurement that prompted it (8983 accumulated files).
+sandboxMarkerDir();
+
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'lint-touched.mjs');
 

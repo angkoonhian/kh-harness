@@ -331,9 +331,53 @@ export function rootTag(root) {
  * Creation failure is swallowed — the caller's own marker read/write is
  * already failure-tolerant, and a directory that cannot be created simply
  * means every marker operation beneath it will consistently fail-safe too.
+ *
+ * `HK_MARKER_DIR` overrides the location, following the same `HK_*`
+ * convention as `HK_LINT_TIMEOUT_MS` and friends. It exists for one reason:
+ * this is ONE FIXED DIRECTORY shared by every invocation of every hook, for
+ * the life of the machine, and nothing removes what is written there.
+ * Markers are keyed by `(rootTag, namespace, sessionId)`, so they never
+ * COLLIDE — but they do accumulate, one file per repository per namespace
+ * per session, for ever.
+ *
+ * BOUNDED, THEN ACCEPTED, AND WRITTEN DOWN HERE RATHER THAN LEFT TO BE
+ * DISCOVERED. Two separate decisions:
+ *
+ *   BOUNDED — `markerPath` shards by `rootTag` as a DIRECTORY level, so the
+ *   entry count in any one directory grows with sessions PER REPOSITORY
+ *   rather than with sessions globally. Measured before that change, from
+ *   this project's own test runs alone: 8983 entries in the one shared
+ *   directory. That is also where the naming scheme's own history is
+ *   visible — flat, pre-subdirectory markers from earlier iterations are
+ *   still sitting there, including one written for an EMPTY session id,
+ *   which is the plainest possible proof that markers outlive the code that
+ *   wrote them.
+ *
+ *   ACCEPTED — the remaining accumulation is NOT fixed with a cleanup sweep.
+ *   A marker is a few dozen bytes of JSON and the OS cleans its temp
+ *   directory; deleting files is a destructive action on the hot path of a
+ *   hook that fires on every edit and every turn end, and the one thing
+ *   worse than litter is a hook that removes the wrong file while a turn is
+ *   in flight. Litter in a temp directory is the better trade, and it is the
+ *   trade this comment records.
+ *
+ * Stale markers from an older naming scheme are never read by the current
+ * one and are harmless: a marker's absence is the permissive default
+ * everywhere (see `readJSONMarker`'s `fallback`), so an unreachable marker
+ * can only ever cost a hook one un-deduplicated report.
+ *
+ * In TESTS the accumulation is removed outright, which is what the override
+ * is for: `scripts/lib/test-marker-sandbox.mjs` points this at a per-run
+ * temp directory and deletes it in a teardown that runs on pass, fail or
+ * throw. Measured before that existed: 8983 files in the shared directory on
+ * the development machine, which is a credible mechanism for a rare,
+ * unattributable failure in a suite that sets sub-second timeouts.
  */
 export function markerDir() {
-  const dir = join(tmpdir(), `harness-kit-stop-${userTag()}`);
+  const override = process.env.HK_MARKER_DIR;
+  const dir = override && override.length > 0
+    ? override
+    : join(tmpdir(), `harness-kit-stop-${userTag()}`);
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
@@ -343,18 +387,49 @@ export function markerDir() {
 }
 
 /**
- * Builds a marker's full path: per-user directory, then a repo-root tag,
- * a `namespace`, and the sanitized session_id as the filename — so
- * neither a cross-repo nor a cross-session collision is possible, AND two
- * DIFFERENT hooks sharing a (root, session_id) pair never read or write
- * each other's marker. lint-touched.mjs and verify-touched.mjs track
- * differently-shaped state (per-file signatures vs. a single
+ * Builds a marker's full path: the per-user directory, then a DIRECTORY
+ * named for the repo-root tag, then `<namespace>-<sanitized session_id>` as
+ * the filename — so neither a cross-repo nor a cross-session collision is
+ * possible, AND two DIFFERENT hooks sharing a (root, session_id) pair never
+ * read or write each other's marker. lint-touched.mjs and verify-touched.mjs
+ * track differently-shaped state (per-file signatures vs. a single
  * count/lastSignature/timedOut) under the SAME root and session; without
  * `namespace` they would silently corrupt one another's bookkeeping the
  * moment both fired in the same session.
+ *
+ * `rootTag` is a DIRECTORY LEVEL rather than a filename prefix, and that is
+ * the only thing that changed here. The marker's IDENTITY is unchanged — it
+ * is still exactly (root, namespace, session) — so no collision behaviour
+ * moves and the cross-repo and cross-session isolation guarantees are the
+ * same guarantees. What changes is how many entries land in one directory.
+ *
+ * Why it had to change. Flat, every marker this tool has ever written on a
+ * machine shares ONE directory, for the life of that machine, and nothing
+ * removes them (see `markerDir`, which rules against a cleanup sweep and
+ * says why). Measured on the development machine, from this project's own
+ * test runs alone: 8983 entries. Entry count grew with sessions GLOBALLY. It
+ * now grows with sessions PER REPOSITORY, which is the bound that actually
+ * matters — a heavy user of one repository is bounded by their own session
+ * count rather than by the sum across every repository they have ever opened.
+ *
+ * The cost is one `mkdirSync` on a path that already did one, on a hot path
+ * (every edit, every turn end). It is not a cleanup mechanism and it deletes
+ * nothing: deleting files on the hot path of a hook that fires mid-turn is a
+ * worse trade than litter, which remains the ruling.
+ *
+ * Creation failure is swallowed for the same reason `markerDir`'s is: every
+ * marker read and write beneath it is already failure-tolerant, so a
+ * directory that cannot be created means the caller consistently fails safe
+ * (see `writeJSONMarker`, which reports failure rather than pretending).
  */
 export function markerPath(root, sessionId, namespace) {
-  return join(markerDir(), `${rootTag(root)}-${namespace}-${sessionId}`);
+  const dir = join(markerDir(), rootTag(root));
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    // best-effort — see comment above
+  }
+  return join(dir, `${namespace}-${sessionId}`);
 }
 
 /**

@@ -5,6 +5,13 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
+import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
+
+// Session markers go in a per-run directory that is removed afterwards, so
+// this file leaves nothing in the real one. See test-marker-sandbox.mjs for
+// the measurement that prompted it (8983 accumulated files).
+sandboxMarkerDir();
+
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'verify-touched.mjs');
 
@@ -33,13 +40,22 @@ function sid() {
 }
 
 // Reproduces harness-redact.mjs's own userTag()/rootTag()/markerPath()
-// formula (ruling 10: a per-user directory, plus a hash of the repository
-// root, plus the session id). Duplicated here deliberately — this is the
-// EXACT path an unsanitized session_id would be concatenated into if
-// safeSessionId's check were ever bypassed, so the SECURITY tests below
-// can assert directly against it rather than against the OLD, simpler
-// shape (`<tmpdir>/harness-kit-stop-<session_id>`) that no longer matches
-// what production actually builds.
+// formula (ruling 10: a per-user directory, a DIRECTORY named for the hash
+// of the repository root, then namespace + session id). Duplicated here
+// deliberately — this is the EXACT path an unsanitized session_id would be
+// concatenated into if safeSessionId's check were ever bypassed, so the
+// SECURITY tests below can assert directly against it rather than against
+// the OLD, simpler shape (`<tmpdir>/harness-kit-stop-<session_id>`) that no
+// longer matches what production actually builds.
+//
+// It is NAIVE ABOUT ONE THING ONLY: it skips `safeSessionId`, which is the
+// whole point. It must track production exactly in every other respect, so
+// it honours `HK_MARKER_DIR` and shards by root tag the same way
+// `markerPath` does. Getting that wrong does not fail loudly — it makes the
+// MARKER WRITE FAILURE test occupy a path production no longer uses, so the
+// write succeeds and the test fails for a reason that has nothing to do with
+// what it is checking. That happened while this suite was being made
+// hermetic, which is why this comment exists.
 function realUserTag() {
   try {
     const id = typeof process.getuid === 'function' ? String(process.getuid()) : userInfo().username;
@@ -48,9 +64,13 @@ function realUserTag() {
     return 'unknown';
   }
 }
+function realMarkerDir() {
+  const override = process.env.HK_MARKER_DIR;
+  return override && override.length > 0 ? override : join(tmpdir(), `harness-kit-stop-${realUserTag()}`);
+}
 function naivePathFor(sessionId, root, namespace = 'stop') {
   const rootHash = createHash('sha256').update(resolve(root), 'utf8').digest('hex').slice(0, 16);
-  return join(tmpdir(), `harness-kit-stop-${realUserTag()}`, `${rootHash}-${namespace}-${sessionId}`);
+  return join(realMarkerDir(), rootHash, `${namespace}-${sessionId}`);
 }
 
 function repo(scripts = {}) {

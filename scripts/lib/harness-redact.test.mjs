@@ -10,9 +10,16 @@
 // entirely on indirection through its two callers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, basename, dirname } from 'node:path';
+import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
+
+// Session markers go in a per-run directory that is removed afterwards, so
+// this file leaves nothing in the real one. See test-marker-sandbox.mjs for
+// the measurement that prompted it (8983 accumulated files).
+sandboxMarkerDir();
+
 import {
   boundReport,
   commandTokens,
@@ -280,4 +287,78 @@ test('MAX_BLOCKS_PER_SESSION is the documented value of 3', () => {
 test('redactLines no longer exists — use dropCommandFragments + maskCredentials explicitly at the call site', async () => {
   const mod = await import('../../assets/scripts/harness-redact.mjs');
   assert.equal('redactLines' in mod, false);
+});
+
+// --- Coordinator ruling (post-review): the marker directory is overridable,
+// --- and sharded by repository ---------------------------------------------
+//
+// Both changes exist because of one measurement. `markerDir()` was a single
+// fixed directory shared by every run of every hook on a machine, with
+// nothing to isolate it and nothing to remove what it accumulated. On the
+// development machine, from this project's own test runs alone:
+//
+//     <tmpdir>/harness-kit-stop-28d5673005cc744e: 8983 entries
+//
+// That is a credible mechanism for a rare, unattributable failure in a suite
+// where several tests set sub-second bounds, and a suite that leaves durable
+// state outside its own fixtures has no business being surprised by one.
+
+test('MARKER DIR: HK_MARKER_DIR overrides the location, following the HK_* convention', () => {
+  const sandbox = process.env.HK_MARKER_DIR;
+  assert.ok(sandbox, 'fixture sanity: this file sandboxes the marker dir at import');
+  assert.equal(markerDir(), sandbox, 'the override must be honoured verbatim');
+  assert.ok(existsSync(sandbox), 'and the directory must exist afterwards');
+});
+
+test('MARKER DIR: an empty HK_MARKER_DIR falls back to the per-user default, never to an empty path', () => {
+  const saved = process.env.HK_MARKER_DIR;
+  try {
+    process.env.HK_MARKER_DIR = '';
+    const fallback = markerDir();
+    assert.notEqual(fallback, '', 'an empty override must not become an empty path');
+    assert.ok(fallback.includes('harness-kit-stop-'), `expected the per-user default, got ${fallback}`);
+  } finally {
+    process.env.HK_MARKER_DIR = saved;
+  }
+});
+
+test('MARKER PATH: sharded by repository — two repositories in ONE session get two directories, not two files', () => {
+  // The bound that matters: entries per directory now grow with sessions
+  // PER REPOSITORY rather than with sessions globally.
+  const session = 'shard-probe-1';
+  const a = mkdtempSync(join(tmpdir(), 'hk-shard-a-'));
+  const b = mkdtempSync(join(tmpdir(), 'hk-shard-b-'));
+
+  const pa = markerPath(a, session, 'stop');
+  const pb = markerPath(b, session, 'stop');
+  assert.notEqual(pa, pb, 'two repositories must never share a marker');
+
+  // Each path's PARENT is the repo shard; the filename no longer carries the
+  // root tag at all.
+  assert.equal(basename(dirname(pa)), rootTag(a));
+  assert.equal(basename(dirname(pb)), rootTag(b));
+  assert.equal(basename(pa), `stop-${session}`, 'the filename is namespace + session only');
+  assert.equal(basename(pb), `stop-${session}`);
+  assert.equal(dirname(dirname(pa)), markerDir(), 'the shard sits directly under the marker directory');
+
+  // The directories are created eagerly, so a caller only has to write.
+  assert.ok(existsSync(dirname(pa)));
+  assert.ok(existsSync(dirname(pb)));
+  writeFileSync(pa, '{}');
+  writeFileSync(pb, '{}');
+  assert.deepEqual(readdirSync(dirname(pa)), [`stop-${session}`]);
+  assert.deepEqual(readdirSync(dirname(pb)), [`stop-${session}`]);
+  assert.equal(readdirSync(markerDir(), { withFileTypes: true }).some(e => e.isFile()), false,
+    'nothing may land flat in the marker directory any more — that was the old layout');
+});
+
+test('MARKER PATH: the identity is still (root, namespace, session) — sharding moved the path, not the key', () => {
+  // If this ever stops holding, the sharding changed collision behaviour
+  // rather than just the layout, which is the one thing it must not do.
+  const d = mkdtempSync(join(tmpdir(), 'hk-shard-id-'));
+  assert.equal(markerPath(d, 's1', 'stop'), markerPath(d, 's1', 'stop'), 'same triple, same path');
+  assert.notEqual(markerPath(d, 's1', 'stop'), markerPath(d, 's1', 'lint'), 'namespace still separates');
+  assert.notEqual(markerPath(d, 's1', 'stop'), markerPath(d, 's2', 'stop'), 'session still separates');
+  // Two namespaces for one repo share the shard and differ by filename.
+  assert.equal(dirname(markerPath(d, 's1', 'stop')), dirname(markerPath(d, 's1', 'lint')));
 });

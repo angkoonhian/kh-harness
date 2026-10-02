@@ -155,13 +155,31 @@ scaffold is empty by construction.
 
 Nothing else. A crash is a bug, not a contract.
 
-## What it leaves in your repository
+## What it leaves behind
+
+In your repository:
 
 - `docs/harness/detect.json` — written by every `detect` run, including runs
   pointed at this repository itself. It is **not** removed by `uninstall`
   (it is a report, not an installation), so a `?? docs/harness/` in
   `git status` after exercising the tool is expected.
 - Whatever `apply --yes` wrote, each entry listed in the manifest.
+
+Outside your repository, once the hooks are installed:
+
+- `<temp>/harness-kit-stop-<user>/<repo>/<hook>-<session>` — one small JSON
+  file per repository, per hook, per Claude Code session. They are how each
+  hook avoids reporting the same standing failure twice in a session and how
+  it bounds how many times it may block, so they have to outlive a single
+  invocation.
+
+  They **accumulate**: nothing deletes them, by design. A hook that removes
+  files runs on the hot path of every edit and every turn end, and the one
+  thing worse than litter in a temp directory is a hook deleting the wrong
+  file mid-turn. They are a few dozen bytes each, they live under the
+  directory your OS already cleans, and the per-repository sharding bounds
+  how many land in any one directory. `HK_MARKER_DIR` moves them if you want
+  them somewhere else. Said here rather than left to be discovered.
 
 ## Development
 

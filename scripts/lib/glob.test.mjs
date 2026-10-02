@@ -217,7 +217,7 @@ test('CONCERN 1: every RESERVED_SENTINELS entry is refused — iterated, so a ne
   }
 });
 
-test('CONCERN 1 INVARIANT: no single character may expand to a wildcard unless it is `*` — a sentinel added without a refusal fails HERE', () => {
+test('CONCERN 1 INVARIANT: no C0 control character or DEL expands to a wildcard unless it is refused — a sentinel added without a refusal fails HERE', () => {
   // What makes a sentinel dangerous is precisely this: the transformation
   // turns that one character into something that matches text it is not.
   // So the property to pin is not "the list is complete" (unknowable from
@@ -225,9 +225,26 @@ test('CONCERN 1 INVARIANT: no single character may expand to a wildcard unless i
   // introduced in the four steps without being added to RESERVED_SENTINELS
   // breaks this, whatever character it is, with nobody extending this test.
   //
-  // The scan covers every C0 control character and DEL — the only plausible
-  // sentinel choices, since a sentinel must be a character a real glob
-  // cannot contain — plus a few printable characters as a control group.
+  // WHAT THIS DOES AND DOES NOT GUARANTEE, stated precisely because a test
+  // NAME IS A REPORT TOO, and a report that overclaims is the defect class
+  // this branch has spent the most effort removing. The earlier name said
+  // "no single character", which is not what the scan covers.
+  //
+  // IT GUARANTEES: no C0 control character (U+0000-U+001F) and not DEL
+  // (U+007F) expands to a wildcard without being refused. Those are the
+  // only plausible sentinel choices — a sentinel must be a character a real
+  // glob cannot contain — so they are where a future placeholder would come
+  // from, and the guarantee is useful.
+  //
+  // IT DOES NOT GUARANTEE: that no sentinel anywhere escapes the list. One
+  // chosen from, say, the Unicode private-use area would not be caught.
+  // Widening the scan to every code point was considered and rejected: it
+  // would be slow and would STILL not amount to "no sentinel", so it buys
+  // runtime rather than a stronger claim.
+  //
+  // The printable characters at the end of the list are a CONTROL GROUP:
+  // they prove the assertion can tell a literal from a wildcard at all, so
+  // a scan that silently stopped checking would not look like a pass.
   const suspects = [];
   for (let code = 0; code <= 0x1f; code++) suspects.push(String.fromCharCode(code));
   suspects.push(String.fromCharCode(0x7f));
@@ -244,7 +261,7 @@ test('CONCERN 1 INVARIANT: no single character may expand to a wildcard unless i
     for (const wildcardish of ['aXb', 'aXXXXb', 'ab', 'a/b', 'aXX/XXb']) {
       if (wildcardish === pattern) continue;
       assert.equal(re.test(wildcardish), false,
-        `${JSON.stringify(ch)} expands to a WILDCARD but is not in RESERVED_SENTINELS — it matched ${JSON.stringify(wildcardish)}. ` +
+        `${JSON.stringify(ch)} (a C0 control character or DEL) expands to a WILDCARD but is not in RESERVED_SENTINELS — it matched ${JSON.stringify(wildcardish)}. ` +
         "If you introduced a new internal sentinel, add it to RESERVED_SENTINELS in glob.mjs: the refusal is derived from that list, " +
         "so a sentinel that is not in it silently turns repository-controlled data into a glob that matches everything.");
     }
