@@ -24,8 +24,15 @@ function make(id, extra) {
       const js = paths.filter(p => /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(p));
       return js.length ? `npx eslint --no-error-on-unmatched-pattern ${js.join(' ')}` : null;
     },
+    // `**/dist/**` only matches a NESTED `dist/` — `**` requires a literal
+    // `/` before the final segment (see generic.mjs's LOCKFILE_GLOBS comment
+    // for the full explanation), so a root-level `dist/` or `build/` — the
+    // only case a single-package project ever has — would otherwise match
+    // nothing and silently fail to be protected. Both the root-anchored and
+    // `**/`-anchored forms are listed deliberately for each: do not
+    // "simplify" this back down to one, that is what caused the gap.
     protectedGlobs() {
-      return [...LOCKFILE_GLOBS, '**/dist/**', '**/build/**'];
+      return [...LOCKFILE_GLOBS, 'dist/**', '**/dist/**', 'build/**', '**/build/**'];
     },
     appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16]; },
     ...extra,

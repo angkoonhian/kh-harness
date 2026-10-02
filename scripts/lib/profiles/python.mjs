@@ -15,6 +15,10 @@ export const python = {
     const py = paths.filter(p => p.endsWith('.py'));
     return py.length ? `ruff check ${py.join(' ')}` : null;
   },
-  protectedGlobs() { return [...LOCKFILE_GLOBS, 'requirements*.txt', '**/__pycache__/**']; },
+  // `**/__pycache__/**` only matches a NESTED `__pycache__/` — same
+  // root-anchor gap as LOCKFILE_GLOBS and typescript.mjs's dist/build
+  // globs (see generic.mjs). A root-level `__pycache__/` needs its own
+  // form; both are listed deliberately — do not collapse this back to one.
+  protectedGlobs() { return [...LOCKFILE_GLOBS, 'requirements*.txt', '__pycache__/**', '**/__pycache__/**']; },
   appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16]; },
 };

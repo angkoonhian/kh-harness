@@ -127,3 +127,57 @@ test('a declared P2.protected check yields no proposals', () => {
   const ps = buildProposals(args([check({ id: 'P2.protected', step: 11, state: 'declared', proposal: null })], { files }));
   assert.deepEqual(ps, []);
 });
+
+// --- root-anchored vs **-anchored forms must each cover their own case ----
+
+const tsStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+const pyStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], languages: ['python'], isWorkspace: false, packageManager: null, ci: [] };
+
+test('P2.protected matches a root-level build output directory (dist/)', () => {
+  // `**/dist/**` cannot match `dist/index.js` — `**` requires a literal `/`
+  // before the final segment, so a root-level `dist/` (the only case a
+  // single-package project ever has) would otherwise match nothing while
+  // *looking* protected.
+  const files = ['package.json', 'dist/index.js'];
+  const ps = buildProposals(args([protectedCheck()], { files, stack: tsStack }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.ok(deny, 'a deny proposal is made');
+  assert.ok(deny.globs.includes('Edit(dist/**)'), 'the root-level dist/ is matched by the root-anchored form');
+});
+
+test('P2.protected still matches a nested build output directory (build/) after the root-anchor fix', () => {
+  const files = ['package.json', 'packages/api/build/out.js'];
+  const ps = buildProposals(args([protectedCheck()], { files, stack: tsStack }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.ok(deny, 'a deny proposal is made');
+  assert.ok(deny.globs.includes('Edit(**/build/**)'), 'the nested build/ is matched by the **-anchored form');
+  assert.equal(deny.globs.includes('Edit(build/**)'), false, 'no root-level build/ exists, so that form finds no evidence');
+});
+
+test('P2.protected matches a root-level __pycache__ directory', () => {
+  const files = ['pyproject.toml', '__pycache__/m.pyc'];
+  const ps = buildProposals(args([protectedCheck()], { files, stack: pyStack }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.ok(deny, 'a deny proposal is made');
+  assert.ok(deny.globs.includes('Edit(__pycache__/**)'), 'the root-level __pycache__/ is matched by the root-anchored form');
+});
+
+test('P2.protected still matches a nested __pycache__ directory after the root-anchor fix', () => {
+  const files = ['pyproject.toml', 'pkg/sub/__pycache__/n.pyc'];
+  const ps = buildProposals(args([protectedCheck()], { files, stack: pyStack }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.ok(deny, 'a deny proposal is made');
+  assert.ok(deny.globs.includes('Edit(**/__pycache__/**)'), 'the nested __pycache__/ is matched by the **-anchored form');
+  assert.equal(deny.globs.includes('Edit(__pycache__/**)'), false, 'no root-level __pycache__/ exists, so that form finds no evidence');
+});
+
+test('P2.protected matches root-level generated-output candidates, not only nested ones', () => {
+  // The same root-anchor gap found in dist/build/__pycache__ also applies
+  // to __generated__/ and *.generated.* — found by checking, not assumed.
+  const files = ['package.json', '__generated__/x.ts', 'foo.generated.ts'];
+  const ps = buildProposals(args([protectedCheck()], { files }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.ok(deny, 'a deny proposal is made');
+  assert.ok(deny.globs.includes('Edit(__generated__/**)'), 'root-level __generated__/ is matched');
+  assert.ok(deny.globs.includes('Edit(*.generated.*)'), 'root-level foo.generated.ts is matched');
+});

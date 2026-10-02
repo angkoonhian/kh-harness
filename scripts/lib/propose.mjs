@@ -36,7 +36,14 @@ const PROTECTED_PATH_CANDIDATES = [
   '**/migrations/**',
   'drizzle/**',
   'alembic/versions/**',
+  // Root-anchored AND **-anchored, deliberately — same gap as dist/build/
+  // __pycache__ in typescript.mjs/python.mjs: `**/__generated__/**` matches
+  // nothing for a root-level `__generated__/`, and `**/*.generated.*`
+  // matches nothing for a root-level `foo.generated.ts` (verified). Do not
+  // collapse this back to one form.
+  '__generated__/**',
   '**/__generated__/**',
+  '*.generated.*',
   '**/*.generated.*',
 ];
 
