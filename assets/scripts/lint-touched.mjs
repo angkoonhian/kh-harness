@@ -217,6 +217,44 @@ function mentionsFile(line, filePath, base) {
   return normLine.includes(normPath) || line.includes(base);
 }
 
+/**
+ * Attribution BLOCKS, not just attributed lines. A single line mentioning
+ * the edited file is too narrow for the dominant real linter's own default
+ * output: eslint's "stylish" formatter prints the bare file path on its
+ * own line, then each diagnostic on a FOLLOWING indented line that never
+ * itself mentions the file — reporting only the bare path line tells
+ * Claude something is wrong and gives it no way to know what.
+ *
+ * The rule: a line that mentions the edited file OPENS a block and is
+ * forwarded. A line that follows and begins with whitespace is forwarded
+ * as a CONTINUATION of that block, exempt from mentionsFile but NEVER
+ * from redaction — continuations are the first output this hook emits
+ * that is not anchored to the edited path, which makes them the natural
+ * home for the next leak, so the caller (main) MUST run the full return
+ * value of this function through the same dropCommandFragments /
+ * maskCredentials chokepoint as any other line, never a parallel path.
+ * The block closes at the first blank line or the first non-indented
+ * line; a later line must mention the file again to open a new one.
+ */
+function extractAttributedBlocks(lines, filePath, base) {
+  const out = [];
+  let inBlock = false;
+  for (const line of lines) {
+    if (!line.trim()) { inBlock = false; continue; } // a blank line always closes a block
+    const isContinuation = inBlock && /^[ \t]/.test(line);
+    if (isContinuation) {
+      out.push(line);
+      continue;
+    }
+    inBlock = false;
+    if (mentionsFile(line, filePath, base)) {
+      out.push(line);
+      inBlock = true;
+    }
+  }
+  return out;
+}
+
 function statSnapshot(path) {
   try {
     const st = statSync(path);
@@ -431,7 +469,7 @@ async function main() {
 
   const base = basename(filePath);
   const combined = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  const attributed = combined.split(/\r?\n/).filter(l => l.trim() && mentionsFile(l, filePath, base));
+  const attributed = extractAttributedBlocks(combined.split(/\r?\n/), filePath, base);
   const survived = dropCommandFragments(attributed, lintScript, fullCommand, relToOwner);
   return writeReport(survived.map(maskCredentials));
 }

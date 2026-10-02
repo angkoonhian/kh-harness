@@ -559,33 +559,137 @@ test('REDACTION DOES NOT OVER-REACH: a plain diagnostic still reaches stderr wit
   assert.match(r.stderr, /no-unused-vars/);
 });
 
-test('REDACTION DOES NOT OVER-REACH: eslint-stylish-shaped output still reports something actionable', () => {
-  // eslint's default "stylish" formatter prints the bare file path on its
-  // own line, then the diagnostics on FOLLOWING indented lines that do not
-  // themselves mention the file at all. mentionsFile is deliberately not
-  // restricted to a "path:line" shape (a diagnostic-shape allowlist would
-  // silence exactly this, the single most common real formatter in this
-  // ecosystem) — this proves the path line itself still survives and
-  // reaches Claude, which is what "something actionable" means today.
-  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
-  mkdirSync(join(d, 'src'), { recursive: true });
-  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;\n');
+// --- BLOCKS: eslint-stylish's bare-path-line-then-indented-detail shape --
+//
+// A single line mentioning the edited file was too narrow for eslint's own
+// default formatter: it prints the bare file path on its own line, then
+// each diagnostic on a FOLLOWING indented line that never itself mentions
+// the file. extractAttributedBlocks forwards indented continuation lines
+// after an opening (file-mentioning) line, closing the block at the first
+// blank line or first non-indented line.
+const NL = String.fromCharCode(10);
+function stylishLintScript(filePath, detail) {
   const stylish = [
-    'src/a.ts',
-    "  1:7  error  'x' is defined but never used  no-unused-vars",
+    filePath,
+    `  ${detail}`,
     '',
     String.fromCharCode(0x2716) + ' 1 problem (1 error, 0 warnings)',
-  ].join(String.fromCharCode(10));
-  writeFileSync(join(d, 'runlint.cjs'), `process.stderr.write(${JSON.stringify(stylish)} + '\\n'); process.exit(1);\n`);
+  ].join(NL);
+  return [`process.stderr.write(${JSON.stringify(stylish)} + ${JSON.stringify(NL)});`, 'process.exit(1);'].join(NL);
+}
+
+test('BLOCK: eslint-stylish output forwards the path line AND its indented diagnostic', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;' + NL);
+  writeFileSync(join(d, 'runlint.cjs'), stylishLintScript('src/a.ts', "1:7  error  'a' is assigned a value but never used  no-unused-vars"));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
 
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
-  assert.equal(r.code, 2, 'the stylish-shaped output is still reported, not swallowed entirely');
-  assert.match(r.stderr, /src\/a\.ts/, 'at minimum, the path line that attributes this to the edit survives');
-  // CONCERN (not fixed this round, per the coordinator's explicit ruling):
-  // the indented detail line below the path does NOT itself mention the
-  // file, so mentionsFile drops it — only the bare path line survives.
-  // See the report for this task's "known limitation" writeup.
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /src\/a\.ts/, 'the opening path line survives');
+  assert.match(r.stderr, /1:7\s+error.*no-unused-vars/, 'the indented detail line now survives too — this is the fix');
+});
+
+test('BLOCK: the non-indented "x 1 problem" summary line after the block is NOT forwarded', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;' + NL);
+  writeFileSync(join(d, 'runlint.cjs'), stylishLintScript('src/a.ts', "1:7  error  'a' is assigned a value but never used  no-unused-vars"));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
+
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  assert.doesNotMatch(r.stderr, /problem/, 'the summary line is not per-edit feedback and must not be forwarded');
+});
+
+test('BLOCK: a continuation line carrying a credential-shaped value is redacted, not forwarded raw', () => {
+  // Proves the chokepoint covers continuations rather than assuming it:
+  // the credential sits on the INDENTED line, which never itself mentions
+  // the file, so it reaches dropCommandFragments/maskCredentials only if
+  // extractAttributedBlocks's continuations are routed through the same
+  // chokepoint as the opening line.
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;' + NL);
+  writeFileSync(join(d, 'runlint.cjs'), stylishLintScript('src/a.ts', 'found token sk-live-CONTINUATIONLEAK0001 in config'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
+
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  assert.doesNotMatch(r.stderr, /sk-live-CONTINUATIONLEAK0001/, 'a credential in a continuation line must be masked');
+  assert.match(r.stderr, /found token/, 'the surrounding continuation text still survives — masked, not dropped');
+  assert.match(r.stderr, /\*\*\*/);
+});
+
+test('BLOCK: a non-indented line after the block is dropped unless it itself mentions the file', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;' + NL);
+  const lines = [
+    'src/a.ts',
+    '  1:7  error  detail-one-survives',
+    'unrelated-file.ts:9  error  detail-two-must-not-appear',
+    'src/a.ts',
+    '  2:1  error  detail-three-survives',
+  ].join(NL);
+  const src = [`process.stderr.write(${JSON.stringify(lines)} + ${JSON.stringify(NL)});`, 'process.exit(1);'].join(NL);
+  writeFileSync(join(d, 'runlint.cjs'), src);
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
+
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /detail-one-survives/);
+  assert.doesNotMatch(r.stderr, /detail-two-must-not-appear/, 'a non-indented line that does not mention the file closes the block and is dropped');
+  assert.match(r.stderr, /detail-three-survives/, 'a later non-indented line that DOES mention the file opens a new block');
+});
+
+test('BLOCK: the existing single-line case behaves exactly as before', () => {
+  const d = repo('node -e "console.error(\'src/a.ts:1 no-unused-vars\'); process.exit(1)"');
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2, 'exit 2 is how Claude is told');
+  assert.match(r.stderr, /no-unused-vars/, 'the linter output must reach stderr');
+  assert.equal(r.stdout.trim(), '', 'stdout is invisible to Claude and must not be used');
+});
+
+test('BLOCK: a blank line closes the block — an indented line after it is NOT a stray continuation', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;' + NL);
+  const lines = [
+    'src/a.ts',
+    '  1:7  error  detail-survives',
+    '', // blank line closes the block
+    '  this-indented-line-must-not-survive', // indented, but the block is already closed
+  ].join(NL);
+  const src = [`process.stderr.write(${JSON.stringify(lines)} + ${JSON.stringify(NL)});`, 'process.exit(1);'].join(NL);
+  writeFileSync(join(d, 'runlint.cjs'), src);
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
+
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /detail-survives/);
+  assert.doesNotMatch(r.stderr, /this-indented-line-must-not-survive/, 'indentation alone does not resurrect a block the blank line already closed');
+});
+
+test('BLOCK: MAX_REPORT_LINES governs the TOTAL, counting continuations', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;' + NL);
+  // One opener + 70 indented continuations = 71 attributable lines, well
+  // past the 60-line cap — the cap must count the opener AND every
+  // continuation together, not reset per block.
+  const continuations = Array.from({ length: 70 }, (_, i) => `  detail-${i}`);
+  const lines = ['src/a.ts', ...continuations].join(NL);
+  const src = [`process.stderr.write(${JSON.stringify(lines)} + ${JSON.stringify(NL)});`, 'process.exit(1);'].join(NL);
+  writeFileSync(join(d, 'runlint.cjs'), src);
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
+
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  const shownLines = r.stderr.split(NL).filter(Boolean);
+  assert.ok(shownLines.length <= 61, `expected at most 60 lines plus a truncation notice, got ${shownLines.length}`);
+  assert.match(r.stderr, /truncated: 11 more line\(s\)/, '1 opener + 70 continuations = 71 total; 71 - 60 = 11 truncated');
 });
 
 // --- Isolating which layer actually does the work -------------------------
