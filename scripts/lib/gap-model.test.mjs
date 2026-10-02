@@ -691,6 +691,43 @@ test('a clean security sweep is verified', () => {
   assert.equal(byId(gaps(bareStack, bareHarness, []), 'P0.security').state, 'verified');
 });
 
+// --- Task 9b, finding 1: P0.security must not fail on noise alone --------
+
+test('a repository with ONLY reference-valued credentials-in-doc hits is verified, not failing, and discloses the collapsed count', () => {
+  const exposures = [
+    { kind: 'credentials-in-doc', location: 'src/a.ts', severity: 'medium', valueKind: 'reference' },
+    { kind: 'credentials-in-doc', location: 'src/b.ts', severity: 'medium', valueKind: 'reference' },
+  ];
+  const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
+  assert.equal(c.state, 'verified', 'code-reference noise alone must never fail the check');
+  assert.equal(c.proposal, null);
+  assert.ok(c.evidence.some(e => /2 credential-shaped key/.test(e) && /detect\.json/.test(e)),
+    'the collapsed count must still be disclosed, not silently dropped');
+});
+
+test('one genuine literal finding among many reference hits still fails the check, and the evidence stays short', () => {
+  const exposures = [
+    { kind: 'token-in-remote-url', location: 'git remote "origin"', severity: 'high' },
+    ...Array.from({ length: 62 }, (_, i) => ({ kind: 'credentials-in-doc', location: `src/f${i}.ts`, severity: 'medium', valueKind: 'reference' })),
+  ];
+  const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
+  assert.equal(c.state, 'failing');
+  // The real finding is named individually...
+  assert.ok(c.evidence.some(e => e.includes('token-in-remote-url')));
+  // ...the 62 reference hits are a single collapsed line, not 62 lines.
+  const perFindingLines = c.evidence.filter(e => e.includes('credentials-in-doc at'));
+  assert.equal(perFindingLines.length, 0, 'no individual reference-valued line may appear in the failing evidence');
+  assert.ok(c.evidence.some(e => /^62 credential-shaped/.test(e)));
+  assert.equal(c.evidence.length, 2, 'evidence must stay short: the real finding plus one collapsed line');
+});
+
+test('a literal-valued credentials-in-doc hit still fails the check and is named individually', () => {
+  const exposures = [{ kind: 'credentials-in-doc', location: 'docs/db.md', severity: 'medium', valueKind: 'literal' }];
+  const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
+  assert.equal(c.state, 'failing');
+  assert.ok(c.evidence.some(e => e.includes('credentials-in-doc at docs/db.md')));
+});
+
 test('a missing git remote is absent', () => {
   assert.equal(byId(gaps(bareStack, bareHarness), 'P4.remote').state, 'absent');
   assert.equal(byId(gaps(fullStack, richHarness), 'P4.remote').state, 'declared');

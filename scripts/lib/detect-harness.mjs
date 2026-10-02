@@ -280,8 +280,16 @@ export function detectHarness(root, files) {
     instructions: { path: instructionsPath, lines: lineCount(claudeMd ?? agentsMd) },
     agentsMd: agentsMd != null ? 'AGENTS.md' : null,
     claudeDir: {
-      settings: files.includes('.claude/settings.json'),
-      localSettings: files.includes('.claude/settings.local.json'),
+      // Task 9b, finding 6: this used to read `files` (the tracked/scan-
+      // visible list) while its own siblings below — denyRules,
+      // denyRuleList, hookEvents — read `.claude/settings.json` directly
+      // off disk via parseSettings. Under a gitignored `.claude/`, that
+      // made `settings: false` sit next to `denyRules: 2` populated from
+      // the very file `settings` just denied existed — a machine-readable
+      // falsehood a later tool would trust. Both booleans now come from the
+      // SAME read as their siblings, so they cannot disagree with them.
+      settings: parseSettings(root, '.claude/settings.json') !== null,
+      localSettings: parseSettings(root, '.claude/settings.local.json') !== null,
       denyRules: denyRuleCount(root),
       denyRuleList: denyRuleList(root),
       // File inventory. NOT what decides whether an event is covered — see hookEvents.

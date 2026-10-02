@@ -8,7 +8,7 @@
 // enough.
 import * as fs from 'node:fs';
 import { join } from 'node:path';
-import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH } from './apply-lib.mjs';
+import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline } from './apply-lib.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
@@ -68,6 +68,72 @@ const GENERATOR_PRODUCIBLE_PREFIXES = ['.claude/rules/'];
 
 function isGeneratorProducible(relPath) {
   return GENERATOR_PRODUCIBLE_EXACT.has(relPath) || GENERATOR_PRODUCIBLE_PREFIXES.some(p => relPath.startsWith(p));
+}
+
+/**
+ * Task 9b, finding 4: the same allowlist-and-containment discipline
+ * `guardRemoval` applies to a FILE, applied to a DIRECTORY this tool's own
+ * manifest (`dirsCreated`, recorded by apply-lib.mjs's `recordCreatedDirs`
+ * at the moment of creation) says it created. The manifest is a file in
+ * the repository, forgeable like any other (see this file's own header
+ * comment on the CRITICAL finding for `files`) — a crafted `dirsCreated`
+ * entry such as `"../../important"` must be refused the same way a forged
+ * file entry is, before `rmdirSync` ever sees it.
+ *
+ * Deliberately its own small allowlist, not `assertAllowed` (apply-
+ * lib.mjs): that function's prefixes are string prefixes WITH a trailing
+ * slash (`'scripts/'`), which a bare directory path (`'scripts'` itself,
+ * no trailing slash) never starts with — reusing it as-is would refuse the
+ * exact top-level directories this cleanup most needs to remove.
+ */
+const DIR_REMOVAL_ALLOWED_EXACT = new Set(['.claude', 'scripts', 'docs', 'docs/harness']);
+const DIR_REMOVAL_ALLOWED_PREFIXES = ['.claude/', 'scripts/', 'docs/harness/'];
+
+function assertDirRemovable(root, relDir) {
+  const normalized = relDir.split('\\').join('/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
+    throw new Error(`not allowed: absolute path: ${relDir}`);
+  }
+  if (normalized.split('/').includes('..')) {
+    throw new Error(`not allowed: path traversal: ${relDir}`);
+  }
+  const allowed = DIR_REMOVAL_ALLOWED_EXACT.has(normalized) || DIR_REMOVAL_ALLOWED_PREFIXES.some(p => normalized.startsWith(p));
+  if (!allowed) {
+    throw new Error(`not allowed: "${relDir}" is outside the directory-removal allowlist`);
+  }
+  assertContained(root, normalized);
+}
+
+/**
+ * Removes every directory in `dirsCreated` that is STILL genuinely empty,
+ * deepest first (a shallower directory can only become removable once
+ * everything recorded under it is already gone) — never one that is
+ * missing already (fine, nothing to do), and never one that still holds
+ * ANYTHING, ours or the user's. Returns the subset actually removed, so
+ * the caller can prune the manifest to match reality rather than its own
+ * stale guess.
+ */
+function removeEmptyCreatedDirs(root, dirsCreated) {
+  const removedDirs = [];
+  const sorted = [...dirsCreated].sort((a, b) => b.split('/').length - a.split('/').length);
+  for (const dir of sorted) {
+    try {
+      assertDirRemovable(root, dir);
+    } catch {
+      continue; // a forged or out-of-scope entry is never acted on
+    }
+    const abs = join(root, dir);
+    try {
+      if (!fs.existsSync(abs)) continue;
+      if (fs.readdirSync(abs).length > 0) continue; // never remove a non-empty directory
+      fs.rmdirSync(abs);
+      removedDirs.push(dir);
+    } catch {
+      // Leave it — the same safe-failure direction every other removal
+      // guard in this module already takes.
+    }
+  }
+  return removedDirs;
 }
 
 /** Never throws: a missing file, a directory, or a read failure (EACCES,
@@ -133,15 +199,21 @@ function guardRemoval(root, relPath) {
  * syntax error and a deleted file must not be indistinguishable to a user.
  */
 function validateSettings(settingsPath) {
-  if (!fs.existsSync(settingsPath)) return { valid: false, object: null, reason: 'settings-missing' };
+  if (!fs.existsSync(settingsPath)) return { valid: false, object: null, reason: 'settings-missing', raw: null };
 
+  let raw;
   try {
-    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    const isPlain = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
-    if (isPlain) return { valid: true, object: parsed, reason: null };
-    return { valid: false, object: null, reason: 'settings-unreadable' };
+    raw = fs.readFileSync(settingsPath, 'utf8');
   } catch {
-    return { valid: false, object: null, reason: 'settings-unreadable' };
+    return { valid: false, object: null, reason: 'settings-unreadable', raw: null };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const isPlain = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+    if (isPlain) return { valid: true, object: parsed, reason: null, raw };
+    return { valid: false, object: null, reason: 'settings-unreadable', raw };
+  } catch {
+    return { valid: false, object: null, reason: 'settings-unreadable', raw };
   }
 }
 
@@ -202,6 +274,11 @@ export function runUninstall({ root, manifest, plan }) {
   let settingsWriteFailed = false, manifestWriteFailed = false;
   const patchesNotReverted = [];
   const changedSincePlan = [];
+  // Task 9b, finding 5: apply.mjs already discloses a settings.json reformat
+  // (see its own `alreadyCanonical`); uninstall rewrites the same file via
+  // the same `JSON.stringify(x, null, 2)` and used to say nothing about it —
+  // the reformat is the SAME kind of change, so it gets the SAME disclosure.
+  let settingsReformatted = false;
 
   // 1. Guard, re-classify, re-check the stamp, and remove only if still
   //    ours-unmodified AND still carries it. The guard (and the stamp
@@ -267,8 +344,22 @@ export function runUninstall({ root, manifest, plan }) {
       // re-indents the user's settings.json — a file this run had no
       // business touching at all.
       if (settingsChanged) {
+        // Task 9b, finding 5: match the ORIGINAL file's trailing-newline
+        // state (apply-lib.mjs's `matchingNewline`, shared so the two
+        // writers of this file cannot disagree) rather than always
+        // appending one — the single most common line of noise left in
+        // `git status` after an otherwise content-identical round trip.
+        //
+        // `settingsReformatted` mirrors apply.mjs's own `alreadyCanonical`:
+        // it asks whether the ORIGINAL file (before THIS run touched it)
+        // was already in the exact form this tool writes — never whether
+        // removing the reverted patch itself changed anything, which it
+        // always does and would make this fire on every revert.
+        const wasCanonical = validated.raw === (JSON.stringify(validated.object, null, 2) + matchingNewline(validated.raw));
+        if (!wasCanonical) settingsReformatted = true;
+        const newContent = JSON.stringify(settings, null, 2) + matchingNewline(validated.raw);
         try {
-          fs.writeFileSync(join(root, SETTINGS), JSON.stringify(settings, null, 2) + '\n', 'utf8');
+          fs.writeFileSync(join(root, SETTINGS), newContent, 'utf8');
         } catch {
           settingsWriteFailed = true;
           // Nothing reached disk, so every patch reverted in memory is still
@@ -297,6 +388,31 @@ export function runUninstall({ root, manifest, plan }) {
       settingsReadFailed = true;
       for (const p of manifestPatches) {
         patchesNotReverted.push({ ...p, why: validated.reason });
+      }
+    }
+  }
+
+  // 2.5. Remove `.claude/settings.json` itself, but ONLY when the manifest
+  // records that WE created it (apply-lib.mjs's `settingsCreated`, set the
+  // first time a settings write found the file absent) AND it is now
+  // genuinely empty — never a file that existed before us, and never one
+  // still holding content, even content unrelated to anything we ever
+  // patched. An unreadable or unparseable file is left exactly alone:
+  // this never guesses.
+  let settingsRemoved = false;
+  if (manifest?.settingsCreated) {
+    const settingsPath = join(root, SETTINGS);
+    if (fs.existsSync(settingsPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        const isEmptyObject = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
+        if (isEmptyObject) {
+          fs.rmSync(settingsPath);
+          settingsRemoved = true;
+          removed.push(SETTINGS);
+        }
+      } catch {
+        // Unreadable/unparseable — never touch it.
       }
     }
   }
@@ -335,17 +451,40 @@ export function runUninstall({ root, manifest, plan }) {
   const hasKept = keptFiles.length > 0 || keptPatches.length > 0 || changedSincePlan.length > 0;
   const hasFailures = failed.length > 0;
 
+  // 4.5. Directories THIS tool created (apply-lib.mjs's `dirsCreated`),
+  // removed once they are genuinely empty — never before, and never a
+  // directory that existed beforehand (it was never recorded in the first
+  // place) or still holds something. The manifest file itself lives
+  // inside `.claude/`, so whether `.claude/` can become empty depends on
+  // whether THIS run just deleted it — hence the split below rather than
+  // one call made at a single fixed point:
+  //   - "nothing kept": the manifest file is deleted FIRST, so the
+  //     directory sweep right after it sees `.claude/` as it will
+  //     actually be left — no stale manifest bookkeeping to persist,
+  //     because there is no manifest left to persist it in.
+  //   - "something kept": the manifest file's CONTENT changes but its
+  //     PRESENCE in `.claude/` does not — computing the sweep before or
+  //     after writing it makes no difference to `.claude/` itself, so it
+  //     is computed first and its result is folded into that one write,
+  //     rather than writing the manifest twice.
+  const dirsCreated = manifest?.dirsCreated ?? [];
+  let removedDirs = [];
+
   if (!hasKept && !hasFailures) {
     try {
       fs.rmSync(join(root, MANIFEST_PATH));
     } catch (e) {
       manifestDeleteFailed = true;
     }
+    if (dirsCreated.length) removedDirs = removeEmptyCreatedDirs(root, dirsCreated);
   } else {
+    if (dirsCreated.length) removedDirs = removeEmptyCreatedDirs(root, dirsCreated);
     const updatedManifest = {
       ...manifest,
       files: keptFiles,
-      settingsPatches: keptPatches
+      settingsPatches: keptPatches,
+      dirsCreated: dirsCreated.filter(d => !removedDirs.includes(d)),
+      settingsCreated: settingsRemoved ? false : (manifest?.settingsCreated ?? false),
     };
     try {
       writeManifest(root, updatedManifest);
@@ -361,9 +500,11 @@ export function runUninstall({ root, manifest, plan }) {
     settingsReadFailed,
     settingsMissing,
     settingsWriteFailed,
+    settingsReformatted,
     manifestWriteFailed,
     manifestDeleteFailed,
     changedSincePlan,
-    patchesNotReverted
+    patchesNotReverted,
+    removedDirs,
   };
 }

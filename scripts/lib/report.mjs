@@ -1,3 +1,6 @@
+import { splitExposures, collapsedExposureNote } from './detect-exposure.mjs';
+import { countProposals } from './gap-model.mjs';
+
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
 const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 4: 'Continuity' };
 
@@ -68,17 +71,24 @@ export function renderSummary(report) {
   }
 
   if (report.exposures.length) {
-    let heading = `Exposures (${report.exposures.length})`;
+    // Task 9b, finding 1: the prominent/collapsed split is the SAME one
+    // P0.security's own check applies (gap-model.mjs, via the shared
+    // detect-exposure.mjs helpers) — the heading count, the listed findings
+    // and P0.security's evidence can never disagree about what counts as
+    // noise, because all three read it from one place.
+    const { prominent, collapsedCount } = splitExposures(report.exposures);
+    let heading = `Exposures (${prominent.length})`;
     if (report.nested && report.nested.length) {
       heading += ` — this repository only; ${report.nested.length} nested repositor${report.nested.length === 1 ? 'y' : 'ies'} not scanned`;
     }
     heading += ' — values are never printed; rotate by hand:';
     lines.push(heading);
-    for (const e of report.exposures) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
+    for (const e of prominent) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
+    if (collapsedCount) lines.push(`  ~ ${collapsedExposureNote(collapsedCount)}`);
     lines.push('');
   }
 
-  const n = report.checks.filter(c => c.proposal).length;
+  const n = countProposals(report.checks);
   lines.push(n === 0 ? 'No proposals — this repository already satisfies every applicable step.' : `${n} proposal${n === 1 ? '' : 's'}. Nothing has been written except docs/harness/detect.json.`);
 
   // Distinct from proposals, deliberately: a proposal is "the tool will do

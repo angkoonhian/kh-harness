@@ -754,6 +754,36 @@ test('apply refuses on a dirty working tree unless told otherwise', () => {
   assert.doesNotThrow(() => run(APPLY, d, '--yes', '--allow-dirty'));
 });
 
+// --- Task 9b, finding 3: the dirty gate must ignore apply's own writes ---
+//
+// `fixture()` commits a tracked `.claude/settings.json` BEFORE the first
+// apply, so apply's own patch to it (P2.stopgate's Stop hook, P4.sessionbrief's
+// SessionStart hook) dirties a file git already tracks — exactly the shape
+// that used to force every second run into `--allow-dirty`.
+
+test('apply\'s own settings patch does not trip the dirty-tree gate on the next run (Task 9b finding 3)', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  // Fixture sanity: the first apply really did dirty the pre-existing
+  // TRACKED settings file — otherwise this test would pass for a reason
+  // unrelated to the fix (nothing for the gate to have ignored).
+  const status = execFileSync('git', ['-C', d, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' });
+  assert.match(status, /\.claude\/settings\.json/, 'fixture sanity: our own apply must have dirtied the tracked settings file');
+  assert.doesNotThrow(() => run(APPLY, d, '--yes'), 'a second apply must not need --allow-dirty just to see its own prior write');
+});
+
+test('a repository dirty from something unrelated still refuses, even once our own paths are excluded (Task 9b finding 3)', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  // An edit to a tracked file apply never touches.
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app-edited-by-someone-else', scripts: { test: 'vitest' } }));
+  assert.throws(
+    () => run(APPLY, d, '--yes'),
+    e => e.status === 3,
+    'an unrelated dirty file must still gate the run',
+  );
+});
+
 test('C4: a malformed permissions.deny does not crash the DEFAULT (dry-run) apply path', () => {
   // Reproduces the exact live crash the review found: before the
   // readSettingsResult fix, `renderSettingsDenyDiff` called `addDenyRules`
@@ -933,4 +963,105 @@ test('a user who replaces our hook with their own is told it is absent again, no
   assert.equal(c.state, 'absent', 'a hook that positively resolves to someone else\'s script must never be credited as ours');
   assert.ok(c.proposal, 'apply must re-propose, not stay silent because the event looks occupied');
   assert.ok(c.evidence.some(e => e.includes('tools-their-replacement.mjs')));
+});
+
+// --- Task 9b, findings 4 & 5: a complete uninstall leaves no containers
+// it created, and leaves `git status` clean when settings.json existed
+// before apply. A repository that starts with NO `.claude/` at all, so
+// apply creates `.claude/`, `.claude/scripts/`, `scripts/` and
+// `.claude/settings.json` itself from nothing.
+
+function freshFixtureNoClaudeDir() {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-fresh-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+  return d;
+}
+
+test('a complete uninstall removes every directory and the empty settings.json apply itself created (Task 9b finding 4)', () => {
+  const d = freshFixtureNoClaudeDir();
+  assert.equal(existsSync(join(d, '.claude')), false, 'fixture sanity: no .claude/ exists before apply');
+
+  run(APPLY, d, '--yes');
+  // Fixture sanity: apply really did create all three containers, and a
+  // settings.json of its own — otherwise "removes them" would be vacuous.
+  assert.ok(existsSync(join(d, '.claude/settings.json')), 'fixture sanity: apply created settings.json');
+  assert.ok(existsSync(join(d, '.claude/scripts')), 'fixture sanity: apply created .claude/scripts/');
+  assert.ok(existsSync(join(d, 'scripts/bootstrap.sh')), 'fixture sanity: apply created scripts/');
+  assert.ok(Object.keys(settings(d)).length > 0, 'fixture sanity: the created settings.json is not already empty');
+
+  const out = run(UNINSTALL, d, '--yes');
+  assert.equal(existsSync(join(d, '.claude/settings.json')), false, 'the settings.json apply created, now empty, must be removed');
+  assert.equal(existsSync(join(d, '.claude/scripts')), false, 'the directory apply created must be removed once empty');
+  assert.equal(existsSync(join(d, '.claude')), false, 'the directory apply created must be removed once empty');
+  assert.equal(existsSync(join(d, 'scripts')), false, 'the directory apply created must be removed once empty');
+  assert.match(out, /Removed/, 'the cleanup must be disclosed, not silent');
+});
+
+test('a directory that existed before apply is never removed by uninstall, even once it is empty again (Task 9b finding 4)', () => {
+  const d = freshFixtureNoClaudeDir();
+  // The user's own, pre-existing `scripts/` directory with their own file —
+  // apply must not credit itself with creating it, and uninstall must
+  // never remove a directory that predates this tool.
+  mkdirSync(join(d, 'scripts'), { recursive: true });
+  writeFileSync(join(d, 'scripts/their-own.sh'), '#!/bin/sh\necho mine\n');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'add my own scripts dir');
+
+  run(APPLY, d, '--yes');
+  assert.ok(existsSync(join(d, 'scripts/bootstrap.sh')));
+  rmSync(join(d, 'scripts/their-own.sh')); // the directory becomes empty of the user's OWN content too
+  run(UNINSTALL, d, '--yes');
+  assert.equal(existsSync(join(d, 'scripts')), true, 'a directory that existed before this tool ran must never be removed by it');
+});
+
+test('a complete apply-then-uninstall cycle leaves git status clean when settings.json existed before apply (Task 9b finding 5)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-cleangit-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  // Pre-existing, already-tracked settings.json — LF, no trailing newline —
+  // matching the real-world case (cashmigo) this finding came from, minus
+  // the CRLF line-ending reformat, which remains a disclosed, un-fixed
+  // limitation (see apply-lib.mjs's own ruling against a format-preserving
+  // JSON editor). The trailing-newline byte is the one this fix controls.
+  const original = JSON.stringify({ hooks: { SessionStart: [{ matcher: 'startup|resume|compact', hooks: [{ type: 'command', command: 'node docs/agent-context/inject.js' }] }] } }, null, 2);
+  writeFileSync(join(d, '.claude/settings.json'), original); // no trailing newline, LF already
+  mkdirSync(join(d, 'docs/agent-context'), { recursive: true });
+  writeFileSync(join(d, 'docs/agent-context/inject.js'), '// their own hook\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  // Deliberately NOT committed in between: HANDOFF.md and the hook scripts
+  // stay untracked the whole time (as they do for a real user reviewing the
+  // diff before committing), so only the PRE-EXISTING tracked settings.json
+  // can possibly show up in `git status` afterward — exactly the file this
+  // finding is about.
+  run(APPLY, d, '--yes');
+  const out = run(UNINSTALL, d, '--yes');
+  assert.match(out, /Removed/);
+
+  const status = execFileSync('git', ['-C', d, 'status', '--porcelain'], { encoding: 'utf8' });
+  assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
+});
+
+// --- Task 9b, finding 7: "proposals" must not count two different things
+// under the same word in the same workflow.
+
+test('apply names its own count "actions" and discloses the capability-gap count detect would report, rather than reusing "proposals" for both (Task 9b finding 7)', () => {
+  const d = fixture();
+  const detected = JSON.parse(run(DETECT, d, '--json'));
+  const gapCount = detected.checks.filter(c => c.proposal).length;
+
+  const out = run(APPLY, d);
+  assert.doesNotMatch(out, /\d+ proposals? for/, 'apply must not reuse the word "proposals" for its own, larger count');
+  assert.match(out, /\d+ actions? to close/, 'apply must name its own count differently');
+  assert.match(out, new RegExp(`${gapCount} capability gap`), 'the gap count named here must be the SAME number detect itself reports');
 });

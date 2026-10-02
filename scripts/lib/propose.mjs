@@ -20,6 +20,26 @@ const VERIFY_TOUCHED_PATH = '.claude/scripts/verify-touched.mjs';
 const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
 
 /**
+ * Task 9b, finding 2: a settings-hook proposal's own `reason` used to be a
+ * hardcoded "no <event> hook registered in .claude/settings.json" — true
+ * only when the event is genuinely empty. When a user already has an
+ * UNRELATED hook on the same event (the exact shape gap-model.mjs's
+ * `registeredHook` exists to disclose, never suppress), that sentence is
+ * printed immediately above apply-lib.mjs's own diff caveat
+ * "(appended after N existing hooks.<event> entries, ...)" — two adjacent,
+ * self-contradicting claims about the same file. `detect` already gets this
+ * right (gap-model.mjs's `registeredHook`, evidence: "<event> hook already
+ * registered, but not ours: <path>"); this reuses that EXACT text — the
+ * check's own `evidence`, passed through from buildProposals, never a
+ * second independently-worded copy that could drift from it — rather than
+ * writing a third phrasing.
+ */
+function hookRegistrationReason(event, check) {
+  const evidence = check?.evidence ?? [];
+  return evidence.length ? evidence.join('; ') : `no ${event} hook registered in .claude/settings.json`;
+}
+
+/**
  * The protected-path candidate list and its evidence filter now live in
  * protected-evidence.mjs, shared with gap-model.mjs's P2.protected CHECK —
  * see that module's own header comment for why: the check and this
@@ -97,7 +117,7 @@ function redactAssetProposal(kitVersion) {
  * file — PostToolUse fires for every tool otherwise, and the hook has
  * nothing to say about a Bash or Read call.
  */
-function sensorProposal({ kitVersion, stack }) {
+function sensorProposal({ kitVersion, stack, check }) {
   if (!hasLintScript(stack)) return [];
   return [{
     kind: 'file', path: LINT_TOUCHED_PATH, step: 9,
@@ -117,7 +137,7 @@ function sensorProposal({ kitVersion, stack }) {
     // apply-lib.mjs, which checks this against the real filesystem AFTER
     // the write phase, not against this list alone.
     requiresFiles: [LINT_TOUCHED_PATH, REDACT_PATH],
-    reason: 'no PostToolUse hook registered in .claude/settings.json',
+    reason: hookRegistrationReason('PostToolUse', check),
   }];
 }
 
@@ -148,7 +168,7 @@ function sensorProposal({ kitVersion, stack }) {
  * no single repo-level verification command, the honest answer is not to
  * propose one.
  */
-function stopgateProposal({ kitVersion, stack }) {
+function stopgateProposal({ kitVersion, stack, check }) {
   const script = rootVerifyScript(stack);
   if (!script) return [];
   // Review's cost measurement: on a real 40-module TypeScript repo this
@@ -161,9 +181,10 @@ function stopgateProposal({ kitVersion, stack }) {
   // user on a large codebase accepts it knowingly rather than discovering
   // it as "turns got slower" with no visible cause.
   const costNote = 'cost scales with the size of the repository, not the size of the edit — a large codebase may see 10-30s added per turn';
+  const registration = hookRegistrationReason('Stop', check);
   const reason = script === 'typecheck'
-    ? `no Stop hook registered — runs the repository's typecheck script, bounded at 120s, at the end of every turn (${costNote})`
-    : `no Stop hook registered — no typecheck script was found, so this falls back to the full test script, bounded at 120s, at the end of every turn (${costNote})`;
+    ? `${registration} — runs the repository's typecheck script, bounded at 120s, at the end of every turn (${costNote})`
+    : `${registration} — no typecheck script was found, so this falls back to the full test script, bounded at 120s, at the end of every turn (${costNote})`;
   return [{
     kind: 'file', path: VERIFY_TOUCHED_PATH, step: 10,
     contents: read('scripts/verify-touched.mjs').replace(
@@ -402,16 +423,21 @@ function pathRuleProposal({ kitVersion, stack }) {
 }
 
 /** Generators receive the full detection context and return proposals.
- * { kitVersion, harness, root, stack, checks, files } are available to all
- * generators. A generator yields nothing by returning an empty array or not
- * being registered. */
+ * { kitVersion, harness, root, stack, checks, files, check } are available
+ * to all generators — `check` is THIS generator's own entry from `checks`
+ * (buildProposals passes it alongside the full array), carrying the exact
+ * `evidence` detect's own report already printed for it (see
+ * `hookRegistrationReason`, above, which is why a settings-hook proposal's
+ * `reason` can reuse detect's wording instead of a second, driftable copy).
+ * A generator yields nothing by returning an empty array or not being
+ * registered. */
 const GENERATORS = {
   'P4.handoff': ({ kitVersion }) => ([{
     kind: 'file', path: 'HANDOFF.md', step: 16,
     contents: render(read('templates/HANDOFF.md.tmpl'), { stamp: versionStamp(kitVersion, 16, '<!--') + ' -->' }),
     reason: 'no handoff file found',
   }]),
-  'P4.sessionbrief': ({ kitVersion }) => [{
+  'P4.sessionbrief': ({ kitVersion, check }) => [{
     kind: 'file', path: BRIEF_PATH, step: 16,
     contents: read('scripts/session-brief.mjs').replace(
       '#!/usr/bin/env node\n',
@@ -426,7 +452,7 @@ const GENERATORS = {
     // OWN file (not just a missing shared module) is caught the same way,
     // by the same generic check — one rule, not two.
     requiresFiles: [BRIEF_PATH],
-    reason: 'no SessionStart hook registered in .claude/settings.json',
+    reason: hookRegistrationReason('SessionStart', check),
   }],
   'P2.protected': protectedPathProposal,
   'P2.sensor': sensorProposal,
@@ -471,7 +497,7 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
     if (c.state !== 'absent' || c.decidable === false) continue;
     const gen = registry[c.id];
     if (!gen) continue;
-    for (const p of gen({ kitVersion, harness, root, stack, checks, files })) {
+    for (const p of gen({ kitVersion, harness, root, stack, checks, files, check: c })) {
       if (p.kind === 'file' && alreadyWritten.has(p.path)) continue;
       out.push({ ...p, checkId: c.id });
       if (p.kind === 'file') alreadyWritten.add(p.path);

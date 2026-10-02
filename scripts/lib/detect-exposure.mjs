@@ -28,9 +28,69 @@ const TOKEN_PATTERNS = [
 
 const PEM_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
-const DB_CRED = /(password|passwd|pwd)\s*[:=]\s*\S{8,}/i;
+const DB_CRED = /(password|passwd|pwd)\s*[:=]\s*(\S{8,})/i;
 
 const PLACEHOLDER =/(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|^(password|secret|todo)$)/i;
+
+// Task 9b, finding 1: a credential-shaped key (`password:`, `pwd=`, ...)
+// whose VALUE is a code reference — a property access, a function call, or a
+// subscript, e.g. `process.env.TOKEN`, `config.get('x')`, `os.environ["K"]`,
+// `self.password`, `settings.SECRET_KEY` — is ordinary source code reading a
+// secret from somewhere else, not a secret written in the file. On a real
+// TypeScript codebase this shape was 62 of 66 `credentials-in-doc` hits: noise
+// loud enough to bury the one real finding and four plausible ones beneath it.
+//
+// This is syntactic, not a parser: a reference is an identifier, optionally
+// extended by one or more `.prop`, `(...)`, or `[...]` segments, and NOTHING
+// else — the whole value, start to end. Deliberately conservative, per the
+// standing ruling that a guard which misses a real secret is worse than one
+// that over-reports: a bare identifier with NO such extension (`SECRET_KEY`
+// alone), a quoted string, a `glpat-`-shaped token (a literal that merely
+// STARTS with identifier characters before hitting a `-` the pattern below
+// does not accept as a continuation), and an empty string all fail to match
+// and are therefore classified `literal` — prominent, exactly as before this
+// fix. Only a genuine compound reference expression is ever classified
+// `reference`. When in doubt, this returns `literal`.
+const REFERENCE_VALUE = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\([^()]*\)|\[[^[\]]*\])+[;,]?$/;
+
+/**
+ * Classifies a `credentials-in-doc` match's VALUE half (never the key) as
+ * `'literal'` (a real string/token — stays a prominent finding) or
+ * `'reference'` (code reading a secret from elsewhere — collapsed to a count
+ * by report.mjs/gap-model.mjs, never suppressed or dropped here). This
+ * function only tags; it never decides what is shown or counted as a
+ * failure — see detectExposures below, which runs it over every DB_CRED
+ * match and records the result on the finding, and splitExposures /
+ * isProminentExposure, which downstream callers use to decide presentation.
+ */
+export function classifyCredentialValue(value) {
+  if (typeof value !== 'string' || value.length === 0) return 'literal';
+  return REFERENCE_VALUE.test(value) ? 'reference' : 'literal';
+}
+
+/** True for every exposure that must stay individually visible: every kind
+ * OTHER than `credentials-in-doc`, and a `credentials-in-doc` finding whose
+ * value is a literal rather than a code reference. */
+export function isProminentExposure(e) {
+  return !(e.kind === 'credentials-in-doc' && e.valueKind === 'reference');
+}
+
+/** Splits a full exposure list into the ones that must stay prominent and a
+ * bare count of the rest (credential-shaped keys holding a code reference,
+ * not a literal) — never the entries themselves, so a caller cannot
+ * accidentally re-individualise what this exists to collapse. */
+export function splitExposures(exposures) {
+  const prominent = exposures.filter(isProminentExposure);
+  return { prominent, collapsedCount: exposures.length - prominent.length };
+}
+
+/** The one shared sentence for the collapsed class, so detect's Phase-0
+ * evidence and the Exposures section always say exactly the same thing. */
+export function collapsedExposureNote(count) {
+  const s = count === 1 ? '' : 's';
+  const isAre = count === 1 ? 'is a' : 'are';
+  return `${count} credential-shaped key${s} whose value${s} ${isAre} code reference${s} (not literal${s}) — listed in detect.json, not shown here`;
+}
 
 // Skip binary-ish extensions: images, archives, binaries, fonts, media, source maps
 const SKIP_EXT = [
@@ -132,7 +192,10 @@ function scanFile(root, rel, isLocalSettings) {
   if (DB_CRED.test(text)) {
     const match = text.match(DB_CRED);
     if (match && !isPlaceholder(match[0])) {
-      findings.push({ kind: 'credentials-in-doc', location: rel, severity: 'medium' });
+      findings.push({
+        kind: 'credentials-in-doc', location: rel, severity: 'medium',
+        valueKind: classifyCredentialValue(match[2]),
+      });
     }
   }
 

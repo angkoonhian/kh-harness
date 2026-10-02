@@ -77,6 +77,30 @@ test('detects other editors', () => {
   assert.ok(h.otherEditors.some(p => p.startsWith('.cursor/rules')));
 });
 
+// --- Task 9b, finding 6: claudeDir.settings must agree with its siblings -
+
+test('claudeDir.settings and localSettings are true even when the file list cannot see them (e.g. gitignored .claude/), matching the siblings that already read the real file', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  write(d, '.claude/settings.local.json', JSON.stringify({ hooks: {} }));
+  // The defect: a `files` list that does NOT include either settings file —
+  // exactly what a gitignored `.claude/` produces from the real scan — must
+  // not make `settings`/`localSettings` disagree with denyRules/denyRuleList,
+  // which are read straight off disk regardless of what `files` says.
+  const filesAsIfGitignored = ['README.md'];
+  const h = detectHarness(d, filesAsIfGitignored);
+  assert.equal(h.claudeDir.settings, true, 'settings must be read the SAME way denyRules was, not from the (gitignored) file list');
+  assert.equal(h.claudeDir.localSettings, true);
+  assert.equal(h.claudeDir.denyRules, 1, 'fixture sanity: the sibling field this one must agree with really is non-zero');
+});
+
+test('claudeDir.settings is false when no settings file exists at all', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  assert.equal(run(d).claudeDir.settings, false);
+  assert.equal(run(d).claudeDir.localSettings, false);
+});
+
 test('denyRules is 0 when there is no settings file', () => {
   const d = repo();
   write(d, 'README.md', '# x');

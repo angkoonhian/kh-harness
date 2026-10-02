@@ -59,6 +59,24 @@ test('a declared session-brief check yields no proposals (hook already registere
   assert.deepEqual(ps, []);
 });
 
+// --- Task 9b, finding 2: a settings-hook proposal's `reason` must agree
+// with its own diff caveat, by reusing detect's own evidence wording
+// rather than a second, independently-worded "no hook registered" claim.
+
+test('P4.sessionbrief\'s settings-hook reason says "no hook registered" when the check genuinely found none', () => {
+  const ps = buildProposals(args([check({ id: 'P4.sessionbrief', proposal: 'install session brief', evidence: [] })]));
+  const hook = ps.find(p => p.kind === 'settings-hook');
+  assert.match(hook.reason, /no SessionStart hook registered in \.claude\/settings\.json/);
+});
+
+test('P4.sessionbrief\'s settings-hook reason reuses detect\'s own "already registered, but not ours" wording instead of contradicting it', () => {
+  const evidence = ['SessionStart hook already registered, but not ours: docs/agent-context/inject.js'];
+  const ps = buildProposals(args([check({ id: 'P4.sessionbrief', proposal: 'install session brief', evidence })]));
+  const hook = ps.find(p => p.kind === 'settings-hook');
+  assert.equal(hook.reason, evidence[0], 'must be the SAME text detect already printed, not a second phrasing');
+  assert.doesNotMatch(hook.reason, /no SessionStart hook registered/, 'must never claim nothing is registered when something is');
+});
+
 // --- P2.sensor: the per-edit lint hook, gated on an actual lint script ----
 
 const lintStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
@@ -80,6 +98,15 @@ test('P2.sensor proposes the script, the shared redaction asset, and a PostToolU
 test('P2.sensor proposes nothing when no package declares a lint script — a sensor with nothing to run is noise', () => {
   const ps = buildProposals(args([sensorCheck()], { stack: noLintStack }));
   assert.deepEqual(ps, []);
+});
+
+test('P2.sensor\'s settings-hook reason reuses detect\'s own "already registered, but not ours" wording (Task 9b finding 2)', () => {
+  const evidence = ['PostToolUse hook already registered, but not ours: some/other/hook.mjs'];
+  const sensorCheckWithEvidence = check({ id: 'P2.sensor', step: 9, proposal: 'install scripts/lint-touched.mjs and register a PostToolUse hook', evidence });
+  const ps = buildProposals(args([sensorCheckWithEvidence], { stack: lintStack }));
+  const hook = ps.find(p => p.kind === 'settings-hook');
+  assert.equal(hook.reason, evidence[0]);
+  assert.doesNotMatch(hook.reason, /no PostToolUse hook registered/);
 });
 
 test('P2.sensor proposes nothing when stack.packages is empty (the default)', () => {
@@ -121,6 +148,15 @@ test('P2.stopgate\'s reason discloses the fallback-to-test cost plainly, without
   const hook = ps.find(p => p.kind === 'settings-hook');
   assert.match(hook.reason, /test/i);
   assert.match(hook.reason, /120s|every turn/i, 'the cost being accepted must be stated plainly');
+});
+
+test('P2.stopgate\'s settings-hook reason reuses detect\'s own "already registered, but not ours" wording (Task 9b finding 2)', () => {
+  const evidence = ['Stop hook already registered, but not ours: some/other/hook.mjs'];
+  const stopgateCheckWithEvidence = check({ id: 'P2.stopgate', step: 10, proposal: 'install scripts/verify-touched.mjs and register a Stop hook', evidence });
+  const ps = buildProposals(args([stopgateCheckWithEvidence], { stack: typecheckStack }));
+  const hook = ps.find(p => p.kind === 'settings-hook');
+  assert.match(hook.reason, /^Stop hook already registered, but not ours: some\/other\/hook\.mjs — runs/, 'the registration clause must be the EXACT evidence text, not a second phrasing, with the cost note still appended');
+  assert.doesNotMatch(hook.reason, /no Stop hook registered/);
 });
 
 test('P2.stopgate proposes nothing when neither a typecheck nor a test script exists', () => {

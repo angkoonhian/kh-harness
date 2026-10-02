@@ -87,6 +87,30 @@ if (result.removed.length > 0) {
   }
 }
 
+// Task 9b, finding 5: apply.mjs already discloses a settings.json reformat
+// caused by its own JSON.stringify(x, null, 2) rewrite; uninstall rewrites
+// the same file the same way while reverting a patch, and must disclose it
+// the same way rather than leaving a user to discover the diff unannounced.
+if (result.settingsReformatted) {
+  console.log(
+    'note       .claude/settings.json was reformatted while reverting the patch(es) above — its content is ' +
+    'unchanged beyond what was reverted, but whitespace/indentation may now differ throughout the file ' +
+    '(this tool always rewrites it as JSON.stringify(settings, null, 2); it does not preserve the ' +
+    'original formatting).',
+  );
+}
+
+// Task 9b, finding 4: directories this tool itself created (never one that
+// existed before it, and never one still holding anything) are cleaned up
+// once uninstall leaves them empty — disclosed here the same way a removed
+// file is.
+if (result.removedDirs && result.removedDirs.length > 0) {
+  console.log('Removed empty directories it created:');
+  for (const dir of result.removedDirs) {
+    console.log(`  ${dir}`);
+  }
+}
+
 if (result.failed.length > 0) {
   console.log('Failed to remove:');
   for (const f of result.failed) {

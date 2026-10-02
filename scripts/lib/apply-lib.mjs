@@ -192,7 +192,7 @@ function unifiedDiff(before, after, label) {
  */
 function readSettingsResult(root) {
   const p = join(root, SETTINGS_PATH);
-  if (!existsSync(p)) return { ok: true, settings: {} };
+  if (!existsSync(p)) return { ok: true, settings: {}, raw: null };
 
   let raw;
   try {
@@ -228,7 +228,23 @@ function readSettingsResult(root) {
     return { ok: false };
   }
 
-  return { ok: true, settings: parsed };
+  return { ok: true, settings: parsed, raw };
+}
+
+/**
+ * Task 9b, finding 5: this tool's own write always appended a trailing
+ * newline, even to a file that had none — the single most common
+ * one-line diff after an otherwise content-identical round trip (a plain
+ * `JSON.stringify(x, null, 2)` never ends in one). `raw` is the file's
+ * exact original text (`null` when it did not exist, i.e. being created
+ * fresh — a brand-new file keeps the conventional trailing newline).
+ * Deliberately narrow: this matches ONE byte, not the original's line
+ * endings or indentation — see apply.mjs's own `alreadyCanonical` comment
+ * (and this project's standing ruling against a format-preserving JSON
+ * editor) for why the rest of the reformat stays disclosed, not fixed.
+ */
+function matchingNewline(raw) {
+  return raw != null && !raw.endsWith('\n') ? '' : '\n';
 }
 
 /**
@@ -384,6 +400,38 @@ function upsertFileEntry(files, entry) {
   else files[idx] = entry;
 }
 
+/**
+ * Task 9b, finding 4: uninstall used to leave behind every directory apply
+ * had to create to write its own files — on a repository with no `.claude/`
+ * at all beforehand, a complete uninstall still left an empty `.claude/`,
+ * `.claude/scripts/` and `scripts/` behind. The fix needs to know, at
+ * uninstall time, which directories THIS tool actually brought into
+ * existence — never one that already existed, and never one a later
+ * `rmdir` could be wrong to touch merely because it happens to be empty
+ * NOW. That provenance has to be recorded at the moment of creation, since
+ * "is this directory empty" on its own cannot answer "did we create it" —
+ * a user's own, separately-empty directory of the same name is
+ * indistinguishable from ours after the fact.
+ *
+ * Called BEFORE `writeFileDeep`'s own `mkdirSync(..., { recursive: true })`
+ * so every ancestor directory's existence is checked against the real
+ * filesystem as it stood before this write, not after. `nextManifest` is
+ * mutated in place and de-duplicated via a Set — safe to call once per
+ * write even when an earlier write in the same batch already created a
+ * shared ancestor (e.g. two files landing in `.claude/scripts/`).
+ */
+function recordCreatedDirs(root, nextManifest, relPath) {
+  const dir = dirname(relPath.split('\\').join('/'));
+  if (dir === '.' || dir === '/') return;
+  const created = new Set(nextManifest.dirsCreated ?? []);
+  let cum = '';
+  for (const seg of dir.split('/')) {
+    cum = cum ? `${cum}/${seg}` : seg;
+    if (!existsSync(join(root, cum))) created.add(cum);
+  }
+  nextManifest.dirsCreated = [...created];
+}
+
 function applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected, chmod }) {
   const { targetPath, redirectFrom } = resolveFileTarget(root, proposal);
   if (redirectFrom) redirected.push({ from: redirectFrom, to: targetPath });
@@ -402,6 +450,7 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
       return;
     }
 
+    recordCreatedDirs(root, nextManifest, targetPath);
     writeFileDeep(abs, proposal.contents, targetPath, proposal.mode, chmod);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: newHash, step: proposal.step, writtenAt: new Date().toISOString() });
     written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
@@ -409,6 +458,7 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
   }
 
   if (cls === 'theirs' && !existsSync(abs)) {
+    recordCreatedDirs(root, nextManifest, targetPath);
     writeFileDeep(abs, proposal.contents, targetPath, proposal.mode, chmod);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: sha256(proposal.contents), step: proposal.step, writtenAt: new Date().toISOString() });
     written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
@@ -471,7 +521,14 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
   }
 
   const { settings: next, patch } = addHookEntry(settings, proposal.event, proposal.entry, proposal.matcher);
-  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + '\n', SETTINGS_PATH);
+  // Task 9b, finding 4: recorded only once, the first time this run (or any
+  // prior one — `nextManifest` starts from a clone of the existing
+  // manifest) finds the file absent right before writing it. Never reset
+  // back to false: once the file was ours to create, it stays ours to
+  // clean up even across later runs that only patch it further.
+  if (result.raw === null) nextManifest.settingsCreated = true;
+  recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
+  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + matchingNewline(result.raw), SETTINGS_PATH);
 
   nextManifest.settingsPatches.push({
     event: proposal.event,
@@ -506,7 +563,9 @@ function applySettingsDenyProposal({ root, proposal, nextManifest, patched, skip
     return;
   }
 
-  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + '\n', SETTINGS_PATH);
+  if (result.raw === null) nextManifest.settingsCreated = true;
+  recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
+  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + matchingNewline(result.raw), SETTINGS_PATH);
 
   nextManifest.settingsPatches.push({
     event: 'permissions.deny',
@@ -598,4 +657,4 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   return { written, patched, skipped, redirected, failed, manifest: nextManifest };
 }
 
-export { SETTINGS_PATH, CLAUDE_REDIRECT_PATH };
+export { SETTINGS_PATH, CLAUDE_REDIRECT_PATH, matchingNewline };

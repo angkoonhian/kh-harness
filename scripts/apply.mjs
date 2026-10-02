@@ -11,7 +11,7 @@ import { detectStack } from './lib/detect-stack.mjs';
 import { detectHarness } from './lib/detect-harness.mjs';
 import { detectExposures } from './lib/detect-exposure.mjs';
 import { selectProfile } from './lib/profiles/index.mjs';
-import { buildGaps } from './lib/gap-model.mjs';
+import { buildGaps, countProposals } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
@@ -47,19 +47,75 @@ if (git.isRepo && DEFAULT_BRANCHES.has(git.branch) && !flags.has('--allow-defaul
   process.exit(3);
 }
 
-/** True only for changes to tracked files — new, untracked files are not this tool's problem. */
-function hasTrackedChanges(r) {
+// Task 9b, finding 3: moved above the dirty-tree gate (it used to be read
+// afterward) so the gate can tell the user's own uncommitted work apart
+// from the tool's own prior writes — see `ownedByUs` and the gate itself,
+// immediately below.
+//
+// Coordinator finding (Major): a manifest file that EXISTS but cannot be
+// read as our schema must refuse the run, not be silently treated as "no
+// manifest" — acting on that assumption writes a fresh EMPTY manifest at
+// the end of this run (see writeManifest below), permanently losing the
+// record of every file a prior install wrote. Those files become
+// invisible to `uninstall` forever, with no notice. Same contract as the
+// default-branch and dirty-tree refusals above: exit 3, name the file,
+// no automatic repair. A CORRUPT manifest cannot be trusted to name what
+// is "ours" either, so `ownedByUs` stays empty in that case and the gate
+// below falls back to its original, strict behaviour — the corrupt-
+// manifest refusal a few lines down still fires regardless.
+const manifestResult = readManifestResult(root);
+
+/**
+ * Paths the dirty-tree gate must not hold against the user: the tool's own
+ * prior writes, per the manifest's own record of them — never re-derived
+ * from the filesystem, which is exactly what a forged or stale record could
+ * fool. `.claude/settings.json` counts only when the manifest actually
+ * recorded a patch there; an untouched settings.json dirtied by something
+ * else is not "ours" merely because it shares that path. The manifest file
+ * itself is always ours: it is this tool's own bookkeeping, and a run that
+ * updates it (new `installedAt`, a new file entry) is expected to leave it
+ * modified if the user has ever committed it.
+ */
+function ownedByUs(manifest) {
+  const owned = new Set([MANIFEST_PATH]);
+  for (const f of manifest?.files ?? []) owned.add(f.path);
+  if ((manifest?.settingsPatches ?? []).length > 0) owned.add(SETTINGS_PATH);
+  return owned;
+}
+const ourPaths = manifestResult.state === 'ok' ? ownedByUs(manifestResult.manifest) : new Set();
+
+/**
+ * True only for changes to tracked files NOT already accounted for by
+ * `ignorePaths` — new, untracked files are not this tool's problem either
+ * way. Without `ignorePaths`, this tool's own first `apply --yes` dirties
+ * any tracked `.claude/settings.json` it patches, so a plain second run
+ * refused with no recourse but `--allow-dirty`, which waives the gate for
+ * every OTHER uncommitted change too — the mechanism that protects the
+ * legibility of a `git diff` of this tool's own work was forcing its own
+ * blanket waiver. The gate still exists, and still refuses, for anything
+ * genuinely not ours.
+ */
+function hasTrackedChanges(r, ignorePaths = new Set()) {
   try {
     const out = execFileSync('git', ['-C', r, 'status', '--porcelain', '--untracked-files=no'], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return out.trim().length > 0;
+    return out.split('\n').some(line => {
+      if (!line.trim()) return false;
+      // Porcelain v1: 2 status chars, a space, then the path (or, for a
+      // rename, "old -> new" — the path that matters is the new one).
+      let path = line.slice(3);
+      const arrow = path.indexOf(' -> ');
+      if (arrow !== -1) path = path.slice(arrow + 4);
+      if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
+      return !ignorePaths.has(path.split('\\').join('/'));
+    });
   } catch {
     return false;
   }
 }
 
-if (git.isRepo && hasTrackedChanges(root) && !flags.has('--allow-dirty')) {
+if (git.isRepo && hasTrackedChanges(root, ourPaths) && !flags.has('--allow-dirty')) {
   process.stderr.write(
     `harness-kit: refusing to apply with uncommitted changes to tracked files. ` +
     `Commit or stash first so you can \`git diff\` what this tool did, or re-run with --allow-dirty.\n`,
@@ -73,20 +129,6 @@ const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
 const exposures = detectExposures(root, files, harness);
 const profile = selectProfile(stack);
-// Read before buildGaps (not after, as before) — gap-model.mjs needs it to
-// confirm OUR OWN hook is present via the install record plus a direct
-// file check when a gitignored `.claude/` makes it invisible to the file
-// scan (see registeredHook's own comment in gap-model.mjs).
-//
-// Coordinator finding (Major): a manifest file that EXISTS but cannot be
-// read as our schema must refuse the run, not be silently treated as "no
-// manifest" — acting on that assumption writes a fresh EMPTY manifest at
-// the end of this run (see writeManifest below), permanently losing the
-// record of every file a prior install wrote. Those files become
-// invisible to `uninstall` forever, with no notice. Same contract as the
-// default-branch and dirty-tree refusals above: exit 3, name the file,
-// no automatic repair.
-const manifestResult = readManifestResult(root);
 if (manifestResult.state === 'corrupt') {
   process.stderr.write(
     `harness-kit: ${join(root, MANIFEST_PATH)} exists but could not be read as a valid harness-kit manifest. ` +
@@ -129,15 +171,29 @@ function reportDrift() {
 
 if (proposals.length === 0) {
   if (drift.length === 0) {
-    process.stdout.write('harness-kit: no proposals — this repository already satisfies every applicable step.\n');
+    process.stdout.write('harness-kit: no actions — this repository already satisfies every applicable step.\n');
   } else {
-    process.stdout.write(`harness-kit: no proposals for ${root}.\n`);
+    process.stdout.write(`harness-kit: no actions for ${root}.\n`);
     reportDrift();
   }
   process.exit(0);
 }
 
-process.stdout.write(`harness-kit: ${proposals.length} proposal${proposals.length === 1 ? '' : 's'} for ${root}\n\n`);
+// Task 9b, finding 7: `proposals.length` (every file write and settings
+// patch this run would make) and `detect`'s own "N proposals" (every
+// CAPABILITY GAP with an actionable next step) count two different things
+// for the same repository — one gap like P2.sensor expands into three
+// writes here. Both used to be printed as "N proposals", inviting a reader
+// to diff numbers that were never comparable. `countProposals` (gap-
+// model.mjs) is the exact function `detect`'s own report reads, so the
+// gap count named here can never drift from what `detect` would say; this
+// run's own, larger number is named "actions" instead of reusing the word
+// detect already owns.
+const gapCount = countProposals(checks);
+process.stdout.write(
+  `harness-kit: ${proposals.length} action${proposals.length === 1 ? '' : 's'} to close ` +
+  `${gapCount} capability gap${gapCount === 1 ? '' : 's'} (as detect reports them) for ${root}\n\n`,
+);
 // renderDiff is read-only, but it is not infallible by construction — it is
 // a backstop, not the primary defence (readSettingsResult's shape checks
 // are), for the same reason applyProposals is wrapped below: the preview is

@@ -162,3 +162,29 @@ test('exposures heading is self-contained and names nested count', () => {
   assert.ok(s.includes('2 nested repositories'));
   assert.ok(s.includes('not scanned'));
 });
+
+// --- Task 9b, finding 1: the exposure summary collapses reference-valued
+// credentials-in-doc hits to a count, keeping literals (and every other
+// kind) prominent and individually listed.
+
+test('renderSummary shows a literal credentials-in-doc hit prominently and collapses reference-valued hits to one count line', () => {
+  const exposures = [
+    { kind: 'token-in-remote-url', location: 'git remote "origin"', severity: 'high' },
+    { kind: 'credentials-in-doc', location: 'docs/real.md', severity: 'medium', valueKind: 'literal' },
+    ...Array.from({ length: 62 }, (_, i) => ({ kind: 'credentials-in-doc', location: `src/f${i}.ts`, severity: 'medium', valueKind: 'reference' })),
+  ];
+  const checks = [{ id: 'P0.security', step: 3, phase: 0, state: 'failing', lookedFor: [], evidence: ['token-in-remote-url at git remote "origin"', 'credentials-in-doc at docs/real.md'], proposal: null }];
+  const s = renderSummary(buildReport({ ...base, checks, exposures }));
+  assert.ok(s.includes('Exposures (2)'), 'the heading must count only the prominent findings');
+  assert.ok(s.includes('token-in-remote-url at git remote "origin"'));
+  assert.ok(s.includes('credentials-in-doc at docs/real.md'));
+  // None of the 62 reference-valued hits is printed as an individual line.
+  assert.equal((s.match(/credentials-in-doc at src\/f/g) ?? []).length, 0);
+  assert.ok(s.includes('62 credential-shaped'), 'the collapsed count must be disclosed');
+  assert.ok(s.includes('not shown here'));
+});
+
+test('renderSummary omits the collapsed-count line entirely when there is nothing to collapse', () => {
+  const r = buildReport({ ...base, exposures: [{ kind: 'token-in-remote-url', location: 'origin', severity: 'high' }] });
+  assert.equal(renderSummary(r).includes('code reference'), false);
+});

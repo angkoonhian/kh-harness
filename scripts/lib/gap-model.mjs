@@ -7,6 +7,7 @@ import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
+import { splitExposures, collapsedExposureNote } from './detect-exposure.mjs';
 // Task 8b: the only three facts gap-model.mjs needs from propose.mjs — the
 // exact resolved script path EACH hook generator registers, so a check can
 // ask "is OURS here" instead of "is anything here". Importing the constant,
@@ -18,6 +19,26 @@ import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH } from './propose.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
+
+/**
+ * Task 9b, finding 7: on one unchanged repository, `detect` reported
+ * "7 proposals" and `apply` reported "10 proposals" for the very same run —
+ * both internally consistent (detect counts CAPABILITY GAPS with an
+ * actionable next step; apply counts the individual file WRITES and
+ * settings PATCHES needed to close them — one gap like P2.sensor can
+ * expand into three of those), but sharing the word "proposals" invites a
+ * reader to diff two numbers that were never meant to be comparable.
+ *
+ * This is the one place that counts capability gaps, so report.mjs's
+ * renderSummary and apply.mjs both read the SAME count from it rather than
+ * two independent `.filter(...)` calls that could silently drift apart —
+ * and apply.mjs names its own, larger number differently ("actions"), so
+ * neither count is wrong and the relationship between them is explicit
+ * instead of implied by a shared noun.
+ */
+export function countProposals(checks) {
+  return checks.filter(c => c.proposal).length;
+}
 
 const MAX_INSTRUCTION_LINES = 150;
 
@@ -281,9 +302,29 @@ const CHECKS = [
   {
     id: 'P0.security', step: 3, phase: 0,
     lookedFor: ['tokens in remotes, tracked files and .claude settings'],
-    check: ({ exposures }) => exposures.length
-      ? { state: 'failing', evidence: exposures.map(e => `${e.kind} at ${e.location}`) }
-      : { state: 'verified', evidence: ['no credential patterns matched'] },
+    // Task 9b, finding 1: this used to fail on `exposures.length` alone and
+    // list every one of them as evidence — on a real repository, 62 of 66
+    // `credentials-in-doc` hits were a credential-shaped key whose value is
+    // a code reference (`process.env.TOKEN`, `config.get('x')`, ...), not a
+    // literal. Burying the one real `high` finding under 62 false alarms
+    // trains a reader to stop reading this check at all, which is worse
+    // than no check. `splitExposures` (detect-exposure.mjs, shared with
+    // report.mjs's renderSummary so the two can never disagree) separates
+    // the prominent class — everything that is NOT a reference-valued
+    // `credentials-in-doc` hit — from the rest, which is reported here as a
+    // single collapsed count, never suppressed and never dropped: every
+    // individual finding, reference or literal, still lands in
+    // exposures/detect.json unchanged. Only the PROMINENT class may fail
+    // this check; a repository with nothing but reference-valued hits is
+    // `verified`, with the collapsed count disclosed rather than hidden.
+    check: ({ exposures }) => {
+      const { prominent, collapsedCount } = splitExposures(exposures);
+      const note = collapsedCount ? [collapsedExposureNote(collapsedCount)] : [];
+      if (prominent.length) {
+        return { state: 'failing', evidence: [...prominent.map(e => `${e.kind} at ${e.location}`), ...note] };
+      }
+      return { state: 'verified', evidence: collapsedCount ? note : ['no credential patterns matched'] };
+    },
   },
   {
     id: 'P0.recon', step: 4, phase: 0,

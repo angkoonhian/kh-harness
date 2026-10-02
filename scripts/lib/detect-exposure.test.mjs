@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { listFiles } from './scan.mjs';
-import { detectExposures } from './detect-exposure.mjs';
+import { detectExposures, classifyCredentialValue, splitExposures, isProminentExposure, collapsedExposureNote } from './detect-exposure.mjs';
 
 const SECRET = 'glpat-' + 'A'.repeat(20);
 
@@ -282,4 +282,83 @@ test('skips genuinely binary file (NUL bytes, no BOM) without throwing (round 4)
   assert.doesNotThrow(() => run(d));
   const found = run(d);
   assert.equal(found.some(e => e.location === 'blob.dat'), false, 'Should skip genuinely binary file');
+});
+
+// --- Task 9b, finding 1: literal vs. code-reference classification -------
+//
+// On a real TypeScript codebase, 62 of 66 `credentials-in-doc` hits were a
+// credential-shaped key whose VALUE is a code reference (`process.env.X`,
+// `config.get('x')`, ...), not a literal — noise that buried the one real
+// finding. `classifyCredentialValue` is the syntactic classifier; these
+// pin it against the exact shapes the brief named, in both directions.
+
+test('classifyCredentialValue: real reference shapes are all classified "reference"', () => {
+  for (const value of ['process.env.TOKEN', "config.get('x')", 'os.environ["K"]', 'self.password', 'settings.SECRET_KEY']) {
+    assert.equal(classifyCredentialValue(value), 'reference', `${value} must be a reference`);
+  }
+});
+
+test('classifyCredentialValue: a glpat-shaped literal is never demoted to "reference"', () => {
+  assert.equal(classifyCredentialValue('glpat-' + 'A'.repeat(20)), 'literal');
+});
+
+test('classifyCredentialValue: a quoted string literal is classified "literal"', () => {
+  assert.equal(classifyCredentialValue('"hunter2hunter2"'), 'literal');
+});
+
+test('classifyCredentialValue: an empty string is classified "literal" (conservative default)', () => {
+  assert.equal(classifyCredentialValue(''), 'literal');
+});
+
+test('classifyCredentialValue: a bare token with no dot/call/subscript is "literal", not merely identifier-shaped', () => {
+  // SECRET_KEY alone — no property access, call or subscript — is a bare
+  // token per the brief's own wording, not a reference: only a GENUINE
+  // compound expression (seen above) may be demoted.
+  assert.equal(classifyCredentialValue('SECRET_KEY'), 'literal');
+  assert.equal(classifyCredentialValue('hunter2hunter2hunter2'), 'literal');
+});
+
+test('classifyCredentialValue: trailing statement punctuation on a real reference does not flip it to literal', () => {
+  assert.equal(classifyCredentialValue('process.env.TOKEN;'), 'reference');
+  assert.equal(classifyCredentialValue('process.env.TOKEN,'), 'reference');
+});
+
+test('detectExposures tags credentials-in-doc findings with valueKind, never dropping either class', () => {
+  const d = repo();
+  write(d, 'src/config/db.ts', "password: process.env.DB_PASSWORD,\n");
+  write(d, 'docs/real-db.md', 'password: hunter2hunter2hunter2\n');
+  const found = run(d);
+  const byLocation = Object.fromEntries(found.map(e => [e.location, e]));
+  assert.equal(byLocation['src/config/db.ts'].kind, 'credentials-in-doc');
+  assert.equal(byLocation['src/config/db.ts'].valueKind, 'reference', 'fixture sanity: the code-reference row must actually be present');
+  assert.equal(byLocation['docs/real-db.md'].kind, 'credentials-in-doc');
+  assert.equal(byLocation['docs/real-db.md'].valueKind, 'literal', 'fixture sanity: the literal row must actually be present');
+  // Both still appear in the raw list — classification tags, it never
+  // suppresses. "Listed in detect.json, not shown here" only ever applies
+  // to the rendered report, which splitExposures/renderSummary handle.
+  assert.equal(found.length, 2);
+});
+
+test('splitExposures: a reference-valued credentials-in-doc finding is collapsed; everything else stays prominent', () => {
+  const exposures = [
+    { kind: 'token-in-remote-url', location: 'git remote "origin"', severity: 'high' },
+    { kind: 'credentials-in-doc', location: 'src/a.ts', severity: 'medium', valueKind: 'reference' },
+    { kind: 'credentials-in-doc', location: 'src/b.ts', severity: 'medium', valueKind: 'reference' },
+    { kind: 'credentials-in-doc', location: 'docs/real.md', severity: 'medium', valueKind: 'literal' },
+  ];
+  const { prominent, collapsedCount } = splitExposures(exposures);
+  assert.deepEqual(prominent.map(e => e.location).sort(), ['docs/real.md', 'git remote "origin"']);
+  assert.equal(collapsedCount, 2);
+  // The invariant the brief demands outright: the demoted class never
+  // contains a literal.
+  const collapsed = exposures.filter(e => !isProminentExposure(e));
+  assert.equal(collapsed.some(e => e.valueKind === 'literal'), false);
+});
+
+test('collapsedExposureNote names the count and says where the rest live', () => {
+  const note = collapsedExposureNote(62);
+  assert.match(note, /^62 /);
+  assert.match(note, /code reference/);
+  assert.match(note, /not literal/);
+  assert.match(note, /detect\.json/);
 });
