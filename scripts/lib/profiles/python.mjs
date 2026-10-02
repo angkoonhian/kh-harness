@@ -31,6 +31,12 @@ export const python = {
   //      Python) is correctly invisible too: it is regenerable, not the
   //      user's content.
   // Do not collapse this back to one form.
-  protectedGlobs() { return [...LOCKFILE_GLOBS, 'requirements*.txt', '__pycache__/**', '**/__pycache__/**']; },
+  //
+  // `requirements*.txt` is NOT listed here: unlike a lockfile, it is
+  // normally a hand-edited manifest, and protecting it unconditionally
+  // was a defect (see protected-evidence.mjs's `pairedRequirementsFiles`,
+  // which protects it per file, only when its own `requirements*.in`
+  // sibling exists — the pip-tools compiled-output case).
+  protectedGlobs() { return [...LOCKFILE_GLOBS, '__pycache__/**', '**/__pycache__/**']; },
   appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16]; },
 };

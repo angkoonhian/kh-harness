@@ -285,31 +285,45 @@ test('P2.protected does not propose a deny rule for requirements.txt without a r
   assert.equal(deny, undefined, 'a hand-edited requirements.txt is not a lockfile — no evidence, no proposal');
 });
 
-test('P2.protected proposes and delivers Edit(requirements*.txt) when requirements.in is present (pip-tools compiled output)', () => {
+test('P2.protected proposes and delivers Edit(requirements.txt) — the literal filename — when its own requirements.in sibling is present', () => {
   const files = ['requirements.in', 'requirements.txt'];
   const ps = buildProposals(args([protectedCheck()], { files, stack: pyStack }));
   const deny = ps.find(p => p.kind === 'settings-deny');
   assert.ok(deny, 'requirements.in is evidence that requirements.txt is compiled output, not hand-edited');
-  assert.ok(deny.globs.includes('Edit(requirements*.txt)'));
+  assert.ok(deny.globs.includes('Edit(requirements.txt)'));
 });
 
-// One thing checked rather than left to be discovered: requirements*.txt
-// also matches requirements-dev.txt and similar. The gate above is
-// GLOB-level, not per-file — it asks "does ANY requirements*.in exist",
-// never "does THIS specific *.txt have its own *.in" — so a requirements.in
-// that backs requirements.txt also protects a sibling requirements-dev.txt
-// that has no requirements-dev.in of its own and may be genuinely
-// hand-edited. This is the same granularity every other candidate in
-// protected-evidence.mjs already has (`migrations/**` protects the whole
-// directory, not file-by-file); it is not fixed here, and is pinned
-// explicitly so it is a known, visible behaviour rather than a silent
-// surprise the next reader has to rediscover.
-test('KNOWN LIMITATION: requirements.in gates the WHOLE requirements*.txt glob, including a sibling dev file with no .in of its own', () => {
+// Coordinator correction, round 2: a glob-level gate ("does ANY
+// requirements*.in exist") reintroduced the original defect on a narrower
+// path — it protected requirements-dev.txt even with no
+// requirements-dev.in of its own, which is exactly the false friction on a
+// hand-edited file this whole fix exists to remove. The rule is now
+// PER FILE: for each requirements*.txt the repository actually contains,
+// swap .txt for .in and protect that exact file only if ITS OWN sibling
+// exists. This is the discrimination test — both outcomes asserted
+// together so the discrimination itself, not just one half of it, is the
+// subject.
+test('DISCRIMINATION: requirements.txt is protected but a sibling requirements-dev.txt with no .in of its own is not', () => {
   const files = ['requirements.in', 'requirements.txt', 'requirements-dev.txt'];
+  // Fixture sanity: the file this test asserts is UNPROTECTED must
+  // actually be present, or the assertion below passes on an empty
+  // fixture rather than on a real discrimination — see this task's
+  // test-quality instruction.
+  assert.ok(files.includes('requirements-dev.txt'), 'fixture sanity: requirements-dev.txt must actually be present');
   const ps = buildProposals(args([protectedCheck()], { files, stack: pyStack }));
   const deny = ps.find(p => p.kind === 'settings-deny');
-  assert.ok(deny, 'requirements.in is present, so the glob is gated open');
-  assert.ok(deny.globs.includes('Edit(requirements*.txt)'), 'the single glob rule covers requirements-dev.txt too, by construction');
+  assert.ok(deny, 'requirements.txt pairs with requirements.in and is protected');
+  assert.ok(deny.globs.includes('Edit(requirements.txt)'), 'requirements.txt has its own .in sibling');
+  assert.equal(deny.globs.includes('Edit(requirements-dev.txt)'), false, 'requirements-dev.txt has NO requirements-dev.in of its own — it must stay hand-editable');
+  assert.equal(deny.globs.some(g => g.includes('requirements*')), false, 'no wildcard form may reappear and sweep requirements-dev.txt back in');
+});
+
+test('a requirements/ directory layout pairs the same way: requirements/base.in protects requirements/base.txt', () => {
+  const files = ['requirements/base.in', 'requirements/base.txt'];
+  const ps = buildProposals(args([protectedCheck()], { files, stack: pyStack }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.ok(deny, 'requirements/base.in is evidence that requirements/base.txt is compiled output');
+  assert.ok(deny.globs.includes('Edit(requirements/base.txt)'));
 });
 
 test('P2.protected matches a root-level build output directory (dist/)', () => {

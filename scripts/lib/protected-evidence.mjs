@@ -80,46 +80,68 @@ function hasEvidence(glob, files) {
 }
 
 /**
- * Coordinator correction: `requirements*.txt` (python.mjs's own
- * `protectedGlobs()` entry) used to survive on presence alone, the same as
- * a real lockfile. It is not one. `requirements.txt` is normally a
- * HAND-EDITED manifest — Python's analogue of `package.json`, which this
- * project deliberately does not protect (a deny rule there blocks "add
- * this dependency", a legitimate and frequent action — exactly the false
- * friction that gets a harness uninstalled, and worse than no rule because
- * it arrives looking authoritative).
- *
- * But under pip-tools, `requirements*.txt` IS compiled output, generated
- * FROM a `requirements*.in` source — and protecting it there is correct,
- * because a hand edit to the compiled file is silently lost on the next
- * `pip-compile`. The presence of any `requirements*.in` file is exactly
- * the kind of real, already-in-hand evidence this module otherwise
- * requires for every other candidate, so `requirements*.txt` is gated on
- * it rather than matched unconditionally.
- *
- * This is a GLOB-level gate, not a per-file one: it asks "does ANY
- * requirements*.in exist anywhere in the repository", never "does THIS
- * specific *.txt have its own *.in" — so a `requirements.in` that backs
- * `requirements.txt` also protects a sibling `requirements-dev.txt` with
- * no `requirements-dev.in` of its own, which may genuinely be
- * hand-edited. That is the same granularity every other candidate in this
- * module already has (`migrations/**` protects the whole directory, not
- * file-by-file) — a known, visible trade-off, not an oversight; see
- * propose.test.mjs's own pinning test for the exact shape.
+ * A path whose basename is pip's requirements*.txt convention
+ * (`requirements.txt`, `requirements-dev.txt`, any directory) OR that
+ * sits inside a directory literally named `requirements/`
+ * (`requirements/base.txt`) — pip-tools' other common layout. Matching on
+ * PATH SHAPE, not on a stack-profile check, because the file-naming
+ * convention is the evidence; a repository that happens to have one of
+ * these without being detected as "python" is not a reason to skip the
+ * pairing rule below.
  */
-const CONDITIONAL_CANDIDATES = {
-  'requirements*.txt': files => hasEvidence('requirements*.in', files),
-};
+const REQUIREMENTS_TXT_RE = /(^|\/)requirements[^/]*\.txt$|(^|\/)requirements\/[^/]*\.txt$/;
+
+/**
+ * Coordinator correction, round 2: `requirements*.txt` used to survive as
+ * a single GLOB, gated on whether ANY `requirements*.in` existed anywhere
+ * in the repository. That reintroduced the original defect on a narrower
+ * path: a `requirements.in` that backs `requirements.txt` also protected
+ * a sibling `requirements-dev.txt` with no `requirements-dev.in` of its
+ * own — a hand-edited file swept in by an unrelated pair, the exact false
+ * friction this whole fix exists to remove.
+ *
+ * The rule is now PER FILE. `requirements.txt` is normally a HAND-EDITED
+ * manifest — Python's analogue of `package.json`, which this project
+ * deliberately does not protect (a deny rule there blocks "add this
+ * dependency", a legitimate and frequent action — the false friction that
+ * gets a harness uninstalled, worse than no rule because it arrives
+ * looking authoritative). Under pip-tools it IS compiled output, but only
+ * for the specific `requirements*.txt` whose OWN sibling `requirements*.in`
+ * (same directory, same basename, extension swapped) exists — a hand edit
+ * to that one file is silently lost on the next `pip-compile`. Implemented
+ * as a general rule (swap the extension, test for existence), not a
+ * special case for `-dev`, so a `requirements/base.in` +
+ * `requirements/base.txt` directory layout is covered without further
+ * thought, and a newly added hand-edited `requirements-*.txt` later does
+ * not silently inherit protection from an unrelated pair.
+ *
+ * Returns LITERAL filenames, never a glob — unlike every other candidate
+ * in this module, each result here was already matched against a
+ * specific file, so re-widening it into a wildcard would throw that
+ * precision away. A literal entry also means the deny list in the user's
+ * `settings.json` names exactly the generated files: a reader can verify
+ * each entry against the repository directly, and it cannot silently
+ * widen to cover a file that did not exist when it was written.
+ */
+function pairedRequirementsFiles(files) {
+  const survivors = [];
+  for (const f of files) {
+    if (!REQUIREMENTS_TXT_RE.test(f)) continue;
+    const sibling = f.slice(0, -'.txt'.length) + '.in';
+    if (files.includes(sibling)) survivors.push(f);
+  }
+  return survivors;
+}
 
 /**
  * Intersects `profile.protectedGlobs()` (the universal-per-stack candidates:
  * lockfiles, build output) with `PROTECTED_PATH_CANDIDATES` (the ORM/
- * framework conventions above), and returns only the RAW globs with
- * evidence in `files` — the complete answer to "is there anything in this
- * repository worth protecting", consulted by both the check (to decide
- * `n/a` vs `absent`) and the generator (to build the actual deny rules). A
- * candidate listed in `CONDITIONAL_CANDIDATES` must additionally pass its
- * own extra gate, on top of (not instead of) the ordinary evidence check.
+ * framework conventions above), keeps only the globs with evidence in
+ * `files`, and appends any `requirements*.txt` files that pair with their
+ * own `requirements*.in` sibling (see `pairedRequirementsFiles`, above) —
+ * the complete answer to "is there anything in this repository worth
+ * protecting", consulted by both the check (to decide `n/a` vs `absent`)
+ * and the generator (to build the actual deny rules).
  */
 export function protectedPathCandidates({ stack, files }) {
   const profile = selectProfile(stack);
@@ -129,10 +151,8 @@ export function protectedPathCandidates({ stack, files }) {
   for (const glob of candidates) {
     if (seen.has(glob)) continue;
     seen.add(glob);
-    if (!hasEvidence(glob, files)) continue;
-    const extraGate = CONDITIONAL_CANDIDATES[glob];
-    if (extraGate && !extraGate(files)) continue;
-    surviving.push(glob);
+    if (hasEvidence(glob, files)) surviving.push(glob);
   }
+  surviving.push(...pairedRequirementsFiles(files));
   return surviving;
 }

@@ -266,7 +266,7 @@ test('END-TO-END (Task 5b): a pip-only repo asks about lint/verify commands inst
   assert.ok(r.couldNotDerive.some(q => /verif|typecheck|test/i.test(q)), 'the stop-gate question must be routed to couldNotDerive');
 });
 
-test('END-TO-END (Task 5b): a pip-tools repo (requirements.in AND requirements.txt) proposes and delivers the deny rule', () => {
+test('END-TO-END (Task 5b): a pip-tools repo (requirements.in AND requirements.txt) proposes and delivers the literal deny rule', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-pip-tools-'));
   write(d, 'requirements.in', 'requests\n');
   write(d, 'requirements.txt', 'requests==2.31.0\n');
@@ -285,9 +285,36 @@ test('END-TO-END (Task 5b): a pip-tools repo (requirements.in AND requirements.t
   execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
   const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
   const out = execFileSync(process.execPath, [APPLY, d, '--yes'], { encoding: 'utf8' });
-  assert.match(out, /Edit\(requirements\*\.txt\)/, 'the deny rule is actually delivered, not just advertised');
+  assert.match(out, /Edit\(requirements\.txt\)/, 'the deny rule is actually delivered, not just advertised — as the literal filename');
   const settings = JSON.parse(readFileSync(join(d, '.claude', 'settings.json'), 'utf8'));
-  assert.ok(settings.permissions.deny.includes('Edit(requirements*.txt)'));
+  assert.ok(settings.permissions.deny.includes('Edit(requirements.txt)'));
+});
+
+// Coordinator correction, round 2: proves the per-file discrimination
+// through the real CLI, end to end — requirements.txt (paired with
+// requirements.in) is protected; requirements-dev.txt (no
+// requirements-dev.in of its own) is not, and no wildcard form sweeps it
+// in regardless.
+test('END-TO-END (Task 5b): requirements.in + requirements.txt + requirements-dev.txt protects only requirements.txt, by its own literal name', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-pip-tools-discrim-'));
+  write(d, 'requirements.in', 'requests\n');
+  write(d, 'requirements.txt', 'requests==2.31.0\n');
+  write(d, 'requirements-dev.txt', 'pytest\n');
+  write(d, 'app.py', 'print("hi")\n');
+  execFileSync('git', ['init', '-q', d]);
+  execFileSync('git', ['-C', d, 'checkout', '-q', '-b', 'chore/harness']);
+  execFileSync('git', ['-C', d, 'remote', 'add', 'origin', 'https://example.invalid/x.git']);
+  execFileSync('git', ['-C', d, 'add', '-A']);
+  execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
+  const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
+  const out = execFileSync(process.execPath, [APPLY, d, '--yes'], { encoding: 'utf8' });
+  assert.match(out, /Edit\(requirements\.txt\)/);
+  assert.doesNotMatch(out, /Edit\(requirements-dev\.txt\)/);
+  assert.doesNotMatch(out, /requirements\*/, 'no wildcard form may appear anywhere in the preview');
+
+  const settings = JSON.parse(readFileSync(join(d, '.claude', 'settings.json'), 'utf8'));
+  assert.deepEqual(settings.permissions.deny, ['Edit(requirements.txt)'],
+    `the deny list must name exactly the paired file, verbatim; got ${JSON.stringify(settings.permissions.deny)}`);
 });
 
 test('END-TO-END (Task 5b): a lockfile-less JS/TS repo with no lint/typecheck/test script asks or reports n/a, never an undeliverable proposal', () => {
