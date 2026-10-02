@@ -822,3 +822,113 @@ test('LAYER 1 does not redact a long file basename that is legitimately part of 
   assert.equal(r.code, 2, 'the file\'s own (long) name must never be treated as a redactable command fragment');
   assert.match(r.stderr, /quite-a-long-component-name\.ts/);
 });
+
+// --- Cost item: dedupe a standing lint error, keyed on file + signature --
+//
+// Without this, a file with one unfixed lint error gets the IDENTICAL
+// notice re-surfaced on every single subsequent edit to that file — with
+// no caching in a real linter, this is paid in full each time too. The
+// dedupe only ever engages when `session_id` is present and valid; every
+// test above omits it, which is exactly why none of them were affected by
+// adding this.
+
+/** A lint script that reads its message from a FILE the edit touches,
+ * never from the command string — same reason verify-touched.test.mjs's
+ * `failingRepo`/`setProblem` do this: layer 1 redaction strips fragments
+ * of the COMMAND, so a message embedded there could be stripped before
+ * the signature is ever computed over it, collapsing two different
+ * messages into the same output and making the dedupe assertions below
+ * pass for the wrong reason. */
+function dedupeRepo() {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;\n');
+  writeFileSync(join(d, 'src', 'b.ts'), 'export const b = 1;\n');
+  writeFileSync(
+    join(d, 'runlint.cjs'),
+    "const fs = require('fs'); const target = process.argv[2]; " +
+    "const msg = fs.readFileSync('message.txt', 'utf8').trim(); " +
+    "console.error(target + ':1 ' + msg); process.exit(1);\n",
+  );
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
+  return d;
+}
+function setMessage(d, message) {
+  writeFileSync(join(d, 'message.txt'), message);
+}
+const editPayload = (filePath, sessionId) => ({
+  hook_event_name: 'PostToolUse', session_id: sessionId, tool_name: 'Edit', tool_input: { file_path: filePath },
+});
+
+test('DEDUPE: the SAME standing lint error on the SAME file is reported once per session, then suppressed', () => {
+  const d = dedupeRepo();
+  setMessage(d, 'no-unused-vars');
+  const r1 = run(d, editPayload('src/a.ts', 'dedupe-session-1'));
+  assert.equal(r1.code, 2, 'sanity: the first edit reports the error');
+  assert.match(r1.stderr, /no-unused-vars/);
+
+  const r2 = run(d, editPayload('src/a.ts', 'dedupe-session-1'));
+  assert.equal(r2.code, 0, 'the identical standing error on a second edit to the same file must not be re-reported');
+});
+
+test('DEDUPE: a DIFFERENT error on the SAME file in the SAME session is still reported', () => {
+  const d = dedupeRepo();
+  setMessage(d, 'problem-one');
+  const r1 = run(d, editPayload('src/a.ts', 'dedupe-session-2'));
+  assert.equal(r1.code, 2);
+  assert.match(r1.stderr, /problem-one/);
+
+  setMessage(d, 'problem-two');
+  const r2 = run(d, editPayload('src/a.ts', 'dedupe-session-2'));
+  assert.equal(r2.code, 2, 'a genuinely different error on the same file must still be reported, even after a prior report');
+  assert.match(r2.stderr, /problem-two/);
+});
+
+test('DEDUPE: a standing error on a DIFFERENT file is reported independently, not globally capped', () => {
+  const d = dedupeRepo();
+  setMessage(d, 'shared-problem');
+  const r1 = run(d, editPayload('src/a.ts', 'dedupe-session-3'));
+  assert.equal(r1.code, 2, 'sanity: a.ts reports once');
+  const r2 = run(d, editPayload('src/a.ts', 'dedupe-session-3'));
+  assert.equal(r2.code, 0, 'sanity: a.ts is now suppressed (same signature)');
+
+  const r3 = run(d, editPayload('src/b.ts', 'dedupe-session-3'));
+  assert.equal(r3.code, 2, 'b.ts has never been reported in this session and must not be suppressed by a.ts\'s own state');
+  assert.match(r3.stderr, /shared-problem/);
+});
+
+test('DEDUPE: a DIFFERENT session for the same file is unaffected by a prior session\'s suppression', () => {
+  const d = dedupeRepo();
+  setMessage(d, 'cross-session-problem');
+  run(d, editPayload('src/a.ts', 'dedupe-session-4a'));          // session 4a: reports, then would suppress a repeat
+  run(d, editPayload('src/a.ts', 'dedupe-session-4a'));          // session 4a: suppressed
+  const r = run(d, editPayload('src/a.ts', 'dedupe-session-4b')); // a NEW session
+  assert.equal(r.code, 2, 'a different session must not inherit another session\'s suppression');
+});
+
+test('DEDUPE: a THIRD distinct error on the same file hits the per-file cap and is not reported', () => {
+  const d = dedupeRepo();
+  const s = 'dedupe-session-cap';
+  setMessage(d, 'cap-problem-A');
+  const r1 = run(d, editPayload('src/a.ts', s));
+  setMessage(d, 'cap-problem-B');
+  const r2 = run(d, editPayload('src/a.ts', s));
+  setMessage(d, 'cap-problem-C');
+  const r3 = run(d, editPayload('src/a.ts', s));
+  // Sanity: three DISTINCT errors on the same file each actually report,
+  // reaching the cap, before asserting anything about what happens next.
+  assert.deepEqual([r1.code, r2.code, r3.code], [2, 2, 2], 'three distinct errors on one file must each report, reaching the cap');
+
+  setMessage(d, 'cap-problem-D');
+  const r4 = run(d, editPayload('src/a.ts', s));
+  assert.equal(r4.code, 0, 'a fourth distinct error on the SAME file must not report once that file\'s cap is reached');
+});
+
+test('DEDUPE: with no session_id, every edit is reported — the dedupe simply does not engage', () => {
+  const d = dedupeRepo();
+  setMessage(d, 'no-session-problem');
+  const r1 = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  const r2 = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r1.code, 2);
+  assert.equal(r2.code, 2, 'without a usable session_id there is nothing to key dedupe state on, so the old always-report behaviour applies');
+});

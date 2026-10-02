@@ -19,7 +19,17 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve, isAbsolute, basename, delimiter, relative, sep } from 'node:path';
-import { dropCommandFragments, maskCredentials } from './harness-redact.mjs';
+import {
+  boundReport,
+  dropCommandFragments,
+  maskCredentials,
+  MAX_BLOCKS_PER_SESSION,
+  markerPath,
+  readJSONMarker,
+  safeSessionId,
+  signatureOf,
+  writeJSONMarker,
+} from './harness-redact.mjs';
 
 // Overridable so a test can exercise the timeout path in milliseconds, not
 // minutes; defaults to the real 30s bound otherwise.
@@ -31,8 +41,6 @@ const LINT_TIMEOUT_MS = Number(process.env.HK_LINT_TIMEOUT_MS) || 30_000;
 // wrong. Reading asynchronously (see readStdin) is what makes a timer
 // actually able to pre-empt it; a blocking sync read cannot be raced.
 const STDIN_TIMEOUT_MS = Number(process.env.HK_STDIN_TIMEOUT_MS) || 5_000;
-// Mirrors session-brief.mjs's own bound on what it prints to a session.
-const MAX_REPORT_LINES = 60;
 // Generous but bounded: raised from spawnSync's 1MB default so a verbose
 // `eslint .` whole-project run (the fallback path below) does not overflow
 // and get silently discarded — see the overflow handling near `isOverflow`.
@@ -288,21 +296,65 @@ function hasChanged(before, after) {
 
 /**
  * The single chokepoint every byte reported to Claude passes through —
- * truncated here (mirrors session-brief.mjs's own bound), and this is the
- * ONLY `process.stderr.write` in this file. Nothing upstream may write to
- * stderr directly; every path that can report something builds a line
- * list and hands it here, so redaction (above) cannot be bypassed by a
- * future call site that forgets it.
+ * bounded by both line count and byte size (`boundReport`, shared with
+ * verify-touched.mjs so neither hook's bound can drift from the other's),
+ * and this is the ONLY `process.stderr.write` in this file. Nothing
+ * upstream may write to stderr directly; every path that can report
+ * something builds a line list and hands it here, so redaction (above)
+ * cannot be bypassed by a future call site that forgets it.
+ *
+ * Unlike verify-touched.mjs, an EMPTY `lines` here genuinely means nothing
+ * happened: this hook's own report is already attribution-filtered (see
+ * extractAttributedBlocks), so a failure that mentions nothing about the
+ * edited file was correctly never attributed to it, and staying silent is
+ * the right call, not a missing guard — verify-touched.mjs blocks on every
+ * real failure of a WHOLE-repo command, where "nothing survived redaction"
+ * can still mean "the command genuinely failed", which is why that file
+ * needs an explicit substitute message instead of this early return.
  */
 function writeReport(lines) {
   if (lines.length === 0) return 0;
-  const shown = lines.slice(0, MAX_REPORT_LINES);
-  let report = shown.join('\n');
-  if (lines.length > MAX_REPORT_LINES) {
-    report += `\n--- truncated: ${lines.length - MAX_REPORT_LINES} more line(s) ---`;
-  }
-  process.stderr.write(report + '\n');
+  process.stderr.write(boundReport(lines) + '\n');
   return 2;
+}
+
+/**
+ * Dedupes a standing lint error so it is reported once per session, not
+ * once per edit — without this, a file with one unfixed lint error gets
+ * the identical notice re-surfaced on every single subsequent edit to that
+ * file, which is how a sensor teaches people to ignore it. Keyed on `file
+ * + signature` (not merely the file) so a NEW, different error on the same
+ * file still gets reported: the SAME shared signature/cap machinery
+ * verify-touched.mjs uses for the Stop gate, applied per file here rather
+ * than once per session, since a sensor naturally has one independent
+ * "stream" of potential issues per file rather than one for the whole
+ * repository.
+ *
+ * Returns `true` when this exact (file, signature) pair has already been
+ * reported `MAX_BLOCKS_PER_SESSION` times or more for THIS file, or was
+ * the most recently reported one for it. A marker write failure fails
+ * OPEN in the opposite direction from verify-touched.mjs's: there, failing
+ * to record state must never cause an unbounded BLOCK; here, it must
+ * never cause a real problem to go silently UNREPORTED — so a write
+ * failure here still reports (returns `false`), accepting that the
+ * dedupe nicety may not perfectly persist, rather than ever hiding a lint
+ * finding from Claude. No `session_id` to key on (malformed payload, or a
+ * value that fails `safeSessionId`) means dedupe is simply skipped — the
+ * old, always-report behaviour, not a reason to suppress anything.
+ */
+function shouldSuppressDuplicate(root, sessionId, filePath, signature) {
+  if (sessionId === null) return false;
+  const path = markerPath(root, sessionId, 'sensor');
+  const marker = readJSONMarker(path, { files: {} });
+  const files = marker?.files && typeof marker.files === 'object' && !Array.isArray(marker.files) ? marker.files : {};
+  const entry = files[filePath] && typeof files[filePath] === 'object' ? files[filePath] : null;
+  const count = Number.isFinite(Number(entry?.count)) && Number(entry?.count) >= 0 ? Number(entry.count) : 0;
+  const lastSignature = typeof entry?.lastSignature === 'string' ? entry.lastSignature : null;
+
+  if (count >= MAX_BLOCKS_PER_SESSION || lastSignature === signature) return true;
+
+  writeJSONMarker(path, { files: { ...files, [filePath]: { count: count + 1, lastSignature: signature } } });
+  return false;
 }
 
 async function main() {
@@ -417,7 +469,13 @@ async function main() {
   const attributed = extractAttributedBlocks(combined.split(/\r?\n/), filePath, base);
   const exemptions = new Set([relToOwner, basename(relToOwner)]);
   const survived = dropCommandFragments(attributed, [lintScript, fullCommand], exemptions);
-  return writeReport(survived.map(maskCredentials));
+  const reported = survived.map(maskCredentials);
+  if (reported.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
+
+  const sessionId = safeSessionId(payload.session_id);
+  if (shouldSuppressDuplicate(root, sessionId, filePath, signatureOf(reported))) return 0;
+
+  return writeReport(reported);
 }
 
 (async () => {

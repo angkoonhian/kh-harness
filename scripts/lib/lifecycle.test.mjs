@@ -129,6 +129,89 @@ test('STOPGATE: apply installs verify-touched.mjs, the shared redaction asset, a
   assert.equal(settings(d).hooks, undefined, 'the Stop hook is reverted');
 });
 
+test('FINDING 5: a settings-hook is never registered when its shared dependency is missing from disk, even though the batch plan says otherwise', () => {
+  // Reproduces the review's exact Case C: P2.sensor installs
+  // lint-touched.mjs + the shared harness-redact.mjs and registers a
+  // PostToolUse hook. The user then deletes the shared module. A LATER
+  // run, for an unrelated reason (a `typecheck` script now exists, making
+  // P2.stopgate absent+decidable), proposes verify-touched.mjs and a Stop
+  // settings-hook — but NOT harness-redact.mjs, because propose.mjs's own
+  // "never re-propose a file already in the manifest" rule (correct for a
+  // self-contained asset the user deliberately deleted) silently skips it
+  // here too, even though its absence now breaks BOTH hooks. Without
+  // Finding 5's fix, apply would register the Stop hook anyway, and it
+  // would die with ERR_MODULE_NOT_FOUND on every single turn.
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'eslint .' } }));
+  // tsconfig.json is what tips selectProfile toward "typescript" rather
+  // than "generic" — the generic profile's own appliesToSteps() excludes
+  // steps 9/10 (P2.sensor/P2.stopgate) entirely, which would make this
+  // fixture's checks never even get considered, for a reason unrelated to
+  // what this test is about.
+  writeFileSync(join(d, 'tsconfig.json'), '{}');
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+
+  // Step 1: P2.sensor installs lint-touched.mjs + harness-redact.mjs and
+  // registers PostToolUse.
+  run(APPLY, d, '--yes');
+  assert.ok(existsSync(join(d, '.claude/scripts/lint-touched.mjs')));
+  assert.ok(existsSync(join(d, '.claude/scripts/harness-redact.mjs')));
+  assert.equal(settings(d).hooks.PostToolUse.length, 1);
+  // `-a` would stage only MODIFICATIONS to already-tracked files; settings.json
+  // here is a brand-new (untracked) file, same as HANDOFF.md/lint-touched.mjs,
+  // so this needs `-A` to actually pick it up.
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'accept settings patch');
+
+  // Step 2: the user deletes the shared module, and separately adds a
+  // `typecheck` script — the unrelated change that makes P2.stopgate fire.
+  rmSync(join(d, '.claude/scripts/harness-redact.mjs'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'eslint .', typecheck: 'tsc --noEmit' } }));
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'add typecheck, delete shared module');
+
+  // Step 3: run 2 proposes verify-touched.mjs + a Stop hook, but (per
+  // propose.mjs's own manifest dedupe) NOT harness-redact.mjs.
+  const out = run(APPLY, d, '--yes');
+  assert.ok(existsSync(join(d, '.claude/scripts/verify-touched.mjs')), 'the Stop gate script is still written');
+  assert.equal(existsSync(join(d, '.claude/scripts/harness-redact.mjs')), false,
+    'sanity: the shared module genuinely was not rewritten this run — the dependency really is missing');
+  assert.equal(settings(d).hooks.Stop, undefined,
+    'the Stop hook must NEVER be registered while the module it imports is missing from disk');
+  assert.match(out, /missing-dependency/, 'the skip must be reported, not silent');
+  assert.match(out, /harness-redact\.mjs/, 'the report must name which dependency was missing');
+
+  // The EARLIER PostToolUse hook, registered in a previous run while its
+  // own dependency genuinely existed, is untouched by this run — this
+  // fix only ever refuses a NEW activation, never revokes an existing one.
+  assert.equal(settings(d).hooks.PostToolUse.length, 1, 'an already-registered, unrelated hook is left alone');
+
+  // The manifest (tracked since step 1's `git add -A`) was just updated
+  // in place by this run's own write of verify-touched.mjs's entry —
+  // commit that before the next apply call, or it refuses on a dirty tree
+  // for a reason unrelated to what this test is about.
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'record partial install');
+
+  // Confirms this is a genuine FILESYSTEM gate, not a permanent one-way
+  // block: once the dependency is back on disk (by whatever means — this
+  // check only ever asks `existsSync`, never the stale manifest), the
+  // very next run completes the activation the previous one correctly
+  // withheld. Both file proposals are skipped on this run too (they are
+  // already in the manifest from the earlier runs, so propose.mjs's own
+  // dedupe never re-proposes them) — only the settings-hook proposal
+  // remains, and this time its dependency check passes.
+  writeFileSync(join(d, '.claude/scripts/harness-redact.mjs'), 'export const CREDENTIAL_RULES = [];\n');
+  run(APPLY, d, '--yes');
+  assert.equal(settings(d).hooks.Stop.length, 1,
+    'once the dependency genuinely exists on disk again, activation proceeds — this is a real-state gate, not a one-way trap');
+});
+
 test('C2: a secret anywhere in settings.json reaches no part of a dry run\'s output', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));

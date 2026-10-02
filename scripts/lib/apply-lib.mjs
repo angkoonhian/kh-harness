@@ -400,8 +400,39 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
   skipped.push({ path: targetPath, why: cls, checkId: proposal.checkId });
 }
 
+/**
+ * Review finding 5: a settings patch that ACTIVATES a script must not be
+ * applied unless that script, and everything it depends on, is actually
+ * present on disk — checked against the real filesystem, after the write
+ * phase, never merely trusted because the batch's PLAN said it would
+ * write them. Without this, a hook that shares a dependency with another
+ * (e.g. lint-touched.mjs and verify-touched.mjs both importing
+ * harness-redact.mjs) could get registered in one run while the shared
+ * file was never (re)written in that same run — propose.mjs's own
+ * "never re-propose a file already in the manifest" rule means exactly
+ * this happens once a user deletes the shared file and only ONE of the
+ * two hooks' checks is absent on a later run. The result without this
+ * check: a `Stop`/`PostToolUse` hook registered, exiting 0 or 2 as far as
+ * settings.json is concerned, that actually dies with
+ * `ERR_MODULE_NOT_FOUND` on every turn or every edit.
+ *
+ * `existsSync`, not the manifest: the manifest only records what a PRIOR
+ * run believed it wrote, which is exactly the stale information this
+ * check exists to not trust.
+ */
+function missingDependencies(root, proposal) {
+  return (proposal.requiresFiles ?? []).filter(f => !existsSync(join(root, f)));
+}
+
 function applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped }) {
   const settingsPath = join(root, SETTINGS_PATH);
+
+  const missing = missingDependencies(root, proposal);
+  if (missing.length > 0) {
+    skipped.push({ path: SETTINGS_PATH, why: `missing-dependency: ${missing.join(', ')}`, checkId: proposal.checkId });
+    return;
+  }
+
   const result = readSettingsResult(root);
 
   if (!result.ok) {
