@@ -1,4 +1,7 @@
 import { installCommand } from './bootstrap-install.mjs';
+import { hasLintScript } from './sensor-evidence.mjs';
+import { rootVerifyScript } from './stopgate-evidence.mjs';
+import { protectedPathCandidates } from './protected-evidence.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
@@ -154,23 +157,77 @@ const CHECKS = [
   {
     id: 'P2.sensor', step: 9, phase: 2,
     lookedFor: ['a PostToolUse hook in .claude/settings.json'],
-    check: ({ harness }) => registeredHook(harness, 'PostToolUse',
-      'install scripts/lint-touched.mjs and register a PostToolUse hook'),
+    // Task 5b (coordinator-inserted correction): this used to decide
+    // `absent` + a proposal purely from whether a PostToolUse hook was
+    // registered, never checking whether propose.mjs's own generator
+    // (sensorProposal) could actually produce anything — while that
+    // generator (correctly) refuses to fire unless some package declares a
+    // `lint` script. detect-stack.mjs has no Python script-name
+    // convention, so `scripts` is always `[]` for Python: this mismatched
+    // for EVERY real Python repository. `hasLintScript`, imported from
+    // sensor-evidence.mjs, is the SAME derivation the generator uses — not
+    // a second independent guess — so the two cannot drift again. The
+    // capability still APPLIES whenever there is code to lint (contrast
+    // P2.protected below, where the subject itself can be genuinely
+    // absent), so the honest answer when no package declares `lint` is to
+    // ASK, not propose.
+    check: ({ harness, stack }) => {
+      const hook = registeredHook(harness, 'PostToolUse',
+        'install scripts/lint-touched.mjs and register a PostToolUse hook');
+      if (hook.state === 'declared') return hook;
+      if (hasLintScript(stack)) return hook;
+      return {
+        state: 'absent', decidable: false,
+        evidence: ['no package declares a lint script'],
+        question: 'A sensor hook applies here, but no package declares a lint script — what command lints a single file in this repository?',
+      };
+    },
   },
   {
     id: 'P2.stopgate', step: 10, phase: 2,
     lookedFor: ['a Stop hook in .claude/settings.json'],
-    check: ({ harness }) => registeredHook(harness, 'Stop',
-      'install scripts/verify-touched.mjs and register a Stop hook'),
+    // Same shape as P2.sensor immediately above, for the Stop gate:
+    // `rootVerifyScript` (stopgate-evidence.mjs) is the SAME root-only
+    // typecheck/test derivation propose.mjs's stopgateProposal uses.
+    check: ({ harness, stack }) => {
+      const hook = registeredHook(harness, 'Stop',
+        'install scripts/verify-touched.mjs and register a Stop hook');
+      if (hook.state === 'declared') return hook;
+      if (rootVerifyScript(stack)) return hook;
+      return {
+        state: 'absent', decidable: false,
+        evidence: ['the root package declares neither a typecheck nor a test script'],
+        question: 'A stop gate applies here, but the root package declares neither a typecheck nor a test script — what command verifies this repository?',
+      };
+    },
   },
   {
     id: 'P2.protected', step: 11, phase: 2,
     lookedFor: ['deny rules in .claude/settings.json'],
     // Existence of settings.json is not enough — an empty or rule-less file
     // must not be reported as protecting anything.
-    check: ({ harness }) => harness.claudeDir.denyRules > 0
-      ? { state: 'declared', evidence: [`${harness.claudeDir.denyRules} deny rule(s) in .claude/settings.json`] }
-      : { state: 'absent', proposal: 'create .claude/settings.json with deny rules for protected paths' },
+    //
+    // Task 5b: this used to propose "create .claude/settings.json with deny
+    // rules" purely from `denyRules` being zero, never checking whether
+    // propose.mjs's own generator (protectedPathProposal, via the shared
+    // `protectedPathCandidates`) had any protected-path EVIDENCE to act on
+    // at all — so a repository with no lockfile, no tracked build output,
+    // no migrations and no generated files was advertised a proposal
+    // `apply` would silently decline. Unlike P2.sensor/P2.stopgate above,
+    // there is no question to ask here: the capability's SUBJECT (something
+    // worth protecting) genuinely does not exist in that case, so `n/a`
+    // with no question is the honest answer — asking the user to name
+    // protected paths that demonstrably are not there would be noise, not a
+    // missing fact.
+    check: ({ harness, stack, files }) => {
+      if (harness.claudeDir.denyRules > 0) {
+        return { state: 'declared', evidence: [`${harness.claudeDir.denyRules} deny rule(s) in .claude/settings.json`] };
+      }
+      if (protectedPathCandidates({ stack, files }).length === 0) {
+        return { state: 'n/a', evidence: ['no protected-path evidence (lockfile, build output, migrations, generated files) found in this repository'] };
+      }
+      return { state: 'absent', proposal: 'create .claude/settings.json with deny rules for protected paths' };
+    },
   },
   {
     id: 'P2.langserver', step: 12, phase: 2,

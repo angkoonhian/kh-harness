@@ -676,19 +676,23 @@ const COHERENCE_FIXTURES = [
     harness: harnessFixture(),
   },
   {
-    // PostToolUse/Stop are pre-registered here deliberately — see the note
-    // below the fixture table. This fixture's job is to exercise
-    // P1.bootstrap (and P2.protected, P4.*) for a REAL python stack; P2.sensor
-    // and P2.stopgate are sidestepped (reported `declared`) rather than
-    // exercised, for a reason unrelated to the P1.bootstrap fix this test
-    // guards.
+    // Task 5b: this fixture used to pre-register PostToolUse/Stop and set
+    // denyRules: 1, deliberately SIDESTEPPING P2.sensor, P2.stopgate and
+    // P2.protected (reported `declared` regardless of real evidence) — see
+    // the note this used to carry, preserved in git history, on the three
+    // coherence gaps that writing this test first surfaced. Those sidesteps
+    // existed only because the defect existed; now that the checks consult
+    // the same evidence their generators do, this fixture exercises all
+    // five generator-backed checks for a real pip python stack on their own
+    // merits: P1.bootstrap and P2.protected propose and deliver (both have
+    // real evidence — requirements.txt), and P2.sensor/P2.stopgate are
+    // correctly undecidable (no lint/typecheck/test script — Python has no
+    // script-name convention) and so never reach this test's loop at all.
     name: 'pip python repo with requirements.txt',
     stack: { languages: ['python'], packageManager: 'pip', isWorkspace: false,
       packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] },
     files: ['requirements.txt', 'app.py'],
-    harness: harnessFixture({ claudeDir: { settings: true, localSettings: false, denyRules: 1, hooks: [],
-      hookEvents: { PostToolUse: ['already/registered.mjs'], Stop: ['already/registered.mjs'] },
-      agents: [], skills: [], commands: [], rules: [] } }),
+    harness: harnessFixture(),
   },
   {
     // This fixture is the regression itself: before the fix, this reported
@@ -699,47 +703,19 @@ const COHERENCE_FIXTURES = [
     // defect recurring silently (a mutation reverting the gap-model.mjs fix
     // would make this fixture start advertising a proposal again, and this
     // test would catch it the moment that proposal's generator failed to
-    // fulfil it). PostToolUse/Stop pre-registered for the same reason as
-    // the fixture above.
+    // fulfil it). Task 5b removed this fixture's own PostToolUse/Stop/
+    // denyRules sidesteps for the same reason as the fixture above — P2.sensor
+    // and P2.stopgate are undecidable here too (no lint/typecheck/test
+    // script), and P2.protected is correctly `n/a` (no requirements.txt, no
+    // lockfile, nothing here to protect), so none of the three ever reaches
+    // this test's loop either.
     name: 'pyproject-only python repo (no requirements.txt, no lockfile)',
     stack: { languages: ['python'], packageManager: null, isWorkspace: false,
       packages: [{ name: 'root', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], ci: [] },
     files: ['pyproject.toml', 'app.py'],
-    harness: harnessFixture({ claudeDir: { settings: true, localSettings: false, denyRules: 1, hooks: [],
-      hookEvents: { PostToolUse: ['already/registered.mjs'], Stop: ['already/registered.mjs'] },
-      agents: [], skills: [], commands: [], rules: [] } }),
+    harness: harnessFixture(),
   },
 ];
-
-// NOTE on the two python fixtures above pre-registering PostToolUse/Stop
-// and setting denyRules: 1: writing THIS coherence test, to pin the
-// P1.bootstrap fix, surfaced THREE separate, pre-existing coherence gaps of
-// the exact same family, all out of today's scope:
-//   - P2.sensor's check advertises a proposal purely from "is the
-//     PostToolUse hook registered", never consulting `stack`, while its
-//     generator (sensorProposal) refuses to fire when no package declares
-//     a `lint` script.
-//   - P2.stopgate: same shape, for the Stop hook and typecheck/test.
-//   - P2.protected's check advertises a proposal purely from
-//     `harness.claudeDir.denyRules > 0`, never consulting `files`, while
-//     its generator (protectedPathProposal) refuses to fire when no
-//     protected-path evidence exists in the repository at all.
-// Since detect-stack.mjs always gives a python package `scripts: []` (it
-// has no python script-name convention to read), the first two mismatch
-// for EVERY real python repository, not just the fixtures here. None of
-// the three is fixed in this change: existing tests already encode the
-// opposite expectation for OTHER stacks too (gap-model.test.mjs's "a bare
-// repo yields proposals for the mechanical steps" wants P2.sensor,
-// P2.stopgate AND P2.protected in the proposal list for a TypeScript stack
-// with empty scripts and no files evidence) — "fixing" any of the three
-// here would mean redefining accepted behaviour across multiple existing
-// tests, not a surgical correction, and deserves its own deliberate ruling
-// rather than being folded into this one. Sidestepped here (not avoided —
-// P4.handoff and P4.sessionbrief are still genuinely exercised for both
-// python fixtures, and P1.bootstrap is exercised for the pip fixture,
-// though by design NOT for the pyproject-only one, which deliberately
-// advertises nothing for it) and flagged in this task's report rather than
-// silently papered over or silently expanded into.
 
 test('COHERENCE: every check that advertises a proposal, and has a registered generator, actually yields one when applied', () => {
   let sawAtLeastOneGeneratedCheck = false;

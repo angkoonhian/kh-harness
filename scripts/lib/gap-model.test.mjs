@@ -42,10 +42,104 @@ test('LOAD-BEARING: a fully harnessed repo yields zero proposals', () => {
   assert.deepEqual(proposals.map(p => p.id), [], 'a satisfied repo must be proposed nothing');
 });
 
+// Task 5b (coordinator-inserted correction): this used to also assert
+// P2.sensor, P2.stopgate AND P2.protected for `bareStack` — a TypeScript
+// stack with one package, empty scripts, and no `files` evidence (the
+// `gaps()` helper defaults `files` to `[]`). That expectation was the
+// defect written down: none of the three checks consulted the same
+// evidence their own generator in propose.mjs requires, so all three
+// advertised a proposal `apply` then silently declined to deliver — for
+// `bareStack` specifically, no lint script (P2.sensor), no typecheck/test
+// script (P2.stopgate), and no protected-path evidence at all
+// (P2.protected). With the shared derivation now in place, P2.sensor and
+// P2.stopgate correctly ask instead of propose (see the dedicated tests
+// below), and P2.protected correctly reports `n/a` (nothing here to
+// protect). Restoring the three to this list would restore the defect.
 test('a bare repo yields proposals for the mechanical steps', () => {
   const ids = gaps(bareStack, bareHarness).filter(c => c.proposal).map(c => c.id);
-  for (const id of ['P1.bootstrap', 'P1.instructions', 'P2.sensor', 'P2.stopgate', 'P2.protected', 'P4.handoff', 'P4.sessionbrief']) {
+  for (const id of ['P1.bootstrap', 'P1.instructions', 'P4.handoff', 'P4.sessionbrief']) {
     assert.ok(ids.includes(id), `expected a proposal for ${id}`);
+  }
+  for (const id of ['P2.sensor', 'P2.stopgate', 'P2.protected']) {
+    assert.ok(!ids.includes(id), `${id} must not advertise a proposal its generator cannot fulfil for this fixture`);
+  }
+});
+
+// --- Task 5b: P2.sensor, P2.stopgate, P2.protected must agree with their
+// generators, exactly as P1.bootstrap now does. Driven from the real
+// `buildGaps` path against realistic fixtures, not a hand-built check
+// object — a hand-built check is what let the P1.bootstrap defect survive
+// its own test the first time around.
+
+function pythonPipFixture() {
+  // scripts: [] is not a contrivance — detect-stack.mjs has no Python
+  // script-name convention to read, so every real Python package reports
+  // this. requirements.txt makes P1.bootstrap's install step derivable
+  // (unrelated to what this fixture is actually exercising) and, via
+  // python.mjs's own `protectedGlobs()`, is itself protected-path
+  // evidence — so this fixture is deliberately NOT used below to test
+  // P2.protected's n/a branch (see bareRepoFixture for that).
+  const stack = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] };
+  return { stack, harness: bareHarness, exposures: [], profile: selectProfile(stack),
+    git: { branch: 'main', isRepo: true }, files: ['requirements.txt', 'app.py'] };
+}
+
+function bareRepoFixture() {
+  // Nothing here at all: no language, no package, no manifest, no
+  // protected-path candidate anywhere in `files`. This is the one case
+  // where the capability's SUBJECT (something worth protecting) genuinely
+  // does not exist — see gap-model.mjs's own comment on P2.protected for
+  // why that is `n/a` with no question, unlike the other two.
+  const stack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
+  return { stack, harness: bareHarness, exposures: [], profile: selectProfile(stack),
+    git: { branch: 'main', isRepo: true }, files: ['README.md'] };
+}
+
+function typescriptFullFixture() {
+  const stack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'typecheck', 'test'] }], ci: [] };
+  return { stack, harness: bareHarness, exposures: [], profile: selectProfile(stack),
+    git: { branch: 'main', isRepo: true }, files: ['package.json', 'package-lock.json', 'dist/index.js'] };
+}
+
+test('P2.sensor asks rather than proposes when no lint script is declared', () => {
+  const checks = buildGaps(pythonPipFixture());
+  const c = byId(checks, 'P2.sensor');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null);
+  assert.match(c.question, /lint/i);
+});
+
+test('P2.stopgate asks rather than proposes when the root declares no typecheck or test', () => {
+  const checks = buildGaps(pythonPipFixture());
+  const c = byId(checks, 'P2.stopgate');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null);
+  assert.match(c.question, /verif|typecheck|test/i);
+});
+
+test('P2.protected is n/a with no question when the repository holds nothing to protect', () => {
+  // Fixture sanity: this must actually be empty, or the test below proves
+  // nothing — see this task's test-quality instruction (a fixture whose
+  // data never survives to the branch under test).
+  const f = bareRepoFixture();
+  assert.equal(f.files.length, 1, 'fixture sanity: no protected-path candidate may sneak into this fixture');
+  const checks = buildGaps(f);
+  const c = byId(checks, 'P2.protected');
+  assert.equal(c.state, 'n/a');
+  assert.equal(c.proposal, null);
+  assert.equal(c.question, null, 'do not ask about protected paths that do not exist');
+});
+
+test('all three still propose when their evidence IS present', () => {
+  const checks = buildGaps(typescriptFullFixture());
+  for (const id of ['P2.sensor', 'P2.stopgate', 'P2.protected']) {
+    const c = byId(checks, id);
+    assert.ok(c.proposal, `${id} must still propose when its evidence exists`);
+    assert.equal(c.decidable, true);
   }
 });
 
@@ -85,8 +179,15 @@ test('deny rules present make P2.protected declared', () => {
 });
 
 test('a settings.json with zero deny rules is absent, not declared — existence alone is not enough', () => {
+  // Task 5b: this used to call `gaps(fullStack, h)` with no `files` at
+  // all — defaulting to `[]`, so there was no protected-path EVIDENCE
+  // either, and the test passed only because the old check keyed purely
+  // on `denyRules`, never on evidence (exactly the defect this task
+  // fixes). A real lockfile is what actually licenses the proposal now —
+  // see the test-quality instruction on fixtures whose data never
+  // survives to the branch under test.
   const h = { ...richHarness, claudeDir: { ...richHarness.claudeDir, denyRules: 0 } };
-  const c = byId(gaps(fullStack, h), 'P2.protected');
+  const c = byId(gaps(fullStack, h, [], undefined, ['package-lock.json']), 'P2.protected');
   assert.equal(c.state, 'absent');
   assert.ok(c.proposal);
 });

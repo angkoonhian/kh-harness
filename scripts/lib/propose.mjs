@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { render, versionStamp } from './render.mjs';
 import { selectProfile } from './profiles/index.mjs';
-import { globToRegExp } from './glob.mjs';
 import { installCommand } from './bootstrap-install.mjs';
+import { hasLintScript } from './sensor-evidence.mjs';
+import { rootVerifyScript } from './stopgate-evidence.mjs';
+import { protectedPathCandidates } from './protected-evidence.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -17,92 +19,20 @@ const VERIFY_TOUCHED_PATH = '.claude/scripts/verify-touched.mjs';
 const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
 
 /**
- * Evidence-based protected-path candidates for conventions that are NOT
- * universal to a language — migrations are an ORM/framework convention
- * (Prisma, Drizzle, Django, Alembic, ...), not a fact about every project
- * written in a given language. Plan 1 hardcoded `**\/migrations/**` into the
- * stack profiles and the review struck it for exactly that reason: a profile
- * asserting this is an opinion about layout it has no basis for (see
- * docs/plan-1-execution-log.md).
- *
- * Listing the known conventions HERE, instead, is not an opinion, because
- * every candidate below is filtered against the repository's actual file
- * list in `protectedPathProposal` — a candidate that matches nothing is
- * simply never proposed. Applied uniformly (not split per detected stack):
- * uniformity is safe precisely because the existence filter prunes whatever
- * is absent, and it avoids maintaining a second set of per-language guesses.
- *
- * Root-anchored and `**\/`-anchored forms are both listed deliberately, for
- * the same reason as typescript.mjs's dist/build globs (see its comment):
- * this is about OUR OWN matcher (glob.mjs's `globToRegExp`), not Claude
- * Code's. `globToRegExp` compiles `**` to `.*` with a required literal `/`
- * before the final segment, so `hasEvidence('**\/migrations/**', [...])` is
- * false for a root-level `migrations/` and the rule is never PROPOSED at
- * all — even though Claude Code's own `Edit(...)` matcher is wider (per its
- * docs, `**\/` also matches zero directory segments) and would have
- * honoured `Edit(**\/migrations/**)` against a root-level path just fine
- * once proposed. The duplication exists to satisfy OUR evidence filter, not
- * Claude Code's matcher.
- *
- * As with every candidate here, a rule is only ever PROPOSED when the path
- * is visible to `listFiles` (scan.mjs) — tracked by git, or not excluded on
- * the dependency-free fallback walk. Migration directories are typically
- * committed, so this rarely bites the way it does for build output (see
- * typescript.mjs/python.mjs), but the mechanism is the same: no evidence,
- * no proposal, by design.
- */
-const PROTECTED_PATH_CANDIDATES = [
-  'prisma/migrations/**',
-  'src/migrations/**',
-  'migrations/**',
-  '**/migrations/**',
-  'drizzle/**',
-  'alembic/versions/**',
-  // Root-anchored AND **-anchored, deliberately — same reason as this
-  // file's migrations comment above and typescript.mjs's dist/build
-  // comment: it is OUR `globToRegExp` that requires the literal `/`, not
-  // Claude Code's matcher. `hasEvidence('**/__generated__/**', [...])` is
-  // false for a root-level `__generated__/`, and likewise for
-  // `**/*.generated.*` against a root-level `foo.generated.ts` (both
-  // verified) — so without the root-anchored form, our evidence filter
-  // never proposes a rule for either, regardless of what Claude Code
-  // itself would have matched. Do not collapse this back to one form.
-  '__generated__/**',
-  '**/__generated__/**',
-  '*.generated.*',
-  '**/*.generated.*',
-];
-
-/** True if `glob` matches at least one path in `files`. */
-function hasEvidence(glob, files) {
-  const re = globToRegExp(glob);
-  return files.some(f => re.test(f));
-}
-
-/**
- * Intersects `profile.protectedGlobs()` (the universal-per-stack candidates:
- * lockfiles, build output) with `PROTECTED_PATH_CANDIDATES` (the ORM/
- * framework conventions above), keeps only the globs with evidence in
- * `files`, and wraps each survivor as a Claude Code `Edit(...)` permission
- * pattern — the shape `.claude/settings.json`'s `permissions.deny` actually
- * takes (see settings-merge.mjs's tests). The candidate table holds RAW
- * globs and the filter matches RAW globs; wrapping happens only at the very
- * end, on survivors only, so nothing here ever has to parse a wrapped string
- * back apart.
+ * The protected-path candidate list and its evidence filter now live in
+ * protected-evidence.mjs, shared with gap-model.mjs's P2.protected CHECK —
+ * see that module's own header comment for why: the check and this
+ * generator must agree on what counts as "something worth protecting" by
+ * construction, not by two people independently getting the same answer
+ * twice. This generator wraps each survivor as a Claude Code `Edit(...)`
+ * permission pattern — the shape `.claude/settings.json`'s
+ * `permissions.deny` actually takes (see settings-merge.mjs's tests).
  *
  * `Edit`, specifically — not `Read` — because the risk being guarded is
  * modification, not the agent reading context it legitimately needs.
  */
 function protectedPathProposal({ stack, files }) {
-  const profile = selectProfile(stack);
-  const candidates = [...profile.protectedGlobs(), ...PROTECTED_PATH_CANDIDATES];
-  const seen = new Set();
-  const surviving = [];
-  for (const glob of candidates) {
-    if (seen.has(glob)) continue;
-    seen.add(glob);
-    if (hasEvidence(glob, files)) surviving.push(glob);
-  }
+  const surviving = protectedPathCandidates({ stack, files });
   if (surviving.length === 0) return [];
   return [{
     kind: 'settings-deny', step: 11,
@@ -162,7 +92,7 @@ function redactAssetProposal(kitVersion) {
  * nothing to say about a Bash or Read call.
  */
 function sensorProposal({ kitVersion, stack }) {
-  if (!stack.packages.some(p => p.scripts?.includes('lint'))) return [];
+  if (!hasLintScript(stack)) return [];
   return [{
     kind: 'file', path: LINT_TOUCHED_PATH, step: 9,
     contents: read('scripts/lint-touched.mjs').replace(
@@ -213,10 +143,8 @@ function sensorProposal({ kitVersion, stack }) {
  * propose one.
  */
 function stopgateProposal({ kitVersion, stack }) {
-  const rootPkg = stack.packages.find(p => p.dir === '.');
-  const hasTypecheck = rootPkg?.scripts?.includes('typecheck') ?? false;
-  const hasTest = rootPkg?.scripts?.includes('test') ?? false;
-  if (!hasTypecheck && !hasTest) return [];
+  const script = rootVerifyScript(stack);
+  if (!script) return [];
   // Review's cost measurement: on a real 40-module TypeScript repo this
   // added ~2.8s per 3-edit turn and zero bytes when green — proportionate
   // there. But a whole-program `tsc --noEmit` (no `--incremental`, which
@@ -227,7 +155,7 @@ function stopgateProposal({ kitVersion, stack }) {
   // user on a large codebase accepts it knowingly rather than discovering
   // it as "turns got slower" with no visible cause.
   const costNote = 'cost scales with the size of the repository, not the size of the edit — a large codebase may see 10-30s added per turn';
-  const reason = hasTypecheck
+  const reason = script === 'typecheck'
     ? `no Stop hook registered — runs the repository's typecheck script, bounded at 120s, at the end of every turn (${costNote})`
     : `no Stop hook registered — no typecheck script was found, so this falls back to the full test script, bounded at 120s, at the end of every turn (${costNote})`;
   return [{

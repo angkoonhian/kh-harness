@@ -223,6 +223,72 @@ test('END-TO-END: a pyproject-only python repo (no requirements.txt, no lockfile
   assert.equal(/create scripts\/bootstrap\.sh/.test(cli(d)), false, 'the human summary must not propose a script detection cannot derive');
 });
 
+// --- Task 5b, through the real CLI: P2.sensor/P2.stopgate/P2.protected
+// must each now either deliver what they advertise or advertise nothing.
+// These pin the exact two repository shapes verified by hand before this
+// task existed (see this task's brief): a pip-only Python repo, and a
+// lockfile-less JS/TS repo with no lint/typecheck/test script. Both used
+// to report all three checks as `absent` + a PROPOSAL, none of which
+// `apply` could deliver.
+
+test('END-TO-END (Task 5b): a pip-only repo asks about lint/verify commands instead of proposing hooks apply cannot deliver', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-pip-coherence-'));
+  write(d, 'requirements.txt', 'requests==2.31.0\n');
+  write(d, 'app.py', 'print("hi")\n');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.stack.packageManager, 'pip');
+
+  const sensor = r.checks.find(c => c.id === 'P2.sensor');
+  assert.equal(sensor.state, 'absent');
+  assert.equal(sensor.decidable, false, 'detect-stack.mjs has no Python script-name convention, so this must ask, not propose');
+  assert.equal(sensor.proposal, null);
+  assert.match(sensor.question, /lint/i);
+
+  const stopgate = r.checks.find(c => c.id === 'P2.stopgate');
+  assert.equal(stopgate.state, 'absent');
+  assert.equal(stopgate.decidable, false);
+  assert.equal(stopgate.proposal, null);
+  assert.match(stopgate.question, /verif|typecheck|test/i);
+
+  // Unlike the other two, P2.protected IS coherent for this fixture:
+  // requirements.txt itself is protected-path evidence (python.mjs's own
+  // `protectedGlobs()` treats it like a lockfile), so the proposal here is
+  // one propose.mjs's generator can actually deliver — not a drift case.
+  const protectedCheck = r.checks.find(c => c.id === 'P2.protected');
+  assert.equal(protectedCheck.state, 'absent');
+  assert.equal(protectedCheck.decidable, true);
+  assert.ok(protectedCheck.proposal, 'requirements.txt is real evidence — this one genuinely is deliverable');
+
+  assert.ok(r.couldNotDerive.some(q => /lint/i.test(q)), 'the sensor question must be routed to couldNotDerive');
+  assert.ok(r.couldNotDerive.some(q => /verif|typecheck|test/i.test(q)), 'the stop-gate question must be routed to couldNotDerive');
+});
+
+test('END-TO-END (Task 5b): a lockfile-less JS/TS repo with no lint/typecheck/test script asks or reports n/a, never an undeliverable proposal', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-js-coherence-'));
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { build: 'tsc' } }));
+  write(d, 'src/index.ts', 'export const a = 1;\n');
+  write(d, 'tsconfig.json', '{}');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.stack.packageManager, null, 'fixture sanity: genuinely no tracked lockfile');
+
+  const sensor = r.checks.find(c => c.id === 'P2.sensor');
+  assert.equal(sensor.state, 'absent');
+  assert.equal(sensor.decidable, false);
+  assert.equal(sensor.proposal, null);
+  assert.match(sensor.question, /lint/i);
+
+  const stopgate = r.checks.find(c => c.id === 'P2.stopgate');
+  assert.equal(stopgate.state, 'absent');
+  assert.equal(stopgate.decidable, false);
+  assert.equal(stopgate.proposal, null);
+  assert.match(stopgate.question, /verif|typecheck|test/i);
+
+  const protectedCheck = r.checks.find(c => c.id === 'P2.protected');
+  assert.equal(protectedCheck.state, 'n/a', 'no lockfile, no build output, no migrations — nothing here to protect');
+  assert.equal(protectedCheck.proposal, null);
+  assert.equal(protectedCheck.question, null, 'do not ask about protected paths that do not exist');
+});
+
 // A package.json script body is repository-derived text that routinely holds a
 // hardcoded token (`sentry-cli --auth-token …`). The report records that a
 // script exists, never what it says. This asserts the value never reaches
