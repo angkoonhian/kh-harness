@@ -291,20 +291,30 @@ function bootstrapScriptLines(stack) {
  * the check-level `decidable` flag that `buildProposals` already enforces
  * centrally — belt-and-suspenders for exactly the case the brief names:
  * a generic stack, or no install command derivable at all.
+ *
+ * `root` is passed through to `installCommand` for exactly one reason: a
+ * Yarn lockfile's OWN header is what distinguishes Classic from Berry (see
+ * bootstrap-install.mjs) — no other package manager in the table needs
+ * file content, only presence.
+ *
+ * `mode: 0o755` — this file has a shebang and is meant to be executed
+ * directly (`./scripts/bootstrap.sh`), not just read; the three shipped
+ * hook scripts are invoked via `node <path>`, where the bit is cosmetic,
+ * but nothing runs this one except by executing it.
  */
-function bootstrapProposal({ kitVersion, stack, files }) {
-  const install = installCommand(stack.packageManager, files);
+function bootstrapProposal({ kitVersion, stack, files, root }) {
+  const install = installCommand(stack.packageManager, files, root);
   if (!install) return [];
 
   const lines = [];
   if (install.fallback) {
-    lines.push(`# No ${install.lockfile} found — using the plain install form so this script never silently rewrites a lockfile that does not exist yet. Commit the lockfile it creates, then re-run harness-kit for the reproducible form.`);
+    lines.push(`# No ${install.lockfiles.join(' or ')} found — using the plain install form so this script never silently rewrites a lockfile that does not exist yet. Commit the lockfile it creates, then re-run harness-kit for the reproducible form.`);
   }
   lines.push(install.command);
   lines.push(...bootstrapScriptLines(stack));
 
   return [{
-    kind: 'file', path: BOOTSTRAP_PATH, step: BOOTSTRAP_STEP,
+    kind: 'file', path: BOOTSTRAP_PATH, step: BOOTSTRAP_STEP, mode: 0o755,
     contents: render(read('templates/bootstrap.sh.tmpl'), {
       stamp: versionStamp(kitVersion, BOOTSTRAP_STEP, '#'),
       steps: lines.join('\n'),
@@ -393,9 +403,12 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 
 // Exported for propose.test.mjs's generic coherence test: "every check that
 // advertises a proposal, and has a generator registered for its id, must
-// actually produce something when applied." That test iterates over
-// `Object.keys(GENERATORS)` rather than a hand-maintained list of ids, so a
-// capability added here later is automatically covered by it — see the
+// actually produce something when applied." That test iterates over the
+// CHECKS a real detection run produces and membership-tests each one's id
+// against this table (`c.id in GENERATORS`), rather than a hand-maintained
+// list of ids, so a capability added here later is automatically covered —
+// a planted new drifting generator is caught with no test edit (see the
+// coherence test's own comment). This is deliberately a review correction:
 // coordinator finding that caught P1.bootstrap drifting from its own
 // generator (a pyproject-only Python repo: `detect` advertised a proposal,
 // `apply` produced nothing) without any test failing, because nothing

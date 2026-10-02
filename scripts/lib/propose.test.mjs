@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest } from './manifest.mjs';
@@ -337,31 +337,47 @@ test('buildProposals requires files explicitly — a caller that omits it gets a
 const bootstrapCheck = () => check({ id: 'P1.bootstrap', step: 5, proposal: 'create bootstrap' });
 
 test('P1.bootstrap writes only steps detection proved', () => {
+  // `files: ['pnpm-lock.yaml']` added (coordinator finding): without it
+  // this exercised the PLAIN fallback (`pnpm install`, from `args()`'s
+  // default `files: []`), not the deterministic form the brief's test
+  // names — a casual reader would assume `pnpm install` here means the
+  // frozen form. The parameterised `DETERMINISTIC` loop above already
+  // covers the frozen form properly; this fixture now reads the way it
+  // looks too.
   const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: false,
     packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
-  const ps = buildProposals(args([bootstrapCheck()], { stack }));
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['pnpm-lock.yaml'] }));
   const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
   assert.ok(b);
-  assert.match(b.contents, /pnpm install/);
+  assert.match(b.contents, /pnpm install --frozen-lockfile/);
   assert.match(b.contents, /pnpm build/);
   assert.match(b.contents, /pnpm test/);
   assert.equal(/lint/.test(b.contents), false, 'no lint script was declared, so none is invented');
 });
 
-// UNIT-LEVEL GUARD ONLY — this hand-constructs a check object with
-// `decidable: false`, which pins `buildProposals`'s own central gate
-// (`if (c.state !== 'absent' || c.decidable === false) continue;`). It does
-// NOT exercise the real detection path: gap-model.mjs's actual check for a
+// UNIT-LEVEL GUARD ONLY, and the fixture is chosen deliberately (coordinator
+// finding): `packageManager: 'npm'` + `files: ['package-lock.json']` means
+// `installCommand` WOULD succeed and `bootstrapProposal` WOULD return a
+// proposal if the central `decidable === false` gate in `buildProposals`
+// were not there — so this pins THAT gate for real, not the generator's own
+// separate, internal "no install command derivable" guard (which an earlier
+// version of this fixture — `packageManager: null` — could not distinguish
+// from: removing the central gate left the generator's own guard still
+// returning `[]`, so the test passed for the wrong reason). It does NOT
+// exercise the real detection path: gap-model.mjs's actual check for a
 // generic stack reports `state: 'n/a'`, never `absent` + `decidable: false`
-// — see its own comment on why `n/a` is the more honest answer, and the
-// end-to-end test in detect-cli.test.mjs that pins THAT behaviour through
-// the real CLI. This test is kept because the generator-level gate it pins
-// is still real: a future caller (or a future check definition) COULD pass
-// `decidable: false`, and this proves buildProposals honours it correctly.
-test('UNIT: an absent-but-undecidable check proposes nothing (generator-level gate, not the real P1.bootstrap path)', () => {
-  const stack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
-  const ps = buildProposals(args([check({ id: 'P1.bootstrap', step: 5, decidable: false })], { stack }));
-  assert.deepEqual(ps, [], 'an undecidable check proposes nothing');
+// — see its own comment on why `n/a` is the more honest answer there, and
+// the end-to-end test in detect-cli.test.mjs that pins THAT behaviour
+// through the real CLI. This test is kept because the generator-level gate
+// it pins is still real: a future caller (or a future check definition)
+// COULD pass `decidable: false`, and this proves buildProposals honours it
+// correctly even when the generator underneath it has every piece of
+// evidence it needs.
+test('UNIT: buildProposals\' central decidable:false gate proposes nothing, even though the generator could otherwise succeed', () => {
+  const stack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
+  const ps = buildProposals(args([check({ id: 'P1.bootstrap', step: 5, decidable: false })], { stack, files: ['package-lock.json'] }));
+  assert.deepEqual(ps, [], 'the central decidable:false gate must short-circuit before the generator is ever called');
 });
 
 test('the generated script carries a version stamp and is executable shell', () => {
@@ -374,6 +390,21 @@ test('the generated script carries a version stamp and is executable shell', () 
   assert.match(b.contents, /^set -euo pipefail$/m);
   assert.match(b.contents, /harness-kit 0\.2\.0/, 'carries the version stamp');
   assert.match(b.contents, /runbook step 5/);
+});
+
+// Coordinator finding (Major): the "question, not a TODO" ruling — four
+// review rounds settled it — had ZERO test coverage. Replacing the
+// template's trailing question with `# TODO: add migrations, seed data,
+// environment files` left 474/474 passing. A ruling with no test is a
+// preference, not a constraint.
+test('the generated script carries a commented QUESTION, never a TODO', () => {
+  const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: false,
+    packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['pnpm-lock.yaml'] }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.equal(/TODO/.test(b.contents), false, 'a TODO is an instruction to the agent; this must stay a question to the human');
+  assert.match(b.contents, /^#.*\?$/m, 'the commented question must survive rendering');
 });
 
 // Ruling 1: CRLF silently destroys this deliverable (bad interpreter:
@@ -393,18 +424,32 @@ test('CRLF: the generated bootstrap script contains no CR bytes at all', () => {
 // from `stack.packageManager` alone, because a bootstrap script exists for
 // reproducibility and a form that can silently rewrite the lockfile from a
 // clean checkout is a defect, not a convenience.
+// `yarn` is deliberately NOT in this table — see the dedicated yarn tests
+// immediately below it, and bootstrap-install.mjs's own comment, for why
+// its frozen form cannot be a fixed string the way every other entry's is.
+//
+// `bun` contributes TWO rows (coordinator finding): Bun wrote `bun.lockb`
+// (binary) through 1.1 and writes `bun.lock` (text) by default from 1.2
+// onward, verified against Bun 1.4.2 — both must independently prove the
+// same command.
+//
+// `poetry`'s form is plain `poetry install`, not `poetry install --sync`
+// (coordinator correction): `--sync` is deprecated (Poetry 2.5.1) and was
+// never load-bearing here — it only prunes packages installed but absent
+// from the lockfile, and a clean checkout has nothing installed to prune.
 const DETERMINISTIC = [
   ['npm', 'package-lock.json', 'npm ci'],
   ['pnpm', 'pnpm-lock.yaml', 'pnpm install --frozen-lockfile'],
-  ['yarn', 'yarn.lock', 'yarn install --immutable'],
+  ['bun', 'bun.lock', 'bun install --frozen-lockfile'],
   ['bun', 'bun.lockb', 'bun install --frozen-lockfile'],
-  ['poetry', 'poetry.lock', 'poetry install --sync'],
+  ['poetry', 'poetry.lock', 'poetry install'],
   ['uv', 'uv.lock', 'uv sync --frozen'],
-  // pip is not a "frozen vs plain" pair the way the other six are — there is
-  // no `pip install --frozen` form — but `pip install -r requirements.txt`
-  // IS derivable verbatim from requirements.txt's own presence, which is
-  // exactly the evidence this table requires. See the dedicated pip tests
-  // below for the no-requirements.txt case, which this loop does not cover.
+  // pip is not a "frozen vs plain" pair the way the other entries are —
+  // there is no `pip install --frozen` form — but `pip install -r
+  // requirements.txt` IS derivable verbatim from requirements.txt's own
+  // presence, which is exactly the evidence this table requires. See the
+  // dedicated pip tests below for the no-requirements.txt case, which this
+  // loop does not cover.
   ['pip', 'requirements.txt', 'pip install -r requirements.txt'],
 ];
 
@@ -414,10 +459,57 @@ for (const [pm, lockfile, command] of DETERMINISTIC) {
     const ps = buildProposals(args([bootstrapCheck()], { stack, files: [lockfile] }));
     const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
     assert.ok(b, `expected a bootstrap proposal for ${pm}`);
-    assert.match(b.contents, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(b.contents, new RegExp('^' + command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'm'));
     assert.equal(b.contents.includes('No ' + lockfile + ' found'), false, 'the lockfile IS present, so no fallback comment is warranted');
   });
 }
+
+// Yarn's frozen form depends on the lockfile's OWN CONTENT (Classic v1 vs
+// Berry), not just its presence (coordinator Major): `--immutable` is
+// Berry-only syntax, and Yarn 1.22.5 silently IGNORES the unknown flag and
+// rewrites the lockfile anyway on drift — the exact failure the flag
+// exists to prevent, verified by actually running it. `args()`'s `root()`
+// creates a real directory but writes nothing into it, so these tests
+// write the lockfile content themselves before calling buildProposals.
+test('P1.bootstrap emits yarn install --frozen-lockfile for a Yarn Classic (v1) lockfile', () => {
+  const d = root();
+  writeFileSync(join(d, 'yarn.lock'),
+    '# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n' +
+    '# yarn lockfile v1\n\n\nleft-pad@^1.3.0:\n  version "1.3.0"\n' +
+    '  resolved "https://registry.yarnpkg.com/left-pad/-/left-pad-1.3.0.tgz"\n');
+  const stack = { languages: [], packageManager: 'yarn', isWorkspace: false, packages: [], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['yarn.lock'], root: d }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.match(b.contents, /yarn install --frozen-lockfile/);
+  assert.equal(/--immutable/.test(b.contents), false,
+    'Yarn Classic silently ignores --immutable and rewrites the lockfile on drift — verified against 1.22.5');
+});
+
+test('P1.bootstrap emits yarn install --immutable for a Yarn Berry lockfile', () => {
+  const d = root();
+  writeFileSync(join(d, 'yarn.lock'),
+    '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n' +
+    '"left-pad@npm:1.3.0":\n  version: 1.3.0\n  resolution: "left-pad@npm:1.3.0"\n');
+  const stack = { languages: [], packageManager: 'yarn', isWorkspace: false, packages: [], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['yarn.lock'], root: d }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.match(b.contents, /yarn install --immutable/);
+  assert.equal(/--frozen-lockfile/.test(b.contents), false);
+});
+
+test('P1.bootstrap falls back to plain yarn install when the lockfile\'s version cannot be read', () => {
+  // `root` deliberately omitted: `files` says yarn.lock exists, but there
+  // is no way to read its header, so this must never GUESS between the
+  // two version-specific flags.
+  const stack = { languages: [], packageManager: 'yarn', isWorkspace: false, packages: [], ci: [] };
+  const ps = buildProposals(args([bootstrapCheck()], { stack, files: ['yarn.lock'] }));
+  const b = ps.find(p => p.path === 'scripts/bootstrap.sh');
+  assert.ok(b);
+  assert.match(b.contents, /^yarn install$/m);
+  assert.equal(/--immutable|--frozen-lockfile/.test(b.contents), false);
+});
 
 test('P1.bootstrap falls back to the plain install form, with a comment, when no lockfile backs the detected package manager', () => {
   // `files` is deliberately empty: this is the one piece of evidence that
@@ -643,9 +735,11 @@ const COHERENCE_FIXTURES = [
 // here would mean redefining accepted behaviour across multiple existing
 // tests, not a surgical correction, and deserves its own deliberate ruling
 // rather than being folded into this one. Sidestepped here (not avoided —
-// P1.bootstrap, P4.handoff and P4.sessionbrief are still genuinely
-// exercised for both python fixtures) and flagged in this task's report
-// rather than silently papered over or silently expanded into.
+// P4.handoff and P4.sessionbrief are still genuinely exercised for both
+// python fixtures, and P1.bootstrap is exercised for the pip fixture,
+// though by design NOT for the pyproject-only one, which deliberately
+// advertises nothing for it) and flagged in this task's report rather than
+// silently papered over or silently expanded into.
 
 test('COHERENCE: every check that advertises a proposal, and has a registered generator, actually yields one when applied', () => {
   let sawAtLeastOneGeneratedCheck = false;

@@ -143,6 +143,24 @@ test('END-TO-END: a pip repo with requirements.txt reports P1.bootstrap as absen
   assert.match(cli(d), /P1\.bootstrap/);
 });
 
+// Coordinator finding (Major): Bun has written `bun.lock` (text) by
+// default since 1.2, not `bun.lockb` (binary, the legacy format) —
+// verified against a real Bun 1.4.2 install. Detection keyed to
+// `bun.lockb` alone silently produced NO proposal at all for every
+// current-Bun repository. This is the real CLI, through a repository a
+// default `bun install` on a modern Bun actually produces.
+test('END-TO-END: a bun.lock repo (Bun 1.2+ default) reports P1.bootstrap as absent, with a proposal', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-bun-'));
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { build: 'true', test: 'true' } }));
+  write(d, 'bun.lock', '{\n  "lockfileVersion": 1,\n}\n');
+  write(d, 'src/index.js', 'export const a = 1;\n');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.stack.packageManager, 'bun');
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal, 'bun.lock is evidence — this must be proposed, not asked about or silently dropped');
+});
+
 // Companion to the pip case above: a python repo with NO requirements.txt
 // (and no pyproject.toml) has no evidence for any install form at all, and
 // must stay n/a — exactly like the fully generic case, not a guess.
@@ -154,6 +172,27 @@ test('END-TO-END: a python repo with no requirements.txt and no pyproject.toml s
   const c = r.checks.find(x => x.id === 'P1.bootstrap');
   assert.equal(c.state, 'n/a', 'no lockfile evidence at all, so this stays n/a rather than asking or guessing');
   assert.equal(c.proposal, null);
+});
+
+// Coordinator finding (Minor, now fixed): a config-only repository — a
+// tracked package.json with a devDependency and build/test scripts, a
+// tracked package-lock.json, plus config.json and README.md, but no
+// .js/.ts source file — has empty `languages()`, so `typescriptSingle`'s
+// confidence is 0 and the profile falls back to `generic`. Before the fix
+// this reported P1.bootstrap `n/a` even though `npm ci` is plainly
+// derivable from the tracked lockfile; `n/a` was not a lie, but it was a
+// missed proposal.
+test('END-TO-END: a config-only repo with a tracked lockfile but no source files still gets a bootstrap proposal, not n/a', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-config-only-'));
+  write(d, 'package.json', JSON.stringify({ name: 'app', devDependencies: { eslint: '9.0.0' }, scripts: { build: 'true', test: 'true' } }));
+  write(d, 'package-lock.json', '{}');
+  write(d, 'config.json', '{}');
+  write(d, 'README.md', '# x\n');
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.profile, 'generic', 'fixture sanity: confidence genuinely falls below 0.5 here (no .js/.ts source)');
+  const c = r.checks.find(x => x.id === 'P1.bootstrap');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal, 'npm ci is derivable from the tracked lockfile alone, even on a generic profile');
 });
 
 // Major, caught by a later coordinator review: a pyproject-only Python repo

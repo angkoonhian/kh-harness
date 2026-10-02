@@ -27,8 +27,8 @@ const richHarness = {
 };
 const fullStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'test', 'typecheck'] }] };
 
-function gaps(stack, harness, exposures = [], git = { branch: 'main', isRepo: true }, files = []) {
-  return buildGaps({ stack, harness, exposures, profile: selectProfile(stack), git, files });
+function gaps(stack, harness, exposures = [], git = { branch: 'main', isRepo: true }, files = [], root) {
+  return buildGaps({ stack, harness, exposures, profile: selectProfile(stack), git, files, root });
 }
 const byId = (cs, id) => cs.find(c => c.id === id);
 
@@ -152,6 +152,33 @@ test('P1.bootstrap: a pip stack with NO requirements.txt evidence is also undeci
   const c = byId(gaps(pipNoEvidence, bareHarness, [], undefined, []), 'P1.bootstrap');
   assert.equal(c.state, 'absent');
   assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null);
+});
+
+// Coordinator finding (Minor, now fixed): the `n/a` branch used to key
+// PURELY on `profile.appliesToSteps()`, never consulting `installCommand` —
+// so a repository whose confidence fell below the profile threshold (e.g.
+// a config-only repo with a tracked package-lock.json but no .js/.ts
+// source file, so `languages()` is empty and `typescriptSingle.confidence()`
+// is 0) got `n/a` even though `npm ci` is plainly derivable from the
+// lockfile alone. `n/a` was not a LIE there (the profile genuinely does not
+// cover it), but it was a missed proposal the shared derivation could have
+// proven. P1.bootstrap now defers to `installCommand` even on a nominally
+// `generic` profile, falling through to `n/a` only when it has nothing
+// either.
+test('P1.bootstrap defers to installCommand even on a generic profile, when a lockfile is genuinely present', () => {
+  const configOnlyStack = { languages: [], packageManager: 'npm', isWorkspace: false, packages: [], ci: [] };
+  const c = byId(gaps(configOnlyStack, bareHarness, [], undefined, ['package-lock.json']), 'P1.bootstrap');
+  assert.equal(selectProfile(configOnlyStack).id, 'generic', 'fixture sanity: this really does fall back to the generic profile');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true);
+  assert.ok(c.proposal, 'npm ci is derivable from package-lock.json alone, even though the profile is generic');
+});
+
+test('P1.bootstrap stays n/a on a generic profile when no lockfile backs it either', () => {
+  const nothing = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
+  const c = byId(gaps(nothing, bareHarness, [], undefined, []), 'P1.bootstrap');
+  assert.equal(c.state, 'n/a');
   assert.equal(c.proposal, null);
 });
 

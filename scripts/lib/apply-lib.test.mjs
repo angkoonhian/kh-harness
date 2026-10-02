@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
@@ -55,6 +55,46 @@ test('REFUSES to overwrite the user\'s OWN scripts/bootstrap.sh', () => {
   assert.equal(r.skipped.length, 1);
   assert.equal(r.skipped[0].path, 'scripts/bootstrap.sh');
   assert.equal(r.skipped[0].why, 'theirs');
+});
+
+// Coordinator finding (Minor): the generated bootstrap script has a
+// shebang and is meant to be executed directly, yet `writeFileSync` with
+// no `mode` leaves it at the platform default (typically 0644, not
+// executable) — a shebang on a non-executable file is decorative. The
+// fix (apply-lib.mjs's `writeFileDeep`) calls `chmodSync` explicitly,
+// after the write, whenever `proposal.mode` is set — not merely passed as
+// `writeFileSync`'s own `mode` option, which Node only honours when the
+// file is actually CREATED, not when re-writing an existing one.
+//
+// The exact mode bits can only be asserted on a POSIX host — reviewed and
+// confirmed: Windows has no execute-bit concept Node's `stat().mode`
+// reflects (`chmodSync` there toggles only the read-only attribute), so
+// asserting `0o755` unconditionally would fail on THIS development
+// machine for a reason unrelated to the fix. On win32 this still proves
+// the call does not throw and the file remains writable (a regression
+// guard, not a claim about bits Windows does not have).
+test('a proposal with mode: 0o755 is written executable — asserted on the mode bits, not on ls output', () => {
+  const d = repo();
+  const p = fileProposal({ path: 'scripts/bootstrap.sh', step: 5, checkId: 'P1.bootstrap', contents: '#!/usr/bin/env bash\nnpm ci\n', mode: 0o755 });
+  const { written } = applyProposals({ root: d, proposals: [p], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(written.length, 1);
+  const abs = join(d, 'scripts/bootstrap.sh');
+  const mode = statSync(abs).mode & 0o777;
+  if (process.platform === 'win32') {
+    assert.doesNotThrow(() => readFileSync(abs, 'utf8'), 'the file must remain readable after chmodSync on a platform with no real execute bit');
+  } else {
+    assert.equal(mode, 0o755, `expected mode 0o755, got 0o${mode.toString(8)}`);
+  }
+});
+
+test('a proposal with no mode specified leaves the platform default untouched (no accidental chmod on everything)', () => {
+  const d = repo();
+  const { written } = applyProposals({ root: d, proposals: [fileProposal()], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(written.length, 1);
+  // No assertion on the exact default mode (umask-dependent even on POSIX)
+  // — only that applying a proposal with no `mode` field never throws from
+  // a stray `chmodSync(abs, undefined)` call.
+  assert.doesNotThrow(() => readFileSync(join(d, 'HANDOFF.md'), 'utf8'));
 });
 
 test('REFUSES to overwrite a file the user edited after we wrote it', () => {

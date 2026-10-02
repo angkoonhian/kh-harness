@@ -41,6 +41,26 @@ test('pnpm workspace finds member packages', () => {
   assert.deepEqual(names, ['@x/api', '@x/web', 'root']);
 });
 
+// Coordinator finding (Major): Bun has written the TEXT `bun.lock` by
+// default since 1.2 — verified against Bun 1.4.2 — while `bun.lockb`
+// (binary) is the legacy format from 1.1 and earlier. Detection keyed to
+// `bun.lockb` alone missed every current-Bun repository entirely.
+test('bun via bun.lock (the default lockfile name since Bun 1.2)', () => {
+  const d = repo();
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'node test.js' } }));
+  write(d, 'bun.lock', '{\n  "lockfileVersion": 1,\n}\n');
+  const s = run(d);
+  assert.equal(s.packageManager, 'bun');
+});
+
+test('bun via the legacy bun.lockb binary lockfile', () => {
+  const d = repo();
+  write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'node test.js' } }));
+  write(d, 'bun.lockb', '');
+  const s = run(d);
+  assert.equal(s.packageManager, 'bun');
+});
+
 test('npm workspaces array is recognised', () => {
   const d = repo();
   write(d, 'package.json', JSON.stringify({ name: 'root', workspaces: ['apps/*'] }));

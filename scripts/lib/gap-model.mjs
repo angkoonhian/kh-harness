@@ -73,9 +73,9 @@ const CHECKS = [
     // again. This is the detected-but-undeliverable branch of the three-way
     // split; see this file's own comment in `buildGaps`, at the `n/a`
     // branch, for the other two.
-    check: ({ harness, stack, files }) => {
+    check: ({ harness, stack, files, root }) => {
       if (harness.bootstrap) return { state: 'declared', evidence: [harness.bootstrap] };
-      if (installCommand(stack.packageManager, files)) {
+      if (installCommand(stack.packageManager, files, root)) {
         return { state: 'absent', proposal: 'create scripts/bootstrap.sh from template' };
       }
       return {
@@ -212,42 +212,52 @@ const CHECKS = [
 // a caller that omits it only ever loses the FROZEN-vs-plain distinction
 // for an npm-family package manager (still derivable either way) or, for
 // pip specifically, falls to the conservative `decidable: false` branch —
-// never the dangerous direction of a false positive proposal.
-export function buildGaps({ stack, harness, exposures, profile, git, files = [], checkDefs = CHECKS }) {
+// never the dangerous direction of a false positive proposal. `root`
+// defaults to `undefined` for the same reason, and for the same reason it
+// is safe: `installCommand` only ever uses it to read a yarn.lock's own
+// header, falling back to the honest plain form when it is not given.
+export function buildGaps({ stack, harness, exposures, profile, git, files = [], root, checkDefs = CHECKS }) {
   const applicable = new Set(profile.appliesToSteps());
   return checkDefs.map(def => {
     if (!applicable.has(def.step)) {
       // The three-way split for P1.bootstrap (and, in principle, any future
-      // check with the same shape), corrected after a coordinator review
-      // caught this comment itself stating it wrong the first time:
+      // check with the same shape):
       //
       //   generic, NOTHING to install anywhere        -> n/a (here)
       //   a stack IS detected, install derivable       -> absent + proposal
       //   a stack IS detected, install NOT derivable   -> absent + decidable:false + question
       //
-      // `n/a` (this branch) is correct ONLY for the first case: a
-      // repository with nothing to install, where "not applicable" is a
-      // true statement and `generic.appliesToSteps()` (profiles/generic.mjs)
-      // already excludes step 5. It is NOT a substitute for the third case
-      // — a python/pyproject-only repository (no requirements.txt, no
-      // poetry.lock/uv.lock) DOES select a non-generic profile (python),
-      // so this branch is never reached for it; that case is handled
-      // inside P1.bootstrap's own `check` function instead, which reports
-      // `absent` + `decidable: false` + a question naming the missing
-      // fact. Conflating the two — treating EITHER case as `n/a`, or
-      // EITHER as `decidable: false` — was the actual mistake across two
-      // review rounds; this comment previously claimed the plan's
-      // `decidable: false` framing was simply superseded, which was only
-      // true for the first case, not the third. See
-      // detect-cli.test.mjs's end-to-end tests for all three cases through
-      // the real CLI, and propose.test.mjs's hand-constructed
-      // `decidable: false` test (kept as a generator-level unit guard, not
-      // a claim that the real path reaches it via this n/a branch).
+      // A later review caught a FOURTH, unhandled input class this branch
+      // used to collapse into `n/a` regardless: `profile.appliesToSteps()`
+      // excludes step 5 (confidence fell below the profile threshold —
+      // e.g. a config-only repository with a tracked package-lock.json but
+      // no .js/.ts source file, so `languages()` is empty), YET an install
+      // command genuinely IS derivable from the lockfile alone. Reported
+      // "not applicable" there was not a lie (the text is still true of
+      // what the PROFILE covers), but it was a missed proposal for a case
+      // this check's own shared derivation could have proven. So: for
+      // P1.bootstrap specifically, defer to `installCommand` even when the
+      // profile says this step does not apply, and only fall through to
+      // `n/a` when it genuinely has nothing to propose either. This is
+      // scoped to P1.bootstrap alone, not a general override of
+      // step-applicability — the python/pyproject-only case (a stack that
+      // DOES select a non-generic profile, so this branch is never reached
+      // for it at all) is handled separately, inside P1.bootstrap's own
+      // `check` function below; conflating that case with this one, or
+      // either with `n/a`, was the actual mistake across review rounds.
+      if (def.id === 'P1.bootstrap') {
+        const install = installCommand(stack.packageManager, files, root);
+        if (install) {
+          return { id: def.id, step: def.step, phase: def.phase, state: 'absent',
+            lookedFor: def.lookedFor, evidence: [], decidable: true, question: null,
+            proposal: 'create scripts/bootstrap.sh from template' };
+        }
+      }
       return { id: def.id, step: def.step, phase: def.phase, state: 'n/a',
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
         decidable: true, question: null, proposal: null };
     }
-    const r = def.check({ stack, harness, exposures, profile, git, files });
+    const r = def.check({ stack, harness, exposures, profile, git, files, root });
     // The second axis, enforced in the same place and for the same reason.
     // `absent` means two incompatible things: "I enumerated the complete space
     // and it is not there" (decidable — the bootstrap script, the deny rules,

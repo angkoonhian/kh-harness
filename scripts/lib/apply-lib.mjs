@@ -11,7 +11,7 @@
 //      unrecorded — a partially applied repository that is accurately
 //      described in its manifest is recoverable; one that is not, is not.
 //   4. There is no --force. Not a flag, not an option, not a code path.
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { classify, emptyManifest, sha256 } from './manifest.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
@@ -347,10 +347,20 @@ export function renderDiff(root, proposal) {
     : body;
 }
 
-function writeFileDeep(absPath, contents, relPath) {
+/**
+ * `mode`, when given, is applied with an explicit `chmodSync` AFTER the
+ * write — not merely passed as `writeFileSync`'s own `mode` option, which
+ * Node only honours when the file is actually CREATED (the open flag's
+ * mode is ignored on an existing file). A proposal like P1.bootstrap's
+ * `scripts/bootstrap.sh` (mode `0o755` — it has a shebang and is meant to
+ * be executed directly) must end up executable whether this is the first
+ * write or a later one re-writing changed contents.
+ */
+function writeFileDeep(absPath, contents, relPath, mode) {
   try {
     mkdirSync(dirname(absPath), { recursive: true });
     writeFileSync(absPath, contents, 'utf8');
+    if (mode != null) chmodSync(absPath, mode);
   } catch (err) {
     const wrapped = new Error(`failed to write ${relPath}: ${err.message}`);
     wrapped.path = relPath;
@@ -382,14 +392,14 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
       return;
     }
 
-    writeFileDeep(abs, proposal.contents, targetPath);
+    writeFileDeep(abs, proposal.contents, targetPath, proposal.mode);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: newHash, step: proposal.step, writtenAt: new Date().toISOString() });
     written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
     return;
   }
 
   if (cls === 'theirs' && !existsSync(abs)) {
-    writeFileDeep(abs, proposal.contents, targetPath);
+    writeFileDeep(abs, proposal.contents, targetPath, proposal.mode);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: sha256(proposal.contents), step: proposal.step, writtenAt: new Date().toISOString() });
     written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
     return;

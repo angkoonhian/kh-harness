@@ -1,8 +1,13 @@
 import { readIfPresent } from './scan.mjs';
 import { globToRegExpSource } from './glob.mjs';
 
+// `bun.lock` (text) is Bun's default since 1.2; `bun.lockb` (binary) is the
+// legacy format Bun wrote through 1.1. Both are tracked — a real review
+// caught `bun.lockb`-only detection missing every current-Bun repository
+// (verified against Bun 1.4.2, whose default `bun install` writes
+// `bun.lock`, not `bun.lockb`).
 const LOCKS = [
-  ['pnpm-lock.yaml', 'pnpm'], ['yarn.lock', 'yarn'], ['bun.lockb', 'bun'],
+  ['pnpm-lock.yaml', 'pnpm'], ['yarn.lock', 'yarn'], ['bun.lock', 'bun'], ['bun.lockb', 'bun'],
   ['package-lock.json', 'npm'], ['uv.lock', 'uv'], ['poetry.lock', 'poetry'],
   ['requirements.txt', 'pip'],
 ];
