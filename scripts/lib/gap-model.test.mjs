@@ -75,14 +75,35 @@ function pythonPipFixture() {
   // scripts: [] is not a contrivance — detect-stack.mjs has no Python
   // script-name convention to read, so every real Python package reports
   // this. requirements.txt makes P1.bootstrap's install step derivable
-  // (unrelated to what this fixture is actually exercising) and, via
-  // python.mjs's own `protectedGlobs()`, is itself protected-path
-  // evidence — so this fixture is deliberately NOT used below to test
-  // P2.protected's n/a branch (see bareRepoFixture for that).
+  // (unrelated to what this fixture is actually exercising).
+  //
+  // Coordinator correction (post-review): this comment used to claim
+  // requirements.txt alone was itself protected-path evidence via
+  // python.mjs's `protectedGlobs()`, and that this fixture was therefore
+  // deliberately unsuitable for testing P2.protected's n/a branch. That
+  // was the bug: `requirements*.txt` is normally a HAND-EDITED manifest
+  // (Python's analogue of package.json, which this project deliberately
+  // does not protect — a deny rule there blocks "add a dependency", a
+  // legitimate and frequent action), so it must not be protected
+  // unconditionally. It is only protected when a `requirements*.in` file
+  // is also present — the pip-tools convention under which
+  // requirements*.txt is COMPILED output, not hand-maintained — see
+  // protected-evidence.mjs's own comment. This fixture has no `.in` file,
+  // so P2.protected now correctly reaches `n/a` for it too; see the
+  // dedicated test below.
   const stack = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
     packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] };
   return { stack, harness: bareHarness, exposures: [], profile: selectProfile(stack),
     git: { branch: 'main', isRepo: true }, files: ['requirements.txt', 'app.py'] };
+}
+
+// requirements.in makes requirements*.txt COMPILED output under pip-tools,
+// unlike pythonPipFixture() above — see protected-evidence.mjs.
+function pythonPipCompiledFixture() {
+  const stack = { languages: ['python'], packageManager: 'pip', isWorkspace: false,
+    packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] };
+  return { stack, harness: bareHarness, exposures: [], profile: selectProfile(stack),
+    git: { branch: 'main', isRepo: true }, files: ['requirements.in', 'requirements.txt', 'app.py'] };
 }
 
 function bareRepoFixture() {
@@ -141,6 +162,34 @@ test('all three still propose when their evidence IS present', () => {
     assert.ok(c.proposal, `${id} must still propose when its evidence exists`);
     assert.equal(c.decidable, true);
   }
+});
+
+// --- Coordinator correction: requirements*.txt is a hand-edited manifest,
+// not a lockfile, unless a requirements*.in source backs it (pip-tools) —
+// see protected-evidence.mjs. Protecting it unconditionally was itself a
+// defect this task's own test code (pythonPipFixture, above) surfaced
+// against this task's own prose.
+
+test('P2.protected is n/a for a pip repo with requirements.txt but no requirements.in', () => {
+  const f = pythonPipFixture();
+  // Fixture sanity, per this task's own test-quality instruction: assert
+  // the fixture actually CONTAINS requirements.txt, so this test cannot
+  // pass merely because the fixture was empty.
+  assert.ok(f.files.includes('requirements.txt'), 'fixture sanity: requirements.txt must actually be present');
+  assert.ok(!f.files.some(x => /requirements.*\.in$/.test(x)), 'fixture sanity: no .in file may sneak in here');
+  const c = byId(buildGaps(f), 'P2.protected');
+  assert.equal(c.state, 'n/a', 'a hand-edited requirements.txt is not a lockfile — nothing here to protect');
+  assert.equal(c.proposal, null);
+  assert.equal(c.question, null);
+});
+
+test('P2.protected proposes for a pip repo with requirements.in AND requirements.txt (pip-tools compiled output)', () => {
+  const f = pythonPipCompiledFixture();
+  assert.ok(f.files.includes('requirements.in') && f.files.includes('requirements.txt'), 'fixture sanity');
+  const c = byId(buildGaps(f), 'P2.protected');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true);
+  assert.ok(c.proposal);
 });
 
 test('only absent carries a proposal', () => {

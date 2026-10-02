@@ -266,6 +266,52 @@ test('a declared P2.protected check yields no proposals', () => {
 const tsStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
 const pyStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'pyproject.toml', scripts: [] }], languages: ['python'], isWorkspace: false, packageManager: null, ci: [] };
 
+// --- Coordinator correction: requirements*.txt is a hand-edited manifest
+// (Python's analogue of package.json, which this project deliberately does
+// not protect — a deny rule there blocks "add a dependency", a legitimate,
+// frequent action), not a lockfile, UNLESS a requirements*.in source backs
+// it. pip-tools compiles requirements*.txt FROM requirements*.in, and a
+// hand edit to the compiled file is silently lost on the next
+// `pip-compile` — protecting it is correct in that case. See
+// protected-evidence.mjs's own comment for the full rationale. This was
+// itself a coherence defect of a different shape than the others: check
+// and generator agreed with each other (both protected it
+// unconditionally), but the rule they agreed on was wrong.
+
+test('P2.protected does not propose a deny rule for requirements.txt without a requirements.in source', () => {
+  const files = ['requirements.txt'];
+  const ps = buildProposals(args([protectedCheck()], { files, stack: pyStack }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.equal(deny, undefined, 'a hand-edited requirements.txt is not a lockfile — no evidence, no proposal');
+});
+
+test('P2.protected proposes and delivers Edit(requirements*.txt) when requirements.in is present (pip-tools compiled output)', () => {
+  const files = ['requirements.in', 'requirements.txt'];
+  const ps = buildProposals(args([protectedCheck()], { files, stack: pyStack }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.ok(deny, 'requirements.in is evidence that requirements.txt is compiled output, not hand-edited');
+  assert.ok(deny.globs.includes('Edit(requirements*.txt)'));
+});
+
+// One thing checked rather than left to be discovered: requirements*.txt
+// also matches requirements-dev.txt and similar. The gate above is
+// GLOB-level, not per-file — it asks "does ANY requirements*.in exist",
+// never "does THIS specific *.txt have its own *.in" — so a requirements.in
+// that backs requirements.txt also protects a sibling requirements-dev.txt
+// that has no requirements-dev.in of its own and may be genuinely
+// hand-edited. This is the same granularity every other candidate in
+// protected-evidence.mjs already has (`migrations/**` protects the whole
+// directory, not file-by-file); it is not fixed here, and is pinned
+// explicitly so it is a known, visible behaviour rather than a silent
+// surprise the next reader has to rediscover.
+test('KNOWN LIMITATION: requirements.in gates the WHOLE requirements*.txt glob, including a sibling dev file with no .in of its own', () => {
+  const files = ['requirements.in', 'requirements.txt', 'requirements-dev.txt'];
+  const ps = buildProposals(args([protectedCheck()], { files, stack: pyStack }));
+  const deny = ps.find(p => p.kind === 'settings-deny');
+  assert.ok(deny, 'requirements.in is present, so the glob is gated open');
+  assert.ok(deny.globs.includes('Edit(requirements*.txt)'), 'the single glob rule covers requirements-dev.txt too, by construction');
+});
+
 test('P2.protected matches a root-level build output directory (dist/)', () => {
   // `**/dist/**` cannot match `dist/index.js` — `**` requires a literal `/`
   // before the final segment, so a root-level `dist/` (the only case a
@@ -684,10 +730,13 @@ const COHERENCE_FIXTURES = [
     // existed only because the defect existed; now that the checks consult
     // the same evidence their generators do, this fixture exercises all
     // five generator-backed checks for a real pip python stack on their own
-    // merits: P1.bootstrap and P2.protected propose and deliver (both have
-    // real evidence — requirements.txt), and P2.sensor/P2.stopgate are
-    // correctly undecidable (no lint/typecheck/test script — Python has no
-    // script-name convention) and so never reach this test's loop at all.
+    // merits: P1.bootstrap proposes and delivers (requirements.txt is real
+    // install evidence), and P2.sensor/P2.stopgate/P2.protected are all
+    // correctly undecidable or n/a here — no lint/typecheck/test script
+    // (Python has no script-name convention), and no requirements*.in, so
+    // requirements.txt alone is a hand-edited manifest, not protected-path
+    // evidence (see protected-evidence.mjs) — and so none of the three ever
+    // reaches this test's loop at all.
     name: 'pip python repo with requirements.txt',
     stack: { languages: ['python'], packageManager: 'pip', isWorkspace: false,
       packages: [{ name: 'root', dir: '.', manifestPath: 'requirements.txt', scripts: [] }], ci: [] },

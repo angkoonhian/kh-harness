@@ -250,17 +250,44 @@ test('END-TO-END (Task 5b): a pip-only repo asks about lint/verify commands inst
   assert.equal(stopgate.proposal, null);
   assert.match(stopgate.question, /verif|typecheck|test/i);
 
-  // Unlike the other two, P2.protected IS coherent for this fixture:
-  // requirements.txt itself is protected-path evidence (python.mjs's own
-  // `protectedGlobs()` treats it like a lockfile), so the proposal here is
-  // one propose.mjs's generator can actually deliver — not a drift case.
+  // Coordinator correction: requirements.txt alone is a HAND-EDITED
+  // manifest, not a lockfile — python.mjs's `protectedGlobs()` entry for
+  // it is now gated on a requirements*.in source also existing (pip-tools
+  // compiled output), which this fixture has none of. So P2.protected
+  // correctly reaches n/a here too, not a proposal — see
+  // protected-evidence.mjs and the companion test below, which adds
+  // requirements.in and shows the proposal become real.
   const protectedCheck = r.checks.find(c => c.id === 'P2.protected');
-  assert.equal(protectedCheck.state, 'absent');
-  assert.equal(protectedCheck.decidable, true);
-  assert.ok(protectedCheck.proposal, 'requirements.txt is real evidence — this one genuinely is deliverable');
+  assert.equal(protectedCheck.state, 'n/a', 'a hand-edited requirements.txt with no .in source is not a lockfile');
+  assert.equal(protectedCheck.proposal, null);
+  assert.equal(protectedCheck.question, null);
 
   assert.ok(r.couldNotDerive.some(q => /lint/i.test(q)), 'the sensor question must be routed to couldNotDerive');
   assert.ok(r.couldNotDerive.some(q => /verif|typecheck|test/i.test(q)), 'the stop-gate question must be routed to couldNotDerive');
+});
+
+test('END-TO-END (Task 5b): a pip-tools repo (requirements.in AND requirements.txt) proposes and delivers the deny rule', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-pip-tools-'));
+  write(d, 'requirements.in', 'requests\n');
+  write(d, 'requirements.txt', 'requests==2.31.0\n');
+  write(d, 'app.py', 'print("hi")\n');
+  const r = JSON.parse(cli(d, '--json'));
+
+  const protectedCheck = r.checks.find(c => c.id === 'P2.protected');
+  assert.equal(protectedCheck.state, 'absent');
+  assert.equal(protectedCheck.decidable, true);
+  assert.ok(protectedCheck.proposal, 'requirements.in is real evidence that requirements.txt is compiled output');
+
+  execFileSync('git', ['init', '-q', d]);
+  execFileSync('git', ['-C', d, 'checkout', '-q', '-b', 'chore/harness']);
+  execFileSync('git', ['-C', d, 'remote', 'add', 'origin', 'https://example.invalid/x.git']);
+  execFileSync('git', ['-C', d, 'add', '-A']);
+  execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
+  const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
+  const out = execFileSync(process.execPath, [APPLY, d, '--yes'], { encoding: 'utf8' });
+  assert.match(out, /Edit\(requirements\*\.txt\)/, 'the deny rule is actually delivered, not just advertised');
+  const settings = JSON.parse(readFileSync(join(d, '.claude', 'settings.json'), 'utf8'));
+  assert.ok(settings.permissions.deny.includes('Edit(requirements*.txt)'));
 });
 
 test('END-TO-END (Task 5b): a lockfile-less JS/TS repo with no lint/typecheck/test script asks or reports n/a, never an undeliverable proposal', () => {
