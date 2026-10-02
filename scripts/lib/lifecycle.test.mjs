@@ -19,7 +19,16 @@ const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/harness-kit.man
 function fixture() {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
-  writeFileSync(join(d, 'package-lock.json'), '{}');
+  // Deliberately NO lockfile here (unlike most other fixtures in this
+  // file): Task 8b made P2.protected's `declared` state mean OUR OWN
+  // derived deny rules are present, not merely that the deny array is
+  // non-empty. With a lockfile present, the pre-existing unrelated rule
+  // below would make P2.protected `absent` + a NEW proposal (correctly —
+  // it genuinely does not protect the lockfile), and apply would then add
+  // a rule of its own here, which is a real behaviour this file already
+  // covers elsewhere (STOPGATE test, LOAD-BEARING-2) but would break this
+  // fixture's own point: that the user's unrelated setting is left
+  // completely alone because there is nothing here to propose over it.
   writeFileSync(join(d, 'tsconfig.json'), '{}');
   mkdirSync(join(d, '.claude'), { recursive: true });
   // The user's own setting, which must survive every stage.
@@ -51,20 +60,26 @@ function fixture() {
  * check's "advice only" assertions below) that falls out of the same
  * fixture rather than needing a package of its own.
  *
- * Deliberately no `.claude/settings.json` at all here, unlike `fixture()`
- * above. Every gap-model check this plan added that reads settings.json —
- * P2.protected (`denyRules > 0`), and P2.sensor/P2.stopgate/P4.sessionbrief
- * (`registeredHook`, which is satisfied by ANY existing hook on that EVENT,
- * not only harness-kit's own) — treats ANY pre-existing entry as proof the
- * capability is already satisfied, before ever asking its own generator
- * whether there is real evidence to act on. Seeding a user's own deny rule
- * or hook here, before the first apply, would make that check `declared` on
- * stage 1 and its generator would never run — the exact thing this test
- * exists to exercise. The user's own content is added instead between
- * stages 5 and 6, below, once every capability has already gone through a
- * genuine absent -> proposal -> write -> declared cycle; see that stage's
- * own comment for why that is still a faithful (and in one respect
- * stricter) proof of "removed only ours".
+ * Task 8b (coordinator ruling, after the original version of this fixture
+ * had to seed the user's own settings AFTER the first apply): every
+ * gap-model.mjs check this plan touches now credits `declared` only when
+ * OUR OWN artefact is present — a specific resolved hook path, or OUR OWN
+ * derived deny rules — never merely because the place it lives is
+ * occupied by something of the user's. That fix is what makes the
+ * coordinator's original ruling satisfiable: the fixture below seeds a
+ * deny rule and a hook that are genuinely the USER'S OWN, unrelated to
+ * anything this plan writes, BEFORE the first apply, and every one of
+ * P2.sensor/P2.stopgate/P2.protected/P4.sessionbrief still goes through a
+ * real absent -> proposal -> write -> declared cycle regardless (stage 1
+ * proves each is still genuinely `absent`, not pre-satisfied by this
+ * content).
+ *
+ * `Edit(secrets/**)` and `node my-own-thing.mjs` (my-own-thing.mjs is a
+ * real tracked file, so its command resolves to a real path, exactly like
+ * the brief's own `fixtureWithHook` example in task-8b-brief.md) are
+ * deliberately unrelated to anything this repository's real evidence would
+ * ever make THIS plan propose — proven by stage 1 below, not merely
+ * asserted.
  */
 function workspaceFixture() {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-ws-'));
@@ -80,6 +95,17 @@ function workspaceFixture() {
   writeFileSync(join(d, 'packages/api/index.ts'), 'export const ok = true;\n');
   mkdirSync(join(d, 'prisma/migrations/0001_init'), { recursive: true });
   writeFileSync(join(d, 'prisma/migrations/0001_init/migration.sql'), '-- init\n');
+  // The user's own deny rule and hook — present from before the FIRST
+  // detect/apply call, as the coordinator originally asked. Neither
+  // matches anything this plan's own generators derive for this
+  // repository (stage 1 proves that), so both must survive untouched,
+  // sitting beside whatever harness-kit itself adds.
+  writeFileSync(join(d, 'my-own-thing.mjs'), '// the user\'s own automation, unrelated to harness-kit\n');
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
+    permissions: { deny: ['Edit(secrets/**)'] },
+    hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'node my-own-thing.mjs' }] }] },
+  }, null, 2));
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');   // not a default branch
   git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
@@ -179,17 +205,29 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
   ];
   let s1, m1;
 
-  await t.test('1. detect: every capability reports absent, decidable, with a proposal', () => {
+  await t.test('1. detect: every capability reports absent, decidable, with a proposal — even with the user\'s OWN unrelated deny rule and hook already in settings.json', () => {
     // This fixture's workspace layout, lockfile, and declared lint/typecheck
     // scripts are real evidence for every one of them (see workspaceFixture's
-    // own comment for which fact backs which check).
+    // own comment for which fact backs which check). Task 8b: the pre-existing
+    // `Edit(secrets/**)` deny rule and `node my-own-thing.mjs` PostToolUse hook
+    // (seeded in workspaceFixture, present from BEFORE this very first detect
+    // call) must NOT satisfy P2.protected/P2.sensor by themselves — this is
+    // the ruling the coordinator asked for from the start, now satisfiable
+    // because gap-model.mjs checks for OUR artefact, not for occupancy.
     const before = JSON.parse(run(DETECT, d, '--json'));
     for (const id of CAPS) {
       const c = find(before, id);
-      assert.equal(c.state, 'absent', `${id} must be absent before apply`);
+      assert.equal(c.state, 'absent', `${id} must be absent before apply, despite the user's own unrelated settings`);
       assert.equal(c.decidable, true, `${id} must be decidable in this fixture`);
       assert.ok(c.proposal, `${id} must carry a proposal`);
     }
+    // The proposal is not suppressed by the user's own content, and it names
+    // what of theirs was found — the coordinator's explicit requirement.
+    assert.match(JSON.stringify(find(before, 'P2.protected').evidence), /secrets/,
+      'P2.protected must name the user\'s own unrelated deny rule');
+    assert.match(JSON.stringify(find(before, 'P2.sensor').evidence), /my-own-thing/,
+      'P2.sensor must name the user\'s own unrelated PostToolUse hook');
+
     // P2.scripts: advice only. The workspace member (packages/api) declares
     // neither `lint` nor `typecheck` — real evidence for the advice, not a
     // contrived absence — while the root package's own lint+typecheck mean
@@ -202,6 +240,10 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
   });
 
   await t.test('2. dry run writes nothing', () => {
+    // settings.json already exists (the user's own content, seeded in
+    // workspaceFixture) — captured before the dry run so the assertion
+    // below can prove it is genuinely untouched, not merely that it exists.
+    const settingsBefore = readFileSync(join(d, '.claude/settings.json'), 'utf8');
     const dry = run(APPLY, d);
     assert.match(dry, /HANDOFF\.md/);
     assert.match(dry, /scripts\/bootstrap\.sh/);
@@ -210,7 +252,8 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     assert.match(dry, /verify-touched\.mjs/);
     assert.match(dry, /session-brief\.mjs/);
     for (const p of NEW_PATHS) assert.equal(existsSync(join(d, p)), false, `the default must never write ${p}`);
-    assert.equal(existsSync(join(d, '.claude/settings.json')), false, 'the default must never write settings.json either');
+    assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), settingsBefore,
+      'the default must never write settings.json either — not even to the user\'s own, pre-existing one');
   });
 
   await t.test('3. apply --yes writes everything, records it in the manifest, registers every hook, and adds the deny rules', () => {
@@ -231,16 +274,31 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     }
 
     s1 = settings(d);
-    assert.equal(s1.hooks.PostToolUse.length, 1);
-    assert.equal(s1.hooks.Stop.length, 1);
-    assert.equal(s1.hooks.SessionStart.length, 1);
-    assert.equal(s1.hooks.PostToolUse[0].matcher, 'Write|Edit');
+    // PostToolUse now holds TWO entries: the user's own (seeded in
+    // workspaceFixture, BEFORE this apply) and ours, appended beside it —
+    // exactly the "add beside their content" the coordinator's ruling
+    // asked to prove. Found by content, not by a fixed index, since which
+    // one apply appends after is an implementation detail, not something
+    // this test should pin.
+    assert.equal(s1.hooks.PostToolUse.length, 2, 'the user\'s own PostToolUse hook survives, ours is added beside it');
+    const theirPostToolUse = s1.hooks.PostToolUse.find(m => m.hooks[0].command === 'node my-own-thing.mjs');
+    const ourPostToolUse = s1.hooks.PostToolUse.find(m => m.hooks[0].command === 'node .claude/scripts/lint-touched.mjs');
+    assert.ok(theirPostToolUse, 'the user\'s own hook must still be there');
+    assert.equal(theirPostToolUse.matcher, undefined, 'their hook is untouched — it never had a matcher');
+    assert.ok(ourPostToolUse, 'our hook must be registered');
+    assert.equal(ourPostToolUse.matcher, 'Write|Edit');
+    assert.equal(s1.hooks.Stop.length, 1, 'Stop had nothing of the user\'s — only ours');
+    assert.equal(s1.hooks.SessionStart.length, 1, 'SessionStart had nothing of the user\'s — only ours');
     assert.equal(s1.hooks.Stop[0].matcher, undefined, 'the Stop entry takes no matcher');
-    assert.equal(s1.hooks.PostToolUse[0].hooks[0].command, 'node .claude/scripts/lint-touched.mjs');
     assert.equal(s1.hooks.Stop[0].hooks[0].command, 'node .claude/scripts/verify-touched.mjs');
     assert.equal(s1.hooks.SessionStart[0].hooks[0].command, 'node .claude/scripts/session-brief.mjs');
-    assert.ok(Array.isArray(s1.permissions.deny) && s1.permissions.deny.length > 0, 'apply must add protected-path deny rules');
-    assert.ok(s1.permissions.deny.every(r => r.startsWith('Edit(')), 'every added rule is an Edit(...) deny pattern');
+
+    // permissions.deny: the user's own `Edit(secrets/**)` survives, and
+    // our own derived rules are added beside it.
+    assert.ok(s1.permissions.deny.includes('Edit(secrets/**)'), 'the user\'s own deny rule survives apply');
+    const ours = s1.permissions.deny.filter(r => r !== 'Edit(secrets/**)');
+    assert.ok(ours.length > 0, 'apply must add protected-path deny rules beside the user\'s own');
+    assert.ok(ours.every(r => r.startsWith('Edit(')), 'every added rule is an Edit(...) deny pattern');
 
     // P2.scripts never writes to a manifest this tool is not allowed to touch.
     assert.equal(readFileSync(join(d, 'packages/api/package.json'), 'utf8'), JSON.stringify({ name: '@app/api', scripts: {} }),
@@ -261,6 +319,13 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     const scriptsAfter = find(after, 'P2.scripts');
     assert.equal(scriptsAfter.state, 'absent', 'P2.scripts is untouched by apply — still absent');
     assert.equal(scriptsAfter.proposal, null);
+
+    // .claude/settings.json is TRACKED here (unlike the first LOAD-BEARING
+    // fixture, which had no pre-existing settings.json) — apply's patch to
+    // it is therefore a modification apply.mjs's own dirty-tree gate would
+    // refuse on the NEXT run unless committed, exactly what a real user
+    // does next: review the diff, then commit.
+    git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'accept harness-kit settings patch');
   });
 
   await t.test('5. re-apply is a no-op', () => {
@@ -268,29 +333,10 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     run(APPLY, d, '--yes');
     for (const p of NEW_PATHS) assert.equal(readFileSync(join(d, p), 'utf8'), before2[p], `${p} must be byte-identical after a no-op re-apply`);
     const s2 = settings(d);
-    assert.equal(s2.hooks.PostToolUse.length, 1, 'no duplicate PostToolUse hook');
+    assert.equal(s2.hooks.PostToolUse.length, 2, 'no duplicate PostToolUse hook — still exactly theirs + ours');
     assert.equal(s2.hooks.Stop.length, 1, 'no duplicate Stop hook');
     assert.equal(s2.hooks.SessionStart.length, 1, 'no duplicate SessionStart hook');
     assert.deepEqual(s2.permissions.deny, s1.permissions.deny, 'no duplicate deny rules');
-
-    // Now, and only now, the user adds their OWN deny rule and their OWN
-    // hook — on PostToolUse, alongside the hook harness-kit just registered
-    // there. Seeding this at fixture() time (see that function's own
-    // comment) would have short-circuited P2.sensor/P2.protected before
-    // apply ever ran. Added here instead, it is a STRICTER proof of
-    // "removed only ours" than seeding it upfront would have been:
-    // uninstall must now tell our entry apart from the user's own SIBLING
-    // in the very same hooks.PostToolUse array by hash, not by position —
-    // exactly the hazard uninstall-lib.mjs's own comment on `revertPatch`
-    // names ("index-based removal would take out the wrong hook the moment
-    // the user adds one of their own above ours"). Stop and SessionStart
-    // get no sibling, so their round trip instead proves the OTHER shape:
-    // the whole event key is removed cleanly when nothing of the user's is
-    // left behind under it.
-    const withUser = settings(d);
-    withUser.permissions.deny.push('Edit(docs/legal/**)');
-    withUser.hooks.PostToolUse.push({ hooks: [{ type: 'command', command: 'echo user-own-hook' }] });
-    writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(withUser, null, 2) + '\n');
   });
 
   await t.test('6. the user edits two of the files harness-kit wrote', () => {
@@ -338,14 +384,20 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
 
   await t.test('9. the user\'s settings are byte-identical to what they had, apart from what we added and removed', () => {
     // The round trip ruling 1 cares about most, now exercised across all
-    // four settings patches (three hook events plus deny rules).
+    // four settings patches (three hook events plus deny rules) — and,
+    // because the user's own deny rule and hook were seeded BEFORE the
+    // first apply (stage 1), this proves uninstall correctly distinguishes
+    // ours from a SIBLING that was there FIRST, by hash, not by position
+    // (see uninstall-lib.mjs's own comment on `revertPatch`: "index-based
+    // removal would take out the wrong hook the moment the user adds one
+    // of their own above ours").
     const finalSettings = settings(d);
-    assert.deepEqual(finalSettings.permissions.deny, ['Edit(docs/legal/**)'],
+    assert.deepEqual(finalSettings.permissions.deny, ['Edit(secrets/**)'],
       'exactly the user\'s own deny rule survives — every rule harness-kit added is gone');
     assert.equal(finalSettings.hooks.Stop, undefined, 'our Stop hook, which had no sibling, is gone entirely');
     assert.equal(finalSettings.hooks.SessionStart, undefined, 'our SessionStart hook, which had no sibling, is gone entirely');
-    assert.equal(finalSettings.hooks.PostToolUse.length, 1, 'our PostToolUse hook is gone; the user\'s own sibling in the SAME array survives');
-    assert.deepEqual(finalSettings.hooks.PostToolUse[0], { hooks: [{ type: 'command', command: 'echo user-own-hook' }] });
+    assert.equal(finalSettings.hooks.PostToolUse.length, 1, 'our PostToolUse hook is gone; the user\'s own, which was there FIRST, survives');
+    assert.deepEqual(finalSettings.hooks.PostToolUse[0], { hooks: [{ type: 'command', command: 'node my-own-thing.mjs' }] });
   });
 });
 

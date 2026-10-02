@@ -108,6 +108,37 @@ test('denyRules is 0 for malformed JSON, and detectHarness does not throw', () =
   assert.equal(run(d).claudeDir.denyRules, 0);
 });
 
+// --- denyRuleList: Task 8b's gap-model.mjs needs the actual rule STRINGS
+// (not just a count) to tell "our own derived rules are present" from
+// "something is present". Safely filtered the same way `hookEvents` is:
+// `harness` is serialised wholesale into docs/harness/detect.json on every
+// run, and a `Bash(...)` deny rule can embed a literal credential as its
+// argument (see apply-lib.mjs's own comment on `renderSettingsDenyDiff`).
+
+test('denyRuleList keeps a path-taking permission rule verbatim', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(secrets/**)', 'Read(./.env)'] } }));
+  assert.deepEqual(run(d).claudeDir.denyRuleList, ['Edit(secrets/**)', 'Read(./.env)']);
+});
+
+test('denyRuleList redacts a Bash(...) rule to null, never the raw string', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ["Bash(curl -H 'PRIVATE-TOKEN: ghp_SECRET')"] } }));
+  const list = run(d).claudeDir.denyRuleList;
+  assert.deepEqual(list, [null]);
+  const full = JSON.stringify(run(d));
+  assert.equal(full.includes('ghp_SECRET'), false, 'the credential must never reach the serialised harness');
+});
+
+test('denyRuleList is [] when there is no settings file, and does not throw on malformed JSON', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  assert.deepEqual(run(d).claudeDir.denyRuleList, []);
+  write(d, '.claude/settings.json', '{ not json');
+  assert.doesNotThrow(() => run(d));
+  assert.deepEqual(run(d).claudeDir.denyRuleList, []);
+});
+
 // --- hookEvents: the registry, not the filenames ---
 //
 // .claude/settings.json is an exact record of what is wired up. A hook's

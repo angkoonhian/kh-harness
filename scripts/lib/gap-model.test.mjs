@@ -8,6 +8,7 @@ import { selectProfile } from './profiles/index.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH } from './propose.mjs';
 
 const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
@@ -458,8 +459,32 @@ test('DEDUPE, reachable case: one real package with both ruff and mypy config st
   assert.equal(explanationCount, 1, 'the shared explanation must appear exactly once, even though a single package derived two commands');
 });
 
-test('deny rules present make P2.protected declared', () => {
-  const c = byId(gaps(fullStack, richHarness), 'P2.protected');
+// Task 8b: the test this replaces, 'deny rules present make P2.protected
+// declared', called gaps(fullStack, richHarness) with no `files` at all
+// (defaulting to []) — so there was no protected-path EVIDENCE either, and
+// it passed only because the OLD check keyed purely on `denyRules > 0`: ANY
+// single deny rule, regardless of what it protected, satisfied this
+// capability. That is the exact defect the coordinator found through the
+// real CLI (a lockfile and migrations left unprotected while the report
+// said "declared" because the user had denied edits to an unrelated
+// secrets directory). The two tests below replace it, driven from a
+// fixture with real protected-path evidence.
+
+test('P2.protected is not satisfied by an unrelated deny rule (Task 8b)', () => {
+  const f = typescriptFullFixture(); // real evidence: package-lock.json, tracked dist/
+  const h = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, denyRules: 1, denyRuleList: ['Edit(secrets/**)'] } };
+  const c = byId(buildGaps({ ...f, harness: h }), 'P2.protected');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal, 'their rule says nothing about our lockfile');
+  assert.match(JSON.stringify(c.evidence), /secrets/, 'and we say what of theirs we found');
+});
+
+test('P2.protected IS satisfied when our own rules are present (Task 8b)', () => {
+  const f = typescriptFullFixture();
+  // Exactly what protectedPathCandidates derives for this fixture's files,
+  // wrapped as Edit(...) — the same shape protectedPathProposal writes.
+  const h = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, denyRules: 2, denyRuleList: ['Edit(*-lock.json)', 'Edit(dist/**)'] } };
+  const c = byId(buildGaps({ ...f, harness: h }), 'P2.protected');
   assert.equal(c.state, 'declared');
   assert.equal(c.proposal, null);
 });
@@ -642,10 +667,28 @@ test('P1.pathrules asks, and proposes nothing, for a single-package repository',
   assert.ok(c.question, 'the honest answer for a single package is a question, not silence');
 });
 
-test('P1.pathrules is declared when .claude/rules/ already holds a file, workspace or not', () => {
-  const c = byId(gaps(bareStack, richHarness), 'P1.pathrules');
+// Task 8b: the test this replaces asserted `declared` from `bareStack`
+// (NOT a workspace at all) purely because `.claude/rules/` was non-empty —
+// "workspace or not" was the defect's own title: `.claude/rules/` is a
+// directory that can hold rule files for many unrelated packages, and a
+// user's own file for some OTHER project satisfied this check for a
+// workspace that does not even have a target yet. `declared` now means
+// every target THIS workspace's own layout calls for (`pathRuleTargets`)
+// is actually present.
+
+test('P1.pathrules is declared when .claude/rules/ holds OUR OWN file for every workspace member (Task 8b)', () => {
+  const ours = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, rules: ['.claude/rules/packages-api.md', '.claude/rules/packages-web.md'] } };
+  const c = byId(gaps(workspaceStack, ours), 'P1.pathrules');
   assert.equal(c.state, 'declared');
-  assert.deepEqual(c.evidence, richHarness.claudeDir.rules);
+  assert.deepEqual(c.evidence, ['.claude/rules/packages-api.md', '.claude/rules/packages-web.md']);
+});
+
+test('P1.pathrules is NOT satisfied by an unrelated rule file for a package this workspace does not have (Task 8b)', () => {
+  const theirs = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, rules: ['.claude/rules/some-other-thing.md'] } };
+  const c = byId(gaps(workspaceStack, theirs), 'P1.pathrules');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal, 'their rule file says nothing about this workspace\'s own layout');
+  assert.ok(c.evidence.some(e => e.includes('some-other-thing.md')), `evidence must name what of theirs was found; got ${JSON.stringify(c.evidence)}`);
 });
 
 test('lookedFor names both the rules directory and the workspace layout for P1.pathrules', () => {
@@ -770,26 +813,55 @@ test('F1 end-to-end: a repo documented in .rst is not proposed an architecture d
   assert.equal(c.decidable, false);
 });
 
-// --- Hook checks read the registry, not the filenames ---
+// --- Hook checks read the registry, not the filenames — but crediting
+// requires OUR OWN script, not merely something registered (Task 8b) ---
 //
-// .claude/settings.json records what is actually wired up. A hook script may
-// live anywhere; a file under .claude/scripts/ that nothing registers does
-// nothing. Both directions are pinned here because mutation testing showed
-// this code had no net at all.
+// .claude/settings.json records what is actually wired up, and a hook
+// script may live anywhere — that half of the original comment here still
+// holds, and is still pinned below (OUR OWN script, living outside
+// .claude/scripts/, is still credited). What changed: a file under
+// .claude/scripts/ that nothing registers still does nothing (unchanged),
+// and NOW a hook that IS registered, but is not OUR resolved script, also
+// does nothing for this capability — see registeredHook's own comment in
+// gap-model.mjs. The coordinator found this exact shape live, through the
+// real CLI, while this plan's own lifecycle test was being written: a
+// user's single unrelated PostToolUse hook used to satisfy P2.sensor
+// outright.
 
 const withHooks = (hookEvents, hooks = []) => ({ ...bareHarness,
   claudeDir: { ...bareHarness.claudeDir, hooks, hookEvents } });
 
-for (const [id, event, cmd] of [
-  ['P2.sensor', 'PostToolUse', 'tools/format-and-lint.js'],
-  ['P2.stopgate', 'Stop', 'tools/verify-all.js'],
-  ['P4.sessionbrief', 'SessionStart', 'docs/agent-context/inject.js'],
+const OUR_HOOK_PATH = { PostToolUse: LINT_TOUCHED_PATH, Stop: VERIFY_TOUCHED_PATH, SessionStart: BRIEF_PATH };
+
+for (const [id, event] of [
+  ['P2.sensor', 'PostToolUse'],
+  ['P2.stopgate', 'Stop'],
+  ['P4.sessionbrief', 'SessionStart'],
 ]) {
-  test(`${id} is declared by a registered ${event} hook living outside .claude/scripts/`, () => {
-    const c = byId(gaps(fullStack, withHooks({ [event]: [cmd] })), id);
+  test(`${id} is declared by OUR OWN registered ${event} hook, wherever its script lives`, () => {
+    // "wherever its script lives" still holds — crediting is by the
+    // resolved PATH recorded in the registry, not a filename under
+    // .claude/scripts/. The path simply has to be ours.
+    const ourPath = OUR_HOOK_PATH[event];
+    const c = byId(gaps(fullStack, withHooks({ [event]: [ourPath] })), id);
     assert.equal(c.state, 'declared');
     assert.equal(c.proposal, null);
-    assert.ok(c.evidence.some(e => e.includes(cmd)), `evidence must name what was credited; got ${JSON.stringify(c.evidence)}`);
+    assert.ok(c.evidence.some(e => e.includes(ourPath)), `evidence must name what was credited; got ${JSON.stringify(c.evidence)}`);
+  });
+
+  test(`${id} is NOT satisfied by someone else's registered ${event} hook (Task 8b) — it stays absent, proposed, and names what it found`, () => {
+    // This is the exact defect the coordinator found through the real CLI.
+    // Before Task 8b this asserted `declared` here — pinning the old
+    // "is there anything on this event" behaviour as correct. An unrelated
+    // script on the SAME event tells this capability nothing about whether
+    // OUR sensor/gate/brief is wired up, and the proposal must not be
+    // suppressed because the coordinator's ruling: their hook may do
+    // something unrelated, and deciding for them is not this tool's place.
+    const cmd = 'tools/unrelated-automation.js';
+    const c = byId(gaps(fullStack, withHooks({ [event]: [cmd] })), id);
+    assert.equal(c.state, 'absent', 'an unrelated hook on the same event must not satisfy this capability');
+    assert.ok(c.proposal, 'their hook says nothing about ours; the proposal must still be made');
+    assert.ok(c.evidence.some(e => e.includes(cmd)), `evidence must name what of theirs was found; got ${JSON.stringify(c.evidence)}`);
   });
 
   test(`${id} is absent when a suggestively named script is present but nothing registers a ${event} hook`, () => {
@@ -800,19 +872,20 @@ for (const [id, event, cmd] of [
   });
 }
 
-test('a registered hook whose command names no repository path is credited by event alone', () => {
-  // The command resolved to nothing — a shell one-liner, or a path built from
-  // an environment variable. It is still registered, so the capability is
-  // still there; the evidence simply names less rather than risk naming an
-  // argument.
+test('a registered hook whose command names no repository path is NOT assumed to be ours (Task 8b)', () => {
+  // Previously this asserted `declared` here: "the command resolved to
+  // nothing ... it is still registered, so the capability is still there"
+  // was exactly the mere-occupancy reasoning Task 8b removes. An
+  // unresolvable command cannot be verified as OURS either — the safe
+  // default is to still propose, not to assume it.
   const c = byId(gaps(fullStack, withHooks({ Stop: [null] })), 'P2.stopgate');
-  assert.equal(c.state, 'declared');
-  assert.equal(c.proposal, null);
-  assert.deepEqual(c.evidence, ['Stop hook registered']);
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal);
+  assert.deepEqual(c.evidence, ['Stop hook already registered, but not ours (its script could not be resolved)']);
 });
 
 test('P4.handoff and P4.sessionbrief are independent — a working hook is not told to install one', () => {
-  const hookOnly = { ...withHooks({ SessionStart: ['node docs/agent-context/inject.js'] }), handoff: null };
+  const hookOnly = { ...withHooks({ SessionStart: [BRIEF_PATH] }), handoff: null };
   const cs = gaps(fullStack, hookOnly);
   assert.equal(byId(cs, 'P4.sessionbrief').state, 'declared');
   assert.equal(byId(cs, 'P4.handoff').state, 'absent');

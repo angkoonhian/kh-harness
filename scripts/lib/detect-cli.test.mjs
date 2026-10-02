@@ -31,11 +31,17 @@ function harnessed() {
   write(d, 'scripts/bootstrap.sh', '#!/bin/sh\n');
   // P2.protected requires at least one entry under permissions.deny — an empty
   // settings.json is indistinguishable from "no deny rules" and must NOT be
-  // treated as protection.
+  // treated as protection. Task 8b: it also requires that entry to actually
+  // be OUR OWN derived rule, not merely any rule — this fixture's only real
+  // protected-path evidence is package-lock.json (from bare()), so the deny
+  // rule here is the literal `Edit(*-lock.json)` that protectedPathCandidates
+  // would derive for it; an unrelated rule (e.g. `Edit(migrations/**)`, which
+  // this fixture has no migrations/ for) would correctly leave P2.protected
+  // `absent` + a new proposal, breaking this test's own "no proposals" point.
   // Hooks are credited from this registry, not from filenames under
   // .claude/scripts/ — a script nothing registers does nothing.
   write(d, '.claude/settings.json', JSON.stringify({
-    permissions: { deny: ['Edit(migrations/**)'] },
+    permissions: { deny: ['Edit(*-lock.json)'] },
     hooks: {
       PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node .claude/scripts/lint-touched.mjs' }] }],
       Stop: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/verify-touched.mjs' }] }],
@@ -402,16 +408,27 @@ test('SECURITY: a hook command argument never reaches stdout, the summary or det
     assert.equal(onDisk.includes(secret), false, `${label} secret leaked into detect.json`);
   }
 
-  // The credit still happens, and still says what was credited.
+  // Task 8b: `tools/inject.js` is not harness-kit's own session-brief
+  // script, so this hook must NOT be credited as ours — but the resolved
+  // path is still safe to name (it carries no secret; the command's
+  // ARGUMENTS are what this test is actually about), so the evidence still
+  // says what was found, just as a reason the proposal is still live.
   const c = JSON.parse(json).checks.find(x => x.id === 'P4.sessionbrief');
-  assert.equal(c.state, 'declared');
+  assert.equal(c.state, 'absent', 'an unrelated SessionStart hook is not ours');
+  assert.ok(c.proposal);
   assert.ok(c.evidence.some(e => e.includes('tools/inject.js')), `got ${JSON.stringify(c.evidence)}`);
 });
 
-// D2: a real repository registers its session brief outside .claude/scripts/.
-// Judged by filename it is invisible, and the tool proposes installing a
-// session brief to a repository that already has a working one.
-test('a hook registered in settings.json but living outside .claude/scripts/ is credited', () => {
+// D2, superseded by Task 8b: this used to assert `declared` for all three
+// checks below, from a command living OUTSIDE .claude/scripts/ — the exact
+// defect Task 8b fixes. The half of D2 that still holds: hook credit comes
+// from the settings.json REGISTRY, keyed by resolved path, never from the
+// file list under .claude/scripts/ (`r.harness.claudeDir.hooks` stays `[]`
+// below, proving that). What no longer holds: a command living outside
+// .claude/scripts/ can never BE ours — every script this tool generates is
+// written there — so it is resolved and named in evidence, but credited as
+// someone else's, with the proposal still live.
+test('a hook registered in settings.json but living outside .claude/scripts/ is resolved and named, but never credited as ours', () => {
   // Built from bare(), so .claude/scripts/ is genuinely empty: the file list
   // cannot be what credits these hooks.
   const d = bare();
@@ -442,11 +459,23 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
 
   for (const [id, cmd] of [['P2.sensor', 'tools/lint.js'], ['P2.stopgate', 'tools/verify.js'], ['P4.sessionbrief', 'docs/agent-context/inject.js']]) {
     const c = r.checks.find(x => x.id === id);
-    assert.equal(c.state, 'declared', `${id} should be credited from the registry`);
-    assert.equal(c.proposal, null);
+    assert.equal(c.state, 'absent', `${id}'s hook is resolved from the registry, but it is not ours`);
+    assert.ok(c.proposal, `${id} must still be proposed — their hook says nothing about ours`);
     assert.ok(c.evidence.some(e => e.includes(cmd)), `${id} evidence must name the registered command; got ${JSON.stringify(c.evidence)}`);
   }
-  assert.match(cli(d), /no proposals/i);
+
+  // This fixture's only deny rule (`Edit(migrations/**)`) has no
+  // migrations/ to back it, and does not match this fixture's real
+  // protected-path evidence (package-lock.json, from bare()) either — so
+  // P2.protected is absent + proposed too, naming the unrelated rule.
+  const protectedCheck = r.checks.find(x => x.id === 'P2.protected');
+  assert.equal(protectedCheck.state, 'absent');
+  assert.ok(protectedCheck.proposal);
+  assert.ok(protectedCheck.evidence.some(e => e.includes('Edit(migrations/**)')));
+
+  // Four proposals now, where there used to be none — the defect, inverted.
+  assert.doesNotMatch(cli(d), /no proposals/i);
+  assert.match(cli(d), /4 proposals/i);
 });
 
 // D1: a real repository keeps 456 lines under docs/wiki/ and names it in

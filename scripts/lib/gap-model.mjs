@@ -4,6 +4,15 @@ import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
+// Task 8b: the only three facts gap-model.mjs needs from propose.mjs — the
+// exact resolved script path EACH hook generator registers, so a check can
+// ask "is OURS here" instead of "is anything here". Importing the constant,
+// not re-deriving it, is the same discipline as every other shared-evidence
+// module in this file (bootstrap-install.mjs, sensor-evidence.mjs, ...):
+// one source of truth, so the check and the generator cannot drift apart.
+// propose.mjs does not import gap-model.mjs (or anything that does), so this
+// is a one-directional import, not a cycle.
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH } from './propose.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
@@ -165,20 +174,49 @@ function typecheckAdvice(pkg, files, root) {
  * repository, so a filename check cannot be made adequate here — and does not
  * need to be, because settings.json is an exact record of what is wired up.
  *
- * This can only widen a check to `declared`; it can never create a proposal, so
- * the central invariant is untouched.
+ * Task 8b (the defect the coordinator found while this plan's own lifecycle
+ * test was being written): this used to credit `declared` the moment the
+ * event had ANYTHING registered on it — any hook at all, ours or not. A user
+ * with their own unrelated `PostToolUse` hook was told the per-edit sensor
+ * was already in place. The fix is `ourPath`: the resolved script path OUR
+ * OWN generator registers for this event (propose.mjs's
+ * `LINT_TOUCHED_PATH`/`VERIFY_TOUCHED_PATH`/`BRIEF_PATH` — the single source
+ * of truth that generator also uses, so the two cannot drift). `declared`
+ * now means OUR path is among what is registered, not merely that the event
+ * is occupied.
  *
- * The evidence names the resolved SCRIPT, never the command: arguments are
- * where secrets live, and `.claude/settings.local.json` is one of the two files
- * this registry is read from. Where no path resolved, the event alone is
- * named — an evidence string that says less is strictly better than one that
- * might say a secret, and it still tells the user exactly what was credited.
+ * This is the same identification `apply-lib.mjs`'s `hasEquivalentHook` uses
+ * (an exact command match against the real settings object), expressed
+ * against the representation THIS layer already carries safely: `hookEvents`
+ * resolves each hook's command to a script PATH (or `null` when it can't),
+ * never the raw command string, specifically so a credential embedded in a
+ * hook's arguments never reaches `harness` — which is serialised wholesale
+ * into docs/harness/detect.json on every run. Calling `hasEquivalentHook`
+ * itself here would need the raw settings object threaded into this check,
+ * which has nowhere safe to live: stashing it on `harness` would undo that
+ * redaction for every hook on every event, not just the one this check
+ * cares about.
+ *
+ * Does NOT suppress the proposal when the event is occupied by something
+ * that isn't ours — the coordinator's ruling: their hook may do something
+ * unrelated, and deciding for them is not this tool's place. It still
+ * widens to `declared` only when ours is found (so the central
+ * absent-only-may-propose invariant is untouched); otherwise it stays
+ * `absent` + the proposal, with evidence naming what else is already there,
+ * so adding a second entry to the same event is never a surprise.
  */
-function registeredHook(harness, event, proposal) {
+function registeredHook(harness, event, ourPath, proposal) {
   const scripts = harness.claudeDir.hookEvents?.[event] ?? [];
-  return scripts.length
-    ? { state: 'declared', evidence: scripts.map(s => (s ? `${event} hook: ${s}` : `${event} hook registered`)) }
-    : { state: 'absent', proposal };
+  if (scripts.includes(ourPath)) {
+    return { state: 'declared', evidence: scripts.map(s => (s ? `${event} hook: ${s}` : `${event} hook registered`)) };
+  }
+  if (scripts.length === 0) return { state: 'absent', proposal };
+  return {
+    state: 'absent', proposal,
+    evidence: scripts.map(s => s
+      ? `${event} hook already registered, but not ours: ${s}`
+      : `${event} hook already registered, but not ours (its script could not be resolved)`),
+  };
 }
 
 /**
@@ -315,10 +353,26 @@ const CHECKS = [
     // worth scaffolding a rule file for, so the honest answer is to ASK,
     // not propose one.
     check: ({ harness, stack }) => {
-      if (harness.claudeDir.rules.length) {
-        return { state: 'declared', evidence: harness.claudeDir.rules };
-      }
-      if (pathRuleTargets(stack).length) {
+      const targets = pathRuleTargets(stack);
+      if (targets.length) {
+        // Task 8b: this used to credit `declared` from
+        // `harness.claudeDir.rules.length` alone — ANY file under
+        // `.claude/rules/`, regardless of whose layout it was scaffolded
+        // for. `.claude/rules/` is a directory, not a single purpose-built
+        // path like HANDOFF.md: a user's own rule file for an unrelated
+        // package satisfied this check for a DIFFERENT workspace member
+        // that had none at all. `declared` now means every target THIS
+        // workspace's own layout calls for (`pathRuleTargets`, the same
+        // derivation propose.mjs's generator uses) is actually present.
+        const ours = targets.map(t => t.path);
+        const present = new Set(harness.claudeDir.rules);
+        if (ours.every(p => present.has(p))) {
+          return { state: 'declared', evidence: ours };
+        }
+        const theirs = harness.claudeDir.rules.filter(p => !ours.includes(p));
+        const evidence = theirs.length
+          ? [`existing .claude/rules/ file(s) that do not match this workspace's own layout, so are not credited here: ${theirs.join(', ')}`]
+          : [];
         // Coordinator finding (round 3): "ship it, but say so" — the
         // reviewer's verdict was that these four near-identical stubs
         // still earn their place (right directory, the one key actually
@@ -328,7 +382,7 @@ const CHECKS = [
         // hold real conventions. Say plainly, in the proposal text itself
         // (which renderSummary prints verbatim after the `→`), that they
         // do not yet.
-        return { state: 'absent', proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout — each file is generated EMPTY; conventions are added by hand afterward' };
+        return { state: 'absent', evidence, proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout — each file is generated EMPTY; conventions are added by hand afterward' };
       }
       // Coordinator finding (round 3, Minor): this evidence/question used
       // to say "this is a single-package repository" — true for every
@@ -422,7 +476,7 @@ const CHECKS = [
     // absent), so the honest answer when no package declares `lint` is to
     // ASK, not propose.
     check: ({ harness, stack }) => {
-      const hook = registeredHook(harness, 'PostToolUse',
+      const hook = registeredHook(harness, 'PostToolUse', LINT_TOUCHED_PATH,
         'install scripts/lint-touched.mjs and register a PostToolUse hook');
       if (hook.state === 'declared') return hook;
       if (hasLintScript(stack)) return hook;
@@ -442,7 +496,7 @@ const CHECKS = [
     // `rootVerifyScript` (stopgate-evidence.mjs) is the SAME root-only
     // typecheck/test derivation propose.mjs's stopgateProposal uses.
     check: ({ harness, stack }) => {
-      const hook = registeredHook(harness, 'Stop',
+      const hook = registeredHook(harness, 'Stop', VERIFY_TOUCHED_PATH,
         'install scripts/verify-touched.mjs and register a Stop hook');
       if (hook.state === 'declared') return hook;
       if (rootVerifyScript(stack)) return hook;
@@ -472,10 +526,8 @@ const CHECKS = [
     // protected paths that demonstrably are not there would be noise, not a
     // missing fact.
     check: ({ harness, stack, files }) => {
-      if (harness.claudeDir.denyRules > 0) {
-        return { state: 'declared', evidence: [`${harness.claudeDir.denyRules} deny rule(s) in .claude/settings.json`] };
-      }
-      if (protectedPathCandidates({ stack, files }).length === 0) {
+      const candidates = protectedPathCandidates({ stack, files });
+      if (candidates.length === 0) {
         // Review Minor: this used to assert repository-WIDE absence
         // ("found in this repository"), but `files` is the TRACKED (or
         // fallback-walk-visible) list from scan.mjs — a gitignored
@@ -485,7 +537,42 @@ const CHECKS = [
         // checked, not what is actually true everywhere.
         return { state: 'n/a', evidence: ['no tracked protected-path evidence (lockfile, build output, migrations, generated files) found — an untracked or gitignored file of the same kind would not be visible here'] };
       }
-      return { state: 'absent', proposal: 'create .claude/settings.json with deny rules for protected paths' };
+
+      // Task 8b: this used to credit `declared` from `denyRules > 0` alone
+      // — ANY existing deny rule, regardless of what it protected. A user
+      // who denies edits to their own secrets directory was told their
+      // lockfile and migrations were protected too. `ours` is exactly what
+      // `protectedPathProposal` (propose.mjs) would write — the same
+      // evidence-derived candidates, wrapped the same way — so `declared`
+      // now means every one of OUR rules is already there, not merely that
+      // the deny array is non-empty. `denyRuleList` (detect-harness.mjs) is
+      // the safely-filtered rule list: an entry is verbatim when it is a
+      // path-taking permission (`Edit`/`Read`/`Write`/`Glob`/`Grep`/
+      // `NotebookEdit`, the shape every rule THIS tool ever writes takes),
+      // `null` otherwise — a `Bash(...)` deny rule can embed a literal
+      // credential as its argument (see apply-lib.mjs's own comment on
+      // `renderSettingsDenyDiff`), and `harness` is serialised wholesale
+      // into docs/harness/detect.json on every run. Our own rules are
+      // always `Edit(...)`, so they are never the ones redacted to `null`;
+      // the comparison below is exact either way.
+      const ours = candidates.map(g => `Edit(${g})`);
+      const denyList = harness.claudeDir.denyRuleList ?? [];
+      if (ours.every(rule => denyList.includes(rule))) {
+        return { state: 'declared', evidence: [`${ours.length} deny rule(s) matching protected-path evidence found in this repository: ${ours.join(', ')}`] };
+      }
+
+      // Do NOT suppress the proposal because something else is already
+      // denied (the coordinator's ruling) — name what of theirs was found
+      // instead, so adding rules alongside it is never a surprise.
+      // `addDenyRules` (settings-merge.mjs) already adds only the rules
+      // that are genuinely new when this is applied, so proposing here is
+      // safe even when some of `ours` is already present.
+      const theirs = denyList.filter(rule => rule !== null && !ours.includes(rule));
+      const redactedCount = denyList.filter(rule => rule === null).length;
+      const evidence = [];
+      if (theirs.length) evidence.push(`existing deny rule(s) that do not match a protected path this repository has evidence for: ${theirs.join(', ')}`);
+      if (redactedCount) evidence.push(`plus ${redactedCount} existing deny rule(s) not shown here (not a path-taking permission)`);
+      return { state: 'absent', evidence, proposal: 'create .claude/settings.json with deny rules for protected paths' };
     },
   },
   {
@@ -516,7 +603,7 @@ const CHECKS = [
   {
     id: 'P4.sessionbrief', step: 16, phase: 4,
     lookedFor: ['a SessionStart hook in .claude/settings.json'],
-    check: ({ harness }) => registeredHook(harness, 'SessionStart',
+    check: ({ harness }) => registeredHook(harness, 'SessionStart', BRIEF_PATH,
       'install scripts/session-brief.mjs and register a SessionStart hook'),
   },
 ];

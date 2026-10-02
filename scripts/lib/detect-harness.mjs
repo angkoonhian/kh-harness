@@ -40,6 +40,35 @@ function denyRuleCount(root) {
   return Array.isArray(deny) ? deny.length : 0;
 }
 
+// Task 8b: gap-model.mjs's P2.protected used to decide `declared` from
+// `denyRules > 0` alone — ANY existing deny rule, regardless of what it
+// protects, satisfied the whole capability. A user who denies edits to
+// their own secrets directory was told their lockfile and migrations were
+// protected too. `denyRuleList`, below, gives gap-model.mjs the actual
+// rule STRINGS so it can compare against what its own generator would
+// produce (protected-evidence.mjs's `protectedPathCandidates`, wrapped as
+// `Edit(...)`) instead of a bare count.
+//
+// `harness` is serialised wholesale into docs/harness/detect.json and
+// printed on every run — the same reason `hookEvents` below never records
+// a raw hook COMMAND, only a resolved script path. A `permissions.deny`
+// rule is ordinarily a path-shaped permission pattern (the shape every
+// rule this tool itself ever writes takes), but apply-lib.mjs's own
+// comment on `renderSettingsDenyDiff` already flags that a `Bash(...)`
+// deny rule can embed a literal credential as its argument. So each entry
+// here is kept verbatim ONLY when it starts with one of the tools whose
+// argument is a path, never a command or URL — `Bash(...)`, `WebFetch(...)`
+// and anything unrecognised become `null`, the same "present, but not
+// shown" convention `hookEvents`' unresolvable commands already use.
+const DENY_RULE_SAFE_PREFIXES = ['Edit(', 'Read(', 'Write(', 'Glob(', 'Grep(', 'NotebookEdit('];
+
+function denyRuleList(root) {
+  const deny = parseSettings(root, '.claude/settings.json')?.permissions?.deny;
+  if (!Array.isArray(deny)) return [];
+  return deny.map(rule =>
+    typeof rule === 'string' && DENY_RULE_SAFE_PREFIXES.some(p => rule.startsWith(p)) ? rule : null);
+}
+
 /**
  * The script a hook command runs, resolved against the repository's file list,
  * or null when nothing resolves.
@@ -254,6 +283,7 @@ export function detectHarness(root, files) {
       settings: files.includes('.claude/settings.json'),
       localSettings: files.includes('.claude/settings.local.json'),
       denyRules: denyRuleCount(root),
+      denyRuleList: denyRuleList(root),
       // File inventory. NOT what decides whether an event is covered — see hookEvents.
       hooks: under(files, '.claude/scripts/'),
       hookEvents: hookEvents(root, files),
