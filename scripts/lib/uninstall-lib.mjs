@@ -51,6 +51,66 @@ const SETTINGS = '.claude/settings.json';
  * in their own instructions) — only `isGeneratorProducible` refuses that,
  * structurally, because the path itself is never one this tool writes.
  * Neither check is redundant with the other.
+ *
+ * THE TWO ABOVE ARE NOT JOINTLY EXHAUSTIVE, and this enumeration used to
+ * read as though they were. Whole-branch review, F6 found the third case:
+ *
+ *   3. A path that is genuinely ours, holding content that genuinely
+ *      descends from our scaffold, INTO WHICH THE USER HAS SINCE WRITTEN
+ *      THEIR OWN WORK. Both gates pass — the path is producible, and the
+ *      content still carries the stamp because the user added to our file
+ *      rather than replacing it — so a forged hash deletes their work.
+ *      Reproduced: a `.claude/rules/packages-api.md` filled in with a
+ *      package's review conventions, removed and reported as a plain
+ *      `Removed:`, not kept, not refused, not flagged.
+ *
+ * `hasUserAuthoredBody` is the third gate, and it is the discriminator that
+ * fits this class of artefact rather than a third general-purpose hash: for
+ * every markdown file this tool generates from a template, the whole of our
+ * own body lives in regions markdown treats as non-content (YAML
+ * frontmatter, HTML comments, headings) PLUS a fixed preamble the template
+ * itself holds. So "strip those and compare what is left against the
+ * template's own leftover" distinguishes our scaffold from a scaffold with
+ * the user's conventions in it — structurally, not by a hash anyone with
+ * write access can rewrite. This is the same reasoning the gap model
+ * already applies to this artefact (P1.pathrules credits a user's OWN rule
+ * files, because for a path rule "the value is its content, not its
+ * presence"); here it decides what must never be deleted.
+ *
+ * EVERY SHIPPED ARTEFACT, audited for the same hole, because the point of
+ * F6 is that an enumeration which looks exhaustive is worse than one that
+ * admits what it leaves out:
+ *
+ *   `.claude/rules/*.md`  user-content body, BY DESIGN — the proposal text
+ *                         literally tells them "conventions are added by
+ *                         hand afterward". COVERED by gate 3.
+ *   `HANDOFF.md`          user-content body, by design — the template is a
+ *                         skeleton of prompts and nothing else. Same hole,
+ *                         same gate: COVERED, and the test for it sits
+ *                         beside the rule-file one.
+ *   `scripts/bootstrap.sh`
+ *                         NOT covered, and cannot be by this gate: its body
+ *                         is `{{steps}}`, derived from detection, so there
+ *                         is no fixed scaffold to compare a remainder
+ *                         against — and the template's own closing comment
+ *                         does invite the user to answer a question in it.
+ *                         Accepted residual: an honest manifest still keeps
+ *                         an edited copy (`ours-modified`), so defeating
+ *                         this needs a forged hash, and anyone who can
+ *                         forge the manifest can delete the file outright.
+ *                         Stated, not hidden.
+ *   `.claude/scripts/*.mjs` (lint-touched, verify-touched, session-brief,
+ *                         harness-redact)
+ *                         NOT covered, and deliberately not: these are OUR
+ *                         code, copied verbatim, and their value is the
+ *                         behaviour we wrote rather than anything the user
+ *                         writes into them. Same accepted residual as
+ *                         bootstrap.sh.
+ *   `docs/harness/CLAUDE.proposed.md`
+ *                         NOT covered, and does not need to be: it exists
+ *                         to be read and merged INTO `CLAUDE.md` by hand,
+ *                         not written into. `CLAUDE.md` itself is refused
+ *                         by gate 1 regardless of content.
  */
 const GENERATOR_PRODUCIBLE_EXACT = new Set([
   'HANDOFF.md',
@@ -194,6 +254,122 @@ function carriesOurStamp(root, relPath) {
   }
 }
 
+// --- The third gate: a body the user wrote (whole-branch review, F6) ------
+
+const TEMPLATES = new URL('../../assets/templates/', import.meta.url);
+
+/**
+ * The template a generated markdown artefact came from, or null when this
+ * gate has nothing to say about the path.
+ *
+ * `.claude/rules/` is prefix-matched for the same reason
+ * `GENERATOR_PRODUCIBLE_PREFIXES` is: the slug is derived from the
+ * repository's own layout, so no exact list can enumerate it in advance.
+ */
+function templateFor(relPath) {
+  if (relPath === 'HANDOFF.md') return 'HANDOFF.md.tmpl';
+  if (relPath.startsWith('.claude/rules/') && relPath.endsWith('.md')) return 'path-rule.md.tmpl';
+  return null;
+}
+
+/**
+ * What is left of a markdown file once everything our own generators put in
+ * it has been removed: YAML frontmatter (only when it opens the file),
+ * every HTML comment, every ATX heading line, and all whitespace
+ * differences.
+ *
+ * LOAD-BEARING, and the reason this can be compared against the RAW
+ * template without rendering it: every placeholder in every shipped
+ * markdown template sits inside a region this function strips, and so does
+ * every value it renders to. `{{glob}}` is inside the frontmatter;
+ * `{{dir}}` is inside a heading; `{{stamp}}` renders to an HTML comment.
+ * So stripping `{{...}}` here leaves exactly what stripping the RENDERED
+ * values leaves, and the comparison is independent of the kit version, the
+ * package name and the glob. If a future template ever puts a placeholder
+ * in ordinary body text, that equivalence breaks — which is why
+ * uninstall-lib.test.mjs asserts it against the output of the REAL
+ * generators rather than trusting this comment.
+ *
+ * Whitespace is collapsed so a CRLF checkout, a reflowed paragraph or a
+ * trailing-newline difference is not mistaken for the user's writing.
+ */
+export function markdownRemainder(text) {
+  return String(text)
+    .replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, '')
+    .replace(/\{\{\w+\}\}/g, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<!--[\s\S]*$/, '')
+    .replace(/^[ \t]*#{1,6}(?:[ \t].*)?$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * True when a generated markdown artefact holds body text our own scaffold
+ * does not — i.e. the user's own work, which must never be deleted however
+ * convincing the manifest is.
+ *
+ * Fails CLOSED on every uncertainty, like `carriesOurStamp` and `classify`:
+ * a file that cannot be read, or a template that cannot be read, means we
+ * cannot PROVE the body is still only ours, so it is treated as the user's
+ * and kept. The cost of a wrong "keep" is a leftover file the user can
+ * delete; the cost of a wrong "remove" is their work.
+ *
+ * Known residual, stated rather than hidden: a user who adds ONLY a heading
+ * and no body text is not distinguished from our scaffold by this gate.
+ * `classify` still keeps that file under an honest manifest (it is
+ * `ours-modified`), so defeating it needs a forged hash AND an edit that is
+ * nothing but a heading. That is narrow enough to accept, and it is written
+ * down here so the next reader does not have to rediscover that this gate,
+ * too, is not exhaustive.
+ */
+function hasUserAuthoredBody(root, relPath) {
+  const template = templateFor(relPath);
+  if (template === null) return false;
+  let text;
+  try {
+    text = fs.readFileSync(join(root, relPath), 'utf8');
+  } catch {
+    return true; // cannot read it, so cannot prove it is still only ours
+  }
+  let scaffold;
+  try {
+    scaffold = fs.readFileSync(new URL(template, TEMPLATES), 'utf8');
+  } catch {
+    return true; // cannot read our own template either
+  }
+  return markdownRemainder(text) !== markdownRemainder(scaffold);
+}
+
+/**
+ * Every CONTENT-level reason a recorded file may not be removed, in one
+ * place — `classify`'s verdict, the stamp, and the user's own body.
+ *
+ * Shared because `planUninstall`'s read-only PREDICTION and
+ * `runUninstall`'s real REMOVAL must decide this identically or the preview
+ * promises something `--yes` does not do (the exact defect Task 9b's
+ * coordinator round 2 found for the DIRECTORY sweep, and the reason
+ * `sweepRemovableDirs` is one function with two callers). They used to ask
+ * these three questions in two places with two different ways of naming
+ * the answer; now there is one.
+ *
+ * @returns {null|string} null when the content permits removal, otherwise
+ *   the reason to record against the entry that will be kept instead.
+ */
+function contentRefusal(root, manifest, relPath) {
+  const state = classify(root, manifest, relPath);
+  if (state !== 'ours-unmodified') return state;
+  // CRITICAL finding, second half: `classify` says the hash matches what the
+  // manifest claims — exactly what a forged entry naming the user's own,
+  // real file (its real hash) also produces. Independent, IN-FILE provenance
+  // is required before this is treated as ours to delete.
+  if (!carriesOurStamp(root, relPath)) return 'missing-stamp';
+  // F6: and in-file provenance is not enough either, for the one family of
+  // artefacts whose designed workflow is the user writing into our file.
+  if (hasUserAuthoredBody(root, relPath)) return 'user-authored-body';
+  return null;
+}
+
 /**
  * The three gates every removal must clear, and why each is required:
  *
@@ -274,18 +450,11 @@ export function planUninstall({ root, manifest }) {
       keep.push({ path: f.path, why: refusal });
       continue;
     }
-    const state = classify(root, manifest, f.path);
-    if (state !== 'ours-unmodified') {
-      keep.push({ path: f.path, why: state });
-      continue;
-    }
-    // CRITICAL finding, second half: `classify` says the hash matches
-    // what the manifest claims — exactly what a forged entry naming the
-    // user's own, real file (its real hash) also produces. Independent,
-    // IN-FILE provenance is required before this is treated as ours to
-    // delete: see `carriesOurStamp`'s own comment, above `guardRemoval`.
-    if (!carriesOurStamp(root, f.path)) {
-      keep.push({ path: f.path, why: 'missing-stamp' });
+    // The three content-level gates, from the one function `runUninstall`
+    // also calls — see `contentRefusal`.
+    const contentWhy = contentRefusal(root, manifest, f.path);
+    if (contentWhy) {
+      keep.push({ path: f.path, why: contentWhy });
       continue;
     }
     remove.push({ path: f.path, step: f.step });
@@ -379,8 +548,8 @@ export function runUninstall({ root, manifest, plan }) {
       refused.push({ path: r.path, why: refusal });
       continue;
     }
-    const currentState = classify(root, manifest, r.path);
-    if (currentState === 'ours-unmodified' && carriesOurStamp(root, r.path)) {
+    const contentWhy = contentRefusal(root, manifest, r.path);
+    if (contentWhy === null) {
       try {
         fs.rmSync(join(root, r.path));
         removed.push(r.path);
@@ -389,9 +558,11 @@ export function runUninstall({ root, manifest, plan }) {
       }
     } else {
       // File changed since plan was made — or, same bucket, the content
-      // never carried our stamp in the first place and the plan's own
-      // check (or a caller that skipped it) let it through regardless.
-      changedSincePlan.push({ path: r.path, why: currentState === 'ours-unmodified' ? 'missing-stamp' : currentState });
+      // never carried our stamp, or holds the user's own body, in the first
+      // place and the plan's own check (or a caller that skipped it) let it
+      // through regardless. The reason is computed by the SAME function the
+      // plan used, so the two can never name the same situation differently.
+      changedSincePlan.push({ path: r.path, why: contentWhy });
     }
   }
 
