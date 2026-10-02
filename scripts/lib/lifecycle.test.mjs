@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { sha256 } from './manifest.mjs';
 
 const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
 const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
@@ -13,6 +14,7 @@ const UNINSTALL = resolve(import.meta.dirname, '..', 'uninstall.mjs');
 const git = (d, ...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 const run = (script, d, ...a) => execFileSync(process.execPath, [script, d, ...a], { encoding: 'utf8' });
 const settings = d => JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/harness-kit.manifest.json'), 'utf8'));
 
 function fixture() {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
@@ -30,6 +32,56 @@ function fixture() {
   // something the tool can do on a user's behalf). Without one, that check
   // would stay 'absent' with a proposal forever, for a reason unrelated to
   // what this test is about.
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+  return d;
+}
+
+/**
+ * The fixture for this plan's own capabilities, walked through the same
+ * nine stages the P4-only fixture above already proved the mechanism for.
+ * Task 8's brief: a TypeScript WORKSPACE (P1.pathrules is decidable only
+ * for one — see pathrules-evidence.mjs), with a lockfile (P1.bootstrap),
+ * declared `lint` and `typecheck` scripts at the root (P2.sensor,
+ * P2.stopgate), and a `prisma/migrations` directory (P2.protected evidence).
+ *
+ * The root package declares BOTH scripts; the one workspace MEMBER
+ * (packages/api) declares NEITHER — real P2.scripts evidence (see the
+ * check's "advice only" assertions below) that falls out of the same
+ * fixture rather than needing a package of its own.
+ *
+ * Deliberately no `.claude/settings.json` at all here, unlike `fixture()`
+ * above. Every gap-model check this plan added that reads settings.json —
+ * P2.protected (`denyRules > 0`), and P2.sensor/P2.stopgate/P4.sessionbrief
+ * (`registeredHook`, which is satisfied by ANY existing hook on that EVENT,
+ * not only harness-kit's own) — treats ANY pre-existing entry as proof the
+ * capability is already satisfied, before ever asking its own generator
+ * whether there is real evidence to act on. Seeding a user's own deny rule
+ * or hook here, before the first apply, would make that check `declared` on
+ * stage 1 and its generator would never run — the exact thing this test
+ * exists to exercise. The user's own content is added instead between
+ * stages 5 and 6, below, once every capability has already gone through a
+ * genuine absent -> proposal -> write -> declared cycle; see that stage's
+ * own comment for why that is still a faithful (and in one respect
+ * stricter) proof of "removed only ours".
+ */
+function workspaceFixture() {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-ws-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({
+    name: 'app',
+    workspaces: ['packages/*'],
+    scripts: { lint: 'eslint .', typecheck: 'tsc --noEmit', test: 'vitest' },
+  }));
+  writeFileSync(join(d, 'package-lock.json'), '{}');
+  writeFileSync(join(d, 'tsconfig.json'), '{}');
+  mkdirSync(join(d, 'packages/api'), { recursive: true });
+  writeFileSync(join(d, 'packages/api/package.json'), JSON.stringify({ name: '@app/api', scripts: {} }));
+  writeFileSync(join(d, 'packages/api/index.ts'), 'export const ok = true;\n');
+  mkdirSync(join(d, 'prisma/migrations/0001_init'), { recursive: true });
+  writeFileSync(join(d, 'prisma/migrations/0001_init/migration.sql'), '-- init\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');   // not a default branch
   git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
@@ -96,6 +148,205 @@ test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall'
 
   // 9. the user's own settings are byte-identical to where they started
   assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)'] });
+});
+
+// Ruling 5: split into subtests, one per stage, rather than one flat test
+// function — but ALL of them run sequentially inside ONE `test()`, sharing
+// the same fixture directory and the same closed-over variables (`d`,
+// `before`, `s1`, `m1`, ...) through plain JS closures. Node's test runner
+// runs a parent's subtests in declaration order and waits for each `await`
+// before starting the next, so stage 5 genuinely sees the repository stage
+// 4 left behind, exactly as a single flat function would — the dependency
+// ruling 5 warns not to lose. Splitting this way buys what a flat function
+// cannot: a failing stage is reported by NAME ("5. re-apply is a no-op"),
+// not by line number inside one 180-line callback.
+test('LOAD-BEARING-2: every capability this plan adds, through the same nine stages, in one workspace fixture', async (t) => {
+  const d = workspaceFixture();
+  const find = (report, id) => report.checks.find(c => c.id === id);
+  // Every capability this plan added that writes something — P2.scripts is
+  // deliberately excluded (see its own stage below): it is advice-only by
+  // design, and never gets a generator at all (gap-model.mjs, propose.mjs's
+  // own comment on `GENERATORS`).
+  const CAPS = ['P1.bootstrap', 'P1.pathrules', 'P2.sensor', 'P2.stopgate', 'P2.protected', 'P4.handoff', 'P4.sessionbrief'];
+  const NEW_PATHS = [
+    'HANDOFF.md',
+    'scripts/bootstrap.sh',
+    '.claude/rules/packages-api.md',
+    '.claude/scripts/lint-touched.mjs',
+    '.claude/scripts/verify-touched.mjs',
+    '.claude/scripts/harness-redact.mjs',
+    '.claude/scripts/session-brief.mjs',
+  ];
+  let s1, m1;
+
+  await t.test('1. detect: every capability reports absent, decidable, with a proposal', () => {
+    // This fixture's workspace layout, lockfile, and declared lint/typecheck
+    // scripts are real evidence for every one of them (see workspaceFixture's
+    // own comment for which fact backs which check).
+    const before = JSON.parse(run(DETECT, d, '--json'));
+    for (const id of CAPS) {
+      const c = find(before, id);
+      assert.equal(c.state, 'absent', `${id} must be absent before apply`);
+      assert.equal(c.decidable, true, `${id} must be decidable in this fixture`);
+      assert.ok(c.proposal, `${id} must carry a proposal`);
+    }
+    // P2.scripts: advice only. The workspace member (packages/api) declares
+    // neither `lint` nor `typecheck` — real evidence for the advice, not a
+    // contrived absence — while the root package's own lint+typecheck mean
+    // this is NOT simply "nothing to advise about".
+    const scripts0 = find(before, 'P2.scripts');
+    assert.equal(scripts0.state, 'absent');
+    assert.equal(scripts0.decidable, false, 'P2.scripts must never be decidable — it has no generator at all');
+    assert.equal(scripts0.proposal, null, 'P2.scripts must never carry a proposal');
+    assert.ok(scripts0.advice.length > 0, 'P2.scripts must carry advice naming the missing scripts');
+  });
+
+  await t.test('2. dry run writes nothing', () => {
+    const dry = run(APPLY, d);
+    assert.match(dry, /HANDOFF\.md/);
+    assert.match(dry, /scripts\/bootstrap\.sh/);
+    assert.match(dry, /\.claude\/rules\/packages-api\.md/);
+    assert.match(dry, /lint-touched\.mjs/);
+    assert.match(dry, /verify-touched\.mjs/);
+    assert.match(dry, /session-brief\.mjs/);
+    for (const p of NEW_PATHS) assert.equal(existsSync(join(d, p)), false, `the default must never write ${p}`);
+    assert.equal(existsSync(join(d, '.claude/settings.json')), false, 'the default must never write settings.json either');
+  });
+
+  await t.test('3. apply --yes writes everything, records it in the manifest, registers every hook, and adds the deny rules', () => {
+    run(APPLY, d, '--yes');
+    for (const p of NEW_PATHS) assert.ok(existsSync(join(d, p)), `apply must write ${p}`);
+
+    // The manifest must record every one of them — not just that the FILE
+    // landed on disk. A generator that writes its file but skips the
+    // manifest entry leaves uninstall permanently unable to remove it (see
+    // manifest.mjs's own comment on `classify`), and no gap-model check in
+    // this plan actually consults the manifest, so detect alone would never
+    // catch that defect — only this direct read of the manifest can.
+    m1 = manifestOf(d);
+    for (const p of NEW_PATHS) {
+      const entry = m1.files.find(f => f.path === p);
+      assert.ok(entry, `the manifest must record ${p}`);
+      assert.equal(entry.sha256, sha256(readFileSync(join(d, p), 'utf8')), `the manifest's hash for ${p} must match what's actually on disk`);
+    }
+
+    s1 = settings(d);
+    assert.equal(s1.hooks.PostToolUse.length, 1);
+    assert.equal(s1.hooks.Stop.length, 1);
+    assert.equal(s1.hooks.SessionStart.length, 1);
+    assert.equal(s1.hooks.PostToolUse[0].matcher, 'Write|Edit');
+    assert.equal(s1.hooks.Stop[0].matcher, undefined, 'the Stop entry takes no matcher');
+    assert.equal(s1.hooks.PostToolUse[0].hooks[0].command, 'node .claude/scripts/lint-touched.mjs');
+    assert.equal(s1.hooks.Stop[0].hooks[0].command, 'node .claude/scripts/verify-touched.mjs');
+    assert.equal(s1.hooks.SessionStart[0].hooks[0].command, 'node .claude/scripts/session-brief.mjs');
+    assert.ok(Array.isArray(s1.permissions.deny) && s1.permissions.deny.length > 0, 'apply must add protected-path deny rules');
+    assert.ok(s1.permissions.deny.every(r => r.startsWith('Edit(')), 'every added rule is an Edit(...) deny pattern');
+
+    // P2.scripts never writes to a manifest this tool is not allowed to touch.
+    assert.equal(readFileSync(join(d, 'packages/api/package.json'), 'utf8'), JSON.stringify({ name: '@app/api', scripts: {} }),
+      'P2.scripts must never modify a package manifest — it is advice only');
+  });
+
+  await t.test('4. THE CLOSED LOOP: re-detect recognises everything written', () => {
+    const after = JSON.parse(run(DETECT, d, '--json'));
+    for (const id of CAPS) assert.equal(find(after, id).state, 'declared', `${id} must be recognised as declared once written`);
+    // Scoped to CAPS, not every check in the report: P1.instructions,
+    // P1.architecture and P0.recon are also `absent` with a `proposal`
+    // string in this fixture (no CLAUDE.md, no ARCHITECTURE.md, no recon
+    // doc) — but genuinely so, since neither apply.mjs's GENERATORS table
+    // nor this plan has anything that writes them. Their proposal
+    // persisting is correct, not a leak; this assertion is about the
+    // capabilities THIS plan added.
+    assert.equal(CAPS.filter(id => find(after, id).proposal).length, 0, 'none of this plan\'s own capabilities remains proposed');
+    const scriptsAfter = find(after, 'P2.scripts');
+    assert.equal(scriptsAfter.state, 'absent', 'P2.scripts is untouched by apply — still absent');
+    assert.equal(scriptsAfter.proposal, null);
+  });
+
+  await t.test('5. re-apply is a no-op', () => {
+    const before2 = Object.fromEntries(NEW_PATHS.map(p => [p, readFileSync(join(d, p), 'utf8')]));
+    run(APPLY, d, '--yes');
+    for (const p of NEW_PATHS) assert.equal(readFileSync(join(d, p), 'utf8'), before2[p], `${p} must be byte-identical after a no-op re-apply`);
+    const s2 = settings(d);
+    assert.equal(s2.hooks.PostToolUse.length, 1, 'no duplicate PostToolUse hook');
+    assert.equal(s2.hooks.Stop.length, 1, 'no duplicate Stop hook');
+    assert.equal(s2.hooks.SessionStart.length, 1, 'no duplicate SessionStart hook');
+    assert.deepEqual(s2.permissions.deny, s1.permissions.deny, 'no duplicate deny rules');
+
+    // Now, and only now, the user adds their OWN deny rule and their OWN
+    // hook — on PostToolUse, alongside the hook harness-kit just registered
+    // there. Seeding this at fixture() time (see that function's own
+    // comment) would have short-circuited P2.sensor/P2.protected before
+    // apply ever ran. Added here instead, it is a STRICTER proof of
+    // "removed only ours" than seeding it upfront would have been:
+    // uninstall must now tell our entry apart from the user's own SIBLING
+    // in the very same hooks.PostToolUse array by hash, not by position —
+    // exactly the hazard uninstall-lib.mjs's own comment on `revertPatch`
+    // names ("index-based removal would take out the wrong hook the moment
+    // the user adds one of their own above ours"). Stop and SessionStart
+    // get no sibling, so their round trip instead proves the OTHER shape:
+    // the whole event key is removed cleanly when nothing of the user's is
+    // left behind under it.
+    const withUser = settings(d);
+    withUser.permissions.deny.push('Edit(docs/legal/**)');
+    withUser.hooks.PostToolUse.push({ hooks: [{ type: 'command', command: 'echo user-own-hook' }] });
+    writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(withUser, null, 2) + '\n');
+  });
+
+  await t.test('6. the user edits two of the files harness-kit wrote', () => {
+    // HANDOFF.md (Plan 2's own artefact, already covered above) and
+    // scripts/bootstrap.sh — a generated file from THIS plan (ruling 3: the
+    // drift stage must cover one, not only HANDOFF.md).
+    writeFileSync(join(d, 'HANDOFF.md'), '# My own handoff\nMid-refactor.\n');
+    writeFileSync(join(d, 'scripts/bootstrap.sh'), '#!/usr/bin/env bash\necho "hand-patched bootstrap"\n');
+  });
+
+  await t.test('7. drift reported and the edit survives, on this apply AND the next one', () => {
+    // Apply, then apply AGAIN, to prove this is not a one-time report but
+    // holds on every subsequent run (ruling 3: "survives apply, survives
+    // re-apply").
+    for (let i = 0; i < 2; i++) {
+      const drift = run(APPLY, d, '--yes');
+      assert.equal(readFileSync(join(d, 'HANDOFF.md'), 'utf8'), '# My own handoff\nMid-refactor.\n', `HANDOFF.md edit must survive apply #${i + 1}`);
+      assert.equal(readFileSync(join(d, 'scripts/bootstrap.sh'), 'utf8'), '#!/usr/bin/env bash\necho "hand-patched bootstrap"\n', `bootstrap.sh edit must survive apply #${i + 1}`);
+      assert.match(drift, /HANDOFF\.md/, `apply #${i + 1} must report HANDOFF.md's drift`);
+      assert.match(drift, /bootstrap\.sh/, `apply #${i + 1} must report bootstrap.sh's drift`);
+      assert.match(drift, /modified|kept|skipped/i, `apply #${i + 1} must report drift, not stay silent`);
+    }
+  });
+
+  let out;
+  await t.test('8. uninstall removes what is untouched, keeps both edits, reverts every hook', () => {
+    out = run(UNINSTALL, d, '--yes');
+    for (const p of ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs', '.claude/rules/packages-api.md']) {
+      assert.equal(existsSync(join(d, p)), false, `${p} must be removed`);
+    }
+    // Ruling 2: the shared module is installed once (asserted at stage 3 —
+    // a single file, regardless of which of P2.sensor/P2.stopgate's
+    // generators happened to propose it first) and uninstall must remove it
+    // too, not leave it behind. "Both hooks are registered only when it is
+    // present" is the negative case — the FINDING 5 test above already
+    // covers that in isolation; this is the positive half, in the full CLI
+    // lifecycle.
+    assert.equal(existsSync(join(d, '.claude/scripts/harness-redact.mjs')), false,
+      'the shared redaction asset is removed too, not left behind');
+    assert.equal(readFileSync(join(d, 'HANDOFF.md'), 'utf8'), '# My own handoff\nMid-refactor.\n', 'HANDOFF.md edit survives uninstall');
+    assert.equal(readFileSync(join(d, 'scripts/bootstrap.sh'), 'utf8'), '#!/usr/bin/env bash\necho "hand-patched bootstrap"\n', 'bootstrap.sh edit survives uninstall');
+    assert.match(out, /HANDOFF\.md/, 'must say what it left behind');
+    assert.match(out, /bootstrap\.sh/, 'must say what it left behind for this plan\'s own artefact too');
+  });
+
+  await t.test('9. the user\'s settings are byte-identical to what they had, apart from what we added and removed', () => {
+    // The round trip ruling 1 cares about most, now exercised across all
+    // four settings patches (three hook events plus deny rules).
+    const finalSettings = settings(d);
+    assert.deepEqual(finalSettings.permissions.deny, ['Edit(docs/legal/**)'],
+      'exactly the user\'s own deny rule survives — every rule harness-kit added is gone');
+    assert.equal(finalSettings.hooks.Stop, undefined, 'our Stop hook, which had no sibling, is gone entirely');
+    assert.equal(finalSettings.hooks.SessionStart, undefined, 'our SessionStart hook, which had no sibling, is gone entirely');
+    assert.equal(finalSettings.hooks.PostToolUse.length, 1, 'our PostToolUse hook is gone; the user\'s own sibling in the SAME array survives');
+    assert.deepEqual(finalSettings.hooks.PostToolUse[0], { hooks: [{ type: 'command', command: 'echo user-own-hook' }] });
+  });
 });
 
 test('STOPGATE: apply installs verify-touched.mjs, the shared redaction asset, and a matcher-less Stop hook; uninstall removes all three', () => {
