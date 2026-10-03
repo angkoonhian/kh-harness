@@ -24,8 +24,9 @@ you are running.
 | Phase | Steps | Kind | Reference |
 |---|---|---|---|
 
-Rows are added here as each phase's reference file lands — Task 3 adds Phase
-0 and Phase 1; Task 4 adds Phase 2 and Phase 4.
+Each phase's row appears here once its reference exists. An empty table
+means no phase reference exists yet — running detection (see the first-run
+rule, below) is the only thing to do so far.
 
 ## The gate rule
 
