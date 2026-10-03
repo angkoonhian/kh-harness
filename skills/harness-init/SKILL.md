@@ -23,10 +23,11 @@ you are running.
 
 | Phase | Steps | Kind | Reference |
 |---|---|---|---|
+| 0 | 4 | prompt | [references/phase-0-recon.md](references/phase-0-recon.md) |
+| 1 | 5, 6, 7a, 7b | script, prompt, prompt, script | [references/phase-1-legible.md](references/phase-1-legible.md) |
 
-Each phase's row appears here once its reference exists. An empty table
-means no phase reference exists yet — running detection (see the first-run
-rule, below) is the only thing to do so far.
+Each phase's row appears here once its reference exists; two of the
+runbook's phases do not have one yet.
 
 ## The gate rule
 
