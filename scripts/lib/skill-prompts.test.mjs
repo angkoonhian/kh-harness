@@ -17,8 +17,16 @@ test('LOAD-BEARING: the CLAUDE.md step writes a proposal, never the file itself'
 
 test('the recon step writes to docs/harness/recon.md and reads detect.json first', () => {
   const t = ref('phase-0-recon.md');
-  assert.match(t, /docs\/harness\/recon\.md/);
-  assert.match(t, /detect\.json/);
+  // Tightened (review Finding 3): a bare substring check on the path passes
+  // even for a sentence that FORBIDS the write (e.g. "never write
+  // docs/harness/recon.md"). Require "write" to actually govern the path in
+  // the same clause, and explicitly reject the forbidding phrasing.
+  assert.match(t, /\bwrite\b[^.]*docs\/harness\/recon\.md/i,
+    'must instruct writing the file, not merely mention its path');
+  assert.doesNotMatch(t, /\bnever\b[^.]*\bwrite\b[^.]*docs\/harness\/recon\.md/i,
+    'a mutation forbidding the write must fail this test');
+  assert.match(t, /\bread\b[^.]*detect\.json[^.]*\bfirst\b/i,
+    'must instruct reading detect.json before anything else, not merely mention it');
 });
 
 test('the architecture step derives from this repository, not from a template', () => {
@@ -29,9 +37,16 @@ test('the architecture step derives from this repository, not from a template', 
 });
 
 test('every prompt-gated step names its gate', () => {
+  // Tightened (review Finding 3): a bare word-count on "gate" passes even
+  // when every occurrence is a cross-reference ("the gate below") with no
+  // actual stop instruction. Require "gate" to be paired, within a bounded
+  // window, with the imperative that makes it a gate (wait/stop) — not just
+  // present somewhere in the file. The window crosses periods on purpose:
+  // "CLAUDE.md" and "ARCHITECTURE.md" sit between some gates and their
+  // "wait", and a literal filename period must not break the pairing.
   for (const [file, count] of [['phase-0-recon.md', 1], ['phase-1-legible.md', 2]]) {
-    const hits = (ref(file).match(/\bgate\b/gi) ?? []).length;
-    assert.ok(hits >= count, `${file} mentions a gate ${hits} times; it owns ${count} prompt-gated step(s)`);
+    const hits = (ref(file).match(/\bgate\b[\s\S]{0,200}?\b(wait|stop)\b/gi) ?? []).length;
+    assert.ok(hits >= count, `${file} pairs "gate" with an actual wait/stop instruction ${hits} times; it owns ${count} prompt-gated step(s)`);
   }
 });
 

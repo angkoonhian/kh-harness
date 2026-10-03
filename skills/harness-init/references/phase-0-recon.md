@@ -56,22 +56,29 @@ write.
 
 ## Credentials: recon will meet them
 
-Recon reads further than `detect.json`'s own credential sweep does. That
-sweep (`scripts/lib/detect-exposure.mjs`, `scripts/lib/scan.mjs`) never
-scans inside `.git/` — both files exclude it by name — so a credential
-embedded in a remote URL (`git remote -v`, `.git/config`) is invisible to
-`detect.json`'s `exposures` array and will only ever surface here, if
-recon's own reading goes looking. This is not hypothetical: a real trial
-run on this project's own validation targets found exactly that — a GitLab
-token embedded in an application's own remote URL, and separately, an
-Obsidian bearer token in a local settings file.
+Recon reads file *bodies* directly — entry points, test setup, CI config,
+history — in a way detection's pattern table does not: it can land on a
+credential quoted in prose, sitting in a config comment, or baked into a
+fixture, none of which match a known secret shape. The rule below exists
+because recon's output is a narrative a human reads, not because detection
+has a blind spot — a secret quoted in a narrative is exactly as
+irreversible, once reported, as one sitting in a settings file.
 
-Whatever recon finds, credential or not, the same rule applies: report its
-location and credential type in `recon.md` — never the value, and never
-rotate it, regardless of how it was found. A credential finding cannot be
-un-seen once reported, which is exactly why `references/gates.md` names it
-as the irreversible kind of thing a gate must state plainly, not bury in
-the rest of the diff.
+*Verified against `scripts/lib/detect-exposure.mjs`'s `detectExposures`:* a
+credential embedded in a git remote URL is already reported, as a
+`token-in-remote-url` finding, sourced from the repository's own remotes —
+this is already in `detect.json`'s `exposures` array before recon ever
+runs. **Do not re-list it.** Read the exposures list `detect.json` already
+carries (see [references/detect.md](detect.md)) and treat anything there
+as handled; recon's own job is only what that sweep did not already catch
+and name.
+
+Whatever recon's own reading surfaces that `detect.json` does not already
+carry, the same rule applies: report its location and credential type in
+`recon.md` — never the value, and never rotate it, regardless of how it
+was found. A credential finding cannot be un-seen once reported, which is
+exactly why `references/gates.md` names it as the irreversible kind of
+thing a gate must state plainly, not bury in the rest of the diff.
 
 ## What not to write
 
