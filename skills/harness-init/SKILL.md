@@ -25,9 +25,8 @@ you are running.
 |---|---|---|---|
 | 0 | 4 | prompt | [references/phase-0-recon.md](references/phase-0-recon.md) |
 | 1 | 5, 6, 7a, 7b | script, prompt, prompt, script | [references/phase-1-legible.md](references/phase-1-legible.md) |
-
-Each phase's row appears here once its reference exists; two of the
-runbook's phases do not have one yet.
+| 2 | 8, 9, 10, 11 | advise, script, script, script | [references/phase-2-sensors.md](references/phase-2-sensors.md) |
+| 4 | 15, 16 | advise, script | [references/phase-4-continuity.md](references/phase-4-continuity.md) |
 
 ## The gate rule
 
