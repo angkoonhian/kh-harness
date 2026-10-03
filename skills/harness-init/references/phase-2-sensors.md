@@ -17,6 +17,17 @@ repository's own lint script on every edit, and step 10's stop gate runs
 this plainly, before either gate, not as a footnote once it is reached —
 accepting the gate is agreeing to let these scripts execute unattended.
 
+The risk was never that a `lint`/`typecheck`/`test` script is arbitrary
+code — it always was, in every project. What changes here is that you
+stop typing the command yourself: once either hook is installed, **a
+commit you did not write can change what runs on your machine without
+being asked again** — a `git pull` that edits the owning package's `lint`
+script, or the root's `typecheck`/`test` script, changes what Claude Code
+executes unattended from that point on. *Verified against
+`scripts/lib/cli.mjs`'s `EXECUTION_DISCLOSURE`,* the fuller text `apply`
+itself prints before a user ever reaches this gate — read it there rather
+than a second copy here.
+
 ## Step 8 — missing `lint`/`typecheck` scripts
 
 *Advise, inside a script phase.* *Verified against

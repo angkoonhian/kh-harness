@@ -1,7 +1,5 @@
 import { LOCKFILE_GLOBS } from './generic.mjs';
 
-const EXEC = { uv: 'uv run', poetry: 'poetry run', pip: '' };
-
 export const python = {
   id: 'python',
   confidence(stack) { return stack.languages.includes('python') && stack.packages.length > 0 ? 0.9 : 0; },
