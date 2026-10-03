@@ -35,7 +35,11 @@ the script itself, not one this step guesses at.
 
 The exact command shape differs by package manager (bare `pnpm build`
 versus `npm run build`, for instance); that per-stack detail lives in its
-own profile reference, not repeated here.
+own profile reference —
+[references/profiles/typescript-single.md](references/profiles/typescript-single.md),
+[references/profiles/typescript-workspace.md](references/profiles/typescript-workspace.md),
+or [references/profiles/python.md](references/profiles/python.md) — not
+repeated here.
 
 No gate beyond the dry-run review above: `apply --yes` is the only write,
 and it is demonstrated for real rather than simulated.
@@ -96,8 +100,12 @@ wait before anything is written.
 `.claude/rules/<package>.md`, with its `paths` frontmatter glob derived
 from that package's own directory in the workspace layout — the only
 pattern derivable from structure alone. The per-stack detail of how a
-workspace's packages are enumerated lives in the same profile reference
-step 5 mentions, not repeated here.
+workspace's packages are enumerated lives in
+[references/profiles/typescript-workspace.md](references/profiles/typescript-workspace.md),
+not repeated here; the capability itself is gated on `stack.isWorkspace`,
+not on language, so a Python workspace gets it too even though it selects
+[references/profiles/python.md](references/profiles/python.md) rather than
+a workspace-specific Python profile.
 
 Every generated file's body is left empty but for a heading and an HTML
 comment: the conventions that belong in a path-scoped rule are the user's
