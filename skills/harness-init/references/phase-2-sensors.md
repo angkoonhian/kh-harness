@@ -72,11 +72,23 @@ time.
 **The cost is measured, not estimated — say the numbers before the gate,
 not after someone notices turns got slower.** This is a whole-program
 check with no incremental cache, so its cost scales with the size of the
-repository, not the size of the edit: measured during an earlier plan at
-roughly 1 second added per turn on a 40-module repository, climbing to
-10-30 seconds per turn at around 1000 modules. A user on a large codebase
-should be able to decline this step for that reason, with the number in
-hand, rather than discover it as unexplained latency later.
+repository, not the size of the edit. *Verified against
+`scripts/lib/propose.mjs`'s own cost measurement — the same figure a user
+reads in the `reason` text when they accept the proposal, so this must
+match it rather than state a second number for the same fact:* on a real
+40-module TypeScript repository, a 3-edit turn adds ~2.8 seconds total,
+with zero bytes of output from either hook when the check is green. Of
+that 2.8 seconds, roughly 1 second is the stop gate itself and the rest is
+the per-edit sensor running once per edit in the same turn *(verified
+against `docs/plan-3-execution-log.md`'s own breakdown of the same
+measurement: three 592ms sensor runs plus a 1038ms gate)* — named as a
+component only because it explains where the time goes; the decision at
+this gate is about the whole turn, not the gate alone. The same
+measurement found 10-30 seconds per turn as the range at around 1000
+modules, because a whole-program `tsc --noEmit` scales with repository
+size, not edit size. A user on a large codebase should be able to decline
+this step for that reason, with the number in hand, rather than discover
+it as unexplained latency later.
 
 It blocks at most three times per session, keyed to each failure's own
 signature — so the identical failure reported twice blocks only once, but
