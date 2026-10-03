@@ -109,6 +109,11 @@ function yarnFrozenCommand(root, lockRelPath) {
  * `root`, when given, is used ONLY to read a yarn.lock's own header (see
  * `yarnFrozenCommand`) — every other package manager's frozen form is a
  * fixed string, needing no file content at all.
+ *
+ * This is the SINGLE source for "what installs this project" — no profile's
+ * `commands()` carries its own `install` field (removed: it had no
+ * production reader and quietly disagreed with this table). Do not add one
+ * back in a profile; extend the table above instead.
  */
 export function installCommand(packageManager, files, root) {
   const spec = INSTALL_COMMANDS[packageManager];

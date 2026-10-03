@@ -20,7 +20,9 @@ export const LOCKFILE_GLOBS = [
 export const generic = {
   id: 'generic',
   confidence() { return 0.1; },
-  commands() { return { install: null, build: null, test: null, lint: null, typecheck: null }; },
+  // No `install` field: see typescript.mjs's/python.mjs's own comment —
+  // `bootstrap-install.mjs`'s `installCommand` is the single source.
+  commands() { return { build: null, test: null, lint: null, typecheck: null }; },
   protectedGlobs() { return [...LOCKFILE_GLOBS]; },
   // Language-agnostic steps only: no bootstrap, scripts, sensor, stop gate or language server.
   appliesToSteps() { return [1, 2, 3, 4, 6, 7, 11, 15, 16]; },

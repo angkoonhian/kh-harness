@@ -1,14 +1,16 @@
 import { LOCKFILE_GLOBS } from './generic.mjs';
 
-const INSTALL = { uv: 'uv sync', poetry: 'poetry install', pip: 'pip install -r requirements.txt' };
 const EXEC = { uv: 'uv run', poetry: 'poetry run', pip: '' };
 
 export const python = {
   id: 'python',
   confidence(stack) { return stack.languages.includes('python') && stack.packages.length > 0 ? 0.9 : 0; },
-  commands(pkg, stack) {
-    const pm = stack?.packageManager ?? 'pip';
-    return { install: INSTALL[pm] ?? INSTALL.pip, build: null, test: null, lint: null, typecheck: null };
+  // No `install` field: the install command has exactly one source,
+  // `bootstrap-install.mjs`'s `installCommand` (see its own comment) — see
+  // git history for the profile-local table this replaced, which had no
+  // production reader and quietly disagreed with the real one.
+  commands() {
+    return { build: null, test: null, lint: null, typecheck: null };
   },
   // Root-anchored AND `**/`-anchored forms are both listed deliberately —
   // same two reasons as typescript.mjs's dist/build globs (see its

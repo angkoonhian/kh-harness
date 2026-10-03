@@ -1,19 +1,22 @@
 import { LOCKFILE_GLOBS } from './generic.mjs';
 
 const RUN = { pnpm: 'pnpm', yarn: 'yarn', bun: 'bun run', npm: 'npm run' };
-const INSTALL = { pnpm: 'pnpm install', yarn: 'yarn install', bun: 'bun install', npm: 'npm ci' };
 
 function runner(pm) { return RUN[pm] ?? 'npm run'; }
 
 function make(id, extra) {
   return {
     id,
+    // No `install` field: the install command has exactly one source,
+    // `bootstrap-install.mjs`'s `installCommand` (see its own comment) —
+    // see git history for the profile-local table this replaced, which had
+    // no production reader and quietly disagreed with the real one.
     commands(pkg, stack) {
       const pm = stack?.packageManager ?? 'npm';
       // `pkg.scripts` is a list of script NAMES; bodies are deliberately not
       // carried through detection (see detect-stack.mjs).
       const has = name => (pkg.scripts?.includes(name) ? `${runner(pm)} ${name}` : null);
-      return { install: INSTALL[pm] ?? 'npm ci', build: has('build'), test: has('test'), lint: has('lint'), typecheck: has('typecheck') };
+      return { build: has('build'), test: has('test'), lint: has('lint'), typecheck: has('typecheck') };
     },
     // Root-anchored AND `**/`-anchored forms are both listed deliberately,
     // and the reason is about OUR OWN matcher, not Claude Code's:
