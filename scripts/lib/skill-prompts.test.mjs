@@ -11,7 +11,16 @@ test('LOAD-BEARING: the CLAUDE.md step writes a proposal, never the file itself'
   const t = ref('phase-1-legible.md');
   assert.match(t, /docs\/harness\/CLAUDE\.proposed\.md/,
     'spec §6: step 6 never writes CLAUDE.md in place when one exists');
-  assert.match(t, /never (write|overwrite|replace)[^.]*CLAUDE\.md[^.]*in place/i);
+  // Cross-file sweep (harness-kit-4, review round 3): markdown in these
+  // reference files wraps at roughly 75 columns, so a multi-word phrase can
+  // straddle a line break — a newline, not a space, then sits between two
+  // of its words, and a regex built from literal spaces silently never
+  // matches even when the prose is correct. \s+ everywhere a phrase spans
+  // more than one word tolerates that reflow; a literal space does not.
+  // This assertion passed today only because the prose happened not to
+  // wrap at these two points — do not revert this to literal spaces on the
+  // grounds that it was "already working."
+  assert.match(t, /never\s+(write|overwrite|replace)[^.]*CLAUDE\.md[^.]*in\s+place/i);
   assert.doesNotMatch(t, /write\s+(the\s+)?CLAUDE\.md\s+(file\s+)?directly/i);
 });
 
