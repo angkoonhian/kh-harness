@@ -13,3 +13,20 @@ jobs:
         with:
           node-version: '24'
       - run: npm test
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate the plugin manifest
+        shell: bash
+        run: |
+          set +e
+          claude plugin validate . --strict
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then
+            echo "::error::claude plugin validate itself failed (exit 2) — this is a toolchain problem, not a plugin problem"
+            exit 1
+          elif [ "$code" -ne 0 ]; then
+            echo "::error::plugin manifest is invalid or has warnings under --strict (exit $code)"
+            exit 1
+          fi
+          echo "plugin manifest validated"
