@@ -13,9 +13,16 @@ jobs:
         with:
           node-version: '24'
       - run: npm test
+      # The manifest is platform-independent JSON — the validator reads the same bytes on
+      # every OS — so this gate runs once, on Linux only, same as Task 6's eval step.
       - name: Install Claude Code CLI
+        if: runner.os == 'Linux'
+        # Deliberately unpinned: the point of this gate is to notice when the installed
+        # CLI's validation behavior changes. If this step turns CI red on a commit that
+        # didn't touch the plugin, the CLI released a new version, not a plugin regression.
         run: npm install -g @anthropic-ai/claude-code
       - name: Validate the plugin manifest
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set +e
@@ -23,6 +30,11 @@ jobs:
           code=$?
           set -e
           if [ "$code" -eq 2 ]; then
+            # Documented as a validator-internal error. Not reproducible on CLI 2.1.288 —
+            # nonexistent paths, malformed JSON, and bad flags all exited 1, not 2. This
+            # branch is defensive insurance against a documented exit code; it may never
+            # fire. Do not chase a mutation to prove it — it is the defensively redundant
+            # case Plan 3 already settled.
             echo "::error::claude plugin validate itself failed (exit 2) — this is a toolchain problem, not a plugin problem"
             exit 1
           elif [ "$code" -ne 0 ]; then
