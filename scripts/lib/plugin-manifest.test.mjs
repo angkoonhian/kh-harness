@@ -30,13 +30,18 @@ test('LOAD-BEARING: claude plugin validate --strict exits 0 on the shipped plugi
   try {
     execSync('claude --version', { encoding: 'utf8', stdio: 'pipe' });
   } catch (e) {
-    t.skip(`\`claude\` binary not found on PATH — cannot run \`claude plugin validate --strict\` (${String(e.message).split('\n')[0]})`);
+    t.skip(`\`claude\` binary not found on PATH — install it with \`npm install -g @anthropic-ai/claude-code\` to run \`claude plugin validate --strict\` (${String(e.message).split('\n')[0]})`);
     return;
   }
 
   let status = 0, out = '';
   try {
-    out = execSync(`claude plugin validate "${ROOT}" --strict`, { encoding: 'utf8' });
+    // ROOT is passed via cwd, not interpolated into the command string: on cmd.exe,
+    // double-quoting a path stops space/& expansion but NOT `%VAR%` expansion (e.g. a
+    // path segment like `100%CI%dir` becomes `100truedir` under GitHub Actions' own
+    // CI=true). Removing the interpolation removes the whole class of shell-expansion
+    // bugs rather than escaping the one character found so far.
+    out = execSync('claude plugin validate . --strict', { cwd: ROOT, encoding: 'utf8' });
   } catch (e) {
     status = e.status; out = String(e.stdout ?? '') + String(e.stderr ?? '');
   }
