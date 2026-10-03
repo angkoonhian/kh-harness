@@ -1,9 +1,10 @@
 # Phase 2 — sensors
 
-Four runbook steps. Three are *script* (steps 9, 10, 11: the CLI derives
+Five runbook steps. Three are *script* (steps 9, 10, 11: the CLI derives
 and writes them); step 8 is *advise within a script phase* — it reports a
-gap and never writes it. Read [references/gates.md](gates.md) before
-presenting the gate at the end.
+gap and never writes it; step 12 is *advise* outright — a sense this kit
+cannot run on your behalf, so it only tells you how to check by hand. Read
+[references/gates.md](gates.md) before presenting the gate at the end.
 
 ## Read this before presenting either hook's gate
 
@@ -114,6 +115,31 @@ opinion-without-basis" this project already struck once)*. The report says
 this plainly — an untracked or gitignored file of the same kind "would not
 be visible here" — rather than letting an empty proposal read as "nothing
 here is worth protecting."
+
+## Step 12 — language server
+
+*Advise.* *Verified against `scripts/lib/gap-model.mjs`'s `P2.langserver`
+check:* always reports `n/a`, with evidence "not determinable from the
+repository; verify by hand" — not because a language server is unimportant
+to this stack, but because whether one is running is machine state, not
+repository state: nothing in the files this kit reads can tell it what is
+active in your editor right now. There is no generator for this id in
+`propose.mjs`'s table either, so nothing is ever written for it, whether
+or not the user would have wanted one.
+
+**The kit never installs one.** The real reason this step only ever
+advises: installing a language server is not reliably automatable across
+platforms — it depends on the editor as much as on the language (a VS
+Code extension, a Neovim LSP client, a JetBrains plugin, or a standalone
+binary like `typescript-language-server`/`pyright`/`rust-analyzer`), and
+this kit has no reliable way to detect which editor you run, let alone
+drive whichever one you use.
+
+**Verify by hand:** open a source file for this stack in your own editor
+and hover over a symbol, or trigger "go to definition." If it resolves, a
+language server is already active and this step needs nothing further. If
+it does not, install the language server for this stack and your own
+editor directly — this kit does not do so, and will not propose to.
 
 ## The gate
 
