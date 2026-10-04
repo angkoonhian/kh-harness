@@ -64,6 +64,14 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          # Skip honestly rather than fail on a missing secret. A red check that
+          # only the repository owner can fix, for a reason invisible in the log,
+          # is how people learn to ignore red checks. Set ANTHROPIC_API_KEY in
+          # the repository secrets to enable this measurement.
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::notice::eval suite skipped — ANTHROPIC_API_KEY is not set on this repository. Add it under Settings > Secrets and variables > Actions to enable the no-plugin baseline measurement."
+            exit 0
+          fi
           claude plugin eval . \
             --trust-plugin \
             --scaffold \
