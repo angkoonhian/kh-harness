@@ -377,7 +377,7 @@ export function markerDir() {
   const override = process.env.HK_MARKER_DIR;
   const dir = override && override.length > 0
     ? override
-    : join(tmpdir(), `harness-kit-stop-${userTag()}`);
+    : join(tmpdir(), `kh-harness-stop-${userTag()}`);
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {

@@ -24,7 +24,7 @@ test('no reference describes a profile that does not exist', () => {
 test('each profile reference states what the profile will NOT claim', () => {
   for (const f of ['typescript-single.md', 'python.md']) {
     const t = readFileSync(join(PROF, f), 'utf8');
-    // Cross-file sweep (harness-kit-4, review): markdown in these reference
+    // Cross-file sweep (kh-harness-4, review): markdown in these reference
     // files wraps at roughly 75 columns, so a multi-word phrase can straddle
     // a line break — a newline, not a space, then sits between two of its
     // words, and a regex built from literal spaces silently never matches

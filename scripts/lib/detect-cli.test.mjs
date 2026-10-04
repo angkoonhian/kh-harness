@@ -458,7 +458,7 @@ test('SECURITY: a hook command argument never reaches stdout, the summary or det
     assert.equal(onDisk.includes(secret), false, `${label} secret leaked into detect.json`);
   }
 
-  // Task 8b: `tools/inject.js` is not harness-kit's own session-brief
+  // Task 8b: `tools/inject.js` is not kh-harness's own session-brief
   // script, so this hook must NOT be credited as ours — but the resolved
   // path is still safe to name (it carries no secret; the command's
   // ARGUMENTS are what this test is actually about), so the evidence still

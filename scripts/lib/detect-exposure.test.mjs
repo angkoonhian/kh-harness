@@ -19,7 +19,7 @@ const SECRET = 'glpat-' + 'A'.repeat(20);
 // fixture in this file is ASSEMBLED AT RUNTIME, never committed as a
 // literal. `SECRET` above was already built this way; the rest were not, and
 // this file was therefore BOTH a `token-in-tracked-file` and a
-// `credentials-in-doc` finding when harness-kit was pointed at its own
+// `credentials-in-doc` finding when kh-harness was pointed at its own
 // repository — a security tool failing its own check, which is the one
 // signal that matters most for it.
 //
@@ -398,7 +398,7 @@ test('collapsedExposureNote names the count and says where the rest live', () =>
   assert.match(note, /detect\.json/);
 });
 
-// --- Coordinator ruling (post-review, concern 5): harness-kit passes its own
+// --- Coordinator ruling (post-review, concern 5): kh-harness passes its own
 // --- credential check, and a regression is visible rather than normalised --
 //
 // `P0.security` used to read `failing` on this very repository, over eight
@@ -419,7 +419,7 @@ test('collapsedExposureNote names the count and says where the rest live', () =>
 // dirty the repository it is run from. Everything that decides `P0.security`
 // — `listFiles`, `detectExposures`, `buildGaps` — is exercised exactly as
 // `detect.mjs` exercises it.
-test('DOGFOOD: harness-kit passes its own P0.security check', () => {
+test('DOGFOOD: kh-harness passes its own P0.security check', () => {
   const files = listFiles(ROOT).files;
   assert.ok(files.length > 50, `fixture sanity: the scan must actually see this repository, got ${files.length} files`);
   assert.ok(files.includes('scripts/lib/detect-exposure.mjs'), 'fixture sanity: the scan must include our own source');
@@ -431,7 +431,7 @@ test('DOGFOOD: harness-kit passes its own P0.security check', () => {
   // whoever broke this: they need to know which file and which kind.
   const listed = exposures.map(e => `${e.severity} ${e.kind} at ${e.location}${e.reason ? ' — ' + e.reason : ''}`);
   const WHAT_TO_DO = [
-    'harness-kit must pass its own credential check — see the README section that states it does.',
+    'kh-harness must pass its own credential check — see the README section that states it does.',
     '',
     'IF YOU ADDED A CREDENTIAL-SHAPED TEST FIXTURE: assemble it at RUNTIME instead of committing the literal.',
     '  Split the value so no single source literal matches a pattern, e.g.',
@@ -440,7 +440,7 @@ test('DOGFOOD: harness-kit passes its own P0.security check', () => {
     '  Every *.test.mjs that holds one has a header explaining this; detect-exposure.test.mjs',
     '  has `credLine`, `bearer` and `PEM_KEY` helpers you can reuse.',
     '',
-    'IF YOU ADDED A DETECTOR PATTERN and it now matches harness-kit’s OWN PROSE: that is this',
+    'IF YOU ADDED A DETECTOR PATTERN and it now matches kh-harness’s OWN PROSE: that is this',
     '  check working, and the fix is in the prose, not the detector. Four of the eight findings',
     '  this check was built to clear were not fixtures at all — a test title, a variable name',
     '  (a variable whose name ends in the word password, assigned anything eight characters or longer,',

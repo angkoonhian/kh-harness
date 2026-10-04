@@ -93,7 +93,7 @@ if (plan.gonePatches.length) {
 // planUninstall's own comments on `removeSettingsFile` and `removeDirs`),
 // not a second, independently-reasoned guess at what the real run will do.
 if (plan.removeSettingsFile) {
-  console.log('Will remove (now empty, created by harness-kit):');
+  console.log('Will remove (now empty, created by kh-harness):');
   console.log(`  ${plan.removeSettingsFile}`);
 }
 
@@ -186,11 +186,11 @@ if (result.settingsWriteFailed) {
 }
 
 if (result.manifestWriteFailed) {
-  console.log(`Manifest file could not be updated: ${join(root, '.claude/harness-kit.manifest.json')}`);
+  console.log(`Manifest file could not be updated: ${join(root, '.claude/kh-harness.manifest.json')}`);
 }
 
 if (result.manifestDeleteFailed) {
-  console.log(`Manifest file could not be removed: ${join(root, '.claude/harness-kit.manifest.json')}`);
+  console.log(`Manifest file could not be removed: ${join(root, '.claude/kh-harness.manifest.json')}`);
 }
 
 // The run re-derives the revertable set, so `result.patchesNotReverted` —

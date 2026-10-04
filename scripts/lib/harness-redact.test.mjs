@@ -96,7 +96,7 @@ test('maskCredentials masks --token=/--auth-token=/--api-key= by key shape', () 
 // The title names the two keys in prose rather than joining them with a
 // slash: that joined form is itself a DB_CRED match (a credential key,
 // then `=`, then nine non-space characters), and it made this FILE a
-// `credentials-in-doc` finding when harness-kit was run on its own repo.
+// `credentials-in-doc` finding when kh-harness was run on its own repo.
 // A comment is tracked text like any other — see this file's header.
 test('maskCredentials masks a password or api_key assignment by key shape', () => {
   // Assembled: written out, the closing quote and comma push the value
@@ -297,7 +297,7 @@ test('redactLines no longer exists — use dropCommandFragments + maskCredential
 // nothing to isolate it and nothing to remove what it accumulated. On the
 // development machine, from this project's own test runs alone:
 //
-//     <tmpdir>/harness-kit-stop-28d5673005cc744e: 8983 entries
+//     <tmpdir>/kh-harness-stop-28d5673005cc744e: 8983 entries
 //
 // That is a credible mechanism for a rare, unattributable failure in a suite
 // where several tests set sub-second bounds, and a suite that leaves durable
@@ -316,7 +316,7 @@ test('MARKER DIR: an empty HK_MARKER_DIR falls back to the per-user default, nev
     process.env.HK_MARKER_DIR = '';
     const fallback = markerDir();
     assert.notEqual(fallback, '', 'an empty override must not become an empty path');
-    assert.ok(fallback.includes('harness-kit-stop-'), `expected the per-user default, got ${fallback}`);
+    assert.ok(fallback.includes('kh-harness-stop-'), `expected the per-user default, got ${fallback}`);
   } finally {
     process.env.HK_MARKER_DIR = saved;
   }

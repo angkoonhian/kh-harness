@@ -44,17 +44,17 @@ test('readManifestResult: a valid manifest reads back ok', () => {
 
 test('readManifestResult: unparseable JSON is corrupt, not missing', () => {
   const d = repo();
-  write(d, '.claude/harness-kit.manifest.json', '{ not json');
+  write(d, '.claude/kh-harness.manifest.json', '{ not json');
   assert.deepEqual(readManifestResult(d), { state: 'corrupt', manifest: null });
 });
 
 test('readManifestResult: valid JSON but the wrong schema (e.g. an array, or missing `files`) is corrupt', () => {
   const d = repo();
-  write(d, '.claude/harness-kit.manifest.json', JSON.stringify({ schema: 1 })); // no `files` array
+  write(d, '.claude/kh-harness.manifest.json', JSON.stringify({ schema: 1 })); // no `files` array
   assert.deepEqual(readManifestResult(d), { state: 'corrupt', manifest: null });
 
   const d2 = repo();
-  write(d2, '.claude/harness-kit.manifest.json', JSON.stringify([1, 2, 3]));
+  write(d2, '.claude/kh-harness.manifest.json', JSON.stringify([1, 2, 3]));
   assert.deepEqual(readManifestResult(d2), { state: 'corrupt', manifest: null });
 });
 
@@ -65,7 +65,7 @@ test('readManifest and readManifestResult agree on every case', () => {
   assert.equal(readManifest(missing), readManifestResult(missing).manifest);
 
   const corrupt = repo();
-  write(corrupt, '.claude/harness-kit.manifest.json', '{ not json');
+  write(corrupt, '.claude/kh-harness.manifest.json', '{ not json');
   assert.equal(readManifest(corrupt), readManifestResult(corrupt).manifest);
 
   const ok = repo();
@@ -125,7 +125,7 @@ test('classify: a manifest entry whose file was deleted is ours-modified, not a 
 
 test('a corrupt manifest reads as null rather than throwing', () => {
   const d = repo();
-  write(d, '.claude/harness-kit.manifest.json', '{ not json');
+  write(d, '.claude/kh-harness.manifest.json', '{ not json');
   assert.equal(readManifest(d), null);
 });
 

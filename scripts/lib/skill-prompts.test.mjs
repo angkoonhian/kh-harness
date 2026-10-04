@@ -11,7 +11,7 @@ test('LOAD-BEARING: the CLAUDE.md step writes a proposal, never the file itself'
   const t = ref('phase-1-legible.md');
   assert.match(t, /docs\/harness\/CLAUDE\.proposed\.md/,
     'spec §6: step 6 never writes CLAUDE.md in place when one exists');
-  // Cross-file sweep (harness-kit-4, review round 3): markdown in these
+  // Cross-file sweep (kh-harness-4, review round 3): markdown in these
   // reference files wraps at roughly 75 columns, so a multi-word phrase can
   // straddle a line break — a newline, not a space, then sits between two
   // of its words, and a regex built from literal spaces silently never

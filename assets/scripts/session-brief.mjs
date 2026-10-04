@@ -44,7 +44,7 @@ if (!rel) {
   // Says what it looked for, not merely what is not there — the same rule
   // every `lookedFor` in the detection report follows. A reader who keeps
   // their handoff somewhere else can now tell that from a broken hook.
-  process.stdout.write(`harness-kit: no handoff file yet (looked for ${HANDOFF_CANDIDATES.join(' and ')}, relative to ${root}).\n`);
+  process.stdout.write(`kh-harness: no handoff file yet (looked for ${HANDOFF_CANDIDATES.join(' and ')}, relative to ${root}).\n`);
   process.exit(0);
 }
 
@@ -52,7 +52,7 @@ let text = '';
 try {
   text = readFileSync(join(root, rel), 'utf8');
 } catch {
-  process.stdout.write(`harness-kit: ${rel} could not be read.\n`);
+  process.stdout.write(`kh-harness: ${rel} could not be read.\n`);
   process.exit(0);
 }
 

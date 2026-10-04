@@ -111,7 +111,7 @@ function redactAssetProposal(kitVersion) {
     // see render.mjs's own comment on why uninstall-lib.mjs depends on
     // this literal text being present verbatim.
     contents: `// ${STAMP_MARKER} ${kitVersion} (shared asset used by the PostToolUse, Stop and SessionStart hooks). ` +
-      `Edit freely — harness-kit will report your changes rather than overwrite them.\n` +
+      `Edit freely — kh-harness will report your changes rather than overwrite them.\n` +
       read('scripts/harness-redact.mjs'),
     reason: 'shared redaction module required by the PostToolUse/Stop hooks',
   };
@@ -297,7 +297,7 @@ function bootstrapProposal({ kitVersion, stack, files, root }) {
 
   const lines = [];
   if (install.fallback) {
-    lines.push(`# No ${install.lockfiles.join(' or ')} found — using the plain install form so this script never silently rewrites a lockfile that does not exist yet. Commit the lockfile it creates, then re-run harness-kit for the reproducible form.`);
+    lines.push(`# No ${install.lockfiles.join(' or ')} found — using the plain install form so this script never silently rewrites a lockfile that does not exist yet. Commit the lockfile it creates, then re-run kh-harness for the reproducible form.`);
   }
   lines.push(install.command);
   lines.push(...bootstrapScriptLines(stack));

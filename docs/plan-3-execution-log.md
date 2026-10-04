@@ -1,5 +1,8 @@
 # Plan 3 execution log — capabilities
 
+> Note: the project was later renamed from `harness-kit` to `kh-harness`. This
+> log is a historical record and is preserved verbatim below, unrenamed.
+
 Preserved verbatim from the SDD ledger so the rulings survive deletion of the
 git-ignored plan workspace, following the precedent of `plan-1-execution-log.md`
 and `plan-2-execution-log.md`.

@@ -1,7 +1,7 @@
-# SDD ledger — plan: docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md
+# SDD ledger — plan: docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md
 
-Spec: docs/superpowers/specs/2026-09-29-harness-kit-design.md (read, reachable)
-Target repo: C:/Users/Dreambuilds/desktop/harness-kit — does NOT exist at setup; Task 1 creates it.
+Spec: docs/superpowers/specs/2026-09-29-kh-harness-design.md (read, reachable)
+Target repo: C:/Users/Dreambuilds/desktop/kh-harness — does NOT exist at setup; Task 1 creates it.
 
 ## Setup rulings
 
@@ -11,7 +11,7 @@ repository has none; there is nothing to protect. Cost if wrong: none, the repo
 is created by this plan and has no other contributors.
 
 Ruling: the ledger and workspace live in oxen/2026 (where the plan lives), not
-in the harness-kit repo — why: the workspace must exist before Task 1 creates
+in the kh-harness repo — why: the workspace must exist before Task 1 creates
 the target repo. Cost if wrong: the ledger sits beside the plan rather than the
 code; git-ignored either way.
 
@@ -75,15 +75,15 @@ Ruling (recorded at plan authoring, repeated here because it binds execution):
 runbook step 1 ("branch for the work") is NOT a gap check. Modelling it as one
 made every complete repo on `main` report a proposal, failing the load-bearing
 zero-proposal test. It becomes an apply-time refusal in Plan 2. Cost if wrong:
-`harness-kit detect` never reminds you to branch; `apply` will.
+`kh-harness detect` never reminds you to branch; `apply` will.
 
 ## Progress
 
 Task 1: complete (commits root..729feda, review clean)
 
-Ruling: harness-kit commits carry the Co-Authored-By trailer; oxen/2026's
+Ruling: kh-harness commits carry the Co-Authored-By trailer; oxen/2026's
 "no AI attribution" rule is scoped to "every repo in the monorepo" and
-harness-kit is a separate repository outside it. Cost if wrong: trivially
+kh-harness is a separate repository outside it. Cost if wrong: trivially
 reversible with a rebase; surfaced to the user at finish.
 
 Task 2: implemented (commit 2042bed). Review: spec OK, quality approved, one
@@ -380,7 +380,7 @@ own harness, remotes and credentials; scanning into it conflates two projects
 and is out of v1 scope. The tool must instead state plainly what it did not
 inspect, with the disclosure placed immediately above the exposures section so
 it qualifies that section rather than sitting where a skimmer misses it. Cost if
-wrong: users must run harness-kit once per nested repo, which is the honest
+wrong: users must run kh-harness once per nested repo, which is the honest
 model anyway given each has its own harness.
 
 Ruling: fix routed through Task 8 (report.mjs + an additive scan.mjs change)

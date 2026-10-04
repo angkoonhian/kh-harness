@@ -9,7 +9,7 @@ import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanoni
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 
 // Coordinator ruling (post-review, concern 5): credential-SHAPED fixtures are
-// ASSEMBLED AT RUNTIME, never committed as literals. harness-kit's own
+// ASSEMBLED AT RUNTIME, never committed as literals. kh-harness's own
 // `P0.security` scans tracked files for exactly these patterns, so a literal
 // here makes the tool fail its own check — and a security tool that cannot be
 // pointed at itself is asking for trust it has not demonstrated. The fix is

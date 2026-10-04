@@ -45,7 +45,7 @@ function sid() {
 // deliberately — this is the EXACT path an unsanitized session_id would be
 // concatenated into if safeSessionId's check were ever bypassed, so the
 // SECURITY tests below can assert directly against it rather than against
-// the OLD, simpler shape (`<tmpdir>/harness-kit-stop-<session_id>`) that no
+// the OLD, simpler shape (`<tmpdir>/kh-harness-stop-<session_id>`) that no
 // longer matches what production actually builds.
 //
 // It is NAIVE ABOUT ONE THING ONLY: it skips `safeSessionId`, which is the
@@ -66,7 +66,7 @@ function realUserTag() {
 }
 function realMarkerDir() {
   const override = process.env.HK_MARKER_DIR;
-  return override && override.length > 0 ? override : join(tmpdir(), `harness-kit-stop-${realUserTag()}`);
+  return override && override.length > 0 ? override : join(tmpdir(), `kh-harness-stop-${realUserTag()}`);
 }
 function naivePathFor(sessionId, root, namespace = 'stop') {
   const rootHash = createHash('sha256').update(resolve(root), 'utf8').digest('hex').slice(0, 16);
@@ -483,7 +483,7 @@ test('EMPTY BODY: a failure whose entire output is removed by redaction still bl
   assert.equal(r.code, 2, 'the failure is real and must still reach Claude — silently exiting 0 would hide it');
   assert.match(r.stderr, /could not be shown/i, 'the substitute message must say the output could not be shown');
   assert.match(r.stderr, /test/i, 'it must name which script to run manually');
-  assert.doesNotMatch(r.stderr, /^harness-kit: the repository's "test" script failed:\s*$/m,
+  assert.doesNotMatch(r.stderr, /^kh-harness: the repository's "test" script failed:\s*$/m,
     'must never be a bare header with nothing after it');
 });
 
@@ -495,7 +495,7 @@ test('EMPTY BODY: sanity — the npm-init-default fixture really is reduced to n
   // test" shape this project has hit three times before).
   const d = repo({ test: 'echo "Error: no test specified" && exit 1' });
   const r = run(d, payload());
-  const body = r.stderr.replace(/^harness-kit:.*\n?/m, '').trim();
+  const body = r.stderr.replace(/^kh-harness:.*\n?/m, '').trim();
   assert.ok(
     !/no test specified/i.test(body) || body.length === 0 || /could not be shown/i.test(r.stderr),
     'sanity: this fixture must genuinely hit the empty-body path, not merely resemble it',

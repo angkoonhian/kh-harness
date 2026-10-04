@@ -36,7 +36,7 @@ const root = resolve(target ?? process.cwd());
 warnUnknown(unknown);
 
 if (!existsSync(root)) {
-  process.stderr.write(`harness-kit: no such path: ${root}\n`);
+  process.stderr.write(`kh-harness: no such path: ${root}\n`);
   process.exit(2);
 }
 
@@ -44,7 +44,7 @@ const git = gitInfo(root);
 
 if (git.isRepo && DEFAULT_BRANCHES.has(git.branch) && !flags.has('--allow-default-branch')) {
   process.stderr.write(
-    `harness-kit: refusing to apply on the default branch "${git.branch}". ` +
+    `kh-harness: refusing to apply on the default branch "${git.branch}". ` +
     `A user must be able to \`git diff\` exactly what this tool did — switch to a ` +
     `feature branch, or re-run with --allow-default-branch if this is intentional.\n`,
   );
@@ -140,7 +140,7 @@ function hasTrackedChanges(r, ignorePaths = new Set()) {
 
 if (git.isRepo && hasTrackedChanges(root, ourPaths) && !flags.has('--allow-dirty')) {
   process.stderr.write(
-    `harness-kit: refusing to apply with uncommitted changes to tracked files. ` +
+    `kh-harness: refusing to apply with uncommitted changes to tracked files. ` +
     `Commit or stash first so you can \`git diff\` what this tool did, or re-run with --allow-dirty.\n`,
   );
   process.exit(3);
@@ -159,7 +159,7 @@ const exposures = detectExposures(root, files, harness);
 const profile = selectProfile(stack);
 if (manifestResult.state === 'corrupt') {
   process.stderr.write(
-    `harness-kit: ${join(root, MANIFEST_PATH)} exists but could not be read as a valid harness-kit manifest. ` +
+    `kh-harness: ${join(root, MANIFEST_PATH)} exists but could not be read as a valid kh-harness manifest. ` +
     `Continuing would overwrite it with a fresh, empty one and permanently lose the record of what this tool ` +
     `previously installed — refusing instead. Restore the file from git history (or from a backup) and re-run; ` +
     `there is no automatic repair.\n`,
@@ -188,18 +188,18 @@ function reportWhatDetectionFound() {
   const out = [];
   const exposureLines = exposureSectionLines(exposures, nested);
   if (exposureLines.length) {
-    out.push('harness-kit: this run performed the same Phase-0 credential sweep `detect` does, and it is not clean.');
+    out.push('kh-harness: this run performed the same Phase-0 credential sweep `detect` does, and it is not clean.');
     out.push(...exposureLines);
   }
   if (nested.length) {
     const was = nested.length === 1 ? 'y was' : 'ies were';
-    out.push(`harness-kit: ${nested.length} nested repositor${was} detected and NOT scanned (${nested.map(n => n.path).join(', ')}). Everything below covers this repository only; each nested repository must be assessed separately.`);
+    out.push(`kh-harness: ${nested.length} nested repositor${was} detected and NOT scanned (${nested.map(n => n.path).join(', ')}). Everything below covers this repository only; each nested repository must be assessed separately.`);
     out.push('');
   }
   const questions = deriveCouldNotDerive({ stack, checks, nested, profile });
   if (questions.length) {
     const s = questions.length === 1 ? '' : 's';
-    out.push(`harness-kit: ${questions.length} question${s} this run could not answer — \`node scripts/detect.mjs ${root}\` prints ${questions.length === 1 ? 'it' : 'them'} in full.`);
+    out.push(`kh-harness: ${questions.length} question${s} this run could not answer — \`node scripts/detect.mjs ${root}\` prints ${questions.length === 1 ? 'it' : 'them'} in full.`);
     out.push('');
   }
   if (out.length) process.stdout.write(out.join('\n') + '\n');
@@ -230,15 +230,15 @@ const drift = (manifest.files ?? [])
 
 function reportDrift() {
   for (const path of drift) {
-    process.stdout.write(`kept       ${path} (modified since harness-kit wrote it — left as-is)\n`);
+    process.stdout.write(`kept       ${path} (modified since kh-harness wrote it — left as-is)\n`);
   }
 }
 
 if (proposals.length === 0) {
   if (drift.length === 0) {
-    process.stdout.write('harness-kit: no actions — this repository already satisfies every applicable step.\n');
+    process.stdout.write('kh-harness: no actions — this repository already satisfies every applicable step.\n');
   } else {
-    process.stdout.write(`harness-kit: no actions for ${root}.\n`);
+    process.stdout.write(`kh-harness: no actions for ${root}.\n`);
     reportDrift();
   }
   process.exit(0);
@@ -256,7 +256,7 @@ if (proposals.length === 0) {
 // detect already owns.
 const gapCount = countProposals(checks);
 process.stdout.write(
-  `harness-kit: ${proposals.length} action${proposals.length === 1 ? '' : 's'} to close ` +
+  `kh-harness: ${proposals.length} action${proposals.length === 1 ? '' : 's'} to close ` +
   `${gapCount} capability gap${gapCount === 1 ? '' : 's'} (as detect reports them) for ${root}\n\n`,
 );
 // renderDiff is read-only, but it is not infallible by construction — it is
@@ -275,7 +275,7 @@ try {
     process.stdout.write(renderDiff(root, p) + '\n\n');
   }
 } catch (err) {
-  process.stderr.write(`harness-kit: could not render the preview: ${err && err.message ? err.message : String(err)}\n`);
+  process.stderr.write(`kh-harness: could not render the preview: ${err && err.message ? err.message : String(err)}\n`);
   process.exit(2);
 }
 
@@ -321,7 +321,7 @@ let result;
 try {
   result = applyProposals({ root, proposals, manifest, kitVersion: KIT_VERSION });
 } catch (err) {
-  process.stderr.write(`harness-kit: apply failed: ${err && err.message ? err.message : String(err)}\n`);
+  process.stderr.write(`kh-harness: apply failed: ${err && err.message ? err.message : String(err)}\n`);
   // Nothing was written — pass 1 validates the whole batch before pass 2
   // touches anything — but drift was already computed above and is just as
   // true on this path as on any other. Dropping it here would contradict the
@@ -360,10 +360,10 @@ for (const f of result.failed) process.stderr.write(`failed     ${f.path}: ${f.e
 reportDrift();
 
 if (manifestError) {
-  process.stderr.write(`harness-kit: could not record what was written in ${join(root, MANIFEST_PATH)}: ${manifestError}\n`);
+  process.stderr.write(`kh-harness: could not record what was written in ${join(root, MANIFEST_PATH)}: ${manifestError}\n`);
   if (result.written.length > 0) {
     process.stderr.write(
-      `harness-kit: the following file(s) are on disk but NOT tracked, so \`uninstall\` cannot remove them — ` +
+      `kh-harness: the following file(s) are on disk but NOT tracked, so \`uninstall\` cannot remove them — ` +
       `delete them by hand, or fix the problem above and re-run:\n`,
     );
     for (const w of result.written) process.stderr.write(`  ${w.path}\n`);
@@ -373,7 +373,7 @@ if (manifestError) {
 
 if (result.failed.length > 0) {
   process.stderr.write(
-    `harness-kit: apply stopped after a write failure. ${result.written.length} item(s) were written and ` +
+    `kh-harness: apply stopped after a write failure. ${result.written.length} item(s) were written and ` +
     `recorded in the manifest before the failure; nothing after it was attempted. Fix the underlying issue and re-run.\n`,
   );
   process.exit(2);

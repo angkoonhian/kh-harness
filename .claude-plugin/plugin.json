@@ -1,5 +1,5 @@
 {
-  "name": "harness-kit",
+  "name": "kh-harness",
   "version": "0.1.0",
   "description": "Inspects a repository and proposes the harness it is missing, deriving every step from evidence and writing nothing it cannot prove.",
   "author": { "name": "Ang Koon Hian" }

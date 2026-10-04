@@ -1,10 +1,10 @@
 {
-  "name": "harness-kit-local",
-  "description": "Local marketplace for the harness-kit plugin.",
+  "name": "kh-harness-local",
+  "description": "Local marketplace for the kh-harness plugin.",
   "owner": { "name": "Ang Koon Hian" },
   "plugins": [
     {
-      "name": "harness-kit",
+      "name": "kh-harness",
       "source": "./",
       "description": "Inspects a repository and proposes the harness it is missing."
     }

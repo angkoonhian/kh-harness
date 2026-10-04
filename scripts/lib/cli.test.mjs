@@ -146,5 +146,5 @@ test('F5: the README discloses that installing the hooks executes this repositor
   assert.match(readme, /lint/);
   assert.match(readme, /typecheck/);
   assert.match(readme, /automatic/i);
-  assert.ok(readme.includes('.claude/harness-kit.manifest.json'), 'the manifest is part of the contract a user must know');
+  assert.ok(readme.includes('.claude/kh-harness.manifest.json'), 'the manifest is part of the contract a user must know');
 });

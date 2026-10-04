@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve, relative } from 'node:path';
 
-const MANIFEST_PATH = '.claude/harness-kit.manifest.json';
+const MANIFEST_PATH = '.claude/kh-harness.manifest.json';
 
 export function sha256(input) {
   // Handle both strings and buffers. Buffers are hashed as raw bytes (no encoding).
