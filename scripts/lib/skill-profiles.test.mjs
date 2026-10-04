@@ -24,7 +24,17 @@ test('no reference describes a profile that does not exist', () => {
 test('each profile reference states what the profile will NOT claim', () => {
   for (const f of ['typescript-single.md', 'python.md']) {
     const t = readFileSync(join(PROF, f), 'utf8');
-    assert.match(t, /never|not derive|cannot derive|no opinion/i,
+    // Cross-file sweep (harness-kit-4, review): markdown in these reference
+    // files wraps at roughly 75 columns, so a multi-word phrase can straddle
+    // a line break — a newline, not a space, then sits between two of its
+    // words, and a regex built from literal spaces silently never matches
+    // even when the prose is correct. \s+ everywhere a phrase spans more
+    // than one word tolerates that reflow; a literal space does not. This
+    // was inert today (the bare `never` branch is one word and matched on
+    // its own), which is exactly why it had to be fixed rather than left:
+    // a later reflow of "not derive"/"cannot derive"/"no opinion" would
+    // turn it red, and the cheapest fix for a red test is to loosen it.
+    assert.match(t, /never|not\s+derive|cannot\s+derive|no\s+opinion/i,
       `${f} must say what the profile declines to assert — a profile that claims layout is a guess`);
   }
 });
