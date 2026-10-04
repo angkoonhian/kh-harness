@@ -1,0 +1,8 @@
+# fixture.sh scaffolds a hand-written CLAUDE.md (with a sentinel line no
+# detector could regenerate), a package.json, a lockfile and a source file —
+# see fixture.sh for the exact contents.
+schema_version: "1.1"
+name: existing-claude-md
+tags: [smoke]
+context:
+  scaffold_script: fixture.sh
