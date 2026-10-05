@@ -56,9 +56,11 @@ automatically.
 
 A folder marketplace tracks the working tree, not a snapshot of it:
 `claude plugin list` shows `Read from: <path to this repository>`. Installing
-from `./` is therefore not a copy — editing this repository changes the
-installed plugin immediately. Convenient while developing it; surprising if
-you expected an "installed" thing to stay put.
+from `./` is therefore not a copy — the installed plugin reads out of this
+working directory. Convenient while developing it; surprising if you expected
+an "installed" thing to stay put. Whether an edit is picked up without
+restarting your session is Claude Code's behaviour rather than this
+repository's, and is not something we have measured — restart if it matters.
 
 ## The three commands
 
@@ -237,5 +239,10 @@ reference appears unreadable, that is an artifact of loading from an
 arbitrary path, not a defect in the skill. Prefer the real install path
 above when checking this.
 
-Evaluation suites exist under `evals/` and run via `claude plugin eval`;
-they need `ANTHROPIC_API_KEY` set to produce a result.
+Evaluation suites exist under `evals/` and run via `claude plugin eval`. Each
+run spawns a full `claude` child process, so locally they use whatever
+credential you are already logged in with — no API key needed. CI is the
+case that needs `ANTHROPIC_API_KEY`, because no interactive login exists
+there; the workflow skips with a notice rather than failing red until that
+secret is set. Note the defaults: 3 runs per case across 2 arms, so the two
+cases here are 12 agent runs per invocation.

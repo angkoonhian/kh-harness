@@ -30,14 +30,23 @@ test('README documents the install path that actually works', () => {
     'the README understated what apply does once already; it must not return');
 });
 
-test('README warns that apply can install code-executing hooks', () => {
+test('README warns up front that apply can install code-executing hooks', () => {
   // apply writes hooks that run lint/typecheck/test on edits and turn ends.
   // Someone running `apply --yes` on a repo they do not own should not learn
-  // that from the diff afterwards.
+  // that from the diff afterwards, so the warning sits beside the install
+  // instructions, not only in the deep-dive section further down.
+  //
+  // Anchored on wording unique to that up-front warning. An earlier version
+  // of this test asserted /apply --yes/ and /hooks/i, which the README's
+  // pre-existing deep-dive sections already satisfied at lines 172 and 210 —
+  // so the warning could be deleted with the test still green. The mutation
+  // that "proved" it substituted every occurrence at once, which is why it
+  // looked like it had teeth. Mutate only the thing you claim to pin.
   const t = readme();
-  assert.match(t, /apply --yes/,
-    'the flag that skips the prompt must be named where its effect is explained');
-  assert.match(t, /hooks/i);
+  assert.match(t, /Before\s+you\s+run\s+`apply --yes`\s+anywhere/,
+    'the up-front warning beside the install steps is gone; the deep-dive section further down does not replace it');
+  assert.match(t, /install\s+hooks\s+that\s+execute/,
+    'the warning must say that hooks execute code, not merely that hooks exist');
 });
 
 test('the plugin ships the skill and declares no hooks', () => {
