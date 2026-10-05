@@ -42,6 +42,31 @@ test('the existing-CLAUDE.md case scaffolds a CLAUDE.md to protect', () => {
     'the case must put a CLAUDE.md in the fixture, or it cannot test that we leave it alone');
 });
 
+test('LOAD-BEARING: an unconfigured eval suite skips rather than reporting green', () => {
+  // Measured on PR #4: the eval job exited 0 when ANTHROPIC_API_KEY was unset,
+  // which rendered as "eval  pass  9s" in the checks list. A passing eval and
+  // an eval that never ran looked identical to anyone scanning the PR.
+  //
+  // The fix is structural, so the test is structural: the eval job must gate on
+  // a separate job's output so an unconfigured run shows as SKIPPED. Asserted
+  // here because the tempting "simplification" — fold the check back into the
+  // eval step and exit 0 — silently restores the lie while CI stays green.
+  const ci = readFileSync(
+    resolve(import.meta.dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+
+  assert.match(ci, /^\s*eval-gate:/m,
+    'the gate job is gone; without it the eval job cannot read a secret to gate on');
+  assert.match(ci, /needs:\s*eval-gate/,
+    'the eval job must depend on the gate, or it runs unconditionally');
+  assert.match(ci, /if:\s*needs\.eval-gate\.outputs\.configured\s*==\s*'true'/,
+    'the eval job must skip when the key is absent, not exit 0 inside the job');
+
+  // The specific regression: a success exit inside the eval step's own guard.
+  const evalJob = ci.slice(ci.indexOf('\n  eval:'));
+  assert.doesNotMatch(evalJob, /ANTHROPIC_API_KEY:-\}"?\s*\]\s*;\s*then[\s\S]{0,400}?exit 0/,
+    'exiting 0 on a missing key is what made a green check that measured nothing');
+});
+
 test('a grader asserts the original CLAUDE.md is untouched', () => {
   const dir = join(EVALS, 'existing-claude-md', 'graders');
   const bodies = readdirSync(dir).map(f => readFileSync(join(dir, f), 'utf8')).join('\n');

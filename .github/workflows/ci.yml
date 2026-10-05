@@ -43,13 +43,49 @@ jobs:
           fi
           echo "plugin manifest validated"
 
-  eval:
+  # Whether the eval CAN run is a property of the repository's secrets, and the
+  # `secrets` context is not available in a job-level `if:`. So one tiny job
+  # reads it and publishes a boolean that the eval job gates on.
+  #
+  # What this buys is the check NAME in the pull request list. The first version
+  # of this put the test inside the eval job and exited 0 when the key was
+  # missing, which rendered as a GREEN "eval" check that had measured nothing:
+  # a passing eval and an absent eval were indistinguishable at a glance.
+  # Measured on PR #4 — "eval  pass  9s" — where 9 seconds was the guard
+  # echoing a notice nobody reads. In a project whose rule is "report only what
+  # is true", a check that misleads by omission is worse than no check, so the
+  # unconfigured case now shows as SKIPPED, which is what it is.
+  eval-gate:
     # Each case runs with the plugin and, by default, again without it (the
     # no-plugin baseline), so two cases is already several full agent runs
     # per invocation — disproportionate for a branch that might be pushed
     # twenty times before it's reviewed. Gate this where the signal is
     # actually needed: a pull request, or on demand.
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.probe.outputs.configured }}
+    steps:
+      - name: Is the eval suite configured to run?
+        id: probe
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Publishes only whether the secret is non-empty. Never echo the value.
+          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY is set — the eval suite will run."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The eval suite will be SKIPPED, not passed — ANTHROPIC_API_KEY is not set on this repository. Add it under Settings > Secrets and variables > Actions to enable the no-plugin baseline measurement."
+          fi
+
+  eval:
+    needs: eval-gate
+    # A skipped job reads as skipped in the checks list. That is the whole point;
+    # see eval-gate above for why exiting 0 here was the wrong answer.
+    if: needs.eval-gate.outputs.configured == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,14 +100,11 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # Skip honestly rather than fail on a missing secret. A red check that
-          # only the repository owner can fix, for a reason invisible in the log,
-          # is how people learn to ignore red checks. Set ANTHROPIC_API_KEY in
-          # the repository secrets to enable this measurement.
-          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-            echo "::notice::eval suite skipped — ANTHROPIC_API_KEY is not set on this repository. Add it under Settings > Secrets and variables > Actions to enable the no-plugin baseline measurement."
-            exit 0
-          fi
+          # No missing-secret guard here on purpose: eval-gate already decided
+          # that, and this job does not start otherwise. A second check for the
+          # same fact is the drift shape — two places asserting one condition,
+          # and the stale copy is the one nobody reads. If the key is somehow
+          # empty despite the gate, let the CLI fail loudly rather than exit 0.
           claude plugin eval . \
             --trust-plugin \
             --scaffold \
