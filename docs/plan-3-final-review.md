@@ -66,10 +66,12 @@ $ git ls-files
 package.json
 "\351\205\215\347\275\256.ts"
 
-$ cat 配置.ts
-export const GITHUB_TOKEN = "ghp_0123456789abcdefghij0123456789";
-export const AWS = "AKIAIOSFODNN7EXAMPLE";
-password = hunter2hunter2
+$ cat 配置.ts        # fixture values below redacted when this record was
+                     # committed: they were fabricated, and the finding is
+                     # that credential-SHAPED content went unexamined.
+export const GITHUB_TOKEN = "ghp_<redacted-fixture-token>";
+export const AWS = "AKIA<redacted-fixture-key>";
+password = <redacted-fixture-literal>
 
 $ node scripts/detect.mjs .
 profile: generic   branch: feat/x
