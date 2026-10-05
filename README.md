@@ -16,6 +16,50 @@ about keeping honest:
 
 Zero runtime dependencies. Node 22+. Nothing is sent anywhere.
 
+## Installing as a plugin
+
+The primary way to use this is as a Claude Code plugin, from the repository
+root:
+
+    claude plugin marketplace add ./
+    claude plugin install kh-harness@kh-harness-local
+
+Then, in the repository you want harnessed, invoke `/harness-init`. The skill
+drives the same `detect` / `apply` / `uninstall` CLIs documented below — it is
+a guided front end for them, not a second tool with its own logic.
+
+**`claude plugin marketplace add .` is rejected.** Claude Code reports
+`Invalid marketplace source format. Try: owner/repo, https://..., or ./path`.
+Only `./` — the leading `./` — works. This is a trap worth knowing about
+before you hit it.
+
+**Before you run `apply --yes` anywhere: it can install hooks that execute
+this repository's own `lint`, `typecheck` or `test` scripts automatically**,
+on every edit or every turn end. Read "What installing the hooks means"
+below first. The plugin itself installs none of this — it ships the skill
+only, and the hooks are something `apply` writes into *your* target
+repository when you ask it to, never something the plugin declares.
+
+`claude plugin details kh-harness` reports, as of this writing — re-run it
+yourself for current numbers, this is not a target:
+
+    Component inventory
+      Skills (1)  harness-init
+      Hooks (0)
+    Projected token cost
+      Always-on:   ~71 tok   added to every session
+      harness-init  always-on ~70   on-invoke ~690
+
+`Hooks (0)` is the platform's own inventory confirming the architecture
+decision above: nothing about the plugin itself runs code in your repository
+automatically.
+
+A folder marketplace tracks the working tree, not a snapshot of it:
+`claude plugin list` shows `Read from: <path to this repository>`. Installing
+from `./` is therefore not a copy — editing this repository changes the
+installed plugin immediately. Convenient while developing it; surprising if
+you expected an "installed" thing to stay put.
+
 ## The three commands
 
     node scripts/detect.mjs    <path-to-repo> [--verify] [--json]
@@ -184,3 +228,14 @@ Outside your repository, once the hooks are installed:
 ## Development
 
     npm test
+
+**The skill reads its own `references/` only under a real plugin install**
+(`claude plugin marketplace add ./` + `claude plugin install
+kh-harness@kh-harness-local`), confirmed by running it end to end. If you
+load the skill a different way — e.g. `claude --plugin-dir <path>` — and a
+reference appears unreadable, that is an artifact of loading from an
+arbitrary path, not a defect in the skill. Prefer the real install path
+above when checking this.
+
+Evaluation suites exist under `evals/` and run via `claude plugin eval`;
+they need `ANTHROPIC_API_KEY` set to produce a result.
