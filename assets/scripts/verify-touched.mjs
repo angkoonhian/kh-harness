@@ -318,7 +318,7 @@ async function main() {
     const wrote = writeJSONMarker(path, { count: count + 1, lastSignature: signature, timedOut: true });
     if (!wrote) return 0; // fail open — see this file's header comment
     process.stderr.write(
-      `harness-kit: the repository's "${picked.kind}" script did not finish within ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s ` +
+      `kh-harness: the repository's "${picked.kind}" script did not finish within ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s ` +
       `and was stopped. Verification will be skipped for the rest of this session so it does not pay this cost on every turn.\n`,
     );
     return 2;
@@ -344,7 +344,7 @@ async function main() {
 
   if (count >= MAX_BLOCKS_PER_SESSION) {
     process.stderr.write(
-      `harness-kit: the stop gate's ${MAX_BLOCKS_PER_SESSION}-block cap for this session has been reached — letting the turn end.\n`,
+      `kh-harness: the stop gate's ${MAX_BLOCKS_PER_SESSION}-block cap for this session has been reached — letting the turn end.\n`,
     );
     return 0;
   }
@@ -352,7 +352,7 @@ async function main() {
   const signature = signatureOf(redacted);
   if (lastSignature === signature) {
     process.stderr.write(
-      `harness-kit: this is the same "${picked.kind}" failure already reported this session — letting the turn end.\n`,
+      `kh-harness: this is the same "${picked.kind}" failure already reported this session — letting the turn end.\n`,
     );
     return 0;
   }
@@ -376,11 +376,11 @@ async function main() {
   // to keep off this surface.
   if (redacted.length === 0) {
     process.stderr.write(
-      `harness-kit: the repository's "${picked.kind}" script failed, but its entire output matched the redaction filter ` +
+      `kh-harness: the repository's "${picked.kind}" script failed, but its entire output matched the redaction filter ` +
       `and could not be shown here safely — run \`npm run ${picked.kind}\` locally to see the failure.\n`,
     );
   } else {
-    process.stderr.write(boundReport(redacted, `harness-kit: the repository's "${picked.kind}" script failed:\n`) + '\n');
+    process.stderr.write(boundReport(redacted, `kh-harness: the repository's "${picked.kind}" script failed:\n`) + '\n');
   }
   return 2;
 }

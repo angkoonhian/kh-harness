@@ -23,10 +23,10 @@ const UNINSTALL = resolve(import.meta.dirname, '..', 'uninstall.mjs');
 const git = (d, ...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 const run = (script, d, ...a) => execFileSync(process.execPath, [script, d, ...a], { encoding: 'utf8' });
 const settings = d => JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
-const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/harness-kit.manifest.json'), 'utf8'));
+const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/kh-harness.manifest.json'), 'utf8'));
 
 // Coordinator ruling (post-review, concern 5): credential-SHAPED fixtures are
-// ASSEMBLED AT RUNTIME, never committed as literals. harness-kit's own
+// ASSEMBLED AT RUNTIME, never committed as literals. kh-harness's own
 // `P0.security` scans tracked files for exactly these patterns, so a literal
 // here makes the tool fail its own check — and a security tool that cannot be
 // pointed at itself is asking for trust it has not demonstrated. The fix is
@@ -61,7 +61,7 @@ function fixture() {
   // something the tool can do on a user's behalf). Without one, that check
   // would stay 'absent' with a proposal forever, for a reason unrelated to
   // what this test is about.
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
   return d;
@@ -130,10 +130,10 @@ function workspaceFixture() {
   // the FIRST detect/apply call, as the coordinator originally asked. None
   // of these matches anything this plan's own generators derive for this
   // repository (stage 1 proves that), so all four must survive untouched,
-  // sitting beside whatever harness-kit itself adds.
-  writeFileSync(join(d, 'my-own-thing.mjs'), '// the user\'s own automation, unrelated to harness-kit\n');
-  writeFileSync(join(d, 'my-own-stop-thing.mjs'), '// the user\'s own Stop automation, unrelated to harness-kit\n');
-  writeFileSync(join(d, 'my-own-startup-thing.mjs'), '// the user\'s own SessionStart automation, unrelated to harness-kit\n');
+  // sitting beside whatever kh-harness itself adds.
+  writeFileSync(join(d, 'my-own-thing.mjs'), '// the user\'s own automation, unrelated to kh-harness\n');
+  writeFileSync(join(d, 'my-own-stop-thing.mjs'), '// the user\'s own Stop automation, unrelated to kh-harness\n');
+  writeFileSync(join(d, 'my-own-startup-thing.mjs'), '// the user\'s own SessionStart automation, unrelated to kh-harness\n');
   mkdirSync(join(d, '.claude'), { recursive: true });
   writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
     permissions: { deny: ['Edit(secrets/**)'] },
@@ -145,7 +145,7 @@ function workspaceFixture() {
   }, null, 2));
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');   // not a default branch
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
   return d;
@@ -185,7 +185,7 @@ test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall'
   // `commit -a` only stages modifications to files already tracked, so they
   // are deliberately left alone here — the point of this commit is only to
   // clear the one pre-existing tracked file apply touched.)
-  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'accept harness-kit settings patch');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'accept kh-harness settings patch');
 
   // 5. applying again changes nothing
   const handoffHash = readFileSync(join(d, 'HANDOFF.md'), 'utf8');
@@ -382,7 +382,7 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     // it is therefore a modification apply.mjs's own dirty-tree gate would
     // refuse on the NEXT run unless committed, exactly what a real user
     // does next: review the diff, then commit.
-    git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'accept harness-kit settings patch');
+    git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'accept kh-harness settings patch');
   });
 
   await t.test('5. re-apply is a no-op', () => {
@@ -396,7 +396,7 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     assert.deepEqual(s2.permissions.deny, s1.permissions.deny, 'no duplicate deny rules');
   });
 
-  await t.test('6. the user edits two of the files harness-kit wrote', () => {
+  await t.test('6. the user edits two of the files kh-harness wrote', () => {
     // HANDOFF.md (Plan 2's own artefact, already covered above) and
     // scripts/bootstrap.sh — a generated file from THIS plan (ruling 3: the
     // drift stage must cover one, not only HANDOFF.md).
@@ -465,7 +465,7 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     // of their own above ours").
     const finalSettings = settings(d);
     assert.deepEqual(finalSettings.permissions.deny, ['Edit(secrets/**)'],
-      'exactly the user\'s own deny rule survives — every rule harness-kit added is gone');
+      'exactly the user\'s own deny rule survives — every rule kh-harness added is gone');
     // All three events had a sibling (finding 8) — each must end with
     // exactly ONE entry left: the user's own, by hash, not by position.
     assert.equal(finalSettings.hooks.PostToolUse.length, 1, 'our PostToolUse hook is gone; the user\'s own, which was there FIRST, survives');
@@ -531,7 +531,7 @@ test('FINDING 5: a settings-hook is never registered when its shared dependency 
   mkdirSync(join(d, '.claude'), { recursive: true });
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -609,7 +609,7 @@ test('C2: a secret anywhere in settings.json reaches no part of a dry run\'s out
   }, null, 2));
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -645,7 +645,7 @@ test('C3: a manifest that cannot be written exits 2 with a readable message, nev
   writeFileSync(join(d, '.claude'), 'a plain file sitting where a directory needs to go\n');
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -658,7 +658,7 @@ test('C3: a manifest that cannot be written exits 2 with a readable message, nev
   // The cause (`EEXIST ... mkdir '<path>'`) belongs in the message. The Node
   // frames around it do not.
   assert.doesNotMatch(out, /node:internal\/|\bat ModuleJob\b|^Node\.js v/m, 'no stack trace may reach the user');
-  assert.match(out, /harness-kit\.manifest\.json/, 'the message must name the file it could not write');
+  assert.match(out, /kh-harness\.manifest\.json/, 'the message must name the file it could not write');
 
   // The proposal that landed before the failure is on disk and untracked;
   // saying so is the difference between a recoverable repository and a trap.
@@ -687,7 +687,7 @@ test('C3b: with a lockfile present (the common real case), the settings-deny wri
   writeFileSync(join(d, '.claude'), 'a plain file sitting where a directory needs to go\n');
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -715,7 +715,7 @@ test('C3b: with a lockfile present (the common real case), the settings-deny wri
 test('apply refuses on an unparseable manifest — exit 3, names the file, and does not touch it', () => {
   const d = fixture();
   const corrupt = '{ this is not valid json, and definitely not our schema';
-  writeFileSync(join(d, '.claude/harness-kit.manifest.json'), corrupt);
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), corrupt);
 
   let err;
   try { run(APPLY, d, '--yes'); } catch (e) { err = e; }
@@ -724,11 +724,11 @@ test('apply refuses on an unparseable manifest — exit 3, names the file, and d
 
   const out = String(err.stdout ?? '') + String(err.stderr ?? '');
   assert.doesNotMatch(out, /node:internal\/|\bat ModuleJob\b|^Node\.js v/m, 'no stack trace may reach the user');
-  assert.match(out, /harness-kit\.manifest\.json/, 'the message must name the file that could not be reconciled');
+  assert.match(out, /kh-harness\.manifest\.json/, 'the message must name the file that could not be reconciled');
 
   // No automatic repair: the corrupt file is byte-for-byte untouched, and
   // nothing else was written either.
-  assert.equal(readFileSync(join(d, '.claude/harness-kit.manifest.json'), 'utf8'), corrupt);
+  assert.equal(readFileSync(join(d, '.claude/kh-harness.manifest.json'), 'utf8'), corrupt);
   assert.equal(existsSync(join(d, 'HANDOFF.md')), false, 'nothing is written when the run refuses this early');
 });
 
@@ -736,7 +736,7 @@ test('I3: a deleted settings file lets uninstall finish, clear the manifest, and
   const d = fixture();
   run(APPLY, d, '--yes');
   assert.equal(settings(d).hooks.SessionStart.length, 1);
-  assert.equal(existsSync(join(d, '.claude/harness-kit.manifest.json')), true);
+  assert.equal(existsSync(join(d, '.claude/kh-harness.manifest.json')), true);
 
   // The user deletes their own settings file. No hook remains registered.
   rmSync(join(d, '.claude/settings.json'));
@@ -744,7 +744,7 @@ test('I3: a deleted settings file lets uninstall finish, clear the manifest, and
   const out = run(UNINSTALL, d, '--yes');               // throws on any non-zero exit
   assert.match(out, /absent/i, 'the reason must be stated, and distinguishable from unreadable');
   assert.doesNotMatch(out, /could not be read/i, 'there is no read failure here to report');
-  assert.equal(existsSync(join(d, '.claude/harness-kit.manifest.json')), false,
+  assert.equal(existsSync(join(d, '.claude/kh-harness.manifest.json')), false,
     'the manifest must be cleared, or uninstall is impossible on every future run, forever');
 });
 
@@ -818,7 +818,7 @@ test('C4: a malformed permissions.deny does not crash the DEFAULT (dry-run) appl
   writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: 'Edit(secrets/**)' } }));
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -845,7 +845,7 @@ test('apply discloses when applying a patch reformats the rest of settings.json'
   writeFileSync(join(d, '.claude/settings.json'), '{"permissions":{"deny":["Edit(secrets/**)"]}}');
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -863,7 +863,7 @@ test('apply does NOT disclose a reformat when settings.json was already in the c
   writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(secrets/**)'] } }, null, 2) + '\n');
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -886,7 +886,7 @@ test('a repository that gitignores .claude/ still recognises its own hook as dec
   writeFileSync(join(d, '.gitignore'), '.claude/\n');
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -947,7 +947,7 @@ test('F2: a WORKSPACE that gitignores .claude/ — detect and apply agree about 
   writeFileSync(join(d, 'packages/web/index.ts'), 'export const ok = true;\n');
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
@@ -1011,7 +1011,7 @@ test('F2: a stray non-markdown file under .claude/rules/ does not credit P1.path
 // {"path":"CLAUDE.md","sha256":<the file's real hash>} made `classify`
 // return `ours-unmodified` for the user's own, hand-written CLAUDE.md —
 // the hash check only proves content matches what the manifest CLAIMS,
-// never that harness-kit wrote it — and uninstall deleted it. The
+// never that kh-harness wrote it — and uninstall deleted it. The
 // manifest is a file in the repository; anyone with write access
 // (a contributor, a dependency's postinstall script, a crafted repo, or
 // an agent mid-session) can add an entry like this. CLAUDE.md is inside
@@ -1020,7 +1020,7 @@ test('F2: a stray non-markdown file under .claude/rules/ does not credit P1.path
 // on `isGeneratorProducible` and `carriesOurStamp` for why both are kept):
 // CLAUDE.md is never a path any generator produces (P1.instructions is
 // prompt-gated), AND even if it were, the user's own file does not carry
-// the `Generated by harness-kit` stamp every real generator writes.
+// the `Generated by kh-harness` stamp every real generator writes.
 test('a forged manifest entry for CLAUDE.md does not delete it — kept, with a reason (Task 8b CRITICAL finding)', () => {
   const d = fixture();
   // The user's own, real, hand-written CLAUDE.md — never written by this
@@ -1029,14 +1029,14 @@ test('a forged manifest entry for CLAUDE.md does not delete it — kept, with a 
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'add my own CLAUDE.md');
 
-  // The forgery: the file's own REAL hash, recorded as if harness-kit had
+  // The forgery: the file's own REAL hash, recorded as if kh-harness had
   // written it — exactly what an attacker with repository write access
   // (or a buggy, unrelated tool) could produce without needing to touch
   // CLAUDE.md's content at all.
   const realHash = sha256(readFileSync(join(d, 'CLAUDE.md')));
   const manifest = emptyManifest('0.1.0');
   manifest.files.push({ path: 'CLAUDE.md', sha256: realHash, step: 6, writtenAt: new Date().toISOString() });
-  writeFileSync(join(d, '.claude/harness-kit.manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
   const out = run(UNINSTALL, d, '--yes');
   assert.equal(existsSync(join(d, 'CLAUDE.md')), true, 'CLAUDE.md must survive a forged manifest entry');
@@ -1095,7 +1095,7 @@ function freshFixtureNoClaudeDir() {
   writeFileSync(join(d, 'package-lock.json'), '{}');
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
   return d;
@@ -1144,7 +1144,7 @@ test('PARITY: the dry-run preview predicts exactly the settings.json/directory c
   run(APPLY, d, '--yes');
 
   const dry = run(UNINSTALL, d);
-  const predictedSettings = linesAfter(dry, 'Will remove (now empty, created by harness-kit):');
+  const predictedSettings = linesAfter(dry, 'Will remove (now empty, created by kh-harness):');
   const predictedDirs = linesAfter(dry, 'Will remove empty directories it created:');
   assert.deepEqual(predictedSettings, ['.claude/settings.json'], 'fixture sanity: the dry run must predict the settings.json cleanup');
   assert.ok(predictedDirs.length > 0, 'fixture sanity: the dry run must predict at least one directory removal');
@@ -1192,7 +1192,7 @@ test('a complete apply-then-uninstall cycle leaves git status clean when setting
   writeFileSync(join(d, 'docs/agent-context/inject.js'), '// their own hook\n');
   execFileSync('git', ['init', '-q', d]);
   git(d, 'checkout', '-q', '-b', 'chore/harness');
-  git(d, 'remote', 'add', 'origin', 'https://example.invalid/harness-kit-fixture.git');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 

@@ -20,7 +20,7 @@ test('leaves non-placeholder braces alone', () => {
 
 test('versionStamp names the kit version and the step', () => {
   const s = versionStamp('0.2.0', 16, '#');
-  assert.match(s, /harness-kit 0\.2\.0/);
+  assert.match(s, /kh-harness 0\.2\.0/);
   assert.match(s, /step 16/);
   assert.ok(s.startsWith('#'));
 });

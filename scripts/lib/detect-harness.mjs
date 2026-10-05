@@ -23,7 +23,7 @@ import { readIfPresent, existsAny } from './scan.mjs';
 //
 // What duplicating it cost last time, measured: `detect` reported
 // `P4.handoff declared / docs/HANDOFF.md`, and three lines later installed a
-// hook that printed `harness-kit: no HANDOFF.md in this repository yet.`
+// hook that printed `kh-harness: no HANDOFF.md in this repository yet.`
 // into every session — a falsehood the same tool had just disproved, placed
 // in the model's own context as a premise to reason from. The two lists had
 // not been written to disagree; they were written once each, by different

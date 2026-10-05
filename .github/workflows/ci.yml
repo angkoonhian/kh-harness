@@ -1,5 +1,5 @@
 name: ci
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
 jobs:
   test:
     strategy:
@@ -13,3 +13,101 @@ jobs:
         with:
           node-version: '24'
       - run: npm test
+      # The manifest is platform-independent JSON — the validator reads the same bytes on
+      # every OS — so this gate runs once, on Linux only, same as Task 6's eval step.
+      - name: Install Claude Code CLI
+        if: runner.os == 'Linux'
+        # Deliberately unpinned: the point of this gate is to notice when the installed
+        # CLI's validation behavior changes. If this step turns CI red on a commit that
+        # didn't touch the plugin, the CLI released a new version, not a plugin regression.
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate the plugin manifest
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set +e
+          claude plugin validate . --strict
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then
+            # Documented as a validator-internal error. Not reproducible on CLI 2.1.288 —
+            # nonexistent paths, malformed JSON, and bad flags all exited 1, not 2. This
+            # branch is defensive insurance against a documented exit code; it may never
+            # fire. Do not chase a mutation to prove it — it is the defensively redundant
+            # case Plan 3 already settled.
+            echo "::error::claude plugin validate itself failed (exit 2) — this is a toolchain problem, not a plugin problem"
+            exit 1
+          elif [ "$code" -ne 0 ]; then
+            echo "::error::plugin manifest is invalid or has warnings under --strict (exit $code)"
+            exit 1
+          fi
+          echo "plugin manifest validated"
+
+  eval:
+    # Each case runs with the plugin and, by default, again without it (the
+    # no-plugin baseline), so two cases is already several full agent runs
+    # per invocation — disproportionate for a branch that might be pushed
+    # twenty times before it's reviewed. Gate this where the signal is
+    # actually needed: a pull request, or on demand.
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # Deliberately unpinned — same rationale as the manifest-validation step above.
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Run the plugin eval suite
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Skip honestly rather than fail on a missing secret. A red check that
+          # only the repository owner can fix, for a reason invisible in the log,
+          # is how people learn to ignore red checks. Set ANTHROPIC_API_KEY in
+          # the repository secrets to enable this measurement.
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::notice::eval suite skipped — ANTHROPIC_API_KEY is not set on this repository. Add it under Settings > Secrets and variables > Actions to enable the no-plugin baseline measurement."
+            exit 0
+          fi
+          claude plugin eval . \
+            --trust-plugin \
+            --scaffold \
+            --allow-tools Bash Write \
+            --model claude-sonnet-5 \
+            --max-cost-usd 5 \
+            --no-publish \
+            --json "$RUNNER_TEMP/eval-result.json"
+          # --scaffold: the existing-claude-md case's fixture — a hand-written
+          # CLAUDE.md the skill must never overwrite in place — has to land in
+          # the run's actual workspace root, not a side directory. The shipped
+          # schema (checked against `claude plugin eval --help` and the
+          # plugin-evals reference on CLI 2.1.289) has no declarative "write
+          # these files into the workspace" field: context.add_dirs grants
+          # read access to a separate directory, not the workspace itself, so
+          # only context.scaffold_script can place it. The script
+          # (evals/existing-claude-md/fixture.sh) just writes a handful of
+          # literal files and runs `git init` — it is reviewed in this repo
+          # like any other source file, at the same trust level --trust-plugin
+          # already asserts for the plugin's own code, and the eval never
+          # starts without --scaffold passed explicitly, here, on purpose.
+          # --threshold: left at the default of 1.0. Each case has 2-3 scored
+          # graders (tool_used: Skill is with-only and not among them) at
+          # equal weight, so no achievable score falls between 0.8 and 1.0 —
+          # loosening it to 0.8 would change nothing here and would just be a
+          # number that reads as more lenient than it is.
+          # --judge-model: left at the default (haiku). Both llm graders in
+          # this suite are concrete, checkable claims ("does the reply name
+          # the file it found" / "does it ask instead of guess"), not
+          # nuanced preference judgments that need a stronger judge.
+          # --runs: left unset, so each case's own `runs: 1` (prompt.md
+          # frontmatter) governs it. That is a deliberate starting point to
+          # prove the suite executes without spending a full three-run budget
+          # per arm — see the task report for what raising it to 3 would buy
+          # and why it isn't done here yet.
+          #
+          # Needs an ANTHROPIC_API_KEY (or equivalent provider credential)
+          # configured as a repository secret, or this job fails at the
+          # first run with an auth error, not a plugin regression.

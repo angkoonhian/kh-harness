@@ -1,0 +1,12 @@
+# fixture.sh scaffolds a minimal, real TypeScript project — package.json,
+# tsconfig.json, a source file, a lockfile and a git repo — so "brand-new
+# TypeScript project" in prompt.md matches what's actually in the workspace.
+# A pilot run against a literally empty directory showed the model correctly
+# refusing to invent a whole project from nothing and asking which repository
+# it should be looking at, instead of ever reaching the skill at all — that
+# was a fixture bug, not a finding about the plugin.
+schema_version: "1.1"
+name: greenfield-ts
+tags: [smoke]
+context:
+  scaffold_script: fixture.sh

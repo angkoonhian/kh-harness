@@ -115,7 +115,7 @@ export function exposureSectionLines(exposures, nested = []) {
 
 export function renderSummary(report) {
   const lines = [];
-  lines.push(`harness-kit ${report.kitVersion} — ${report.repo.root}`);
+  lines.push(`kh-harness ${report.kitVersion} — ${report.repo.root}`);
   lines.push(`profile: ${report.profile}   branch: ${report.repo.branch ?? '(none)'}`);
   lines.push('');
 
@@ -142,14 +142,14 @@ export function renderSummary(report) {
   lines.push(n === 0 ? 'No proposals — this repository already satisfies every applicable step.' : `${n} proposal${n === 1 ? '' : 's'}. Nothing has been written except docs/harness/detect.json.`);
 
   // Distinct from proposals, deliberately: a proposal is "the tool will do
-  // this"; advice is "you should do this, but harness-kit will not" (e.g.
+  // this"; advice is "you should do this, but kh-harness will not" (e.g.
   // P2.scripts — see gap-model.mjs's own comment on why package.json is
   // never written). Folding these into the `→` proposal lines above would
   // blur a line a reader must be able to trust without re-deriving it.
   const advice = report.checks.flatMap(c => c.advice ?? []);
   if (advice.length) {
     lines.push('');
-    lines.push('Advice — reported only; harness-kit will not write these:');
+    lines.push('Advice — reported only; kh-harness will not write these:');
     for (const a of advice) lines.push(`  * ${a}`);
   }
 

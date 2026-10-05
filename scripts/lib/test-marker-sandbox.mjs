@@ -6,13 +6,13 @@
 // (`scripts/lib/**/*.test.mjs`) does not pick it up as a suite.
 //
 // WHY THIS EXISTS. `markerDir()` is one fixed directory per OS user —
-// `<tmpdir>/harness-kit-stop-<userTag>` — shared by every run of every test.
+// `<tmpdir>/kh-harness-stop-<userTag>` — shared by every run of every test.
 // Markers are keyed by `(rootTag, namespace, sessionId)`, so a `mkdtemp`
 // fixture gets ISOLATION by accident of its random path, but nothing isolates
 // the DIRECTORY, and nothing ever removes what a run leaves there. Measured on
 // this machine before this module existed:
 //
-//     <tmpdir>/harness-kit-stop-28d5673005cc744e: 8983 files
+//     <tmpdir>/kh-harness-stop-28d5673005cc744e: 8983 files
 //
 // Eight thousand nine hundred and eighty-three entries in one NTFS directory,
 // in a suite where several tests deliberately set sub-second bounds through

@@ -1,6 +1,6 @@
 # Case B — cashmigo (thin parent repository)
 
-Validated 2026-09-29 against harness-kit HEAD `ff2ef61` (118/118 tests passing at time of run).
+Validated 2026-09-29 against kh-harness HEAD `ff2ef61` (118/118 tests passing at time of run).
 
 ## Command
 
@@ -8,7 +8,7 @@ Validated 2026-09-29 against harness-kit HEAD `ff2ef61` (118/118 tests passing a
 node scripts/detect.mjs /c/Users/Dreambuilds/desktop/cashmigo
 ```
 
-Run from `C:\Users\Dreambuilds\desktop\harness-kit`.
+Run from `C:\Users\Dreambuilds\desktop\kh-harness`.
 
 ## Corrected prediction under test
 
@@ -28,7 +28,7 @@ confirmed directly (`git ls-files | grep '^app/'` returns nothing) — so no
 ## Full summary output
 
 ```
-harness-kit 0.1.0 — C:\Users\Dreambuilds\desktop\cashmigo
+kh-harness 0.1.0 — C:\Users\Dreambuilds\desktop\cashmigo
 profile: generic   branch: d1-rulings
 
 Phase 0 — Reconnaissance

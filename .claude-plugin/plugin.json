@@ -1,6 +1,6 @@
 {
-  "name": "harness-kit",
+  "name": "kh-harness",
   "version": "0.1.0",
-  "description": "Inventories an existing repository against the harness runbook and proposes only what is missing.",
-  "author": "Ang Koon Hian"
+  "description": "Inspects a repository and proposes the harness it is missing, deriving every step from evidence and writing nothing it cannot prove.",
+  "author": { "name": "Ang Koon Hian" }
 }

@@ -28,7 +28,7 @@ const DIFF_LINE_BAILOUT = 3000;
 // Exact paths and path prefixes the kit is ever allowed to write. Anything
 // else — however it got proposed — is refused before a single byte is
 // written. This list, not a permission rule in settings.json, is what keeps
-// harness-kit from ever touching a user's own files: settings-based
+// kh-harness from ever touching a user's own files: settings-based
 // containment would appear to work (writes match through `Edit`, not
 // `Write(path)`) and silently would not.
 const ALLOWED_EXACT = new Set(['CLAUDE.md', 'HANDOFF.md', 'docs/ARCHITECTURE.md']);

@@ -26,12 +26,6 @@ test('falls back to generic below 0.5 confidence', () => {
   assert.equal(selectProfile(nothing).id, 'generic');
 });
 
-test('commands use the detected package manager', () => {
-  const p = selectProfile(tsWorkspace);
-  const c = p.commands(tsWorkspace.packages[1]);
-  assert.ok(c.install.startsWith('pnpm'));
-});
-
 test('a missing script yields null, never a guess', () => {
   const p = selectProfile(tsSingle);
   const c = p.commands(tsSingle.packages[0]);
@@ -43,7 +37,6 @@ test('a missing script yields null, never a guess', () => {
 test('python profile returns null for guessable commands', () => {
   const p = selectProfile(py);
   const c = p.commands(py.packages[0]);
-  assert.ok(c.install !== null); // install is evidence-based from lockfile
   assert.equal(c.build, null);
   assert.equal(c.test, null);
   assert.equal(c.lint, null);

@@ -1,7 +1,7 @@
-# SDD ledger — plan: docs/superpowers/plans/2026-09-29-harness-kit-2-apply-engine.md
+# SDD ledger — plan: docs/superpowers/plans/2026-09-29-kh-harness-2-apply-engine.md
 
-Spec: docs/superpowers/specs/2026-09-29-harness-kit-design.md (revised 2026-09-29 after Plan 1)
-Repo: C:/Users/Dreambuilds/desktop/harness-kit, branch `feat/apply-engine` off `27fb27d`
+Spec: docs/superpowers/specs/2026-09-29-kh-harness-design.md (revised 2026-09-29 after Plan 1)
+Repo: C:/Users/Dreambuilds/desktop/kh-harness, branch `feat/apply-engine` off `27fb27d`
 Baseline: 161 tests passing, CI green on ubuntu-latest and windows-latest
 
 ## Setup rulings
@@ -546,7 +546,7 @@ the CLI: the proposal filter ran before any drift check could happen. A user who
 edited a file the tool wrote got silence. Fixed with a small independent
 drift-report pass in apply.mjs using the existing classify(); no other module or
 existing test changed. Verified end to end: "kept HANDOFF.md (modified since
-harness-kit wrote it — left as-is)" with the edit preserved.
+kh-harness wrote it — left as-is)" with the edit preserved.
 
 Two fixture deviations, both sound and both explained: the fixture now adds a git
 remote (else P4.remote permanently pollutes stage 4's zero-proposal assertion),
@@ -581,7 +581,7 @@ Task 8: minor (deferred) x3, for the final review:
      rewrite" is unexercised.
 Task 9: complete (commit 4405132) — ALL NINE STAGES PASS, no defects.
   Controller-verified cleanup: worktree removed, hk-validation branch deleted,
-  /tmp/hk-case-c gone, and harness-kit left NOTHING behind in cashmigo. The
+  /tmp/hk-case-c gone, and kh-harness left NOTHING behind in cashmigo. The
   ` M app` entry in cashmigo is a dirty submodule working tree whose files date
   from 2026-06-09 — three months old, pre-existing user work, unrelated.
   Two non-defect surprises correctly diagnosed rather than reported as bugs:

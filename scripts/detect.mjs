@@ -35,7 +35,7 @@ const root = resolve(target ?? process.cwd());
 warnUnknown(unknown);
 
 if (!existsSync(root)) {
-  process.stderr.write(`harness-kit: no such path: ${root}\n`);
+  process.stderr.write(`kh-harness: no such path: ${root}\n`);
   process.exit(2);
 }
 

@@ -1,6 +1,6 @@
 # Case A — oxen/2026 (rich, already-harnessed repository)
 
-Validated 2026-09-29 against harness-kit HEAD `ff2ef61` (118/118 tests passing at time of run).
+Validated 2026-09-29 against kh-harness HEAD `ff2ef61` (118/118 tests passing at time of run).
 
 ## Command
 
@@ -8,7 +8,7 @@ Validated 2026-09-29 against harness-kit HEAD `ff2ef61` (118/118 tests passing a
 node scripts/detect.mjs /c/Users/Dreambuilds/desktop/oxen/2026
 ```
 
-Run from `C:\Users\Dreambuilds\desktop\harness-kit`.
+Run from `C:\Users\Dreambuilds\desktop\kh-harness`.
 
 ## Corrected prediction under test
 
@@ -26,7 +26,7 @@ from the parent. Corrected prediction:
 ## Full summary output
 
 ```
-harness-kit 0.1.0 — C:\Users\Dreambuilds\desktop\oxen\2026
+kh-harness 0.1.0 — C:\Users\Dreambuilds\desktop\oxen\2026
 profile: generic   branch: feature/knowledge-chatbot
 
 Phase 0 — Reconnaissance
@@ -44,8 +44,8 @@ Phase 0 — Reconnaissance
         credentials-in-doc at .claude/orchestration.backup-2026-05-30-170709/docs/agents/qa/e2e-test.md
         credentials-in-doc at docs/superpowers/plans/2026-05-24-portal-auth-gateway.md
         credentials-in-doc at docs/superpowers/plans/2026-09-24-knowledge-chatbot-1-skeleton-and-ingestion.md
-        token-in-tracked-file at docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md
-        credentials-in-doc at docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md
+        token-in-tracked-file at docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md
+        credentials-in-doc at docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md
   [ ] P0.recon           absent
       → run the recon prompt to write docs/harness/recon.md
 
@@ -113,8 +113,8 @@ Exposures (13) — this repository only; 20 nested repositories not scanned — 
   ! medium credentials-in-doc at .claude/orchestration.backup-2026-05-30-170709/docs/agents/qa/e2e-test.md
   ! medium credentials-in-doc at docs/superpowers/plans/2026-05-24-portal-auth-gateway.md
   ! medium credentials-in-doc at docs/superpowers/plans/2026-09-24-knowledge-chatbot-1-skeleton-and-ingestion.md
-  ! high   token-in-tracked-file at docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md
-  ! medium credentials-in-doc at docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md
+  ! high   token-in-tracked-file at docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md
+  ! medium credentials-in-doc at docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md
 
 6 proposals. Nothing has been written except docs/harness/detect.json.
 
@@ -191,8 +191,8 @@ rule.
 | 9 | credentials-in-doc | `.claude/orchestration.backup-2026-05-30-170709/docs/agents/qa/e2e-test.md` | medium | Same file content, duplicated under a second orchestration backup snapshot directory. Same classification as #8. |
 | 10 | credentials-in-doc | `docs/superpowers/plans/2026-05-24-portal-auth-gateway.md` | medium | **Documentation example** — planning doc for an auth gateway; short code-snippet-shaped match. |
 | 11 | credentials-in-doc | `docs/superpowers/plans/2026-09-24-knowledge-chatbot-1-skeleton-and-ingestion.md` | medium | **Documentation example** — one of the three matches explicitly classifies as an environment-variable reference (`process.env`-style); the others are env-var-name-shaped, consistent with configuration documentation rather than literal secrets. |
-| 12 | token-in-tracked-file | `docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md` | high | **Documentation example**, most likely — this is the harness-kit design plan itself, describing/illustrating the exposure scanner it specifies. The matched `Bearer` token is shorter (29 chars total) than and distinct in value-shape from the genuine Obsidian token in finding #1. |
-| 13 | credentials-in-doc | `docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md` | medium | Same file as #12, a second `password`-shaped match; consistent with the same illustrative/example content. |
+| 12 | token-in-tracked-file | `docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md` | high | **Documentation example**, most likely — this is the kh-harness design plan itself, describing/illustrating the exposure scanner it specifies. The matched `Bearer` token is shorter (29 chars total) than and distinct in value-shape from the genuine Obsidian token in finding #1. |
+| 13 | credentials-in-doc | `docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md` | medium | Same file as #12, a second `password`-shaped match; consistent with the same illustrative/example content. |
 
 Summary: **2 genuine high-severity live secrets** (findings #4 the local TLS
 key and #5 the production-domain-named private key are the most concerning;
@@ -209,9 +209,9 @@ reproduced anywhere in this record.
 Baseline captured before the run (`git status --porcelain --untracked-files=all`,
 7223 lines, dominated by pre-existing untracked nested-repo/project content).
 One tracked file was **already** modified before this tool ran:
-`docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md`
+`docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md`
 (md5 `dd1ba6703d06c336930ad2a6e262a83a`, unrelated to this task — it is the
-harness-kit plan itself, being edited elsewhere).
+kh-harness plan itself, being edited elsewhere).
 
 Post-run diff against that baseline:
 
@@ -226,7 +226,7 @@ run (`dd1ba6703d06c336930ad2a6e262a83a`), confirming the tool did not touch it.
 
 ```
 $ git status --porcelain --untracked-files=all | grep -v '^??'
- M docs/superpowers/plans/2026-09-29-harness-kit-1-detection-and-gap-model.md
+ M docs/superpowers/plans/2026-09-29-kh-harness-1-detection-and-gap-model.md
 ```
 
 No tracked file was modified by this run. **No harm.**
