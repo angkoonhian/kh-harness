@@ -4,8 +4,40 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
 const EVALS = resolve(import.meta.dirname, '..', '..', 'evals');
+
+// `claude plugin eval` writes its run output to <evals>/results/ by default —
+// that is why .gitignore carries `evals/results/`. It is the tool's output, not
+// a case, and enumerating it as one made this suite fail the moment anyone ran
+// an eval locally. CI never caught it because the test job runs on a fresh
+// checkout where results/ does not exist yet, so the breakage was invisible in
+// the only place that was watching. Excluded by name rather than by "skip
+// directories that look malformed": a case dir missing its case.yaml IS the
+// defect the next test exists to catch, and inferring the exclusion would
+// silently skip it.
+const NOT_A_CASE = new Set(['results']);
+
 const cases = () => readdirSync(EVALS, { withFileTypes: true })
-  .filter(e => e.isDirectory()).map(e => e.name).sort();
+  .filter(e => e.isDirectory() && !NOT_A_CASE.has(e.name))
+  .map(e => e.name).sort();
+
+test('the eval runner\'s own output directory is not mistaken for a case', () => {
+  // Regression: running an eval locally created evals/results/, and case
+  // enumeration treated it as a case with no case.yaml. Anyone who had run an
+  // eval saw a red suite; anyone who had not saw green.
+  assert.ok(!cases().includes('results'),
+    'evals/results/ is the runner\'s output directory, not a case');
+
+  // The exclusion is only legitimate because that path is tool output. If it
+  // ever stops being gitignored, the premise is wrong and this should fail
+  // rather than quietly hide a real directory.
+  const ignore = readFileSync(resolve(import.meta.dirname, '..', '..', '.gitignore'), 'utf8');
+  assert.match(ignore, /^\s*evals\/results\/?\s*$/m,
+    'evals/results/ must stay gitignored, or excluding it from cases is unjustified');
+
+  // And the exclusion must not have eaten the real cases.
+  assert.ok(cases().length >= 2,
+    `expected the real eval cases to survive enumeration, got: ${cases().join(', ') || '(none)'}`);
+});
 
 test('every eval case has a prompt and at least one grader', () => {
   for (const c of cases()) {
