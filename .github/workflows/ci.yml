@@ -70,15 +70,26 @@ jobs:
         id: probe
         shell: bash
         env:
+          # Either credential works, and CLAUDE_CODE_OAUTH_TOKEN is preferred:
+          # `claude setup-token` mints a long-lived token against an existing
+          # Claude subscription, so the measurement bills to the plan rather
+          # than to API credits and no API key has to exist at all. The key
+          # remains supported for API-billed accounts.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # Publishes only whether the secret is non-empty. Never echo the value.
-          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+          # Publishes only whether a credential is non-empty. Never echo either
+          # value, and never say which one is set beyond its name — the token
+          # and the key are both secrets.
+          if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::ANTHROPIC_API_KEY is set — the eval suite will run."
+            echo "::notice::CLAUDE_CODE_OAUTH_TOKEN is set — the eval suite will run on the subscription credential."
+          elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY is set — the eval suite will run on API billing."
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::The eval suite will be SKIPPED, not passed — ANTHROPIC_API_KEY is not set on this repository. Add it under Settings > Secrets and variables > Actions to enable the no-plugin baseline measurement."
+            echo "::notice::The eval suite will be SKIPPED, not passed — no credential is set on this repository. Run 'claude setup-token' and add the result as CLAUDE_CODE_OAUTH_TOKEN under Settings > Secrets and variables > Actions (bills to your Claude subscription), or set ANTHROPIC_API_KEY for API billing. Until then there is no measured delta."
           fi
 
   eval:
@@ -98,13 +109,16 @@ jobs:
       - name: Run the plugin eval suite
         shell: bash
         env:
+          # Both are passed; the CLI uses whichever is present. eval-gate has
+          # already established that at least one is.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # No missing-secret guard here on purpose: eval-gate already decided
-          # that, and this job does not start otherwise. A second check for the
-          # same fact is the drift shape — two places asserting one condition,
-          # and the stale copy is the one nobody reads. If the key is somehow
-          # empty despite the gate, let the CLI fail loudly rather than exit 0.
+          # No missing-credential guard here on purpose: eval-gate already
+          # decided that, and this job does not start otherwise. A second check
+          # for the same fact is the drift shape — two places asserting one
+          # condition, and the stale copy is the one nobody reads. If both are
+          # somehow empty past the gate, let the CLI fail loudly, not exit 0.
           claude plugin eval . \
             --trust-plugin \
             --scaffold \
@@ -141,6 +155,16 @@ jobs:
           # per arm — see the task report for what raising it to 3 would buy
           # and why it isn't done here yet.
           #
-          # Needs an ANTHROPIC_API_KEY (or equivalent provider credential)
-          # configured as a repository secret, or this job fails at the
-          # first run with an auth error, not a plugin regression.
+          # Needs CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, billed to
+          # a Claude subscription) or ANTHROPIC_API_KEY (API billing) as a
+          # repository secret, or this job fails at the first run with an auth
+          # error, not a plugin regression. eval-gate skips the job rather than
+          # letting that happen.
+          #
+          # CI is the only place this suite can run reliably. Measured on a
+          # Windows dev machine: `--scaffold` hands the scaffold path to
+          # /bin/bash as a native Windows path and bash eats the backslashes
+          # (exit 127), and under WSL the Bash sandbox refuses while ~/.docker
+          # holds a symlink inside it. A clean Linux runner has neither
+          # problem, which is why the measurement lives here and not in a
+          # local script someone is expected to remember to run.
