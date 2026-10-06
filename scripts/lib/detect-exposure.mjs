@@ -4,13 +4,23 @@ import { join, basename } from 'node:path';
 
 const MAX_BYTES = 512 * 1024;
 
+// `token-in-repo-file` is NOT called `token-in-tracked-file`, and must not be
+// renamed back. This scanner walks the filesystem; it never consults the git
+// index, so it cannot know whether a file is tracked. Under the old name it
+// asserted tracking it had not checked: run against a real repository it
+// labelled three files `token-in-tracked-file` that `git ls-files` did not
+// know and that had zero commits touching them. The exposure was real; the
+// kind was a claim the detector had no evidence for, which is the one thing
+// this tool is not allowed to do. If a genuine tracked/untracked split is
+// wanted later, it needs the git index as an input, not a new name.
+//
 // Always-probed paths (e.g., .gitignored local settings)
 // The two files `token-in-local-settings` actually names. Whole-branch
 // review, F8 (the trailing "related, same module, trivial" note): the test
 // used to be `rel.startsWith('.claude/')`, which reported a token in, say,
 // `.claude/scripts/lint-touched.mjs` under a kind that names a different
 // file. A token anywhere else under `.claude/` is an ordinary
-// `token-in-tracked-file`.
+// `token-in-repo-file`.
 const LOCAL_SETTINGS_FILES = new Set(['.claude/settings.json', '.claude/settings.local.json']);
 
 const ALWAYS_PROBE = [
@@ -308,7 +318,7 @@ function scanFile(root, rel, isLocalSettings) {
 
   const hasToken = TOKEN_PATTERNS.some(re => re.test(text)) || PEM_PATTERN.test(text);
   if (hasToken) {
-    const kind = isLocalSettings ? 'token-in-local-settings' : 'token-in-tracked-file';
+    const kind = isLocalSettings ? 'token-in-local-settings' : 'token-in-repo-file';
     findings.push({ kind, location: rel, severity: 'high' });
   }
 
