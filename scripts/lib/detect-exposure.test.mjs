@@ -18,7 +18,7 @@ const SECRET = 'glpat-' + 'A'.repeat(20);
 // Coordinator ruling (post-review, concern 5): every credential-SHAPED
 // fixture in this file is ASSEMBLED AT RUNTIME, never committed as a
 // literal. `SECRET` above was already built this way; the rest were not, and
-// this file was therefore BOTH a `token-in-tracked-file` and a
+// this file was therefore BOTH a `token-in-repo-file` and a
 // `credentials-in-doc` finding when kh-harness was pointed at its own
 // repository — a security tool failing its own check, which is the one
 // signal that matters most for it.
@@ -66,7 +66,7 @@ test('finds a provider token in a tracked file', () => {
   write(d, '.env.example', `TOKEN=${SECRET}\n`);
   const found = run(d);
   assert.equal(found.length, 1);
-  assert.equal(found[0].kind, 'token-in-tracked-file');
+  assert.equal(found[0].kind, 'token-in-repo-file');
   assert.equal(found[0].location, '.env.example');
 });
 
@@ -131,7 +131,7 @@ test('finds token in JavaScript source file', () => {
   const d = repo();
   write(d, 'src/config.js', `const API_KEY = 'sk-${'A'.repeat(25)}';\n`);
   const found = run(d);
-  const hasToken = found.some(e => e.location === 'src/config.js' && e.kind === 'token-in-tracked-file');
+  const hasToken = found.some(e => e.location === 'src/config.js' && e.kind === 'token-in-repo-file');
   assert.ok(hasToken, 'Should find token in .js file');
 });
 
@@ -139,7 +139,7 @@ test('finds token in Python source file', () => {
   const d = repo();
   write(d, 'config.py', `API_KEY = "sk-${'B'.repeat(25)}"\n`);
   const found = run(d);
-  const hasToken = found.some(e => e.location === 'config.py' && e.kind === 'token-in-tracked-file');
+  const hasToken = found.some(e => e.location === 'config.py' && e.kind === 'token-in-repo-file');
   assert.ok(hasToken, 'Should find token in .py file');
 });
 
@@ -148,7 +148,7 @@ test('finds PEM private key in extensionless file', () => {
   const d = repo();
   write(d, 'id_rsa', PEM_KEY);
   const found = run(d);
-  const hasExposure = found.some(e => e.location === 'id_rsa' && e.kind === 'token-in-tracked-file');
+  const hasExposure = found.some(e => e.location === 'id_rsa' && e.kind === 'token-in-repo-file');
   assert.ok(hasExposure, 'Should find PEM private key in extensionless file');
 });
 
@@ -174,7 +174,7 @@ test('reports both token and database credential in same file', () => {
   const d = repo();
   write(d, 'config.env', `token: ${SECRET}\n` + credLine('secretpass123456'));
   const found = run(d);
-  assert.ok(found.some(e => e.kind === 'token-in-tracked-file'), 'Should report token');
+  assert.ok(found.some(e => e.kind === 'token-in-repo-file'), 'Should report token');
   assert.ok(found.some(e => e.kind === 'credentials-in-doc'), 'Should report db cred');
 });
 
@@ -183,7 +183,7 @@ test('finds underscore-style API keys', () => {
   const d = repo();
   write(d, 'keys.txt', `live key: sk_live_${'C'.repeat(15)}\ntest key: pk_test_${'D'.repeat(15)}\n`);
   const found = run(d);
-  assert.ok(found.some(e => e.kind === 'token-in-tracked-file'), 'Should find underscore-style tokens');
+  assert.ok(found.some(e => e.kind === 'token-in-repo-file'), 'Should find underscore-style tokens');
 });
 
 // Fix 7: Case-insensitive extension matching
@@ -200,7 +200,7 @@ test('finds PEM key in .ssh/id_rsa (extensionless under dotted directory)', () =
   const d = repo();
   write(d, '.ssh/id_rsa', PEM_KEY);
   const found = run(d);
-  const hasExposure = found.some(e => e.location === '.ssh/id_rsa' && e.kind === 'token-in-tracked-file');
+  const hasExposure = found.some(e => e.location === '.ssh/id_rsa' && e.kind === 'token-in-repo-file');
   assert.ok(hasExposure, 'Should find PEM key in .ssh/id_rsa');
 });
 
@@ -217,7 +217,7 @@ test('reports both token and password in gitignored .env', () => {
   execSync('git add .gitignore README.md', { cwd: d, stdio: 'ignore' });
   execSync('git commit -m "init"', { cwd: d, stdio: 'ignore' });
   const found = run(d);
-  const hasToken = found.some(e => e.location === '.env' && e.kind === 'token-in-tracked-file');
+  const hasToken = found.some(e => e.location === '.env' && e.kind === 'token-in-repo-file');
   const hasDbCred = found.some(e => e.location === '.env' && e.kind === 'credentials-in-doc');
   assert.ok(hasToken, 'Should find token in .env');
   assert.ok(hasDbCred, 'Should find password in .env');
@@ -237,7 +237,7 @@ test('finds tracked .env.local with token (round 3 regression)', () => {
   execSync('git add .env.local README.md', { cwd: d, stdio: 'ignore' });
   execSync('git -c user.email=test@example.com -c user.name=Test commit -m "init"', { cwd: d, stdio: 'ignore' });
   const found = run(d);
-  const hasExposure = found.some(e => e.location === '.env.local' && e.kind === 'token-in-tracked-file');
+  const hasExposure = found.some(e => e.location === '.env.local' && e.kind === 'token-in-repo-file');
   assert.ok(hasExposure, 'Should find token in tracked .env.local');
 });
 
@@ -280,7 +280,7 @@ test('finds token in extensionless credentials file', () => {
   const d = repo();
   write(d, 'credentials', `key: pk_live_${'K'.repeat(15)}\n`);
   const found = run(d);
-  const hasExposure = found.some(e => e.location === 'credentials' && e.kind === 'token-in-tracked-file');
+  const hasExposure = found.some(e => e.location === 'credentials' && e.kind === 'token-in-repo-file');
   assert.ok(hasExposure, 'Should find token in extensionless credentials file');
 });
 
@@ -292,7 +292,7 @@ test('finds token in UTF-16LE file with BOM (round 4 fix)', () => {
   const buf = Buffer.concat([Buffer.from([0xff, 0xfe]), body]);
   write(d, '.env.ps1out', buf);
   const found = run(d);
-  const hasExposure = found.some(e => e.location === '.env.ps1out' && e.kind === 'token-in-tracked-file');
+  const hasExposure = found.some(e => e.location === '.env.ps1out' && e.kind === 'token-in-repo-file');
   assert.ok(hasExposure, 'Should find token in UTF-16LE BOM file');
 });
 
@@ -304,7 +304,7 @@ test('finds token in UTF-16BE file with BOM (round 4 fix)', () => {
   const buf = Buffer.concat([Buffer.from([0xfe, 0xff]), beBody]);
   write(d, '.env.be', buf);
   const found = run(d);
-  const hasExposure = found.some(e => e.location === '.env.be' && e.kind === 'token-in-tracked-file');
+  const hasExposure = found.some(e => e.location === '.env.be' && e.kind === 'token-in-repo-file');
   assert.ok(hasExposure, 'Should find token in UTF-16BE BOM file');
 });
 

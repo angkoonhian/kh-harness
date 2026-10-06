@@ -722,8 +722,8 @@ test('F1 SECURITY: a plaintext token in a file with a non-ASCII name is found, a
   const security = report.checks.find(c => c.id === 'P0.security');
   assert.equal(security.state, 'failing', 'a repository holding a plaintext token must never report a clean sweep');
 
-  const hit = report.exposures.find(e => e.kind === 'token-in-tracked-file');
-  assert.ok(hit, `expected a token-in-tracked-file finding, got ${JSON.stringify(report.exposures)}`);
+  const hit = report.exposures.find(e => e.kind === 'token-in-repo-file');
+  assert.ok(hit, `expected a token-in-repo-file finding, got ${JSON.stringify(report.exposures)}`);
   assert.equal(hit.location, NAME, 'the finding must name the real path, not a C-quoted literal');
 
   // The value itself is never printed — the pre-existing guarantee must hold

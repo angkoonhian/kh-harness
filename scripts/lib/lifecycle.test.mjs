@@ -1256,7 +1256,7 @@ test('F9: apply discloses the credential finding, the nested repository and the 
 
   // 1. The credential sweep it performed and used to discard.
   assert.match(dry, /same Phase-0 credential sweep/);
-  assert.match(dry, /token-in-tracked-file at src\/creds\.ts/);
+  assert.match(dry, /token-in-repo-file at src\/creds\.ts/);
   assert.equal(dry.includes(LEAKED_PAT), false, 'the VALUE is still never printed');
 
   // 2. The nested repository. `detect`'s own comment calls this disclosure
@@ -1274,7 +1274,7 @@ test('F9: apply discloses the credential finding, the nested repository and the 
   assert.match(dry, /Dry run — nothing written/);
 
   // The same disclosure reaches the --yes path, which is the one that writes.
-  assert.match(run(APPLY, d, '--yes'), /token-in-tracked-file at src\/creds\.ts/);
+  assert.match(run(APPLY, d, '--yes'), /token-in-repo-file at src\/creds\.ts/);
 });
 
 test('F9: apply says nothing extra about a clean repository', () => {
