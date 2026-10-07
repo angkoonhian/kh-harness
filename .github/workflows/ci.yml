@@ -119,6 +119,7 @@ jobs:
           # for the same fact is the drift shape — two places asserting one
           # condition, and the stale copy is the one nobody reads. If both are
           # somehow empty past the gate, let the CLI fail loudly, not exit 0.
+          set +e
           claude plugin eval . \
             --trust-plugin \
             --scaffold \
@@ -127,6 +128,42 @@ jobs:
             --max-cost-usd 5 \
             --no-publish \
             --json "$RUNNER_TEMP/eval-result.json"
+          code=$?
+          set -e
+
+          # Print the diagnosis into the log, always. A first run of this job
+          # failed in 13 seconds with nothing but "exit code 1": the result
+          # JSON stayed on the runner, so the one fact needed to act on it —
+          # WHY each arm stopped — was unreachable. A red check nobody can
+          # diagnose is the mirror of the green check that measured nothing,
+          # and this project has now shipped both.
+          #
+          # The distinction this surfaces is the one that keeps misleading
+          # readers of the aggregate: `meanDelta: 0` with costUsd 0 and
+          # turns 0 means the model was never called, NOT that the plugin
+          # made no difference. Aborted and measured-as-equal look identical
+          # one level up, so the per-arm errors are printed first.
+          if [ -f "$RUNNER_TEMP/eval-result.json" ]; then
+            echo "::group::Per-arm outcome (errors first — an aborted arm is not a measured zero)"
+            jq -r '
+              .cases[]? as $c
+              | ($c.arms // {} | to_entries[])
+              | "\($c.name) / \(.key): turns=\(.value[0].turns // 0) cost=\(.value[0].costUsd // 0) score=\(.value[0].score // 0) error=\(.value[0].error // "none")"
+            ' "$RUNNER_TEMP/eval-result.json" || echo "(could not parse result JSON)"
+            echo "::endgroup::"
+            echo "::group::Aggregates"
+            jq -r '{durationSeconds, costUsd, partial, aggregates}' "$RUNNER_TEMP/eval-result.json" || true
+            echo "::endgroup::"
+
+            # Cost is the honest test of whether anything ran at all.
+            spent=$(jq -r '.costUsd // 0' "$RUNNER_TEMP/eval-result.json")
+            if [ "$spent" = "0" ] && [ "$code" -ne 0 ]; then
+              echo "::error::The eval suite ABORTED before calling the model (costUsd=0). Any delta in the aggregate above is an artefact of that abort, not a measurement. Read the per-arm errors."
+            fi
+          else
+            echo "::error::No result JSON was written — the suite failed before it could report."
+          fi
+          exit $code
           # --scaffold: the existing-claude-md case's fixture — a hand-written
           # CLAUDE.md the skill must never overwrite in place — has to land in
           # the run's actual workspace root, not a side directory. The shipped
@@ -168,3 +205,16 @@ jobs:
           # holds a symlink inside it. A clean Linux runner has neither
           # problem, which is why the measurement lives here and not in a
           # local script someone is expected to remember to run.
+      # Keep the evidence even when the job fails — especially then. The JSON
+      # carries the per-arm errors and the HTML report carries the transcripts,
+      # and both live on the runner, which is deleted minutes later.
+      - name: Upload the eval result and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-result
+          path: |
+            ${{ runner.temp }}/eval-result.json
+            evals/results/
+          if-no-files-found: warn
+          retention-days: 14
