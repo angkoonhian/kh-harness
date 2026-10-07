@@ -118,6 +118,15 @@ test('DISCLOSED LIMITATION: this suite cannot make harness-init fire', () => {
   const readme = readFileSync(resolve(import.meta.dirname, '..', '..', 'README.md'), 'utf8');
   assert.match(readme, /disable-model-invocation/,
     'the README must disclose why this suite cannot measure the skill, or its zero deltas will be read as findings');
+
+  // And it must not spend money per pull request producing that number. Each
+  // run costs ~$1.31 and ~11 minutes; on a pull_request trigger that is a
+  // recurring charge for a result the README calls meaningless. Manual only
+  // until the skill is model-invocable.
+  const ci = readFileSync(
+    resolve(import.meta.dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.doesNotMatch(ci, /if: github\.event_name == 'pull_request'/,
+    'the eval must not run per pull request while it cannot measure the skill — it bills ~$1.31 a run for a number the README documents as meaningless');
 });
 
 test('LOAD-BEARING: every case can tell whether the skill fired', () => {

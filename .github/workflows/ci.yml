@@ -61,7 +61,17 @@ jobs:
     # per invocation — disproportionate for a branch that might be pushed
     # twenty times before it's reviewed. Gate this where the signal is
     # actually needed: a pull request, or on demand.
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    # Manual only, deliberately. This suite cannot make harness-init fire —
+    # `disable-model-invocation: true` keeps the skill out of Claude's context,
+    # and the runner passes prompts verbatim rather than expanding slash
+    # commands (both confirmed in the Claude Code docs; see the README). So a
+    # pull-request trigger spent ~$1.31 and ~11 minutes per run to produce a
+    # `meanDelta: 0` the README explicitly says means nothing about the plugin.
+    #
+    # Kept rather than deleted: the suite, the graders and the diagnostics are
+    # all correct, and the moment the skill becomes model-invocable this starts
+    # measuring something real. Until then it runs when someone asks for it.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       configured: ${{ steps.probe.outputs.configured }}
