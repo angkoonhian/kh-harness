@@ -39,6 +39,50 @@ test('the eval runner\'s own output directory is not mistaken for a case', () =>
     `expected the real eval cases to survive enumeration, got: ${cases().join(', ') || '(none)'}`);
 });
 
+test('LOAD-BEARING: a failing eval job says WHY, and keeps its evidence', () => {
+  // A first CI run of this job failed in 13 seconds reporting nothing but
+  // "exit code 1". The result JSON — the only place the per-arm reason lives —
+  // stayed on the runner and was deleted with it. Undiagnosable red is the
+  // mirror of the green check that measured nothing; both have now shipped
+  // here, so both get a test.
+  const ci = readFileSync(
+    resolve(import.meta.dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+
+  assert.match(ci, /\.cases\[\]\?/,
+    'the job must print per-arm outcomes; the aggregate alone cannot distinguish an abort from a measured zero');
+  assert.match(ci, /\.value\[0\]\.error/,
+    'the per-arm error is the field that names the blocker — print it');
+  assert.match(ci, /upload-artifact/,
+    'the result JSON and report must outlive the runner, or a failure is unreproducible');
+
+  // The runner has no sandbox backend, and Claude Code refuses to grant Bash
+  // it cannot confine. Without these packages every arm aborts at turns=0
+  // before the model is called — measured on three separate CI runs, each
+  // reporting a meaningless `meanDelta: 0`.
+  assert.match(ci, /bubblewrap/,
+    'the eval grants Bash, which needs a sandbox backend installed on the runner');
+  assert.match(ci, /socat/,
+    'the sandbox backend needs socat as well as bubblewrap');
+
+  // Abort detection must key on agent turns, not cost: an all-aborted suite
+  // still billed 0.0055 USD for grader calls, so cost cannot tell the
+  // difference between "nothing ran" and "it ran and scored zero".
+  assert.match(ci, /\.turns \/\/ 0\] \| add/,
+    'sum agent turns to detect an abort; cost includes grader calls and so cannot');
+  assert.match(ci, /if:\s*always\(\)/,
+    'the upload must run on failure too — that is the case it exists for');
+
+  // The exit code has to survive the diagnostics, or a failing eval reports
+  // success and the gate becomes decorative.
+  //
+  // Anchored to a line that is ONLY `exit $code`. A bare /exit \$code/ also
+  // matched the validate step's error text `(exit $code)` in a different job,
+  // so deleting the real statement left this assertion green — the same
+  // duplicate-match flaw this suite already fixed once in the README tests.
+  assert.match(ci, /^\s*exit \$code\s*$/m,
+    'the eval must still fail the job after printing its diagnosis');
+});
+
 test('every eval case has a prompt and at least one grader', () => {
   for (const c of cases()) {
     const hasPrompt = existsSync(join(EVALS, c, 'prompt.md')) || existsSync(join(EVALS, c, 'case.yaml'));
