@@ -93,6 +93,57 @@ test('every eval case has a prompt and at least one grader', () => {
   }
 });
 
+test('DISCLOSED LIMITATION: this suite cannot make harness-init fire', () => {
+  // Two measured runs, ~$1.31 and ~11 minutes each, both reported
+  // `meanDelta: 0` with identical scores across arms. That reads as "the
+  // plugin makes no difference" and is not what happened: `uses-skill` FAILED
+  // both times, so the skill never ran and both arms were plain Claude.
+  //
+  // Confirmed against the docs, not inferred:
+  //   - skills.md: `disable-model-invocation: true` omits the skill's
+  //     description from Claude's context entirely. The model cannot know it
+  //     exists, so it has no basis to call the Skill tool.
+  //   - plugin-evals.md: "Claude receives the body exactly as you wrote it."
+  //     Slash commands are a client feature; the runner does not expand them,
+  //     so a literal `/harness-init` in a prompt is inert text.
+  //
+  // So no `tool_used: Skill` grader on harness-init can ever pass here, and no
+  // delta this suite reports is a statement about the plugin. An earlier
+  // version of this test asserted that each prompt contains `/harness-init`,
+  // which pinned that misconception in place — the line is harmless but does
+  // nothing, and a passing test implying otherwise is worse than no test.
+  //
+  // This asserts the limitation is written down where a reader of the numbers
+  // will see it, rather than asserting a workaround that does not exist.
+  const readme = readFileSync(resolve(import.meta.dirname, '..', '..', 'README.md'), 'utf8');
+  assert.match(readme, /disable-model-invocation/,
+    'the README must disclose why this suite cannot measure the skill, or its zero deltas will be read as findings');
+
+  // And it must not spend money per pull request producing that number. Each
+  // run costs ~$1.31 and ~11 minutes; on a pull_request trigger that is a
+  // recurring charge for a result the README calls meaningless. Manual only
+  // until the skill is model-invocable.
+  const ci = readFileSync(
+    resolve(import.meta.dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.doesNotMatch(ci, /if: github\.event_name == 'pull_request'/,
+    'the eval must not run per pull request while it cannot measure the skill — it bills ~$1.31 a run for a number the README documents as meaningless');
+});
+
+test('LOAD-BEARING: every case can tell whether the skill fired', () => {
+  // existing-claude-md had no tool_used grader, so when the skill silently
+  // failed to fire, that case reported a clean-looking 0.333 on both arms
+  // with no indication anything was wrong. An unswitched-on subject makes
+  // every scored number meaningless, so each case must be able to say so.
+  for (const c of cases()) {
+    const dir = join(EVALS, c, 'graders');
+    if (!existsSync(dir)) continue;
+    const bodies = readdirSync(dir).filter(f => f.endsWith('.md'))
+      .map(f => readFileSync(join(dir, f), 'utf8'));
+    assert.ok(bodies.some(b => /^\s*type:\s*tool_used\b/m.test(b)),
+      `${c} has no tool_used indicator — a delta from this case cannot be interpreted, because nothing proves the skill was switched on`);
+  }
+});
+
 test('LOAD-BEARING: at least one grader provably cannot pass without the plugin', () => {
   // The runtime excludes such graders from without-arm scoring, which is what
   // makes the delta meaningful. A suite of only regex/file_exists graders can

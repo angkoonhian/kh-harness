@@ -239,6 +239,26 @@ reference appears unreadable, that is an artifact of loading from an
 arbitrary path, not a defect in the skill. Prefer the real install path
 above when checking this.
 
+**The eval suite cannot measure `harness-init`, and its deltas are not
+findings about it.** `SKILL.md` sets `disable-model-invocation: true`, which
+per the Claude Code docs omits the skill's description from Claude's context
+entirely — the model cannot know it exists, so it never calls it. And
+`claude plugin eval` passes `prompt.md` to the model verbatim ("Claude
+receives the body exactly as you wrote it"), so a literal `/harness-init` in
+a prompt is inert text rather than an expanded slash command. A
+`tool_used: Skill` grader on this skill therefore cannot pass.
+
+Measured twice on CI, ~$1.31 and ~11 minutes per run: both reported
+`meanDelta: 0` with identical scores in both arms, which looks exactly like
+"the plugin makes no difference". It is not — the plugin was never engaged.
+The `uses-skill` indicator on each case is what reveals this, which is why
+every case carries one.
+
+Making the skill measurable this way would mean dropping
+`disable-model-invocation`, which is a deliberate product decision: setting
+up a harness is a human's call, not something to start unbidden. The scripts
+the skill routes to are covered by the unit suite instead.
+
 Evaluation suites exist under `evals/` and run via `claude plugin eval`. Each
 run spawns a full `claude` child process, so locally they use whatever
 credential you are already logged in with — no API key needed. CI is the
