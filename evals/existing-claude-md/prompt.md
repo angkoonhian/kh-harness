@@ -5,6 +5,8 @@ allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
 runs: 1
 ---
 
+Use /harness-init on this repository.
+
 I've had this project around for a while and never got around to setting
 up a proper development harness for it — no CI, no sensors, nothing like
 that written down anywhere. Can you look at what's actually here and get

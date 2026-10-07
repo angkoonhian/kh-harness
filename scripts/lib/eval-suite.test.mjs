@@ -93,6 +93,40 @@ test('every eval case has a prompt and at least one grader', () => {
   }
 });
 
+test('LOAD-BEARING: every case invokes the skill, because the model cannot', () => {
+  // The suite's first measured run cost $1.36 and 11 minutes to report a
+  // delta of zero on both cases — which read as "the plugin makes no
+  // difference" and was nothing of the kind. `uses-skill` had FAILED: the
+  // skill never fired, so both arms were plain Claude and identical scores
+  // were inevitable.
+  //
+  // Cause: SKILL.md sets `disable-model-invocation: true` on purpose, so
+  // harness-init is user-invocable only. Prompts that describe a task and
+  // hope Claude reaches for the skill are asking for something the frontmatter
+  // forbids. The prompt must invoke it the way a user does.
+  for (const c of cases()) {
+    const p = join(EVALS, c, 'prompt.md');
+    if (!existsSync(p)) continue;
+    assert.match(readFileSync(p, 'utf8'), /\/harness-init/,
+      `${c}'s prompt must invoke /harness-init explicitly — the skill sets disable-model-invocation, so it can never fire on description alone`);
+  }
+});
+
+test('LOAD-BEARING: every case can tell whether the skill fired', () => {
+  // existing-claude-md had no tool_used grader, so when the skill silently
+  // failed to fire, that case reported a clean-looking 0.333 on both arms
+  // with no indication anything was wrong. An unswitched-on subject makes
+  // every scored number meaningless, so each case must be able to say so.
+  for (const c of cases()) {
+    const dir = join(EVALS, c, 'graders');
+    if (!existsSync(dir)) continue;
+    const bodies = readdirSync(dir).filter(f => f.endsWith('.md'))
+      .map(f => readFileSync(join(dir, f), 'utf8'));
+    assert.ok(bodies.some(b => /^\s*type:\s*tool_used\b/m.test(b)),
+      `${c} has no tool_used indicator — a delta from this case cannot be interpreted, because nothing proves the skill was switched on`);
+  }
+});
+
 test('LOAD-BEARING: at least one grader provably cannot pass without the plugin', () => {
   // The runtime excludes such graders from without-arm scoring, which is what
   // makes the delta meaningful. A suite of only regex/file_exists graders can

@@ -5,6 +5,8 @@ allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
 runs: 1
 ---
 
+Use /harness-init on this repository.
+
 This is a brand-new TypeScript project. There's no CI, no CLAUDE.md, no
 linting hooks, nothing written down about how it's structured or how to
 work in it safely. Can you look at what's actually here and get it set up
