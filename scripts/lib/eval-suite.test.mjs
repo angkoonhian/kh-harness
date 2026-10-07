@@ -93,23 +93,31 @@ test('every eval case has a prompt and at least one grader', () => {
   }
 });
 
-test('LOAD-BEARING: every case invokes the skill, because the model cannot', () => {
-  // The suite's first measured run cost $1.36 and 11 minutes to report a
-  // delta of zero on both cases — which read as "the plugin makes no
-  // difference" and was nothing of the kind. `uses-skill` had FAILED: the
-  // skill never fired, so both arms were plain Claude and identical scores
-  // were inevitable.
+test('DISCLOSED LIMITATION: this suite cannot make harness-init fire', () => {
+  // Two measured runs, ~$1.31 and ~11 minutes each, both reported
+  // `meanDelta: 0` with identical scores across arms. That reads as "the
+  // plugin makes no difference" and is not what happened: `uses-skill` FAILED
+  // both times, so the skill never ran and both arms were plain Claude.
   //
-  // Cause: SKILL.md sets `disable-model-invocation: true` on purpose, so
-  // harness-init is user-invocable only. Prompts that describe a task and
-  // hope Claude reaches for the skill are asking for something the frontmatter
-  // forbids. The prompt must invoke it the way a user does.
-  for (const c of cases()) {
-    const p = join(EVALS, c, 'prompt.md');
-    if (!existsSync(p)) continue;
-    assert.match(readFileSync(p, 'utf8'), /\/harness-init/,
-      `${c}'s prompt must invoke /harness-init explicitly — the skill sets disable-model-invocation, so it can never fire on description alone`);
-  }
+  // Confirmed against the docs, not inferred:
+  //   - skills.md: `disable-model-invocation: true` omits the skill's
+  //     description from Claude's context entirely. The model cannot know it
+  //     exists, so it has no basis to call the Skill tool.
+  //   - plugin-evals.md: "Claude receives the body exactly as you wrote it."
+  //     Slash commands are a client feature; the runner does not expand them,
+  //     so a literal `/harness-init` in a prompt is inert text.
+  //
+  // So no `tool_used: Skill` grader on harness-init can ever pass here, and no
+  // delta this suite reports is a statement about the plugin. An earlier
+  // version of this test asserted that each prompt contains `/harness-init`,
+  // which pinned that misconception in place — the line is harmless but does
+  // nothing, and a passing test implying otherwise is worse than no test.
+  //
+  // This asserts the limitation is written down where a reader of the numbers
+  // will see it, rather than asserting a workaround that does not exist.
+  const readme = readFileSync(resolve(import.meta.dirname, '..', '..', 'README.md'), 'utf8');
+  assert.match(readme, /disable-model-invocation/,
+    'the README must disclose why this suite cannot measure the skill, or its zero deltas will be read as findings');
 });
 
 test('LOAD-BEARING: every case can tell whether the skill fired', () => {
