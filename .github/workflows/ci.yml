@@ -106,6 +106,13 @@ jobs:
       # Deliberately unpinned — same rationale as the manifest-validation step above.
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
+      # The eval grants Bash, and Claude Code refuses to grant a shell it
+      # cannot confine (sandbox.failIfUnavailable). GitHub's ubuntu runner
+      # ships neither backend, so without this every arm aborts with turns=0
+      # before the model is called — which is how three earlier runs produced
+      # a meaningless `meanDelta: 0`.
+      - name: Install the Bash sandbox backend
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap socat
       - name: Run the plugin eval suite
         shell: bash
         env:
@@ -155,10 +162,13 @@ jobs:
             jq -r '{durationSeconds, costUsd, partial, aggregates}' "$RUNNER_TEMP/eval-result.json" || true
             echo "::endgroup::"
 
-            # Cost is the honest test of whether anything ran at all.
-            spent=$(jq -r '.costUsd // 0' "$RUNNER_TEMP/eval-result.json")
-            if [ "$spent" = "0" ] && [ "$code" -ne 0 ]; then
-              echo "::error::The eval suite ABORTED before calling the model (costUsd=0). Any delta in the aggregate above is an artefact of that abort, not a measurement. Read the per-arm errors."
+            # Turns, not cost, is the honest test of whether the agent ran.
+            # Measured: an all-aborted suite still reported costUsd 0.0055,
+            # because the graders are billed even when every arm stopped at
+            # turns=0. Keying this on cost let the abort read as a real run.
+            turns=$(jq -r '[.cases[]?.arms[]?[]?.turns // 0] | add // 0' "$RUNNER_TEMP/eval-result.json")
+            if [ "$turns" = "0" ]; then
+              echo "::error::The eval suite ABORTED before calling the model (0 agent turns across all arms). Any delta in the aggregate above is an artefact of that abort, not a measurement — grader calls still cost money, so a non-zero costUsd does not mean the agent ran. Read the per-arm errors."
             fi
           else
             echo "::error::No result JSON was written — the suite failed before it could report."

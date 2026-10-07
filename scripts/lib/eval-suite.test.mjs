@@ -54,6 +54,21 @@ test('LOAD-BEARING: a failing eval job says WHY, and keeps its evidence', () => 
     'the per-arm error is the field that names the blocker — print it');
   assert.match(ci, /upload-artifact/,
     'the result JSON and report must outlive the runner, or a failure is unreproducible');
+
+  // The runner has no sandbox backend, and Claude Code refuses to grant Bash
+  // it cannot confine. Without these packages every arm aborts at turns=0
+  // before the model is called — measured on three separate CI runs, each
+  // reporting a meaningless `meanDelta: 0`.
+  assert.match(ci, /bubblewrap/,
+    'the eval grants Bash, which needs a sandbox backend installed on the runner');
+  assert.match(ci, /socat/,
+    'the sandbox backend needs socat as well as bubblewrap');
+
+  // Abort detection must key on agent turns, not cost: an all-aborted suite
+  // still billed 0.0055 USD for grader calls, so cost cannot tell the
+  // difference between "nothing ran" and "it ran and scored zero".
+  assert.match(ci, /\.turns \/\/ 0\] \| add/,
+    'sum agent turns to detect an abort; cost includes grader calls and so cannot');
   assert.match(ci, /if:\s*always\(\)/,
     'the upload must run on failure too — that is the case it exists for');
 
