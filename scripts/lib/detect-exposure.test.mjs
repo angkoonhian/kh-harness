@@ -431,11 +431,27 @@ test('finds today\'s provider token shapes: OpenAI project, Anthropic, npm, fine
   }
 });
 
-test('a provider-token shape inside a longer word is not a token', () => {
+test('a provider-token shape inside a longer word, or hyphenated prose starting with sk-, is not a token', () => {
   const d = repo();
-  // `desk-` followed by 25 token characters contains `sk-…` as a substring.
-  write(d, 'notes.md', `desk-${'F'.repeat(25)} is a furniture SKU\n`);
+  // `desk-` followed by 25 token characters contains `sk-…` as a substring;
+  // the two prose lines are what the hyphen-tolerant rule must NOT match
+  // (final review, Important 1: both read as high findings).
+  write(d, 'notes.md', [
+    `desk-${'F'.repeat(25)} is a furniture SKU`,
+    'see /sk-hynix-memory-chips-report-2024 for the numbers',
+    'the sk-learn-compatible-estimator-api page explains it',
+  ].join('\n') + '\n');
   assert.deepEqual(run(d), []);
+});
+
+test('a real key whose random body happens to contain xxx is still found; an all-filler body is not', () => {
+  const real = repo();
+  write(real, 'config.txt', `KEY=${['sk-proj', 'Ab1'.repeat(10) + 'xxx' + 'Cd2'.repeat(10)].join('-')}\n`);
+  assert.equal(run(real).length, 1, 'final review, Important 2: a filler substring must not hide a real key');
+
+  const filler = repo();
+  write(filler, 'docs/setup.md', `export GITHUB_TOKEN=${['ghp', 'x'.repeat(24)].join('_')}\nAWS_ACCESS_KEY_ID=${['AKIA', 'IOSFODNN7EXAMPLE'].join('')}\n`);
+  assert.deepEqual(run(filler), [], 'an all-x body and the documented AWS example key are placeholders');
 });
 
 test('a Bearer placeholder is not a token finding', () => {
@@ -525,7 +541,10 @@ test('pathRole: test directories and test-named files are "test"; everything els
   for (const p of ['tests/db.json', 'src/__tests__/a.ts', 'spec/x.rb', 'fixtures/creds.yml', 'a/b/testdata/x', 'src/__mocks__/api.ts', 'e2e/login.ts', 'src/a.test.ts', 'src/a.spec.js', 'pkg/test_db.py', 'pkg/db_test.py', 'pkg/db_test.go']) {
     assert.equal(pathRole(p), 'test', p);
   }
-  for (const p of ['src/db.ts', 'docs/testing.md', 'contest/x.ts', 'src/latest.ts', '.env', 'src/testing-utils.ts', 'attest/x.go']) {
+  // `docs/specs/` (final review, Important 3): design documents, OpenAPI
+  // specs and RFCs live there far more often than RSpec files; only the
+  // singular `spec/` is a test convention.
+  for (const p of ['src/db.ts', 'docs/testing.md', 'contest/x.ts', 'src/latest.ts', '.env', 'src/testing-utils.ts', 'attest/x.go', 'docs/specs/openapi.md', 'docs/superpowers/specs/design.md']) {
     assert.equal(pathRole(p), null, p);
   }
 });

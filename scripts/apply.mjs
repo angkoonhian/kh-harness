@@ -51,11 +51,11 @@ const git = gitInfo(root);
 // the end of this run (see writeManifest below), permanently losing the
 // record of every file a prior install wrote. Those files become
 // invisible to `uninstall` forever, with no notice. Same contract as the
-// default-branch and dirty-tree refusals above: exit 3, name the file,
+// default-branch and dirty-tree refusals in `gateRefusals` below: exit 3, name the file,
 // no automatic repair. A CORRUPT manifest cannot be trusted to name what
 // is "ours" either, so `ownedByUs` stays empty in that case and the gate
 // below falls back to its original, strict behaviour — the corrupt-
-// manifest refusal a few lines down still fires regardless.
+// manifest refusal after detection still fires regardless.
 const manifestResult = readManifestResult(root);
 
 /**
@@ -182,6 +182,13 @@ function gateRefusals() {
 }
 
 const refusals = gateRefusals();
+// Both gates waived over a git failure: the run proceeds, and the checks
+// treat the directory as not under version control (P4.remote may propose a
+// remote). Said once, as `detect` says it, so the waiver never makes the
+// failure silent.
+if (git.error && refusals.length === 0) {
+  process.stderr.write(`kh-harness: ${git.error} — proceeding with both gates waived; the checks treat this directory as not under version control.\n`);
+}
 if (flags.has('--yes') && refusals.length) {
   for (const r of refusals) process.stderr.write(`kh-harness: ${r}\n`);
   process.exit(3);
@@ -260,7 +267,7 @@ const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, ha
 //
 // This is computed BEFORE the apply and reported after it. Since the
 // upgrade-skew fix, propose.mjs DOES re-propose a recorded file — but only
-// one that classifies `ours-unmodified` (byte-identical to the manifest,
+// one that classifies `ours-unmodified` (identical to the manifest up to line endings,
 // stamped), as an update. That is why computing drift first stays correct:
 // drift is the `ours-modified` set, an update touches only `ours-unmodified`
 // files, and writing one re-records its hash, so no file can move INTO the

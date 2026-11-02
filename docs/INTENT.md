@@ -39,7 +39,7 @@ verified, declared, absent, failing or not applicable, with the evidence
 it read. `apply` writes only what `detect` proposed, inside a write
 allowlist enforced in code, and records every write in a manifest by
 content hash. `uninstall` removes only what the manifest records, only
-when the bytes still match and still carry the generator's stamp, and
+when the content still matches (line endings aside) and still carries the generator's stamp, and
 never a file the user has written into. The `harness-init` skill walks a
 human through the phases, gating every judgement step. Mechanics live in
 `scripts/` and are unit-tested; judgement lives in `skills/` as prose the

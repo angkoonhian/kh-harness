@@ -104,6 +104,10 @@ const CONFIG_SHAPED = /(?:\.(?:json|ya?ml|toml|[cm]?[jt]s|cfg|ini|conf)|(?:^|[/=
 // A flag whose NAME is credential-shaped is never exempt, whatever its value
 // looks like: `--token=secrets.json` is still a token.
 const CREDENTIAL_FLAG = /^--?(?:[\w-]*(?:token|key|secret|password|passwd|pwd|auth)[\w-]*)=/i;
+// Nor is anything that can carry userinfo: a URL or an `scp`-style
+// `user@host:path`, whatever it ends in (final review: `…@host/x.json`
+// was exempt by its suffix and a credential URL survived layer 1).
+const CARRIES_USERINFO = /:\/\/|@/;
 
 /**
  * The tokens of `command` that name a PATH or a CONFIG FILE rather than
@@ -129,7 +133,7 @@ export function pathTokenExemptions(command, paths = []) {
   };
   const exempt = new Set();
   for (const token of commandTokens(command)) {
-    if (CREDENTIAL_FLAG.test(token)) continue;
+    if (CREDENTIAL_FLAG.test(token) || CARRIES_USERINFO.test(token)) continue;
     if (isDirPrefixOrSelf(token) || CONFIG_SHAPED.test(token)) exempt.add(token);
   }
   return exempt;

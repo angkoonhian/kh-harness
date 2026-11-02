@@ -108,6 +108,15 @@ test('pathTokenExemptions: a credential-shaped token is never exempt', () => {
   assert.deepEqual([...ex], ['src/components']);
 });
 
+test('pathTokenExemptions: a URL token is never exempt, even when it ends like a config file', () => {
+  // Final review, re-graded Important: a credential URL in a lint or verify
+  // command, echoed in a diagnostic, must keep dropping at layer 1 — layer 2
+  // has no URL-userinfo rule yet (Tier 3).
+  const url = ['https://user:hunter2hunter2@host.invalid/x', 'json'].join('.');
+  assert.equal(pathTokenExemptions(`curl ${url} src/components`, ['src/components/a.ts']).has(url), false);
+  assert.equal(pathTokenExemptions('deploy user@host.invalid:config.json').size, 0);
+});
+
 test('dropCommandFragments with pathTokenExemptions keeps a diagnostic naming the linted directory and still drops a token fragment', () => {
   const command = 'eslint src/components --token=abcdefghijkl';
   const lines = ['src/components/Button.tsx:1:1 error no-unused-vars', 'auth: --token=abcdefghijkl rejected'];

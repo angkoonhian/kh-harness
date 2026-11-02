@@ -13,7 +13,7 @@
 // are the cases it did not cover.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -22,14 +22,12 @@ import { envWithoutGit } from './git-info.test.mjs';
 const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
 const git = (d, ...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 
-/** Runs apply and returns `{ code, stdout, stderr }` whatever the exit. */
+/** Runs apply and returns `{ code, stdout, stderr }` whatever the exit —
+ * spawnSync, because execFileSync's success path discards stderr, and the
+ * both-waivers test below asserts on stderr of a run that exits 0. */
 function apply(d, args = [], env = process.env) {
-  try {
-    const stdout = execFileSync(process.execPath, [APPLY, d, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
-    return { code: 0, stdout, stderr: '' };
-  } catch (e) {
-    return { code: e.status, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
-  }
+  const r = spawnSync(process.execPath, [APPLY, d, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+  return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
 /** A repository that has something to propose (HANDOFF.md, at least) on
@@ -113,11 +111,15 @@ test('apply --yes refuses, naming both waivers, when git cannot run', () => {
   assert.equal(existsSync(join(d, 'HANDOFF.md')), false);
 });
 
-test('apply --yes with both waivers proceeds when git cannot run', () => {
+test('apply --yes with both waivers proceeds when git cannot run, and still says so', () => {
   const d = repoOn('feat/x');
   const r = apply(d, ['--yes', '--allow-default-branch', '--allow-dirty'], envWithoutGit());
   assert.equal(r.code, 0, JSON.stringify(r));
   assert.equal(existsSync(join(d, 'HANDOFF.md')), true);
+  // Final review, Minor 10 re-graded: with git unavailable the checks run as
+  // for a non-repository (P4.remote may propose "add a remote"), and the
+  // user must be told why — detect already says it on stderr.
+  assert.match(r.stderr, /git/i, 'the waived gates must not make the git failure silent');
 });
 
 test('a dry run when git cannot run is not refused and says the gates could not be checked', () => {

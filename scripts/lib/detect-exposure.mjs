@@ -45,7 +45,11 @@ const TOKEN_PATTERNS = [
   /\bglpat-[A-Za-z0-9_-]{16,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{16,}/g,
   /\bgithub_pat_[A-Za-z0-9_]{22,}/g,
-  /\bsk-[A-Za-z0-9_-]{20,}/g,
+  // The hyphenated body is admitted only after a known vendor prefix: a
+  // bare `sk-[A-Za-z0-9_-]{20,}` read `/sk-hynix-memory-chips-report-2024`
+  // and `sk-learn-compatible-estimator-api` as high findings (final
+  // review, Important 1). The legacy alphanumeric-only form stays.
+  /\bsk-(?:[A-Za-z0-9]{20,}|(?:proj|ant|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,})/g,
   /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g,
   /\bAKIA[0-9A-Z]{16}/g,
   /\bnpm_[A-Za-z0-9]{36}/g,
@@ -72,6 +76,17 @@ const DB_CRED = /(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]
 // value; and it was never applied to tokens, so `Bearer YOUR_TOKEN_HERE` was
 // a permanent high finding.
 const PLACEHOLDER = /(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|^(password|secret|todo)$)/i;
+
+// What makes a TOKEN a placeholder is a filler that dominates its body —
+// the documented AWS example key, `ghp_xxxxxxxxxxxxxxxx`, `<your-token>` —
+// never a three-letter substring: a real base62 body of 150 characters has
+// roughly a 0.5 % chance of containing `xxx`, and skipping it would be a
+// false `verified`, the one direction this check must not fail in (final
+// review, Important 2). A `Bearer` value keeps the fuller PLACEHOLDER rule:
+// its body is free text in the documentation that carries it. A run of one
+// repeated letter is NOT treated as filler: real documentation fills with
+// `x`, `*` or `#`, and over-reporting a repeated letter is the safe direction.
+const TOKEN_PLACEHOLDER = /your[-_]|example|placeholder|changeme|redacted|<|[_-][x*#]{8,}$/i;
 
 // Task 9b, finding 1: a credential-shaped key (`password:`, `pwd=`, ...)
 // whose VALUE is a code reference — a property access, a function call, or a
@@ -253,8 +268,10 @@ const SKIP_DIRS = ['node_modules/', '.git/', 'dist/', 'build/'];
 // TOKEN keeps its severity wherever it sits, because a live key in a test
 // file is still a live key. Matched on whole directory segments and whole
 // filenames, never substrings — `contest/`, `latest.ts` and
-// `testing-utils.ts` are not test paths.
-const TEST_DIR_SEGMENTS = new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'fixtures', '__fixtures__', 'testdata', 'mocks', '__mocks__', 'e2e']);
+// `testing-utils.ts` are not test paths. `spec/` (RSpec) counts; `specs/`
+// does not — it holds design documents, OpenAPI specs and RFCs far more
+// often than tests (final review, Important 3).
+const TEST_DIR_SEGMENTS = new Set(['test', 'tests', '__tests__', 'spec', 'fixtures', '__fixtures__', 'testdata', 'mocks', '__mocks__', 'e2e']);
 const TEST_FILE_PATTERNS = [/\.(?:test|spec)\.[^.]+$/, /^test_.*\.py$/, /_test\.(?:py|go)$/];
 
 /**
@@ -329,7 +346,9 @@ function tokenFinding(text) {
   let first = null;
   for (const re of [...TOKEN_PATTERNS, PEM_PATTERN]) {
     for (const m of text.matchAll(re)) {
-      if (isPlaceholder(m[0].replace(/^Bearer\s+/i, ''))) continue;
+      const isBearer = /^Bearer\s/i.test(m[0]);
+      const body = isBearer ? m[0].replace(/^Bearer\s+/i, '') : m[0];
+      if (isBearer ? isPlaceholder(body) : TOKEN_PLACEHOLDER.test(body)) continue;
       if (first === null || m.index < first) first = m.index;
       break; // earliest surviving match of THIS pattern found; the next pattern may be earlier still
     }

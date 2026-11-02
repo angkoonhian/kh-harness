@@ -612,7 +612,7 @@ const GENERATORS = {
  *
  * A path the manifest already records is NOT simply skipped. Since the
  * upgrade-skew fix (see the comment inside the loop), a recorded file that
- * is still byte-identical to what we wrote, still carries our stamp, and
+ * is still what we wrote (line endings aside), still carries our stamp, and
  * whose generated content has changed is re-proposed as an UPDATE —
  * exactly once per run. A recorded file the user edited or deleted is
  * still never re-proposed: their edit or deletion is a decision, not a
@@ -652,7 +652,7 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
         // `applyFileProposal` has implemented the update branch all along.
         // Only this dedupe never offered it anything. So: a recorded path is
         // re-proposed when, and only when, (a) `root` is known, (b)
-        // `classify` says the on-disk file is still byte-identical to what
+        // `classify` says the on-disk file is still identical, line endings aside, to what
         // we wrote — a user's edit, or a deletion, keeps the old rule — (c)
         // the on-disk bytes carry the kit's own stamp — whole-branch review,
         // Important 2: the manifest is a file in the repository and a forged

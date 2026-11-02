@@ -119,7 +119,8 @@ test('TIMEOUT: a run that emits an attributable line and THEN hangs is still not
 test('a lint script that names the edited file\'s directory still reports its diagnostics', () => {
   // The linter is a FILE, as a real one is, so the command carries only
   // `node lint.cjs src/components` — a `-e` body would put the diagnostic's
-  // own text into the command's tokens (see the fixture note above).
+  // own text into the command's tokens, and layer-1 redaction would drop
+  // the very diagnostic under test.
   const d = repo('node lint.cjs src/components');
   writeFileSync(join(d, 'lint.cjs'), "console.error(process.argv[2] + '/Button.tsx:1:1 error x'); process.exit(1);\n");
   mkdirSync(join(d, 'src', 'components'), { recursive: true });
