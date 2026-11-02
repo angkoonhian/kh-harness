@@ -573,10 +573,12 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
  * write them. Without this, a hook that shares a dependency with another
  * (e.g. lint-touched.mjs and verify-touched.mjs both importing
  * harness-redact.mjs) could get registered in one run while the shared
- * file was never (re)written in that same run — propose.mjs's own
- * "never re-propose a file already in the manifest" rule means exactly
- * this happens once a user deletes the shared file and only ONE of the
- * two hooks' checks is absent on a later run. The result without this
+ * file was never (re)written in that same run — propose.mjs never
+ * re-proposes a recorded file the user DELETED (a deletion classifies
+ * `ours-modified`; only an `ours-unmodified`, stamped file is ever offered
+ * as an update), so exactly this happens once a user deletes the shared
+ * file and only ONE of the two hooks' checks is absent on a later run.
+ * The result without this
  * check: a `Stop`/`PostToolUse` hook registered, exiting 0 or 2 as far as
  * settings.json is concerned, that actually dies with
  * `ERR_MODULE_NOT_FOUND` on every turn or every edit.

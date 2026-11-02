@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { render, versionStamp, STAMP_MARKER } from './render.mjs';
 import { classify, sha256 } from './manifest.mjs';
 import { selectProfile } from './profiles/index.mjs';
@@ -608,7 +609,27 @@ const GENERATORS = {
  * the growing set, not only the manifest snapshot, is what keeps a shared
  * asset proposed exactly once per run regardless of how many generators
  * want it.
+ *
+ * A path the manifest already records is NOT simply skipped. Since the
+ * upgrade-skew fix (see the comment inside the loop), a recorded file that
+ * is still byte-identical to what we wrote, still carries our stamp, and
+ * whose generated content has changed is re-proposed as an UPDATE —
+ * exactly once per run. A recorded file the user edited or deleted is
+ * still never re-proposed: their edit or deletion is a decision, not a
+ * gap to re-fill ("a file already in the manifest is not re-proposed" in
+ * propose.test.mjs pins the deleted case; the UPGRADE tests pin the rest).
  */
+/** The same in-file provenance uninstall-lib.mjs's `carriesOurStamp`
+ * demands before deleting, applied before UPDATING. Fails closed: a file
+ * that cannot be read is not shown to be ours. */
+function onDiskCarriesStamp(root, relPath) {
+  try {
+    return readFileSync(join(root, relPath), 'utf8').includes(STAMP_MARKER);
+  } catch {
+    return false;
+  }
+}
+
 export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files, generators = {} }) {
   const registry = { ...GENERATORS, ...generators };
   const recorded = new Map((manifest?.files ?? []).map(f => [f.path, f]));
@@ -625,21 +646,34 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
         // prior run's harness-redact.mjs was recorded in the manifest, so
         // the dedupe kept the 0.1.0 copy while installing a hook that
         // imports `parseRules` from it — a hook that died at import on
-        // every prompt. The spec's own manifest table (§8) says a file
-        // whose bytes still match its manifest hash is "ours and
-        // unmodified — may be UPDATED"; apply-lib.mjs's `applyFileProposal`
-        // has implemented that update branch all along. Only this dedupe
-        // never offered it anything. So: a recorded path is re-proposed
-        // when, and only when, (a) `root` is known, (b) `classify` says the
-        // on-disk file is still byte-identical to what we wrote — a user's
-        // edit, or a deletion, keeps the old rule — and (c) the generated
-        // content differs, so there is something to update. The `reason`
-        // says all of that, because it is printed at the gate.
+        // every prompt. The original harness-kit design's manifest table
+        // ("Behaviour on re-run": matches manifest → "ours and unmodified —
+        // may be updated") always allowed this; apply-lib.mjs's
+        // `applyFileProposal` has implemented the update branch all along.
+        // Only this dedupe never offered it anything. So: a recorded path is
+        // re-proposed when, and only when, (a) `root` is known, (b)
+        // `classify` says the on-disk file is still byte-identical to what
+        // we wrote — a user's edit, or a deletion, keeps the old rule — (c)
+        // the on-disk bytes carry the kit's own stamp — whole-branch review,
+        // Important 2: the manifest is a file in the repository and a forged
+        // entry naming a user's real file with its real hash also classifies
+        // `ours-unmodified`; uninstall-lib.mjs refuses that exact shape via
+        // `carriesOurStamp`, and an UPDATE path that trusted the hash alone
+        // would be the write-side version of the hole uninstall closed — and
+        // (d) the generated content differs, so there is something to
+        // update. Once per run (review, Important 1): the first generator
+        // to want the stale asset gets the update; later ones in the same
+        // run see it in `recorded` no longer and in `alreadyWritten` still,
+        // so they skip — the "exactly once per run" promise in this
+        // function's docstring holds for updates as it does for new files.
+        // The `reason` says all of this, because it is printed at the gate.
         const entry = recorded.get(p.path);
         const upgradable = root && entry
           && classify(root, manifest, p.path) === 'ours-unmodified'
+          && onDiskCarriesStamp(root, p.path)
           && sha256(p.contents) !== entry.sha256;
         if (!upgradable) continue;
+        recorded.delete(p.path);
         out.push({ ...p, checkId: c.id, reason: `update ${p.path} — unmodified since kh-harness wrote it, and the generated content has changed (${p.reason})` });
         continue;
       }

@@ -209,21 +209,24 @@ reportWhatDetectionFound();
 const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });
 
 // Files this kit previously wrote whose content on disk no longer matches
-// what the manifest recorded. propose.mjs deliberately never re-proposes a
-// file already in the manifest — even once its check looks 'absent' again,
-// e.g. because the user deleted it — a user's edit or deletion is a
-// decision, not a gap to re-fill (see "a file already in the manifest is
-// not re-proposed" in propose.test.mjs). That file therefore never reaches
-// applyProposals, so its drift must be surfaced here instead, independent
-// of whatever else this run does or doesn't propose. Silent drift is drift
-// the user never finds out about.
+// what the manifest recorded. propose.mjs never re-proposes a file the user
+// has EDITED or DELETED — even once its check looks 'absent' again — a
+// user's edit or deletion is a decision, not a gap to re-fill (see "a file
+// already in the manifest is not re-proposed" in propose.test.mjs). Such a
+// file therefore never reaches applyProposals, so its drift must be
+// surfaced here instead, independent of whatever else this run does or
+// doesn't propose. Silent drift is drift the user never finds out about.
 //
-// This is computed BEFORE the apply and reported after it. That is only
-// correct because propose.mjs never re-proposes a file already in the
-// manifest, so nothing this run writes can change any of these
-// classifications. If that rule ever changes, this must move below
-// applyProposals — it would otherwise report a pre-apply snapshot as though
-// it were the state the user is left with.
+// This is computed BEFORE the apply and reported after it. Since the
+// upgrade-skew fix, propose.mjs DOES re-propose a recorded file — but only
+// one that classifies `ours-unmodified` (byte-identical to the manifest,
+// stamped), as an update. That is why computing drift first stays correct:
+// drift is the `ours-modified` set, an update touches only `ours-unmodified`
+// files, and writing one re-records its hash, so no file can move INTO the
+// modified set because of anything this run writes. If an update path for
+// modified files is ever added, this must move below applyProposals — it
+// would otherwise report a pre-apply snapshot as though it were the state
+// the user is left with.
 const drift = (manifest.files ?? [])
   .filter(f => classify(root, manifest, f.path) === 'ours-modified')
   .map(f => f.path);

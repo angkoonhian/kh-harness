@@ -157,3 +157,28 @@ test('an older harness-redact.mjs beside the hook produces one stderr line namin
   assert.match(r.stderr, /apply/);
   assert.equal(r.stderr.trim().split('\n').length, 1, 'one line, not a stack trace');
 });
+
+test('REVIEW-6: a MISSING harness-redact.mjs beside the hook also produces one stderr line and exit 1, never a stack trace', () => {
+  const d = repo();
+  registry(d, TWO_RULES);
+  mkdirSync(join(d, '.claude', 'scripts'), { recursive: true });
+  copyFileSync(SCRIPT, join(d, '.claude', 'scripts', 'rules-brief.mjs'));
+  const r = spawnSync(process.execPath, [join(d, '.claude', 'scripts', 'rules-brief.mjs')], {
+    cwd: d, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: d, HK_RULES_BRIEF_MAX_BYTES: '' },
+  });
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr.trim().split('\n').length, 1, `one line, not a stack trace: ${r.stderr}`);
+  assert.match(r.stderr, /harness-redact\.mjs/);
+  assert.match(r.stderr, /missing|not found|older/i);
+});
+
+test('REVIEW-4: the skew notice names the fallback for when apply cannot update the asset', () => {
+  const d = repo();
+  registry(d, TWO_RULES);
+  mkdirSync(join(d, '.claude', 'scripts'), { recursive: true });
+  copyFileSync(SCRIPT, join(d, '.claude', 'scripts', 'rules-brief.mjs'));
+  writeFileSync(join(d, '.claude', 'scripts', 'harness-redact.mjs'), 'export function projectRoot() { return process.cwd(); }\n');
+  const r = spawnSync(process.execPath, [join(d, '.claude', 'scripts', 'rules-brief.mjs')], { cwd: d, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: d } });
+  assert.match(r.stderr, /uninstall/, 'when apply reports the asset as modified (CRLF checkouts, hand edits), uninstall then apply is the way through');
+});

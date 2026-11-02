@@ -1431,3 +1431,29 @@ test('UPGRADE: with no root given, the dedupe falls back to the old manifest-onl
   const ps = buildProposals(a);
   assert.equal(ps.find(p => p.path === REDACT_PATH), undefined);
 });
+
+// --- Whole-branch review, Important 1 and 2 (the upgrade path) -------------
+
+test('REVIEW-1: a stale shared asset wanted by TWO absent hook checks is re-proposed exactly once per run', () => {
+  const d = root();
+  const manifest = manifestWith(d, REDACT_PATH, OLD_REDACT);
+  const checks = [
+    check({ id: 'P3.reinject', step: 28, phase: 3, proposal: 'register the hook' }),
+    check({ id: 'P4.sessionbrief', step: 16, phase: 4, proposal: 'install session brief' }),
+  ];
+  const ps = buildProposals(reinjectArgsAt(d, manifest, checks));
+  const updates = ps.filter(p => p.path === REDACT_PATH);
+  assert.equal(updates.length, 1, `the shared asset must be offered once, got ${updates.length}: ${JSON.stringify(ps.map(p => p.path ?? p.event))}`);
+  assert.ok(ps.some(p => p.path === RULES_BRIEF_PATH));
+  assert.ok(ps.some(p => p.path === '.claude/scripts/session-brief.mjs'));
+});
+
+test('REVIEW-2: a hash-matching recorded file WITHOUT the kit\'s stamp is never offered an update — the manifest alone is forgeable', () => {
+  const d = root();
+  // A user's own file, with a manifest entry forged to its real hash: the
+  // exact shape uninstall-lib.mjs's carriesOurStamp exists to refuse.
+  const theirs = '// my own redaction helper, nothing to do with kh-harness\nexport function projectRoot() { return process.cwd(); }\n';
+  const manifest = manifestWith(d, REDACT_PATH, theirs);
+  const ps = buildProposals(reinjectArgsAt(d, manifest, [check({ id: 'P3.reinject', step: 28, phase: 3, proposal: 'register the hook' })]));
+  assert.equal(ps.find(p => p.path === REDACT_PATH), undefined, 'no stamp on disk → not ours to update, whatever the manifest claims');
+});

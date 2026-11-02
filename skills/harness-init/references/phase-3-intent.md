@@ -118,10 +118,15 @@ rules are added to the model's context on **every prompt** — `high`
 priority first, superseded rules skipped, bounded at **1500 bytes** with
 the cut announced in the text itself. The hook reads one file
 (`docs/harness/RULES.md`) and executes nothing else: it runs no script of
-this repository's, writes nothing, keeps no state, and on any failure
-prints nothing and exits 0. It is the only hook this kit installs that is
-*meant* to fail open, because it injects a reminder rather than guarding
-an action. *Verified against `assets/scripts/rules-brief.mjs`'s header
+this repository's, writes nothing, keeps no state, and when the registry
+is missing, unreadable or empty it prints nothing and exits 0. It is the
+only hook this kit installs that is *meant* to fail open, because it
+injects a reminder rather than guarding an action. The one exception is
+visible, not silent: if the shared `harness-redact.mjs` beside it is
+missing or older than the hook (a repository upgraded from an earlier
+kh-harness), it prints one line to stderr naming the fix and exits 1 — a
+hook-error notice in the transcript, never a blocked prompt and never a
+stack trace. *Verified against `assets/scripts/rules-brief.mjs`'s header
 comment, which states each of these properties.*
 
 Gate: show the dry run, name the two script files and the settings patch

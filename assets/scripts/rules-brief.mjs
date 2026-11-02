@@ -47,10 +47,27 @@ import { join } from 'node:path';
 // prompt, which a reminder must never do), and nothing on stdout. Silent
 // exit 0 was rejected: a reminder that quietly stopped arriving is the
 // failure this whole phase exists to prevent.
-const asset = await import('./harness-redact.mjs');
+//
+// The remedy named below has a fallback for a reason (whole-branch review,
+// Important 4): `apply` updates the shared asset only when it is still
+// byte-identical to what the kit wrote. On a Windows checkout with
+// `core.autocrlf=true`, or after a hand edit, it is not — apply reports it
+// `kept (modified)` and the notice would return on every prompt with a
+// remedy that cannot work. `uninstall --yes` then `apply --yes` is the way
+// through in that case, so the one line says both.
 const NEEDED = ['findRules', 'maskCredentials', 'parseRules', 'projectRoot', 'RULES_PATH'];
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+let asset;
+try {
+  asset = await import('./harness-redact.mjs');
+} catch {
+  // Missing or unloadable (review, Minor 6): the same one-line, exit-1 shape
+  // as the stale case — never a stack trace on every prompt.
+  process.stderr.write(`kh-harness rules-brief: .claude/scripts/harness-redact.mjs is missing or cannot be loaded — ${REMEDY}\n`);
+  process.exit(1);
+}
 if (NEEDED.some(name => !(name in asset))) {
-  process.stderr.write('kh-harness rules-brief: .claude/scripts/harness-redact.mjs is older than this hook and lacks what it needs — re-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset.\n');
+  process.stderr.write(`kh-harness rules-brief: .claude/scripts/harness-redact.mjs is older than this hook and lacks what it needs — ${REMEDY}\n`);
   process.exit(1);
 }
 const { findRules, maskCredentials, parseRules, projectRoot, RULES_PATH } = asset;
