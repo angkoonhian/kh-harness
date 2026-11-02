@@ -358,6 +358,8 @@ function docPointers(text, files) {
  * what is found, which can only turn a proposal into a question, never the
  * reverse.
  */
+const PROJECT_DOCS_LISTED = 25;
+
 function projectDocs(files) {
   return files.filter(f => isProjectDocShaped(f) && !isKitOutput(f)).sort();
 }
@@ -397,6 +399,7 @@ export function detectHarness(root, files) {
   const agentsMd = readIfPresent(root, 'AGENTS.md');
   const instructionsPath = claudeMd != null ? 'CLAUDE.md' : (agentsMd != null ? 'AGENTS.md' : null);
   const denyInEffect = denyRulesInEffect(root);
+  const allDocs = projectDocs(files);
   // One parse of both settings files for every hook field below.
   const registrations = hookRegistrations(root, files);
 
@@ -443,7 +446,11 @@ export function detectHarness(root, files) {
     // all — so P1.architecture can tell "there is none" from "I only know
     // three filenames". See gap-model.mjs.
     docPointers: docPointers(claudeMd ?? agentsMd, files),
-    projectDocs: projectDocs(files),
+    // Capped (audit Tier 4, finding 23): a repository with hundreds of
+    // documentation-shaped files listed every one of them in the committed
+    // report. The first 25 in sorted order, and the total beside them.
+    projectDocs: allDocs.slice(0, PROJECT_DOCS_LISTED),
+    projectDocCount: allDocs.length,
     // F4: the same function session-brief.mjs resolves its own path with.
     handoff: findHandoff(root),
     bootstrap: existsAny(root, BOOTSTRAP_CANDIDATES),

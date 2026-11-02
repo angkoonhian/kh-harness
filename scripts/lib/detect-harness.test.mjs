@@ -374,6 +374,16 @@ test('projectDocs lists docs/ markdown that is not the kit\'s own output', () =>
   assert.deepEqual(run(d).projectDocs, ['docs/wiki/README.md', 'docs/wiki/services.md']);
 });
 
+// --- Audit Tier 4, finding 23: the document list is capped, the count kept ---
+test('projectDocs is capped at 25 paths with the total beside it', () => {
+  const d = repo();
+  for (let i = 0; i < 30; i++) write(d, `docs/note-${String(i).padStart(2, '0')}.md`, '#');
+  const h = run(d);
+  assert.equal(h.projectDocs.length, 25);
+  assert.equal(h.projectDocCount, 30);
+  assert.deepEqual(h.projectDocs, [...h.projectDocs].sort(), 'the first 25 in sorted order, so the list is stable');
+});
+
 // --- F1: projectDocs must find documentation-shaped files anywhere in the
 // repository, not only docs/*.md — see gap-model.mjs's P1.architecture,
 // which trusts an empty projectDocs to mean "no documentation anywhere".

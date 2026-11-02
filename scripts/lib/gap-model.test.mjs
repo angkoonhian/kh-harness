@@ -970,6 +970,16 @@ test('P3.intent is declared when the instruction file points at a document named
   assert.equal(unrelated.state, 'absent', 'a pointer at an unrelated document is not an intent statement');
 });
 
+// --- Audit Tier 4, finding 23: the question states the total, not the capped list
+test('the documentation-shaped questions state the total count, not the length of the capped list', () => {
+  const listed = Array.from({ length: 25 }, (_, i) => `docs/n${i}.md`);
+  const h = p3Harness({ projectDocs: listed, projectDocCount: 40, architecture: null, docPointers: [] });
+  for (const id of ['P1.architecture', 'P3.intent']) {
+    const c = byId(gaps(bareStack, h), id);
+    assert.match(c.question ?? '', /holds 40 files/, `${id}: ${c.question}`);
+  }
+});
+
 test('P1.pathrules is declared when .claude/rules/ already holds a file, workspace or not', () => {
   const c = byId(gaps(bareStack, richHarness, [], undefined, richHarness.claudeDir.rules), 'P1.pathrules');
   assert.equal(c.state, 'declared');

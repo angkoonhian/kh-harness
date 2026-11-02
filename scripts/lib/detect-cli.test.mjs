@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { detectExposures, UNREADABLE_KIND } from './detect-exposure.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
@@ -97,6 +97,16 @@ test('detect reports P2.sensor absent when the sensor script is registered under
   assert.equal(sensor.state, 'absent', JSON.stringify(sensor));
   assert.match(sensor.evidence.join(' '), /Bash/);
   assert.equal(JSON.stringify(r).includes('node .claude/scripts/lint-touched.mjs'), false, 'the command string still never reaches the report');
+});
+
+// --- Audit Tier 4, finding 23: a machine's absolute path in a committed file --
+test('detect.json names the repository, never its absolute path', () => {
+  const d = bare();
+  const r = JSON.parse(cli(d, '--json'));
+  assert.equal(r.repo.name, basename(d));
+  assert.equal('root' in r.repo, false, 'the absolute root (with the machine\'s user name in it) is not written into a committed file');
+  assert.equal(JSON.stringify(r).includes(d), false);
+  assert.equal(JSON.stringify(r).includes(d.split('\\').join('/')), false);
 });
 
 test('writes detect.json into the target repo', () => {

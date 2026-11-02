@@ -1,4 +1,5 @@
 import { splitExposures, partitionProminent, collapsedExposureNote } from './detect-exposure.mjs';
+import { basename } from 'node:path';
 import { countProposals } from './gap-model.mjs';
 
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
@@ -60,7 +61,9 @@ export function buildReport({ root, kitVersion, git, stack, harness, exposures, 
     schema: 1,
     kitVersion,
     generatedAt: new Date().toISOString(),
-    repo: { root, vcs: git.isRepo ? 'git' : null, branch: git.branch ?? null },
+    // The repository's NAME, never its absolute path: detect.json is committed,
+    // and the path carried the machine's user name (audit Tier 4, finding 23).
+    repo: { name: basename(root), vcs: git.isRepo ? 'git' : null, branch: git.branch ?? null },
     profile: profile.id,
     stack,
     harness,
@@ -125,7 +128,7 @@ export function exposureSectionLines(exposures, nested = []) {
 
 export function renderSummary(report) {
   const lines = [];
-  lines.push(`kh-harness ${report.kitVersion} — ${report.repo.root}`);
+  lines.push(`kh-harness ${report.kitVersion} — ${report.repo.name}`);
   lines.push(`profile: ${report.profile}   branch: ${report.repo.branch ?? '(none)'}`);
   lines.push('');
 

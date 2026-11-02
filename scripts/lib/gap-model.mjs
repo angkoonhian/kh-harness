@@ -499,8 +499,9 @@ const CHECKS = [
       }
 
       const docs = harness.projectDocs ?? [];
+      const docCount = harness.projectDocCount ?? docs.length;
       if (docs.length) {
-        const shown = docs.slice(0, 3).join(', ') + (docs.length > 3 ? ', …' : '');
+        const shown = docs.slice(0, 3).join(', ') + (docCount > 3 ? ', …' : '');
         return {
           state: 'absent',
           decidable: false,
@@ -512,7 +513,7 @@ const CHECKS = [
           // conventionally used for docs); it never opened one to confirm
           // its content. Say what was actually measured, not what was
           // merely likely — the question still prompts the same answer.
-          question: `No docs/ARCHITECTURE.md found, but the repository holds ${docs.length} file${docs.length === 1 ? '' : 's'} with a documentation-shaped name (${shown}). Is one of these the architecture document?`,
+          question: `No docs/ARCHITECTURE.md found, but the repository holds ${docCount} file${docCount === 1 ? '' : 's'} with a documentation-shaped name (${shown}). Is one of these the architecture document?`,
         };
       }
 
@@ -664,12 +665,13 @@ const CHECKS = [
         return { state: 'declared', evidence: pointed.map(p => `${from} points at ${p} (named for intent; its sections were not measured)`) };
       }
       const docs = harness.projectDocs ?? [];
+      const docCount = harness.projectDocCount ?? docs.length;
       if (docs.length) {
-        const shown = docs.slice(0, 3).join(', ') + (docs.length > 3 ? ', …' : '');
+        const shown = docs.slice(0, 3).join(', ') + (docCount > 3 ? ', …' : '');
         return {
           state: 'absent', decidable: false,
           evidence: [`no ${INTENT_PATH}`],
-          question: `No ${INTENT_PATH} found, but the repository holds ${docs.length} file${docs.length === 1 ? '' : 's'} with a documentation-shaped name (${shown}). Does one of these already state the application's purpose and its success and failure criteria?`,
+          question: `No ${INTENT_PATH} found, but the repository holds ${docCount} file${docCount === 1 ? '' : 's'} with a documentation-shaped name (${shown}). Does one of these already state the application's purpose and its success and failure criteria?`,
         };
       }
       return { state: 'absent', proposal: `run the intent prompt to write ${INTENT_PATH}` };
