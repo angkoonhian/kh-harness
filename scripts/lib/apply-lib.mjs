@@ -633,7 +633,7 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
   }
 
   const settings = result.settings;
-  if (hasEquivalentHook(settings, proposal.event, proposal.entry?.command, proposal.matcher)) {
+  if (hasEquivalentHook(settings, proposal.event, proposal.entry, proposal.matcher)) {
     skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
     return;
   }

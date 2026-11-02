@@ -229,6 +229,20 @@ test('hookRegistrations records each hook\'s resolved script with its normalised
   assert.equal(JSON.stringify(regs).includes('--write'), false, 'the command itself is never recorded');
 });
 
+test('hookRegistrations resolves an exec-form entry\'s script from args, with ${CLAUDE_PROJECT_DIR} stripped', () => {
+  const d = repo();
+  write(d, 'bin/lint.sh', '#');
+  write(d, '.claude/settings.json', JSON.stringify({
+    hooks: {
+      PostToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/bin/lint.sh', '--fix'] }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/not/in/the/scan.mjs'] }] }],
+    },
+  }));
+  const regs = run(d).claudeDir.hookRegistrations;
+  assert.deepEqual(regs.PostToolUse, [{ script: 'bin/lint.sh', matcher: 'Edit' }]);
+  assert.deepEqual(regs.Stop, [{ script: null, matcher: null }], 'a path the scan cannot see is never named');
+});
+
 test('hookEvents also reads .claude/settings.local.json', () => {
   const d = repo();
   write(d, 'a.mjs', '//');

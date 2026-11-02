@@ -333,20 +333,20 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     assert.equal(s1.hooks.SessionStart.length, 2, 'the user\'s own SessionStart hook survives, ours is added beside it');
 
     const theirPostToolUse = s1.hooks.PostToolUse.find(m => m.hooks[0].command === 'node my-own-thing.mjs');
-    const ourPostToolUse = s1.hooks.PostToolUse.find(m => m.hooks[0].command === 'node .claude/scripts/lint-touched.mjs');
+    const ourPostToolUse = s1.hooks.PostToolUse.find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/lint-touched.mjs');
     assert.ok(theirPostToolUse, 'the user\'s own hook must still be there');
     assert.equal(theirPostToolUse.matcher, undefined, 'their hook is untouched — it never had a matcher');
     assert.ok(ourPostToolUse, 'our hook must be registered');
     assert.equal(ourPostToolUse.matcher, 'Write|Edit');
 
     const theirStop = s1.hooks.Stop.find(m => m.hooks[0].command === 'node my-own-stop-thing.mjs');
-    const ourStop = s1.hooks.Stop.find(m => m.hooks[0].command === 'node .claude/scripts/verify-touched.mjs');
+    const ourStop = s1.hooks.Stop.find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/verify-touched.mjs');
     assert.ok(theirStop, 'the user\'s own Stop hook must still be there');
     assert.ok(ourStop, 'our Stop hook must be registered');
     assert.equal(ourStop.matcher, undefined, 'the Stop entry takes no matcher');
 
     const theirSessionStart = s1.hooks.SessionStart.find(m => m.hooks[0].command === 'node my-own-startup-thing.mjs');
-    const ourSessionStart = s1.hooks.SessionStart.find(m => m.hooks[0].command === 'node .claude/scripts/session-brief.mjs');
+    const ourSessionStart = s1.hooks.SessionStart.find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/session-brief.mjs');
     assert.ok(theirSessionStart, 'the user\'s own SessionStart hook must still be there');
     assert.ok(ourSessionStart, 'our SessionStart hook must be registered');
 
@@ -496,7 +496,8 @@ test('STOPGATE: apply installs verify-touched.mjs, the shared redaction asset, a
   const stopHooks = settings(d).hooks.Stop;
   assert.equal(stopHooks.length, 1);
   assert.equal(stopHooks[0].matcher, undefined, 'the Stop entry takes no matcher');
-  assert.equal(stopHooks[0].hooks[0].command, 'node .claude/scripts/verify-touched.mjs');
+  assert.equal(stopHooks[0].hooks[0].command, 'node');
+  assert.deepEqual(stopHooks[0].hooks[0].args, ['${CLAUDE_PROJECT_DIR}/.claude/scripts/verify-touched.mjs'], 'exec form: no shell, and a path that holds from any working directory');
 
   const after = JSON.parse(run(DETECT, d, '--json'));
   assert.equal(after.checks.find(c => c.id === 'P2.stopgate').state, 'declared');
@@ -762,9 +763,9 @@ test('uninstall --yes exits 2 when a recorded hook could not be reverted, and sa
   const d = fixture();
   run(APPLY, d, '--yes');
   const s = settings(d);
-  const stop = (s.hooks?.Stop ?? []).find(m => m.hooks.some(h => /verify-touched/.test(h.command)));
+  const stop = (s.hooks?.Stop ?? []).find(m => m.hooks.some(h => /verify-touched/.test(JSON.stringify(h))));
   assert.ok(stop, 'fixture sanity: our Stop hook is registered');
-  stop.hooks[0].command += ' --edited-by-the-user'; // the hash no longer matches the manifest's patch record
+  stop.hooks[0].args.push('--edited-by-the-user'); // the hash no longer matches the manifest's patch record
   writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + '\n');
 
   let err;
@@ -773,6 +774,39 @@ test('uninstall --yes exits 2 when a recorded hook could not be reverted, and sa
   assert.equal(err.status, 2, 'exit 0 would tell a script the uninstall was complete');
   assert.match(String(err.stdout), /Could not revert:/);
   assert.match(String(err.stdout), /hooks\/Stop/);
+});
+
+// --- Audit Tier 3, finding 11: hooks are registered in exec form ---------------
+test('after apply --yes every registered hook is exec form with a ${CLAUDE_PROJECT_DIR}-rooted path, and detect reports it declared', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const s = settings(d);
+  const ours = Object.values(s.hooks).flat().flatMap(m => m.hooks).filter(h => JSON.stringify(h).includes('.claude/scripts/'));
+  assert.ok(ours.length >= 2, `fixture sanity: our hooks are registered: ${JSON.stringify(s.hooks)}`);
+  for (const h of ours) {
+    assert.equal(h.command, 'node', 'the executable, spawned with no shell');
+    assert.match(h.args?.[0] ?? '', /^\$\{CLAUDE_PROJECT_DIR\}\/\.claude\/scripts\/[a-z-]+\.mjs$/, JSON.stringify(h));
+  }
+  const after = JSON.parse(run(DETECT, d, '--json'));
+  for (const id of ['P2.stopgate', 'P4.sessionbrief']) {
+    assert.equal(after.checks.find(c => c.id === id).state, 'declared', id);
+  }
+});
+
+test('a user\'s shell-form registration of our script is declared and not re-proposed', () => {
+  const d = fixture();
+  mkdirSync(join(d, '.claude', 'scripts'), { recursive: true });
+  writeFileSync(join(d, '.claude', 'scripts', 'verify-touched.mjs'), '// theirs, by hand\n');
+  writeFileSync(join(d, '.claude', 'scripts', 'harness-redact.mjs'), '//\n');
+  const s = settings(d);
+  s.hooks = { Stop: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/verify-touched.mjs' }] }] };
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + '\n');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'their registration');
+  const report = JSON.parse(run(DETECT, d, '--json'));
+  assert.equal(report.checks.find(c => c.id === 'P2.stopgate').state, 'declared', 'their shell-form registration is ours, recognised');
+  const dry = run(APPLY, d);
+  assert.doesNotMatch(dry, /\(hook: Stop\)/, 'and no second registration is proposed');
 });
 
 test('apply refuses on a default branch unless told otherwise', () => {

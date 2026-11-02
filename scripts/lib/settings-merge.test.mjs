@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addHookEntry, hasEquivalentHook, normalizeMatcher, matcherCovers, revertPatch, addDenyRules } from './settings-merge.mjs';
+import { addHookEntry, hasEquivalentHook, hookPathTokens, hookScriptOf, normalizeMatcher, matcherCovers, revertPatch, addDenyRules } from './settings-merge.mjs';
 
 const ENTRY = { type: 'command', command: 'node .claude/scripts/session-brief.mjs' };
 
@@ -30,9 +30,9 @@ test('appends after an existing hook on the same event', () => {
 
 test('hasEquivalentHook detects an existing command', () => {
   const { settings } = addHookEntry({}, 'SessionStart', ENTRY);
-  assert.equal(hasEquivalentHook(settings, 'SessionStart', ENTRY.command), true);
-  assert.equal(hasEquivalentHook(settings, 'Stop', ENTRY.command), false);
-  assert.equal(hasEquivalentHook({}, 'SessionStart', ENTRY.command), false);
+  assert.equal(hasEquivalentHook(settings, 'SessionStart', ENTRY), true);
+  assert.equal(hasEquivalentHook(settings, 'Stop', ENTRY), false);
+  assert.equal(hasEquivalentHook({}, 'SessionStart', ENTRY), false);
 });
 
 // Audit Tier 2, finding 7 (second half): the same command under a DIFFERENT
@@ -40,15 +40,15 @@ test('hasEquivalentHook detects an existing command', () => {
 // suppress our `Write|Edit` registration of the same script.
 test('hasEquivalentHook distinguishes the same command under a different matcher', () => {
   const { settings } = addHookEntry({}, 'PostToolUse', ENTRY, 'Bash');
-  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command, 'Write|Edit'), false, 'theirs is under Bash; ours would be under Write|Edit');
-  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command, 'Bash'), true);
+  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY, 'Write|Edit'), false, 'theirs is under Bash; ours would be under Write|Edit');
+  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY, 'Bash'), true);
   // Reversed by the Tier 2 review fix pass: a narrower registration of a
   // match-all proposal counts — narrowing is the user's choice (see
   // matcherCovers). Our generators never propose PostToolUse without one.
-  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command), true, 'a narrower registration of a match-all proposal still counts');
+  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY), true, 'a narrower registration of a match-all proposal still counts');
   const { settings: unmatched } = addHookEntry({}, 'SessionStart', ENTRY);
-  assert.equal(hasEquivalentHook(unmatched, 'SessionStart', ENTRY.command), true, 'an absent matcher on both sides is equivalent');
-  assert.equal(hasEquivalentHook(unmatched, 'SessionStart', ENTRY.command, undefined), true);
+  assert.equal(hasEquivalentHook(unmatched, 'SessionStart', ENTRY), true, 'an absent matcher on both sides is equivalent');
+  assert.equal(hasEquivalentHook(unmatched, 'SessionStart', ENTRY, undefined), true);
 });
 
 // Tier 2 final review, Minor 7 (and the shared definition behind Important 1):
@@ -73,9 +73,40 @@ test('matcherCovers: a wider or reordered list covers; a narrower one does not; 
 
 test('hasEquivalentHook treats Edit|Write as Write|Edit and a wider list as covering', () => {
   const { settings: reordered } = addHookEntry({}, 'PostToolUse', ENTRY, 'Edit|Write');
-  assert.equal(hasEquivalentHook(reordered, 'PostToolUse', ENTRY.command, 'Write|Edit'), true);
+  assert.equal(hasEquivalentHook(reordered, 'PostToolUse', ENTRY, 'Write|Edit'), true);
   const { settings: wider } = addHookEntry({}, 'PostToolUse', ENTRY, 'Write|Edit|NotebookEdit');
-  assert.equal(hasEquivalentHook(wider, 'PostToolUse', ENTRY.command, 'Write|Edit'), true);
+  assert.equal(hasEquivalentHook(wider, 'PostToolUse', ENTRY, 'Write|Edit'), true);
+});
+
+// --- Audit Tier 3, finding 11: exec-form registration, both forms one hook ----
+//
+// Claude Code documents the exec form — `"command": "node", "args": [...]`,
+// spawned with no shell — and `${CLAUDE_PROJECT_DIR}` as the project root,
+// and says to prefer that form for any path placeholder. Our hooks were
+// registered as `node .claude/scripts/x.mjs`: a shell per invocation
+// (~260 ms measured) and a cwd-relative path that breaks after `cd`.
+
+test('hookPathTokens and hookScriptOf resolve shell form, exec form with ${CLAUDE_PROJECT_DIR}, quoted and ./-prefixed paths', () => {
+  const execForm = { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/lint-touched.mjs'] };
+  assert.equal(hookScriptOf(execForm), '.claude/scripts/lint-touched.mjs');
+  assert.deepEqual(hookPathTokens(execForm), ['.claude/scripts/lint-touched.mjs']);
+  assert.equal(hookScriptOf({ type: 'command', command: 'node .claude/scripts/lint-touched.mjs' }), null, 'shell form cannot be resolved without the file list');
+  assert.deepEqual(hookPathTokens({ command: 'node "./.claude/scripts/lint-touched.mjs" --fix' }), ['node', '.claude/scripts/lint-touched.mjs', '--fix']);
+  assert.deepEqual(hookPathTokens({ command: 'node $CLAUDE_PROJECT_DIR\\.claude\\scripts\\x.mjs' }), ['node', '.claude/scripts/x.mjs']);
+  assert.deepEqual(hookPathTokens({}), []);
+});
+
+test('hasEquivalentHook treats a shell-form and an exec-form registration of the same script under the same matcher as one hook', () => {
+  const execForm = { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/lint-touched.mjs'] };
+  const shellForm = { type: 'command', command: 'node .claude/scripts/lint-touched.mjs' };
+  const { settings: hasShell } = addHookEntry({}, 'PostToolUse', shellForm, 'Write|Edit');
+  assert.equal(hasEquivalentHook(hasShell, 'PostToolUse', execForm, 'Write|Edit'), true, 'a user\'s shell-form registration is recognised');
+  const { settings: hasExec } = addHookEntry({}, 'PostToolUse', execForm, 'Write|Edit');
+  assert.equal(hasEquivalentHook(hasExec, 'PostToolUse', shellForm, 'Write|Edit'), true, 'and the other way round');
+  assert.equal(hasEquivalentHook(hasExec, 'PostToolUse', execForm, 'Write|Edit'), true);
+  const other = { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/other.mjs'] };
+  assert.equal(hasEquivalentHook(hasExec, 'PostToolUse', other, 'Write|Edit'), false);
+  assert.equal(hasEquivalentHook(hasShell, 'PostToolUse', { command: 'node theirs.mjs' }, 'Write|Edit'), false, 'two shell forms compare as strings');
 });
 
 // --- optional matcher (PostToolUse needs one; SessionStart never has) -----

@@ -175,6 +175,11 @@ without being asked each time:
 | `SessionStart` | at session start | nothing — it reads `HANDOFF.md` (or `docs/HANDOFF.md`) and prints the top of it |
 | `UserPromptSubmit` | on every prompt | nothing — it reads `docs/harness/RULES.md` and adds up to 1500 bytes of its rules to the prompt's context, high priority first (installed only once the registry holds a rule) |
 
+Each hook is registered in Claude Code's exec form — `node` plus the script's
+path rooted at `${CLAUDE_PROJECT_DIR}` — so it runs with no shell and from any
+working directory. A registration you already have in shell form
+(`node .claude/scripts/…`) is recognised as the same hook and left alone.
+
 A repository's own lint or test script is arbitrary code in every project; that
 is not new. What changes is **automation**: you stop typing it, and a `git pull`
 that edits `scripts.lint` therefore changes what now runs by itself.

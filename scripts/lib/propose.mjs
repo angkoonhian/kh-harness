@@ -168,6 +168,19 @@ function redactAssetProposal(kitVersion) {
  * this generator writes. */
 const SENSOR_MATCHER = 'Write|Edit';
 
+/**
+ * A hook entry in Claude Code's EXEC form (audit Tier 3, finding 11): the
+ * executable and an argument vector, "spawned directly … with no shell
+ * involved", with the script rooted at `${CLAUDE_PROJECT_DIR}` — "the
+ * project root where the session started" — which the reference says to
+ * prefer for any path placeholder. The shell form this replaced
+ * (`node .claude/scripts/x.mjs`) paid ~260 ms of shell per invocation and
+ * a cwd-relative path that stopped resolving after `cd`. A repository's
+ * existing shell-form registration of the same script is still recognised
+ * as ours (settings-merge.mjs's `sameHook`) and never duplicated.
+ */
+const execEntry = scriptPath => ({ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${scriptPath}`] });
+
 function sensorProposal({ kitVersion, stack, check }) {
   if (!hasLintScript(stack)) return [];
   return [{
@@ -180,7 +193,7 @@ function sensorProposal({ kitVersion, stack, check }) {
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'PostToolUse', step: 9,
     matcher: SENSOR_MATCHER,
-    entry: { type: 'command', command: `node ${LINT_TOUCHED_PATH}` },
+    entry: execEntry(LINT_TOUCHED_PATH),
     // Review finding 5: a hook must never be ACTIVATED (registered in
     // settings.json) unless the script it runs, and everything that
     // script imports, is actually present on disk — never merely
@@ -245,7 +258,7 @@ function stopgateProposal({ kitVersion, stack, check }) {
     reason: 'no Stop hook registered',
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'Stop', step: 10,
-    entry: { type: 'command', command: `node ${VERIFY_TOUCHED_PATH}` },
+    entry: execEntry(VERIFY_TOUCHED_PATH),
     // See the matching comment on P2.sensor's own settings-hook proposal —
     // this is review finding 5's fix, applied identically here.
     requiresFiles: [VERIFY_TOUCHED_PATH, REDACT_PATH],
@@ -534,7 +547,7 @@ function reinjectProposal({ kitVersion, harness, check }) {
     reason: 'no UserPromptSubmit re-injection hook registered',
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'UserPromptSubmit', step: REINJECT_STEP,
-    entry: { type: 'command', command: `node ${RULES_BRIEF_PATH}` },
+    entry: execEntry(RULES_BRIEF_PATH),
     requiresFiles: [RULES_BRIEF_PATH, REDACT_PATH],
     reason: hookRegistrationReason('UserPromptSubmit', check),
   }];
@@ -564,7 +577,7 @@ const GENERATORS = {
     reason: 'no SessionStart brief hook registered',
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'SessionStart', step: 16,
-    entry: { type: 'command', command: `node ${BRIEF_PATH}` },
+    entry: execEntry(BRIEF_PATH),
     // Whole-branch review, F3/F4: session-brief.mjs now imports the shared
     // `harness-redact.mjs` (for `boundReport`, `projectRoot` and
     // `findHandoff`), so it has exactly the dependency the other two hooks

@@ -39,7 +39,7 @@ import { readIfPresent, existsAny } from './scan.mjs';
 import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
 import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
-import { normalizeMatcher } from './settings-merge.mjs';
+import { normalizeMatcher, hookPathTokens } from './settings-merge.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
   'scripts/bootstrap.sh', 'scripts/bootstrap.ps1', 'scripts/setup.sh', 'scripts/setup.ps1',
@@ -193,11 +193,13 @@ function claudeRuleFiles(root) {
  * resolution docPointers performs on instruction-file pointers — so nothing
  * that was not already a known filename can come out of here.
  */
-function commandScript(command, files) {
+function commandScript(entry, files) {
   const present = new Set(files);
-  for (const raw of command.split(/\s+/)) {
-    const p = raw.replace(/^["']+|["']+$/g, '').split('\\').join('/').replace(/^\.\//, '');
-    if (p && present.has(p)) return p;
+  // Both of Claude Code's forms — exec (`args[0]`) and shell (the command's
+  // tokens) — through the one normaliser the write-time dedupe uses, so a
+  // `${CLAUDE_PROJECT_DIR}`-rooted path resolves to the same repository path.
+  for (const p of hookPathTokens(entry)) {
+    if (present.has(p)) return p;
   }
   return null;
 }
@@ -235,7 +237,7 @@ function hookRegistrations(root, files) {
         for (const entry of Array.isArray(matcher?.hooks) ? matcher.hooks : []) {
           const command = typeof entry?.command === 'string' ? entry.command.trim() : '';
           if (!command) continue;
-          (out[event] ??= []).push({ script: commandScript(command, files), matcher: m });
+          (out[event] ??= []).push({ script: commandScript(entry, files), matcher: m });
         }
       }
     }

@@ -76,6 +76,12 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
   both hooks. Neither is installed unless its check reported \`absent\` and you
   ran \`apply --yes\`.
 
+  Each hook is registered in Claude Code's exec form — \`node\` plus the
+  script's path rooted at \`\${CLAUDE_PROJECT_DIR}\` — so it runs with no shell
+  and from any working directory. A registration you already have in shell
+  form (\`node .claude/scripts/…\`) is recognised as the same hook and left
+  alone.
+
   The SessionStart hook only reads HANDOFF.md (or docs/HANDOFF.md) and prints
   the top of it. It executes nothing.
 

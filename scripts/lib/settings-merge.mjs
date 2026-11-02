@@ -88,19 +88,70 @@ export function matcherCovers(theirs, ours) {
 }
 
 /**
- * True when `command` is already registered on `event` under a matcher that
- * covers `matcher` (see matcherCovers). Audit Tier 2, finding 7: the matcher
- * used to be ignored, so a user's own `node x.mjs` under `Bash` suppressed
- * our `Write|Edit` registration of the same script — a different hook, since
- * the matcher is what decides when it fires. (The entry hash `addHookEntry`
- * records has always included the matcher; only this check did not.)
+ * A path token as it may appear in a hook command, normalised: surrounding
+ * quotes, a `${CLAUDE_PROJECT_DIR}/` or `$CLAUDE_PROJECT_DIR/` root, a
+ * `./` prefix and backslashes are removed, so `"./.claude/scripts/x.mjs"`
+ * and `${CLAUDE_PROJECT_DIR}/.claude/scripts/x.mjs` are the same path.
  */
-export function hasEquivalentHook(settings, event, command, matcher) {
+export function normalizeHookPath(token) {
+  return String(token)
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/^\$\{CLAUDE_PROJECT_DIR\}[\\/]|^\$CLAUDE_PROJECT_DIR[\\/]/, '')
+    .split('\\').join('/')
+    .replace(/^\.\//, '');
+}
+
+/**
+ * The candidate script tokens of a hook entry, normalised. Claude Code's two
+ * forms (audit Tier 3, finding 11): exec form — `command` is the executable
+ * and `args[0]` the script, spawned with no shell — yields that one token;
+ * shell form — `command` is a shell string — yields every whitespace token,
+ * for a caller that can tell which one is a path (detect-harness.mjs checks
+ * them against the file list). Never resolves beyond what the entry says.
+ */
+export function hookPathTokens(entry) {
+  if (Array.isArray(entry?.args) && entry.args.length > 0) return [normalizeHookPath(entry.args[0])];
+  if (typeof entry?.command === 'string') return entry.command.split(/\s+/).map(normalizeHookPath).filter(Boolean);
+  return [];
+}
+
+/** The script an exec-form entry runs; null for shell form, which cannot be
+ * resolved without the file list. */
+export function hookScriptOf(entry) {
+  return Array.isArray(entry?.args) && entry.args.length > 0 ? normalizeHookPath(entry.args[0]) : null;
+}
+
+/**
+ * Two entries are the same hook when they run the same script: two exec
+ * forms by their script, an exec form and a shell form when the shell
+ * string names that script, two shell forms when their strings are equal.
+ * So a user's existing `node .claude/scripts/x.mjs` and our exec-form
+ * registration of `x.mjs` are one hook — recognised, never duplicated.
+ */
+function sameHook(a, b) {
+  const sa = hookScriptOf(a);
+  const sb = hookScriptOf(b);
+  if (sa !== null && sb !== null) return sa === sb;
+  if (sa !== null) return hookPathTokens(b).includes(sa);
+  if (sb !== null) return hookPathTokens(a).includes(sb);
+  return typeof a?.command === 'string' && a.command === b?.command;
+}
+
+/**
+ * True when `entry` (or one that runs the same script — see sameHook) is
+ * already registered on `event` under a matcher that covers `matcher` (see
+ * matcherCovers). Audit Tier 2, finding 7: the matcher used to be ignored,
+ * so a user's own `node x.mjs` under `Bash` suppressed our `Write|Edit`
+ * registration of the same script — a different hook, since the matcher is
+ * what decides when it fires. (The entry hash `addHookEntry` records has
+ * always included the matcher; only this check did not.)
+ */
+export function hasEquivalentHook(settings, event, entry, matcher) {
   const matchers = settings?.hooks?.[event];
   if (!Array.isArray(matchers)) return false;
   return matchers.some(m => Array.isArray(m?.hooks)
     && matcherCovers(m.matcher, matcher)
-    && m.hooks.some(h => h?.command === command));
+    && m.hooks.some(h => sameHook(h, entry)));
 }
 
 export function addDenyRules(settings, globs) {

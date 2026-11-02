@@ -1492,7 +1492,7 @@ function twoPathVerdict(command) {
   // The RAW path: exactly what applySettingsHookProposal/hasEquivalentHook
   // itself reads before deciding whether to add a settings patch.
   const rawSettings = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
-  const raw = hasEquivalentHook(rawSettings, 'SessionStart', BRIEF_COMMAND);
+  const raw = hasEquivalentHook(rawSettings, 'SessionStart', { type: 'command', command: BRIEF_COMMAND });
 
   // The REDACTED path: the real detect pipeline, through buildGaps, the
   // same way detect.mjs/apply.mjs actually call it.
