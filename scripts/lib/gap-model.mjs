@@ -55,6 +55,11 @@ const MAX_INSTRUCTION_LINES = 150;
  * entirely: that is an `UNREADABLE_KIND` finding and this sentence is never
  * reached while one exists.
  */
+/** A document name that says it states the application's purpose — what
+ * P3.intent accepts from an instruction-file pointer in place of
+ * docs/INTENT.md. */
+const INTENT_LIKE = /intent|purpose|vision|product|prd/i;
+
 const CLEAN_SWEEP_NOTE = 'no credential patterns matched in any file this sweep could read (binary, build-output and over-512 KB files are skipped by design; a file that could not be READ is reported, not skipped silently)';
 
 /**
@@ -598,10 +603,17 @@ const CHECKS = [
       // tests is `stack.isWorkspace`, not "how many packages", so the
       // sentence now describes THAT, true regardless of where the one
       // package (if any) happens to sit.
+      // Audit Tier 4, finding 20: this used to ASK, on every run of every
+      // single-package repository, for globs the user might want — a
+      // question no answer could silence, because the check re-derived
+      // the same state next run. A single package has no cross-package
+      // split to scope a rule to: that is a fact about the repository,
+      // not a gap in it, so the honest state is `n/a`. A user who wants
+      // path rules anyway writes them under .claude/rules/, which the
+      // branch above then credits.
       return {
-        state: 'absent', decidable: false,
-        evidence: ['this repository is not detected as a multi-package workspace (stack.isWorkspace is false) — there is no cross-package split to scope a rule to'],
-        question: 'Path-scoped rules apply here, but this repository is not detected as a multi-package workspace, so there is no cross-package split to derive a glob from — are there subdirectories with their own conventions that should each get their own .claude/rules/ file, and if so, what glob should scope each one?',
+        state: 'n/a',
+        evidence: ['single-package repository — no sub-directory split to scaffold a rule file for (stack.isWorkspace is false); any .claude/rules/*.md you write is credited above'],
       };
     },
   },
@@ -619,6 +631,7 @@ const CHECKS = [
   // repository without them (`?? null`), never a crash.
   {
     id: 'P3.intent', step: 26, phase: 3,
+    // See the docPointers branch below.
     lookedFor: [INTENT_PATH, 'documentation the instruction file points at', 'any documentation-shaped file'],
     // Mirrors P1.architecture's three-way split, for the same decidability
     // reason: the canonical path is decided; "docs exist somewhere, but
@@ -640,6 +653,15 @@ const CHECKS = [
         else evidence.push(`${intent.path} (all ${INTENT_SECTIONS.length} sections present — presence of the shape is what was measured, not the quality of the prose)`);
         if (intent.lastReviewed) evidence.push(`last reviewed ${intent.lastReviewed}`);
         return { state: 'declared', evidence };
+      }
+      // Audit Tier 4, finding 20: like P1.architecture, honour a pointer the
+      // instruction file already makes — but only at a document whose NAME
+      // says it states the purpose (intent, purpose, vision, product, PRD);
+      // a pointer at an API reference is not an intent statement.
+      const pointed = (harness.docPointers ?? []).filter(p => INTENT_LIKE.test(p.split('/').pop()));
+      if (pointed.length) {
+        const from = harness.instructions?.path ?? 'the instruction file';
+        return { state: 'declared', evidence: pointed.map(p => `${from} points at ${p} (named for intent; its sections were not measured)`) };
       }
       const docs = harness.projectDocs ?? [];
       if (docs.length) {

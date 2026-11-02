@@ -244,10 +244,13 @@ function reportWhatDetectionFound() {
     out.push(`kh-harness: ${nested.length} nested repositor${was} detected and NOT scanned (${nested.map(n => n.path).join(', ')}). Everything below covers this repository only; each nested repository must be assessed separately.`);
     out.push('');
   }
+  // Printed inline (audit Tier 4, finding 20): this used to point at
+  // `detect` for sentences this run already held.
   const questions = deriveCouldNotDerive({ stack, checks, nested, profile });
   if (questions.length) {
     const s = questions.length === 1 ? '' : 's';
-    out.push(`kh-harness: ${questions.length} question${s} this run could not answer — \`node scripts/detect.mjs ${root}\` prints ${questions.length === 1 ? 'it' : 'them'} in full.`);
+    out.push(`kh-harness: ${questions.length} question${s} this run could not answer:`);
+    for (const q of questions) out.push(`  - ${q}`);
     out.push('');
   }
   if (out.length) process.stdout.write(out.join('\n') + '\n');

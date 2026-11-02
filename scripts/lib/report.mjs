@@ -36,8 +36,13 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
     const is = rejected.length === 1 ? 'is' : 'are';
     out.push(`${rejected.length} workspace pattern${s} (at index ${rejected.join(', ')} of this repository's own \`workspaces\` list) ${is} not a usable glob — ${rejected.length === 1 ? 'it contains' : 'they contain'} a NUL character, so ${rejected.length === 1 ? 'it was' : 'they were'} refused rather than interpreted, and any package ${rejected.length === 1 ? 'it' : 'they'} would have matched is NOT in this report. The value is not printed here because it is repository-controlled and holds a control character. What should ${rejected.length === 1 ? 'that entry' : 'those entries'} be?`);
   }
-  if (checks.some(c => c.id === 'P1.instructions' && c.state === 'declared')) {
-    out.push('An instruction file already exists. Which of its rules are decisions that cannot be re-derived from source? Those must survive any regeneration.');
+  // Asked only while no rules registry exists (audit Tier 4, finding 20: it
+  // used to be asked on every run, forever). Once docs/harness/RULES.md is
+  // there, that is where the answer lives — each rule names what holds it —
+  // and P3.rules' advice already lists the rule-shaped lines still outside it.
+  const registryExists = checks.some(c => c.id === 'P3.rules' && c.state !== 'absent');
+  if (!registryExists && checks.some(c => c.id === 'P1.instructions' && c.state === 'declared')) {
+    out.push('An instruction file already exists. Which of its rules are decisions that cannot be re-derived from source? Those must survive any regeneration — docs/harness/RULES.md (Phase 3) is where each can name what enforces it.');
   }
   // Questions routed by buildGaps from checks that could not decide. These are
   // the `absent` results that may not propose: asking is what they do instead.

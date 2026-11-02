@@ -47,6 +47,22 @@ test('a single-package repo raises no sensor-scope question', () => {
   assert.equal(deriveCouldNotDerive({ stack: one, checks }).some(s => /sensor/i.test(s)), false);
 });
 
+// --- Audit Tier 4, finding 20: a question the user can make go away ----------
+//
+// "Which of its rules cannot be re-derived from source?" was asked on every
+// run of every repository with an instruction file, forever. Once a rules
+// registry exists the question has a home (each rule names its enforcer, and
+// P3.rules' advice already lists the rule-shaped lines still outside it).
+test('the instruction-file question is asked only while no rules registry exists', () => {
+  const instructions = { id: 'P1.instructions', step: 6, phase: 1, state: 'declared', lookedFor: [], evidence: ['CLAUDE.md'], proposal: null };
+  const registryAbsent = { id: 'P3.rules', step: 27, phase: 3, state: 'absent', lookedFor: [], evidence: [], proposal: 'scaffold docs/harness/RULES.md' };
+  const registryPresent = { ...registryAbsent, state: 'declared', proposal: null, evidence: ['docs/harness/RULES.md (3 rules)'] };
+  const asked = deriveCouldNotDerive({ stack, checks: [instructions, registryAbsent] });
+  assert.ok(asked.some(q => /cannot be re-derived/.test(q)), 'with no registry the question still stands');
+  const answered = deriveCouldNotDerive({ stack, checks: [instructions, registryPresent] });
+  assert.equal(answered.some(q => /cannot be re-derived/.test(q)), false, 'a registry is where that answer lives');
+});
+
 test('couldNotDerive is included in the report', () => {
   assert.ok(Array.isArray(buildReport(base).couldNotDerive));
 });

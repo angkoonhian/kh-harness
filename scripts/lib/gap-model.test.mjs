@@ -936,14 +936,6 @@ test('P1.pathrules\' proposal text discloses plainly that the generated files ar
   assert.match(c.proposal, /empty/i);
 });
 
-test('P1.pathrules asks, and proposes nothing, for a single-package repository', () => {
-  const c = byId(gaps(bareStack, bareHarness), 'P1.pathrules');
-  assert.equal(c.state, 'absent');
-  assert.equal(c.decidable, false);
-  assert.equal(c.proposal, null);
-  assert.ok(c.question, 'the honest answer for a single package is a question, not silence');
-});
-
 // Coordinator ruling: an 8b change here briefly narrowed `declared` to
 // "every target THIS workspace's own layout calls for is present",
 // replacing the test below with two others asserting that narrower
@@ -957,6 +949,26 @@ test('P1.pathrules asks, and proposes nothing, for a single-package repository',
 // — fully satisfy the capability (see the check's own comment on why this
 // is not an exception to the 8b principle, but the principle applied to a
 // content-valued artefact instead of a behaviour-valued one).
+
+// --- Audit Tier 4, finding 20: a state is not a question ---------------------
+test('P1.pathrules is n/a with no question on a single-package repository without rule files', () => {
+  const c = byId(gaps(bareStack, bareHarness), 'P1.pathrules');
+  assert.equal(c.state, 'n/a', 'a single package has no sub-directory split to scaffold a rule file for — a fact, not a gap');
+  assert.equal(c.question, null, 'nothing the user could answer would change it');
+  assert.equal(c.proposal, null);
+  assert.match(c.evidence.join(' '), /single-package/);
+});
+
+test('P3.intent is declared when the instruction file points at a document named for intent or purpose', () => {
+  for (const pointed of ['docs/PRODUCT.md', 'docs/intent.md', 'docs/vision.md', 'PRD.md']) {
+    const c = byId(gaps(bareStack, p3Harness({ projectDocs: [pointed, 'docs/other.md'], docPointers: [pointed], instructions: { path: 'CLAUDE.md', lines: 10 } })), 'P3.intent');
+    assert.equal(c.state, 'declared', pointed);
+    assert.match(c.evidence.join(' '), /CLAUDE\.md points at/, pointed);
+    assert.equal(c.question, null, pointed);
+  }
+  const unrelated = byId(gaps(bareStack, p3Harness({ projectDocs: ['docs/API.md'], docPointers: ['docs/API.md'], instructions: { path: 'CLAUDE.md', lines: 10 } })), 'P3.intent');
+  assert.equal(unrelated.state, 'absent', 'a pointer at an unrelated document is not an intent statement');
+});
 
 test('P1.pathrules is declared when .claude/rules/ already holds a file, workspace or not', () => {
   const c = byId(gaps(bareStack, richHarness, [], undefined, richHarness.claudeDir.rules), 'P1.pathrules');
@@ -997,8 +1009,10 @@ test('MUTATION GUARD: P1.pathrules\' decidability consults stack.isWorkspace exp
     languages: ['typescript'], packageManager: null, isWorkspace: false, ci: [],
   };
   const c = byId(gaps(stack, bareHarness), 'P1.pathrules');
-  assert.equal(c.state, 'absent');
-  assert.equal(c.decidable, false, 'isWorkspace is false, so this must stay undecidable even though a non-root package exists');
+  // Audit Tier 4, finding 20: the non-workspace state is `n/a` now (a fact,
+  // not a question); what this guard pins is unchanged — isWorkspace, not
+  // "any non-root package", decides, so no proposal appears.
+  assert.equal(c.state, 'n/a', 'isWorkspace is false, so this must not propose even though a non-root package exists');
   assert.equal(c.proposal, null);
 });
 

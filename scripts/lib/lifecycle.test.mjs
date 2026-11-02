@@ -827,6 +827,14 @@ test('apply --yes prints labels and reasons, no file diffs, and still the settin
   assert.match(out, /^wrote      HANDOFF\.md$/m);
 });
 
+// --- Audit Tier 4, finding 20: apply holds the questions; it prints them -----
+test('apply prints the questions it could not answer inline, not a pointer to detect', () => {
+  const dry = run(APPLY, fixture());
+  assert.match(dry, /question(s)? this run could not answer:\n/, 'the questions follow on the next lines');
+  assert.match(dry, /^  - .+\?$/m, 'each question is a line of its own');
+  assert.doesNotMatch(dry, /node scripts\/detect\.mjs/, 'the user is not sent to another command to read a sentence apply already holds');
+});
+
 test('apply refuses on a default branch unless told otherwise', () => {
   const d = fixture();
   git(d, 'checkout', '-q', '-b', 'master');
@@ -1354,10 +1362,11 @@ test('F9: apply discloses the credential finding, the nested repository and the 
   assert.match(dry, /vendor\/libx/);
   assert.match(dry, /NOT scanned/);
 
-  // 3. The questions, counted by the same function detect uses, with a
-  //    pointer rather than a second copy of the text.
-  assert.match(dry, /questions? this run could not answer/);
-  assert.match(dry, /scripts\/detect\.mjs/);
+  // 3. The questions, derived by the same function detect uses, printed
+  //    inline (audit Tier 4, finding 20: a pointer to detect sent the user
+  //    to another command for a sentence apply already held).
+  assert.match(dry, /questions? this run could not answer:/);
+  assert.match(dry, /^  - /m);
 
   // And it still does its actual job afterwards.
   assert.match(dry, /Dry run — nothing written/);
