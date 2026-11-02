@@ -151,6 +151,9 @@ test('F5: the README discloses that installing the hooks executes this repositor
 
 test('the execution disclosure names the UserPromptSubmit re-injection hook and says it executes nothing', () => {
   assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit/);
-  assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit[\s\S]{0,400}executes nothing/i);
+  // The disclosure wraps at ~75 columns, so "executes" and "nothing" may sit
+  // on different lines — \s+ tolerates the reflow (same lesson as
+  // skill-prompts.test.mjs's cross-file sweep).
+  assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit[\s\S]{0,400}executes\s+nothing/i);
   assert.match(EXECUTION_DISCLOSURE, /1500 bytes/);
 });
