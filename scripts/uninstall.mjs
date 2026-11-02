@@ -215,9 +215,11 @@ if (result.removed.length === 0 && result.failed.length === 0 && result.changedS
   console.log('nothing was left behind');
 }
 
-// Exit 2 if any removal failed or was refused, a file changed since plan, or
-// if settings/manifest couldn't be handled
-if (result.failed.length > 0 || result.changedSincePlan.length > 0 || result.refused.length > 0 || result.settingsReadFailed || result.settingsWriteFailed || result.manifestWriteFailed || result.manifestDeleteFailed) {
+// Exit 2 if any removal failed or was refused, a file changed since plan, a
+// recorded settings patch is still registered (audit Tier 2, finding 15:
+// this used to exit 0 with a hook left live), or settings/manifest could
+// not be handled.
+if (result.failed.length > 0 || result.changedSincePlan.length > 0 || result.refused.length > 0 || result.patchesNotReverted.length > 0 || result.settingsReadFailed || result.settingsWriteFailed || result.manifestWriteFailed || result.manifestDeleteFailed) {
   process.exit(2);
 }
 

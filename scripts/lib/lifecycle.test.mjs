@@ -756,6 +756,25 @@ test('I7: uninstall with no argument exits 2, never 1', () => {
   assert.match(String(err.stderr ?? ''), /usage/i, 'and it must say how to call it');
 });
 
+// --- Audit Tier 2, finding 15: uninstall exited 0 with a hook still
+// --- registered -------------------------------------------------------------
+test('uninstall --yes exits 2 when a recorded hook could not be reverted, and says which', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const s = settings(d);
+  const stop = (s.hooks?.Stop ?? []).find(m => m.hooks.some(h => /verify-touched/.test(h.command)));
+  assert.ok(stop, 'fixture sanity: our Stop hook is registered');
+  stop.hooks[0].command += ' --edited-by-the-user'; // the hash no longer matches the manifest's patch record
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + '\n');
+
+  let err;
+  try { run(UNINSTALL, d, '--yes'); } catch (e) { err = e; }
+  assert.ok(err, 'a hook left registered is not a clean uninstall');
+  assert.equal(err.status, 2, 'exit 0 would tell a script the uninstall was complete');
+  assert.match(String(err.stdout), /Could not revert:/);
+  assert.match(String(err.stdout), /hooks\/Stop/);
+});
+
 test('apply refuses on a default branch unless told otherwise', () => {
   const d = fixture();
   git(d, 'checkout', '-q', '-b', 'master');
