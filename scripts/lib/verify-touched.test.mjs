@@ -390,20 +390,21 @@ test('TIMEOUT: the FIRST timeout blocks once with an explicit message naming the
 });
 
 test('TIMEOUT: a second Stop in the same session SKIPS re-running the command entirely', () => {
-  const d = repo({ typecheck: 'node -e "console.error(\'typecheck: early\'); setInterval(() => {}, 1000)"' });
+  // Counted, not timed (audit Tier 4): a fixed `elapsed < 300 ms` bound on a
+  // full Node spawn flaked under suite load. The command appends one byte to
+  // a file outside the repository each time it runs, then hangs.
+  const d = repo({ typecheck: 'node count.cjs' });
+  const runs = join(mkdtempSync(join(tmpdir(), 'hk-stop-runs-')), 'runs.txt');
+  writeFileSync(join(d, 'count.cjs'), "require('fs').appendFileSync(process.env.HK_TEST_RUNS, 'x'); console.error('typecheck: early'); setInterval(() => {}, 1000);\n");
   const s = sid();
-  const extraEnv = { HK_VERIFY_TIMEOUT_MS: '300', HK_VERIFY_KILL_GRACE_MS: '500' };
+  const extraEnv = { HK_VERIFY_TIMEOUT_MS: '300', HK_VERIFY_KILL_GRACE_MS: '500', HK_TEST_RUNS: runs };
   const r1 = run(d, payload({ session_id: s }), extraEnv);
   assert.equal(r1.code, 2, 'sanity: the first call really did block on the timeout');
+  assert.equal(readFileSync(runs, 'utf8').length, 1, 'sanity: the command ran once');
 
-  const start = Date.now();
   const r2 = run(d, payload({ session_id: s }), extraEnv);
-  const elapsed = Date.now() - start;
   assert.equal(r2.code, 0, 'a session that already established a timeout must not block again');
-  assert.ok(
-    elapsed < 300,
-    `the second call must skip spawning the command, not pay the 300ms bound again (took ${elapsed}ms)`,
-  );
+  assert.equal(readFileSync(runs, 'utf8').length, 1, 'the second call must not spawn the command at all');
 });
 
 /**
