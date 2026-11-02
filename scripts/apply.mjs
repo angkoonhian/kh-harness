@@ -12,7 +12,7 @@ import { detectHarness } from './lib/detect-harness.mjs';
 import { detectExposures } from './lib/detect-exposure.mjs';
 import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps, countProposals } from './lib/gap-model.mjs';
-import { gitInfo } from './lib/git-info.mjs';
+import { gitInfo, defaultBranches } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
 import { deriveCouldNotDerive, exposureSectionLines } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
@@ -20,7 +20,6 @@ import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isC
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const DEFAULT_BRANCHES = new Set(['main', 'master']);
 const KNOWN_FLAGS = new Set(['--yes', '--allow-default-branch', '--allow-dirty', '--help', '-h']);
 
 const argv = process.argv.slice(2);
@@ -42,19 +41,9 @@ if (!existsSync(root)) {
 
 const git = gitInfo(root);
 
-if (git.isRepo && DEFAULT_BRANCHES.has(git.branch) && !flags.has('--allow-default-branch')) {
-  process.stderr.write(
-    `kh-harness: refusing to apply on the default branch "${git.branch}". ` +
-    `A user must be able to \`git diff\` exactly what this tool did — switch to a ` +
-    `feature branch, or re-run with --allow-default-branch if this is intentional.\n`,
-  );
-  process.exit(3);
-}
-
-// Task 9b, finding 3: moved above the dirty-tree gate (it used to be read
-// afterward) so the gate can tell the user's own uncommitted work apart
-// from the tool's own prior writes — see `ownedByUs` and the gate itself,
-// immediately below.
+// The manifest is read before the gates (Task 9b, finding 3) so the dirty-
+// tree gate can tell the user's own uncommitted work apart from the tool's
+// own prior writes — see `ownedByUs` and `gateRefusals`, below.
 //
 // Coordinator finding (Major): a manifest file that EXISTS but cannot be
 // read as our schema must refuse the run, not be silently treated as "no
@@ -116,33 +105,85 @@ const ourPaths = manifestResult.state === 'ok' ? ownedByUs(manifestResult.manife
  * no ` -> ` form here (verified against git directly on this branch, not
  * assumed). The status belongs to the pair, and the path that matters is the
  * new one, so the original-path record is consumed and never tested.
+ *
+ * Returns `{ dirty, error }`. Audit Tier 1, finding 3: a failed `git status`
+ * used to read as "clean", which waived the gate on exactly the repositories
+ * where git could not be trusted to answer. An error is now the caller's to
+ * refuse on.
  */
-function hasTrackedChanges(r, ignorePaths = new Set()) {
+function trackedChanges(r, ignorePaths = new Set()) {
+  let out;
   try {
-    const out = execFileSync('git', ['-C', r, 'status', '--porcelain', '-z', '--untracked-files=no'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    out = execFileSync('git', ['-C', r, 'status', '--porcelain', '-z', '--untracked-files=no'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const records = out.split('\0');
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i];
-      if (!record) continue;
-      const status = record.slice(0, 2);
-      const path = record.slice(3);
-      // Rename/copy: skip the original-path record that follows this one.
-      if (status.includes('R') || status.includes('C')) i += 1;
-      if (!ignorePaths.has(path.split('\\').join('/'))) return true;
-    }
-    return false;
-  } catch {
-    return false;
+  } catch (err) {
+    const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
+    return { dirty: false, error: stderr || (err?.code === 'ENOENT' ? 'git is not installed or not on PATH' : 'git status failed') };
   }
+  const records = out.split('\0');
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (!record) continue;
+    const status = record.slice(0, 2);
+    const path = record.slice(3);
+    // Rename/copy: skip the original-path record that follows this one.
+    if (status.includes('R') || status.includes('C')) i += 1;
+    if (!ignorePaths.has(path.split('\\').join('/'))) return { dirty: true, error: null };
+  }
+  return { dirty: false, error: null };
 }
 
-if (git.isRepo && hasTrackedChanges(root, ourPaths) && !flags.has('--allow-dirty')) {
-  process.stderr.write(
-    `kh-harness: refusing to apply with uncommitted changes to tracked files. ` +
-    `Commit or stash first so you can \`git diff\` what this tool did, or re-run with --allow-dirty.\n`,
-  );
+/**
+ * The two refusals that protect `git diff` as the record of what this tool
+ * did, as the sentences `--yes` prints before exiting 3 — or, on a dry run,
+ * prints as notes after the diffs. A dry run writes nothing, so there is
+ * nothing to refuse; it used to be refused anyway, before showing anything,
+ * which contradicted the README's "read the diffs — nothing is written"
+ * (audit finding 5). Computed once, here, so the two paths cannot disagree.
+ *
+ * Audit Tier 1, finding 3, the three bypasses this closes: a repository with
+ * no commits (an unborn `main` is `main` — `gitInfo` reads the symbolic
+ * ref, not a commit); a default branch not named `main` or `master`
+ * (`defaultBranches` adds `init.defaultBranch` and `origin/HEAD`); and a git
+ * that cannot answer at all (not installed, "dubious ownership"), which used
+ * to read as "not a repository" and waive both gates — it now refuses unless
+ * BOTH waivers are given, because neither gate could run.
+ */
+function gateRefusals() {
+  const waivedBranch = flags.has('--allow-default-branch');
+  const waivedDirty = flags.has('--allow-dirty');
+  if (git.error) {
+    return waivedBranch && waivedDirty ? [] : [
+      `git could not report the state of ${root} (${git.error}), so neither the default-branch gate nor the ` +
+      `dirty-tree gate can run. Re-run with --allow-default-branch --allow-dirty to proceed without them.`,
+    ];
+  }
+  if (!git.isRepo) return [];
+  const refusals = [];
+  if (!waivedBranch && defaultBranches(root).includes(git.branch)) {
+    refusals.push(
+      `refusing to apply on the default branch "${git.branch}". A user must be able to \`git diff\` exactly what ` +
+      `this tool did — switch to a feature branch, or re-run with --allow-default-branch if this is intentional.`,
+    );
+  }
+  if (!waivedDirty) {
+    const { dirty, error } = trackedChanges(root, ourPaths);
+    if (error) {
+      refusals.push(`git could not report whether the tree is clean (${error}), so the dirty-tree gate cannot run. Re-run with --allow-dirty to proceed without it.`);
+    } else if (dirty) {
+      refusals.push(
+        `refusing to apply with uncommitted changes to tracked files. Commit or stash first so you can ` +
+        `\`git diff\` what this tool did, or re-run with --allow-dirty.`,
+      );
+    }
+  }
+  return refusals;
+}
+
+const refusals = gateRefusals();
+if (flags.has('--yes') && refusals.length) {
+  for (const r of refusals) process.stderr.write(`kh-harness: ${r}\n`);
   process.exit(3);
 }
 
@@ -284,6 +325,9 @@ try {
 
 if (!flags.has('--yes')) {
   reportDrift();
+  // What `--yes` would refuse, said now rather than after the diffs have
+  // been read and acted on — see gateRefusals.
+  for (const r of refusals) process.stdout.write(`note: --yes would be refused — ${r}\n`);
   process.stdout.write('Dry run — nothing written. Re-run with --yes to apply.\n');
   process.exit(0);
 }

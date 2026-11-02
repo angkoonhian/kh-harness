@@ -144,8 +144,15 @@ FLAGS
                            this tool did. This tool's OWN prior writes are
                            already excused from it, per the manifest, so you
                            should not need this to re-run.
-  --allow-default-branch   Proceed on \`main\`/\`master\`. Refused by default for
-                           the same reason: a reviewable diff.
+  --allow-default-branch   Proceed on the default branch (\`main\`, \`master\`,
+                           what init.defaultBranch names, or what origin/HEAD
+                           points at — a repository with no commits included).
+                           Refused by default for the same reason: a
+                           reviewable diff.
+
+Both gates apply to --yes only; a dry run is never refused and prints a
+\`note:\` for what --yes would refuse. If git cannot be consulted at all,
+--yes needs both flags, because neither gate could run.
 
 ${EXECUTION_DISCLOSURE}
 

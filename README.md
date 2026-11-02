@@ -70,7 +70,8 @@ repository's, and is not something we have measured — restart if it matters.
 
 Each takes `--help` for its full contract. `apply` and `uninstall` **default to
 a dry run**: without `--yes` they print exactly what they would do, and do
-nothing.
+nothing. A dry run is never refused; when `--yes` would be, it says so in a
+`note:` line after the diffs.
 
 A normal first pass:
 
@@ -139,7 +140,11 @@ Writes the files and settings patches `detect` proposed. Nothing else, ever:
 |---|---|
 | `--yes` | Nothing — this is what makes it write at all. Without it you get proposals and diffs. |
 | `--allow-dirty` | The refusal to run with uncommitted changes to tracked files. That gate exists so you can `git diff` exactly what this tool did. This tool's own prior writes are already excused from it, via the manifest, so re-running should not need this. |
-| `--allow-default-branch` | The refusal to run on `main` or `master`, for the same reason. |
+| `--allow-default-branch` | The refusal to run on `main`, `master`, the branch `init.defaultBranch` names, or the one `origin/HEAD` points at — a repository with no commits yet included — for the same reason. |
+
+Both gates apply only to `--yes`. When git cannot be consulted at all (not
+installed, or it refuses to read the directory), neither gate can run, and
+`--yes` refuses unless both flags are given.
 
 ### `uninstall`
 

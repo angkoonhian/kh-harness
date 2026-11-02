@@ -44,6 +44,9 @@ if (!existsSync(root)) {
 // report — a report that omits it makes a partial scan look complete.
 const { files, nested } = listFiles(root);
 const git = gitInfo(root);
+// A git that could not answer is not a non-repository; say so, on stderr so
+// `--json` stdout stays parseable. The report records `vcs: null` either way.
+if (git.error) process.stderr.write(`kh-harness: ${git.error} — the report treats this directory as not under version control.\n`);
 const stack = detectStack(root, files);
 const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
