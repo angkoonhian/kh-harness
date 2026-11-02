@@ -76,6 +76,12 @@ test('settingsReformattedNote names the behaviour and accepts the caller\'s own 
   const reverting = settingsReformattedNote('reverting the patch(es) above');
   assert.match(applying, /applying the patch above/);
   assert.match(reverting, /reverting the patch\(es\) above/);
+  // Tier 4 final review, Important 3: the writers keep the file's
+  // indentation and trailing newline since finding 22, so the note may no
+  // longer claim an unconditional two-space rewrite.
+  assert.doesNotMatch(applying, /always rewrites|JSON\.stringify|null, 2/);
+  assert.match(applying, /indentation and the trailing newline are kept/);
+  assert.match(applying, /key order and inline spacing are normalised/);
   // Same sentence otherwise — only the verb clause differs.
   assert.equal(
     applying.replace('applying the patch above', 'X'),

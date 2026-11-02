@@ -57,8 +57,14 @@ const MAX_INSTRUCTION_LINES = 150;
  */
 /** A document name that says it states the application's purpose — what
  * P3.intent accepts from an instruction-file pointer in place of
- * docs/INTENT.md. */
-const INTENT_LIKE = /intent|purpose|vision|product|prd/i;
+ * docs/INTENT.md. Whole tokens of the file name (split on -, _, . and
+ * space), never substrings: production.md, provisioning.md and
+ * revision-history.md are not intent statements (Tier 4 final review,
+ * Important 1). */
+const INTENT_WORDS = new Set(['intent', 'purpose', 'vision', 'product', 'prd']);
+function namedForIntent(path) {
+  return path.split('/').pop().toLowerCase().split(/[-_. ]+/).some(t => INTENT_WORDS.has(t));
+}
 
 const CLEAN_SWEEP_NOTE = 'no credential patterns matched in any file this sweep could read (binary, build-output and over-512 KB files are skipped by design; a file that could not be READ is reported, not skipped silently)';
 
@@ -614,7 +620,7 @@ const CHECKS = [
       // branch above then credits.
       return {
         state: 'n/a',
-        evidence: ['single-package repository — no sub-directory split to scaffold a rule file for (stack.isWorkspace is false); any .claude/rules/*.md you write is credited above'],
+        evidence: ['not a workspace (stack.isWorkspace is false) — no sub-directory split to scaffold a rule file for; any .claude/rules/*.md you write is credited above'],
       };
     },
   },
@@ -659,7 +665,7 @@ const CHECKS = [
       // instruction file already makes — but only at a document whose NAME
       // says it states the purpose (intent, purpose, vision, product, PRD);
       // a pointer at an API reference is not an intent statement.
-      const pointed = (harness.docPointers ?? []).filter(p => INTENT_LIKE.test(p.split('/').pop()));
+      const pointed = (harness.docPointers ?? []).filter(namedForIntent);
       if (pointed.length) {
         const from = harness.instructions?.path ?? 'the instruction file';
         return { state: 'declared', evidence: pointed.map(p => `${from} points at ${p} (named for intent; its sections were not measured)`) };

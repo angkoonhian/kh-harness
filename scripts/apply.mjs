@@ -353,12 +353,12 @@ if (!flags.has('--yes')) {
   process.exit(0);
 }
 
-// Coordinator finding (Minor): a settings-hook/deny write rewrites the
-// WHOLE file via JSON.stringify(settings, null, 2) — if the user's own
-// settings.json was not already in exactly that form (compact, a
-// different indent width, a different key order, ...), applying a patch
-// reformats everything else in the file too, not just what is listed
-// above. Captured BEFORE applyProposals runs, since that call may rewrite
+// Coordinator finding (Minor): a settings-hook/deny write re-serialises
+// the WHOLE file (JSON.stringify at the file's own indentation — see
+// detectIndent) — if the user's own settings.json was not already in
+// exactly that form (compact, a different key order, ...), applying a
+// patch reformats everything else in the file too, not just what is
+// listed above. Captured BEFORE applyProposals runs, since that call may rewrite
 // the very file this checks. Ruled, not fixed (see docs/task-8b-report.md,
 // finding 7): preserving the original formatting needs a format-preserving
 // JSON editor — a dependency, or a parser this project would have to

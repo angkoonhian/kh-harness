@@ -73,10 +73,12 @@ function workspacePatterns(root, rootPkg) {
   if (ws) {
     // Only the `packages:` list is globs: a `catalog:` or
     // `onlyBuiltDependencies:` entry is not a workspace member (audit Tier 4,
-    // finding 27). A top-level key ends the list.
+    // finding 27). A top-level key ends the list; a comment or blank line,
+    // at any column, does not (Tier 4 final review, Important 2).
     const patterns = [];
     let inPackages = false;
     for (const l of ws.split('\n')) {
+      if (/^\s*(#|$)/.test(l)) continue;
       if (/^\S/.test(l)) { inPackages = /^packages\s*:/.test(l); continue; }
       if (!inPackages) continue;
       const m = l.match(/^\s*-\s*['"]?([^'"#]+?)['"]?\s*$/);

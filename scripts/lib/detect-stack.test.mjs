@@ -58,6 +58,20 @@ test('pnpm-workspace.yaml catalog entries are not workspace globs', () => {
   assert.deepEqual(s.packages.map(p => p.name).sort(), ['@x/api', 'root'], 'only the packages: list is a glob list');
 });
 
+test('a column-0 comment or blank line inside the pnpm packages: list does not end it', () => {
+  // Tier 4 final review, Important 2: any non-indented line was taken for
+  // the next top-level key, so a comment between two entries dropped every
+  // entry after it.
+  const d = repo();
+  write(d, 'package.json', JSON.stringify({ name: 'root', private: true }));
+  write(d, 'pnpm-lock.yaml', '');
+  write(d, 'pnpm-workspace.yaml', 'packages:\n  - "packages/*"\n# the deployable apps\n\n  - "apps/*"\ncatalog:\n  react: ^18\n');
+  write(d, 'packages/api/package.json', JSON.stringify({ name: '@x/api', scripts: {} }));
+  write(d, 'apps/web/package.json', JSON.stringify({ name: '@x/web', scripts: {} }));
+  const s = run(d);
+  assert.deepEqual(s.packages.map(p => p.name).sort(), ['@x/api', '@x/web', 'root'], 'both globs survive the comment');
+});
+
 test('bun via bun.lock (the default lockfile name since Bun 1.2)', () => {
   const d = repo();
   write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'node test.js' } }));

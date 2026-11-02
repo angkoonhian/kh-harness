@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
 // Whole-branch review, F2: the two commands can only be held to agree about
 // the capabilities `apply` is actually able to write. A prompt-gated check

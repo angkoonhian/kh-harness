@@ -4,12 +4,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
 import { GENERATORS } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, git, run, settings, fixture } from './lifecycle-fixtures.mjs';
 
 test('a repository that gitignores .claude/ still recognises its own hook as declared after apply (Task 8b Major)', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-gitignore-'));

@@ -3,11 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { sha256, emptyManifest } from './manifest.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter } from './lifecycle-fixtures.mjs';
+import { join } from 'node:path';
+import { DETECT, APPLY, git, run, settings, fixture, workspaceFixture } from './lifecycle-fixtures.mjs';
 
 // --- Audit Tier 3, finding 11: hooks are registered in exec form ---------------
 test('after apply --yes every registered hook is exec form with a ${CLAUDE_PROJECT_DIR}-rooted path, and detect reports it declared', () => {
@@ -159,9 +158,9 @@ test('C4: a malformed permissions.deny does not crash the DEFAULT (dry-run) appl
   assert.match(out, /could not be parsed as a JSON object/, 'the malformed deny must be reported the same way as unparseable JSON');
 });
 
-// Coordinator finding (Minor): apply rewrites the whole settings.json via
-// JSON.stringify(settings, null, 2) — a user whose file was NOT already in
-// that exact form gets everything else in it reformatted too, not just
+// Coordinator finding (Minor): apply re-serialises the whole settings.json
+// (at its own indentation) — a user whose file was NOT already in that
+// canonical form gets everything else in it reformatted too, not just
 // the patch being applied. Disclosed, not fixed (ruled against format
 // preservation — see task-8b-report.md, finding 7). These pin both
 // directions: the note appears when it is true, and does not appear
@@ -171,8 +170,8 @@ test('apply discloses when applying a patch reformats the rest of settings.json'
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest', lint: 'eslint .' } }));
   mkdirSync(join(d, '.claude'), { recursive: true });
-  // Compact, single-line JSON — not the `JSON.stringify(x, null, 2)` form
-  // apply itself writes, so applying the sensor's hook patch will reformat
+  // Compact, single-line JSON — not the canonical form apply itself
+  // writes, so applying the sensor's hook patch will reformat
   // this unrelated `permissions` block too, not just add the new hook.
   writeFileSync(join(d, '.claude/settings.json'), '{"permissions":{"deny":["Edit(secrets/**)"]}}');
   execFileSync('git', ['init', '-q', d]);
@@ -182,7 +181,7 @@ test('apply discloses when applying a patch reformats the rest of settings.json'
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
   const out = run(APPLY, d, '--yes');
-  assert.match(out, /was reformatted while applying the patch/, 'the user must be told, not left to discover a diff full of lines they did not change');
+  assert.match(out, /was re-serialised while applying the patch/, 'the user must be told, not left to discover a diff full of lines they did not change');
   assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)'] }, 'the content itself is genuinely unchanged — only its formatting is');
 });
 
@@ -200,7 +199,7 @@ test('apply does NOT disclose a reformat when settings.json was already in the c
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
 
   const out = run(APPLY, d, '--yes');
-  assert.doesNotMatch(out, /was reformatted/, 'no false alarm when nothing but the patch itself changed');
+  assert.doesNotMatch(out, /was re-serialised/, 'no false alarm when nothing but the patch itself changed');
 });
 
 // Coordinator finding (Major): `commandScript` (detect-harness.mjs)

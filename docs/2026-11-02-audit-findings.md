@@ -108,8 +108,7 @@
 ---
 
 ## Tier 4 — docs, CI, tests
-*Status (2026-11-03): fixed on `fix/audit-findings` — 
-*Status (2026-11-03): fixed on `fix/audit-findings` — README says four hooks and that uninstall reverts the hooks it installed; the CI paragraph describes the `workflow_dispatch` eval job and both credentials; `SKILL.md` Phase 2 is steps 8–12; `ci.yml` runs Node 22 and 24 and installs the CLI before `npm test` on Linux; `plugin.json`'s version is tied to `package.json`'s by a test; `lifecycle.test.mjs` is three files on `lifecycle-fixtures.mjs`; the Stop-gate skip test counts runs instead of milliseconds. The two platform skips (mode bits, junctions) remain Linux-CI-only by design.**
+*Status (2026-11-03): fixed on `fix/audit-findings` — README says four hooks and that uninstall reverts the hooks it installed; the CI paragraph describes the `workflow_dispatch` eval job and both credentials; `SKILL.md` Phase 2 is steps 8–12; `ci.yml` runs Node 22 and 24 and installs the CLI before `npm test` on Linux; `plugin.json`'s version is tied to `package.json`'s by a test; `lifecycle.test.mjs` is three files on `lifecycle-fixtures.mjs`; the Stop-gate skip test counts runs instead of milliseconds. The two platform skips (mode bits, junctions) remain Linux-CI-only by design.*
 
 - README: "three hooks" (table has four); "reverts both hooks"; CI section says `ANTHROPIC_API_KEY` and "skips with a notice" (now `workflow_dispatch`-only, prefers the OAuth token); "3 runs per case" (`runs: 1`).
 - `SKILL.md:29` Phase 2 row omits step 12, which its reference and a test cover.

@@ -128,9 +128,9 @@ if (result.removed.length > 0) {
 }
 
 // Task 9b, finding 5: apply.mjs already discloses a settings.json reformat
-// caused by its own JSON.stringify(x, null, 2) rewrite; uninstall rewrites
-// the same file the same way while reverting a patch, and must disclose it
-// the same way rather than leaving a user to discover the diff unannounced.
+// caused by its own parse-and-re-serialise write; uninstall rewrites the
+// same file the same way while reverting a patch, and must disclose it the
+// same way rather than leaving a user to discover the diff unannounced.
 if (result.settingsReformatted) {
   console.log(settingsReformattedNote('reverting the patch(es) above'));
 }

@@ -541,7 +541,8 @@ export function runUninstall({ root, manifest, plan }) {
   const changedSincePlan = [];
   // Task 9b, finding 5: apply.mjs already discloses a settings.json reformat
   // (see its own `alreadyCanonical`); uninstall rewrites the same file via
-  // the same `JSON.stringify(x, null, 2)` and used to say nothing about it —
+  // the same re-serialisation (at the file's own indentation, see
+  // detectIndent) and used to say nothing about it —
   // the reformat is the SAME kind of change, so it gets the SAME disclosure.
   let settingsReformatted = false;
 

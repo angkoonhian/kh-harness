@@ -956,7 +956,7 @@ test('P1.pathrules is n/a with no question on a single-package repository withou
   assert.equal(c.state, 'n/a', 'a single package has no sub-directory split to scaffold a rule file for — a fact, not a gap');
   assert.equal(c.question, null, 'nothing the user could answer would change it');
   assert.equal(c.proposal, null);
-  assert.match(c.evidence.join(' '), /single-package/);
+  assert.match(c.evidence.join(' '), /not a workspace/);
 });
 
 test('P3.intent is declared when the instruction file points at a document named for intent or purpose', () => {
@@ -968,6 +968,22 @@ test('P3.intent is declared when the instruction file points at a document named
   }
   const unrelated = byId(gaps(bareStack, p3Harness({ projectDocs: ['docs/API.md'], docPointers: ['docs/API.md'], instructions: { path: 'CLAUDE.md', lines: 10 } })), 'P3.intent');
   assert.equal(unrelated.state, 'absent', 'a pointer at an unrelated document is not an intent statement');
+});
+
+test('P3.intent does not credit a pointer whose name merely contains an intent word', () => {
+  // Tier 4 final review, Important 1: a substring match took production.md
+  // (product), provisioning.md (vision), revision-history.md (vision) and
+  // reproduction.md (product) for intent statements. The words must be
+  // whole tokens of the file name.
+  for (const pointed of ['docs/production.md', 'docs/provisioning.md', 'docs/revision-history.md', 'docs/reproduction.md', 'docs/intentions.md']) {
+    const c = byId(gaps(bareStack, p3Harness({ projectDocs: [pointed], docPointers: [pointed], instructions: { path: 'CLAUDE.md', lines: 10 } })), 'P3.intent');
+    assert.equal(c.state, 'absent', pointed);
+  }
+  // Tokens split on -, _, . and space still count.
+  for (const pointed of ['docs/product-vision.md', 'docs/project_intent.md', 'docs/purpose.statement.md']) {
+    const c = byId(gaps(bareStack, p3Harness({ projectDocs: [pointed], docPointers: [pointed], instructions: { path: 'CLAUDE.md', lines: 10 } })), 'P3.intent');
+    assert.equal(c.state, 'declared', pointed);
+  }
 });
 
 // --- Audit Tier 4, finding 23: the question states the total, not the capped list

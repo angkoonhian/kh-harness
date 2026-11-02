@@ -124,11 +124,20 @@ test('the injected block is delimited and names its source', () => {
 });
 
 test('the byte bound counts the delimiter', () => {
+  // Tier 4 final review, Minor 6: the reservation of the closing tag only
+  // matters when the LAST rule is admitted (the "… N more" notice is
+  // reserved separately and is wider than the tag), so a bound that cuts
+  // the list never exercised it. Measure the full block, then set the bound
+  // one byte short of it: without the reservation the last rule is still
+  // admitted and the tag pushes the block over.
   const d = repo();
-  const many = Array.from({ length: 12 }, (_, i) => `## R${i} — rule number ${i} with some words to take up space\n- enforced-by: none\n`).join('');
-  registry(d, many);
-  const text = injected(run(d, { HK_RULES_BRIEF_MAX_BYTES: '300' }));
-  assert.ok(Buffer.byteLength(text, 'utf8') <= 300, `got ${Buffer.byteLength(text, 'utf8')} bytes`);
+  const few = Array.from({ length: 3 }, (_, i) => `## R${i} — rule number ${i} with some words to take up space\n- enforced-by: none\n`).join('');
+  registry(d, few);
+  const full = Buffer.byteLength(injected(run(d, { HK_RULES_BRIEF_MAX_BYTES: '100000' })), 'utf8');
+  const bound = full - 1;
+  const text = injected(run(d, { HK_RULES_BRIEF_MAX_BYTES: String(bound) }));
+  assert.ok(Buffer.byteLength(text, 'utf8') <= bound, `got ${Buffer.byteLength(text, 'utf8')} bytes for a bound of ${bound}`);
+  assert.match(text, /… 1 more rule\(s\) in/, 'the last rule gave way to the notice');
   assert.ok(text.endsWith('</project-rules>'));
 });
 

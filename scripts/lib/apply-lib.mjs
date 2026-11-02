@@ -316,7 +316,8 @@ function matchingNewline(raw) {
 
 /**
  * Was this JSON file ALREADY in exactly the form this tool writes — the same
- * `JSON.stringify(x, null, 2)` plus the same trailing-newline decision? If
+ * `JSON.stringify(x, null, detectIndent(raw))` plus the same trailing-newline
+ * decision? If
  * so, applying a patch cannot have reformatted anything else, and the
  * reformat disclosure must not be printed.
  *
@@ -365,21 +366,24 @@ export function detectIndent(raw) {
 
 /**
  * Task 9b (coordinator round 2, finding 3): apply.mjs and uninstall.mjs
- * each rewrite `.claude/settings.json` via `JSON.stringify(x, null, 2)` —
- * applying a patch, and reverting one — and each used to carry its OWN,
- * near-identical sentence disclosing that the rest of the file may have
- * been reformatted along with it. Two independently-worded copies of the
- * same disclosure drift: this project's verification already caught the
- * two differ in a small way ("beyond what was listed" vs. "beyond what
- * was reverted"). One sentence, one place; `verb` is the only thing that
- * legitimately differs between the two callers ("applying the patch
- * above" / "reverting the patch(es) above").
+ * each parse and re-serialise `.claude/settings.json` — applying a patch,
+ * and reverting one — and each used to carry its OWN, near-identical
+ * sentence disclosing that the rest of the file may have been reformatted
+ * along with it. Two independently-worded copies of the same disclosure
+ * drift: this project's verification already caught the two differ in a
+ * small way ("beyond what was listed" vs. "beyond what was reverted"). One
+ * sentence, one place; `verb` is the only thing that legitimately differs
+ * between the two callers ("applying the patch above" / "reverting the
+ * patch(es) above"). Since audit Tier 4 (finding 22) both writers keep the
+ * file's indentation and trailing newline, so the disclosure is narrower
+ * than it was: key order and inline spacing (Tier 4 final review,
+ * Important 3).
  */
 export function settingsReformattedNote(verb) {
-  return `note       .claude/settings.json was reformatted while ${verb} — its content is ` +
-    `unchanged beyond what was listed, but whitespace/indentation may now differ throughout the file ` +
-    `(this tool always rewrites it as JSON.stringify(settings, null, 2); it does not preserve the ` +
-    `original formatting).`;
+  return `note       .claude/settings.json was re-serialised while ${verb} — its content is ` +
+    `unchanged beyond what was listed, and its indentation and the trailing newline are kept, but ` +
+    `key order and inline spacing are normalised (this tool parses and re-serialises the file; it ` +
+    `does not preserve every byte of the original formatting).`;
 }
 
 /**
