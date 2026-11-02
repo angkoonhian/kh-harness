@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 
 const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
 
@@ -217,28 +217,39 @@ export function listFiles(root) {
     return { files, source: 'git', nested };
   }
 
-  // Fallback: recursive directory walk using stable readdirSync (Node 20.1+)
+  // Fallback: a directory walk that PRUNES at the directory. Audit Tier 2,
+  // finding 14: `readdirSync(root, { recursive: true })` enumerated every
+  // entry under node_modules and only then dropped them by path component —
+  // 2.6 s for 20,000 files where skipping the directory takes milliseconds.
+  // Regular files only, never through a symlink or a Windows junction (the
+  // recursive readdir DID descend into a junction — measured by the test
+  // that now pins this), POSIX-relative paths.
+  // A walk that fails returns an empty list rather than throwing.
+  return { files: walkFiles(root) ?? [], source: 'walk', nested };
+}
+
+/** The fallback file list for `root`, or null when the walk failed.
+ * Exported so its test can time the walk itself, apart from the git probes
+ * `listFiles` makes first. */
+export function walkFiles(root) {
   const files = [];
   try {
-    const entries = readdirSync(root, { recursive: true, withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-
-      const fullPath = join(entry.parentPath, entry.name);
-      const relPath = relative(root, fullPath);
-      const pathComponents = relPath.split(/[\\\/]/);
-
-      // Skip if any directory component is excluded
-      if (pathComponents.slice(0, -1).some(p => EXCLUDE_DIRS.has(p))) continue;
-
-      // Convert to POSIX separators
-      files.push(relPath.split('\\').join('/'));
-    }
+    walk(root, '', files);
   } catch {
-    // If walk fails, return empty list rather than throwing
-    return { files: [], source: 'walk', nested };
+    return null;
   }
-  return { files, source: 'walk', nested };
+  return files;
+}
+
+function walk(root, rel, out) {
+  for (const entry of readdirSync(rel ? join(root, rel) : root, { withFileTypes: true })) {
+    const entryRel = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (!EXCLUDE_DIRS.has(entry.name)) walk(root, entryRel, out);
+    } else if (entry.isFile()) {
+      out.push(entryRel);
+    }
+  }
 }
 
 export function readIfPresent(root, rel) {

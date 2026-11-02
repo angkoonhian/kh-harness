@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { listFiles, readIfPresent, existsAny } from './scan.mjs';
+import { listFiles, walkFiles, readIfPresent, existsAny } from './scan.mjs';
 
 function fixture() {
   const d = mkdtempSync(join(tmpdir(), 'hk-scan-'));
@@ -40,6 +40,58 @@ test('excludes node_modules', () => {
 test('reports its source', () => {
   const { source } = listFiles(fixture());
   assert.ok(source === 'git' || source === 'walk');
+});
+
+// --- Audit Tier 2, finding 14: the fallback walk enumerated node_modules
+// --- before filtering it out ---------------------------------------------------
+//
+// `readdirSync(root, { recursive: true })` lists every entry under an
+// excluded directory and only then drops them by path component: 2.6 s for a
+// 20,000-file node_modules where a walk that skips the directory takes
+// milliseconds. The pruned walk also never follows a symlinked directory
+// or a Windows junction — the recursive readdir descended into a junction
+// and listed what was behind it (this test was red before the fix).
+test('the fallback walk never enters an excluded directory', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-walk-')); // deliberately NOT a git repository
+  writeFileSync(join(d, 'package.json'), '{}');
+  mkdirSync(join(d, 'src'));
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;');
+  const big = join(d, 'node_modules', 'big');
+  mkdirSync(big, { recursive: true });
+  for (let i = 0; i < 5000; i++) writeFileSync(join(big, `f${i}.js`), '//');
+
+  walkFiles(d); // warm the directory cache so the timings below measure the walks, not the disk
+  // The WALK is timed, not listFiles (which first spends ~170 ms asking git
+  // whether this is a repository), and RELATIVE to enumerating everything in
+  // the same process, so load from the rest of the suite scales both sides
+  // (a fixed bound flaked at 426 ms under the full suite). Enumerating lists
+  // 5,000 entries; pruning reads three directories.
+  const t0 = performance.now();
+  readdirSync(d, { recursive: true, withFileTypes: true });
+  const enumerateMs = performance.now() - t0;
+  const t1 = performance.now();
+  const walked = walkFiles(d);
+  const walkMs = performance.now() - t1;
+  assert.deepEqual(walked.sort(), ['package.json', 'src/a.ts']);
+  const { files, source } = listFiles(d);
+  assert.equal(source, 'walk', 'fixture sanity: this must be the non-git path');
+  assert.deepEqual(files.sort(), ['package.json', 'src/a.ts']);
+  assert.ok(walkMs < enumerateMs / 3, `the walk must prune node_modules at the directory, not enumerate it: walk ${walkMs.toFixed(0)} ms vs enumerate ${enumerateMs.toFixed(0)} ms`);
+});
+
+test('the fallback walk does not follow a symlinked directory', (t) => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-walk-'));
+  writeFileSync(join(d, 'package.json'), '{}');
+  const outside = mkdtempSync(join(tmpdir(), 'hk-walk-outside-'));
+  writeFileSync(join(outside, 'x.ts'), '');
+  try {
+    symlinkSync(outside, join(d, 'linked'), 'junction');
+  } catch (e) {
+    t.skip(`cannot create a directory link here: ${e.message}`);
+    return;
+  }
+  const { files } = listFiles(d);
+  assert.deepEqual(files, ['package.json'], 'nothing behind the link is listed');
 });
 
 test('readIfPresent returns null for a missing file', () => {
