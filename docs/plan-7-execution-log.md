@@ -22,7 +22,7 @@ Pre-flight: no other shared interfaces (T1, T3, T4, T6, T7, T8 are disjoint).
 
 ## Progress
 Task 1: complete (commits b89e7b3..ef79cfc, tests: node --test scripts/lib/scan.test.mjs scripts/lib/detect-exposure.test.mjs → ℹ duration_ms 17049.9326)
-Task 1 note: the full suite before the commit was red only on DOGFOOD, over a sentence in docs/plan-6-execution-log.md (`pwd:/api_key:,` parses as a credential line); reworded in its own commit. Everything else: 914 pass.
+Task 1 note: the full suite before the commit was red only on DOGFOOD, over a sentence in docs/plan-6-execution-log.md (a key name followed by a colon and a slash-joined list parses as a credential line); reworded in its own commit. Everything else: 914 pass.
 Task 2: complete (commits ef79cfc..b2e48d6, tests: node --test scripts/lib/apply-lib.test.mjs scripts/lib/settings-merge.test.mjs → ℹ duration_ms 355.1999)
 Task 3: complete (commits b2e48d6..83588b7, tests: node --test scripts/lib/manifest.test.mjs scripts/lib/apply-lib.test.mjs → ℹ duration_ms 285.8162)
 Ruling (T3): the two writeManifest tests passed BEFORE the change — atomicity (temp file + rename) is not observable from a single-threaded synchronous test without injecting fs, which would be test-only code in production. They are kept as contract guards (no temporary residue; a failed replace leaves the target intact), the atomic write itself is verified by reading the ten lines. The kitVersion test was RED→GREEN. Cost if wrong: a regression to an in-place write would pass the suite.
