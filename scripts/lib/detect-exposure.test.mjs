@@ -11,7 +11,7 @@ import { detectStack } from './detect-stack.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { fileURLToPath } from 'node:url';
-import { detectExposures, classifyCredentialValue, splitExposures, isProminentExposure, collapsedExposureNote, pathRole, fixtureExposureNote } from './detect-exposure.mjs';
+import { detectExposures, classifyCredentialValue, splitExposures, isProminentExposure, collapsedExposureNote, pathRole, fixtureExposureNote, UNREADABLE_KIND } from './detect-exposure.mjs';
 
 const SECRET = 'glpat-' + 'A'.repeat(20);
 
@@ -584,6 +584,29 @@ test('fixtureExposureNote names the count, the severity and where to read them',
   assert.match(one, /severity low/);
   assert.match(one, /Exposures/);
   assert.match(fixtureExposureNote(3), /^3 .*literals/);
+});
+
+// --- Audit Tier 3, finding 18: two path lookups per swept file ---------------
+//
+// `statSync` then `readFileSync` was ~48 % of a detect run on 1,400 files.
+// One `open` → `fstat` → `read` keeps every outcome the two lookups had:
+// a deliberate skip stays silent, an unexpected failure is still a finding.
+test('an always-probed path that does not exist, or is a directory, is silent; a scan-list path that does not exist is reported', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  mkdirSync(join(d, '.npmrc')); // a directory where the always-probed file would be
+  assert.deepEqual(run(d), [], 'absent and non-regular always-probed paths are expected, not alarms');
+  const found = detectExposures(d, ['README.md', 'src/gone.ts'], { remotes: [] });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].kind, UNREADABLE_KIND);
+  assert.equal(found[0].location, 'src/gone.ts');
+  assert.match(found[0].reason, /ENOENT/);
+});
+
+test('a scan-list path that is a directory is skipped silently, as a non-regular file', () => {
+  const d = repo();
+  write(d, 'src/a.ts', '');
+  assert.deepEqual(detectExposures(d, ['src', 'src/a.ts'], { remotes: [] }), []);
 });
 
 // --- Coordinator ruling (post-review, concern 5): kh-harness passes its own

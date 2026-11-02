@@ -1,5 +1,5 @@
 // scripts/lib/detect-exposure.mjs
-import { statSync, readFileSync, existsSync } from 'node:fs';
+import { openSync, fstatSync, readSync, closeSync } from 'node:fs';
 import { join, basename } from 'node:path';
 
 const MAX_BYTES = 512 * 1024;
@@ -293,35 +293,56 @@ function isBinaryExtension(base) {
 }
 
 /**
- * Decides whether one path is examined, and — when it is not — whether that
- * is a DELIBERATE skip (`reason: null`, silent by design) or an unexpected
- * read failure (`reason` set, reported as an `UNREADABLE_KIND` finding).
- * See `UNREADABLE_KIND`'s own comment for why the two are separated rather
- * than all collapsed into one alarm.
+ * Reads the bytes of one path in ONE open — `open` → `fstat` → `read` —
+ * deciding on the way whether the path is examined at all, and, when it is
+ * not, whether that is a DELIBERATE skip (`reason: null`, silent by design)
+ * or an unexpected failure (`reason` set, reported as an `UNREADABLE_KIND`
+ * finding). See `UNREADABLE_KIND`'s own comment for why the two are
+ * separated rather than all collapsed into one alarm.
  *
- * One function, consulted on both of `detectExposures`' two paths (the scan
- * list and `ALWAYS_PROBE`). It used to be two: `scannable` tested
- * `size <= MAX_BYTES` for scan-list entries and `scanFile` re-tested
- * `size > MAX_BYTES` for everything — the same question, asked twice, with
- * two independent `catch` clauses that disagreed about what a failed `stat`
- * meant. That is the duplicated-predicate shape this branch's review found
- * five times over; it is one predicate now.
+ * Audit Tier 3, finding 18: this was a `statSync` in `probe` and then a
+ * `readFileSync` in `readTextIfPresent` — two path lookups per file, ~48 %
+ * of a detect run on 1,400 files. Every outcome the two had is kept:
+ *   - a skipped directory prefix or a binary extension: silent, no open;
+ *   - the open fails: `reason` set (the caller decides whether an absent
+ *     always-probed path is expected — it is — or a scan-list path that is
+ *     missing is an anomaly — it is);
+ *   - not a regular file (a submodule gitlink, a directory git listed):
+ *     silent — already disclosed as a nested repository by report.mjs;
+ *   - over `MAX_BYTES`: silent, by design;
+ *   - the read itself fails after a successful open: `reason` set.
+ * Returns `{ buf, reason, missing }`; `missing` is true for ENOENT so the
+ * always-probe path can stay quiet without re-testing existence.
  */
-function probe(root, rel) {
-  if (SKIP_DIRS.some(p => rel.startsWith(p) || rel.includes('/' + p))) return { examine: false, reason: null };
-  if (isBinaryExtension(basename(rel))) return { examine: false, reason: null };
-  let st;
+function openAndRead(root, rel) {
+  if (SKIP_DIRS.some(p => rel.startsWith(p) || rel.includes('/' + p))) return { buf: null, reason: null, missing: false };
+  if (isBinaryExtension(basename(rel))) return { buf: null, reason: null, missing: false };
+  let fd;
   try {
-    st = statSync(join(root, rel));
+    fd = openSync(join(root, rel), 'r');
   } catch (err) {
-    return { examine: false, reason: `could not be stat()ed (${err?.code ?? 'unknown error'})` };
+    const code = err?.code ?? 'unknown error';
+    // A directory opens on POSIX and fails with EISDIR on Windows: both are
+    // "not a regular file", which is a deliberate skip, not an alarm.
+    if (code === 'EISDIR') return { buf: null, reason: null, missing: false };
+    return { buf: null, reason: `could not be opened (${code})`, missing: code === 'ENOENT' };
   }
-  // Not a regular file: a submodule gitlink, or a directory git listed. Already
-  // disclosed as a nested repository ("each nested repository must be assessed
-  // separately" — report.mjs), so not an alarm here.
-  if (!st.isFile()) return { examine: false, reason: null };
-  if (st.size > MAX_BYTES) return { examine: false, reason: null };
-  return { examine: true, reason: null };
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > MAX_BYTES) return { buf: null, reason: null, missing: false };
+    const buf = Buffer.allocUnsafe(st.size);
+    let offset = 0;
+    while (offset < st.size) {
+      const n = readSync(fd, buf, offset, st.size - offset, offset);
+      if (n === 0) break;
+      offset += n;
+    }
+    return { buf: offset === st.size ? buf : buf.subarray(0, offset), reason: null, missing: false };
+  } catch (err) {
+    return { buf: null, reason: `could not be read (${err?.code ?? 'unknown error'})`, missing: false };
+  } finally {
+    try { closeSync(fd); } catch { /* nothing to do about a close failure */ }
+  }
 }
 
 function isPlaceholder(value) {
@@ -375,7 +396,7 @@ function credentialFinding(text) {
 }
 
 /**
- * Read a file's text content, deciding the encoding from its bytes rather
+ * Decodes a file's bytes as text, deciding the encoding from the bytes rather
  * than assuming UTF-8. Order matters (see task-5-report.md, fix round 4):
  *   1. UTF-16LE BOM (FF FE)  -> decode as utf16le
  *   2. UTF-16BE BOM (FE FF)  -> byte-swap then decode as utf16le
@@ -387,27 +408,16 @@ function credentialFinding(text) {
  * distinguish it from binary content, and heuristics here have a history of
  * causing regressions (see task-5-report.md). Such files are skipped.
  *
- * Never throws: any failure decoding is treated as "not readable text".
- *
- * Returns `{ text, reason }`. `reason` is set ONLY when the bytes could not
- * be obtained at all (an `fs` failure) — that is an unexpected read failure
- * and becomes an `UNREADABLE_KIND` finding. Every decode-level "nothing to
- * read" outcome below (the NUL sniff, BOM-less UTF-16, a decoder throwing)
- * keeps `reason: null`: those are this module's own documented policy, not a
- * failure, and crying alarm over them would make the check useless.
+ * Never throws: any failure decoding is treated as "not readable text" —
+ * the NUL sniff, BOM-less UTF-16, a decoder throwing are this module's own
+ * documented policy, not a failure, and crying alarm over them would make
+ * the check useless. (An `fs` failure is `openAndRead`'s to report.)
  */
-function readTextIfPresent(root, rel) {
-  let buf;
-  try {
-    buf = readFileSync(join(root, rel));
-  } catch (err) {
-    return { text: null, reason: `could not be read (${err?.code ?? 'unknown error'})` };
-  }
-
+function decodeText(buf) {
   try {
     // UTF-16LE BOM
     if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
-      return { text: buf.subarray(2).toString('utf16le'), reason: null };
+      return buf.subarray(2).toString('utf16le');
     }
 
     // UTF-16BE BOM: Node has no native utf16be decoder, so byte-swap into
@@ -416,38 +426,31 @@ function readTextIfPresent(root, rel) {
       let body = Buffer.from(buf.subarray(2)); // copy: swap16 mutates in place
       if (body.length % 2 !== 0) body = body.subarray(0, body.length - 1);
       body.swap16();
-      return { text: body.toString('utf16le'), reason: null };
+      return body.toString('utf16le');
     }
 
     // Binary-content sniff over the raw bytes (not a decoded string).
     const sniffLen = Math.min(buf.length, 8192);
-    if (buf.subarray(0, sniffLen).includes(0)) return { text: null, reason: null };
+    if (buf.subarray(0, sniffLen).includes(0)) return null;
 
     // UTF-8, stripping a UTF-8 BOM if present so BOM-prefixed first lines
     // still match patterns anchored at the start of the text.
     const start = (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) ? 3 : 0;
-    return { text: buf.subarray(start).toString('utf8'), reason: null };
+    return buf.subarray(start).toString('utf8');
   } catch {
-    return { text: null, reason: null };
+    return null;
   }
 }
 
 /**
- * Scans one file that `probe` already decided is examinable. Returns
- * `{ findings, reason }` — `reason` set only when the read itself failed, so
- * the caller can record that the file went unexamined instead of returning an
- * empty `findings` list that is indistinguishable from "clean".
- *
- * The duplicate `statSync`/`MAX_BYTES` check that used to open this function
- * is gone: `probe` is the single place that answers it, for both of
- * `detectExposures`' paths.
+ * Scans the text of one file `openAndRead` handed over. Returns its findings;
+ * an undecodable buffer (binary by sniff, BOM-less UTF-16) yields none, by
+ * policy — see decodeText.
  */
-function scanFile(root, rel, isLocalSettings) {
+function scanFile(buf, rel, isLocalSettings) {
   const findings = [];
-
-  const { text, reason } = readTextIfPresent(root, rel);
-  if (reason) return { findings, reason };
-  if (!text) return { findings, reason: null };
+  const text = decodeText(buf);
+  if (!text) return findings;
 
   const token = tokenFinding(text);
   if (token) {
@@ -470,7 +473,7 @@ function scanFile(root, rel, isLocalSettings) {
     findings.push(finding);
   }
 
-  return { findings, reason: null };
+  return findings;
 }
 
 /**
@@ -481,27 +484,23 @@ function scanFile(root, rel, isLocalSettings) {
  * there is a real anomaly worth reporting (that is F1 exactly — the quoted
  * literal `"src/caf\303\251.ts"` stat-ed as ENOENT), while an `ALWAYS_PROBE`
  * path is a guess at a name that usually is not there, so its absence is
- * expected and silent.
+ * expected and silent — decided from the open's own ENOENT, not a separate
+ * `existsSync` (finding 18).
  */
 function scanPath(root, rel, out, announceMissing) {
-  if (!announceMissing && !existsSync(join(root, rel))) return;
-
-  const unreadable = reason => out.push({ kind: UNREADABLE_KIND, location: rel, severity: 'high', reason });
-
-  const p = probe(root, rel);
-  if (!p.examine) {
-    if (p.reason) unreadable(p.reason);
+  const { buf, reason, missing } = openAndRead(root, rel);
+  if (reason) {
+    if (announceMissing || !missing) out.push({ kind: UNREADABLE_KIND, location: rel, severity: 'high', reason });
     return;
   }
+  if (!buf) return;
   // `.claude/` holds the gitignored, machine-local settings file the kit
   // treats as a credential carrier. Whole-branch review, F8 (related note):
   // this used to label ANY finding under `.claude/` as
   // `token-in-local-settings`, so a token in `.claude/scripts/*.mjs` was
   // reported under a kind naming a file it was not in. It is now the two
   // settings files themselves, which is what the kind actually names.
-  const { findings, reason } = scanFile(root, rel, LOCAL_SETTINGS_FILES.has(rel));
-  if (reason) unreadable(reason);
-  out.push(...findings);
+  out.push(...scanFile(buf, rel, LOCAL_SETTINGS_FILES.has(rel)));
 }
 
 export function detectExposures(root, files, harness) {
