@@ -179,3 +179,8 @@ test('renderSummary omits the collapsed-count line entirely when there is nothin
   const r = buildReport({ ...base, exposures: [{ kind: 'token-in-remote-url', location: 'origin', severity: 'high' }] });
   assert.equal(renderSummary(r).includes('code reference'), false);
 });
+
+test('renderSummary names phase 3 Intent', () => {
+  const r = buildReport({ ...base, checks: [{ id: 'P3.rules', step: 27, phase: 3, state: 'absent', lookedFor: [], evidence: [], proposal: 'scaffold it' }] });
+  assert.match(renderSummary(r), /Phase 3 — Intent/);
+});

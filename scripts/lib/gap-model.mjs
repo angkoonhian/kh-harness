@@ -16,7 +16,9 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // one source of truth, so the check and the generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH } from './propose.mjs';
+import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
+import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
@@ -577,6 +579,135 @@ const CHECKS = [
         evidence: ['this repository is not detected as a multi-package workspace (stack.isWorkspace is false) — there is no cross-package split to scope a rule to'],
         question: 'Path-scoped rules apply here, but this repository is not detected as a multi-package workspace, so there is no cross-package split to derive a glob from — are there subdirectories with their own conventions that should each get their own .claude/rules/ file, and if so, what glob should scope each one?',
       };
+    },
+  },
+  // --- Phase 3: intent and rules ---------------------------------------
+  //
+  // Steps 26-28 are ADDENDA to the 25-step runbook, the same way step 7a
+  // was a prompt the runbook lacked (see docs/superpowers/specs/2026-11-02-
+  // intent-and-rules-design.md). They apply to every profile, generic
+  // included: nothing here depends on language.
+  //
+  // Evidence for all three is computed once by detect-harness.mjs and
+  // carried on `harness` (`intent`, `rulesRegistry`, `ruleShapedLines`) —
+  // like `architecture`/`handoff`/`bootstrap` — so these checks are pure
+  // functions of that object. A harness fixture that omits the fields is a
+  // repository without them (`?? null`), never a crash.
+  {
+    id: 'P3.intent', step: 26, phase: 3,
+    lookedFor: [INTENT_PATH, 'documentation the instruction file points at', 'any documentation-shaped file'],
+    // Mirrors P1.architecture's three-way split, for the same decidability
+    // reason: the canonical path is decided; "docs exist somewhere, but
+    // not there" is NOT — a repository whose statement of purpose lives in
+    // README.md or docs/product.md would otherwise be told to create what
+    // it already has. The evidence names which of the seven sections are
+    // MISSING — presence of the shape is what was measured, never the
+    // prose, and the all-present sentence says so in as many words so a
+    // reader does not mistake `declared` for "the intent is good".
+    //
+    // No generator exists for this id, and must not: like steps 6 and 7a
+    // the skill writes this file itself after reading the repository, and
+    // gates on the full content (propose.test.mjs pins the absence).
+    check: ({ harness }) => {
+      const intent = harness.intent ?? null;
+      if (intent) {
+        const evidence = [];
+        if (intent.missing.length) evidence.push(`${intent.path} (missing sections: ${intent.missing.join(', ')})`);
+        else evidence.push(`${intent.path} (all ${INTENT_SECTIONS.length} sections present — presence of the shape is what was measured, not the quality of the prose)`);
+        if (intent.lastReviewed) evidence.push(`last reviewed ${intent.lastReviewed}`);
+        return { state: 'declared', evidence };
+      }
+      const docs = harness.projectDocs ?? [];
+      if (docs.length) {
+        const shown = docs.slice(0, 3).join(', ') + (docs.length > 3 ? ', …' : '');
+        return {
+          state: 'absent', decidable: false,
+          evidence: [`no ${INTENT_PATH}`],
+          question: `No ${INTENT_PATH} found, but the repository holds ${docs.length} file${docs.length === 1 ? '' : 's'} with a documentation-shaped name (${shown}). Does one of these already state the application's purpose and its success and failure criteria?`,
+        };
+      }
+      return { state: 'absent', proposal: `run the intent prompt to write ${INTENT_PATH}` };
+    },
+  },
+  {
+    id: 'P3.rules', step: 27, phase: 3,
+    lookedFor: [RULES_PATH, 'rule-shaped lines in the instruction file and .claude/rules/'],
+    // The registry is the kit's own claim/evidence split applied to a
+    // sentence: a rule with `enforced-by: none` is a CLAIM (Claude is told
+    // it), one with a resolving pointer is held by something. This check
+    // can report `declared` and, with the counts, how much of the registry
+    // is held — but NEVER `verified`: nothing here is executed. Stated in
+    // the test "never reports verified" so nobody upgrades it later
+    // without adding execution (a `--verify` that runs `enforced-by: test`
+    // commands is the deferred design in the spec's §9).
+    //
+    // Decidable when absent: the path is ours, and the scaffold is empty
+    // by construction — rules are added by hand afterward, each with the
+    // enforcer that holds it (the proposal text says so, verbatim, because
+    // renderSummary prints it after the `→`). The scaffold's only value is
+    // being a place for the user to write, exactly like P1.pathrules.
+    //
+    // Advice (never a proposal): rule-shaped lines in CLAUDE.md and
+    // `.claude/rules/*.md` are the registry's natural first entries. Named
+    // by COUNT and LINE NUMBER, never by sentence — rules-evidence.mjs's
+    // own comment on why: this reaches the committed detect.json.
+    check: ({ harness }) => {
+      const advice = (harness.ruleShapedLines ?? []).map(({ file, lines }) =>
+        `${file} holds ${lines.length} rule-shaped line${lines.length === 1 ? '' : 's'} (line${lines.length === 1 ? '' : 's'} ${lines.join(', ')}) not in ${RULES_PATH} — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart`);
+      const reg = harness.rulesRegistry ?? null;
+      if (!reg) {
+        return { state: 'absent', advice, proposal: `scaffold ${RULES_PATH} — generated EMPTY; rules are added by hand, each with the enforcer that holds it` };
+      }
+      if (reg.count === 0) {
+        const evidence = [`${reg.path} (0 rules — scaffold not yet filled in)`];
+        if (reg.superseded) evidence.push(`${reg.superseded} superseded rule${reg.superseded === 1 ? '' : 's'} kept as a record`);
+        return { state: 'declared', advice, evidence: [...evidence, ...reg.problems.map(p => `registry: ${p}`)] };
+      }
+      const enforced = reg.count - reg.unenforced.length;
+      const byEnforcer = Object.entries(reg.byEnforcer).filter(([k]) => k !== 'none').map(([k, n]) => `${k} ${n}`).join(', ');
+      const unenforced = reg.unenforced.length ? `${reg.unenforced.length} with enforced-by: none (${reg.unenforced.join(', ')})` : 'none with enforced-by: none';
+      const evidence = [`${reg.path}: ${reg.count} rule${reg.count === 1 ? '' : 's'} — ${enforced} enforced${byEnforcer ? ` (${byEnforcer})` : ''}, ${unenforced}`];
+      if (reg.superseded) evidence.push(`${reg.superseded} superseded rule${reg.superseded === 1 ? '' : 's'} kept as a record, not counted`);
+      for (const m of reg.missingPointers) {
+        evidence.push(m.pointer == null
+          ? `${m.id}: enforced-by names a mechanism but no pointer says where it is`
+          : `${m.id}: pointer ${m.pointer} does not exist`);
+      }
+      for (const p of reg.problems) evidence.push(`registry: ${p}`);
+      return { state: 'declared', advice, evidence };
+    },
+  },
+  {
+    id: 'P3.reinject', step: 28, phase: 3,
+    lookedFor: ['a UserPromptSubmit hook registered at ' + RULES_BRIEF_PATH, RULES_PATH + ' with at least one rule'],
+    // Decidable only with something to inject — the same evidence-gated
+    // shape as P2.sensor (no lint script, no sensor). Two undecidable
+    // branches, deliberately different: with NO registry, P3.rules' own
+    // proposal already says what to do, so this asks nothing (a second
+    // question in couldNotDerive on every first run would be noise); with
+    // a registry that parses to ZERO rules, the user has done the first
+    // step and the next one is worth saying. Ruling recorded in the SDD
+    // ledger for this plan.
+    //
+    // Why re-inject at all: the 2026 studies the spec cites (McMillan)
+    // measure compliance with told rules decaying within a session; a
+    // per-prompt `additionalContext` is the one mechanism that counters it
+    // without a longer file. The hook is byte-bounded (1500) so it stays
+    // cheap on every single prompt — the figure is named in the proposal so
+    // the gate carries it.
+    check: ({ harness, manifest, root }) => {
+      const reg = harness.rulesRegistry ?? null;
+      if (!reg) return { state: 'absent', decidable: false, evidence: [`no ${RULES_PATH} yet — nothing to inject`] };
+      if (reg.count === 0) {
+        return {
+          state: 'absent', decidable: false,
+          evidence: [`${reg.path} holds 0 rules — nothing to inject yet`],
+          question: `The re-injection hook has nothing to inject until ${RULES_PATH} holds at least one rule — add rules, then re-run detect.`,
+        };
+      }
+      return registeredHook(harness, 'UserPromptSubmit', RULES_BRIEF_PATH,
+        "register a UserPromptSubmit hook that re-injects the registry's rules into every prompt, bounded at 1500 bytes",
+        { manifest, root });
     },
   },
   {

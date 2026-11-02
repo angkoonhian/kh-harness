@@ -488,3 +488,21 @@ test('F2: claudeDir.rules is [] when .claude/rules is a plain FILE, not a direct
   assert.doesNotThrow(() => detectHarness(d, listFiles(d).files));
   assert.deepEqual(detectHarness(d, listFiles(d).files).claudeDir.rules, []);
 });
+
+test('detectHarness carries phase-3 evidence: intent, rulesRegistry and ruleShapedLines', () => {
+  const d = repo();
+  mkdirSync(join(d, 'docs', 'harness'), { recursive: true });
+  writeFileSync(join(d, 'CLAUDE.md'), 'Always run tests.\n');
+  writeFileSync(join(d, 'docs', 'INTENT.md'), '## Purpose\n');
+  writeFileSync(join(d, 'docs', 'harness', 'RULES.md'), '## R1 — r\n- enforced-by: none\n');
+  const h = detectHarness(d, ['CLAUDE.md', 'docs/INTENT.md', 'docs/harness/RULES.md']);
+  assert.equal(h.intent.path, 'docs/INTENT.md');
+  assert.deepEqual(h.intent.found, ['Purpose']);
+  assert.equal(h.rulesRegistry.count, 1);
+  assert.deepEqual(h.rulesRegistry.unenforced, ['R1']);
+  assert.deepEqual(h.ruleShapedLines, [{ file: 'CLAUDE.md', lines: [1] }]);
+  const bare = detectHarness(repo(), []);
+  assert.equal(bare.intent, null);
+  assert.equal(bare.rulesRegistry, null);
+  assert.deepEqual(bare.ruleShapedLines, []);
+});

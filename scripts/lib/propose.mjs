@@ -20,6 +20,11 @@ const VERIFY_TOUCHED_PATH = '.claude/scripts/verify-touched.mjs';
 // relative `./harness-redact.mjs`, so it must always land in the SAME
 // directory as each of them.
 const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
+// Phase 3 (intent and rules): the UserPromptSubmit hook that re-injects the
+// rules registry into every prompt. Declared here, like the other three
+// hook paths, so gap-model.mjs's `registeredHook` can ask "is OURS here"
+// against the same constant the generator registers — one source of truth.
+const RULES_BRIEF_PATH = '.claude/scripts/rules-brief.mjs';
 
 /**
  * Task 9b, finding 2: a settings-hook proposal's own `reason` used to be a
@@ -555,4 +560,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // generator (a pyproject-only Python repo: `detect` advertised a proposal,
 // `apply` produced nothing) without any test failing, because nothing
 // checked the two against each other.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, GENERATORS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, GENERATORS };

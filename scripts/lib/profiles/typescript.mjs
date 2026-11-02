@@ -45,7 +45,7 @@ function make(id, extra) {
     protectedGlobs() {
       return [...LOCKFILE_GLOBS, 'dist/**', '**/dist/**', 'build/**', '**/build/**'];
     },
-    appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16]; },
+    appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 26, 27, 28]; },
     ...extra,
   };
 }

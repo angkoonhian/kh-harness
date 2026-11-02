@@ -25,5 +25,5 @@ export const generic = {
   commands() { return { build: null, test: null, lint: null, typecheck: null }; },
   protectedGlobs() { return [...LOCKFILE_GLOBS]; },
   // Language-agnostic steps only: no bootstrap, scripts, sensor, stop gate or language server.
-  appliesToSteps() { return [1, 2, 3, 4, 6, 7, 11, 15, 16]; },
+  appliesToSteps() { return [1, 2, 3, 4, 6, 7, 11, 15, 16, 26, 27, 28]; },
 };

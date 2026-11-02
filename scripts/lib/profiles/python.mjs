@@ -33,5 +33,5 @@ export const python = {
   // which protects it per file, only when its own `requirements*.in`
   // sibling exists — the pip-tools compiled-output case).
   protectedGlobs() { return [...LOCKFILE_GLOBS, '__pycache__/**', '**/__pycache__/**']; },
-  appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16]; },
+  appliesToSteps() { return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 26, 27, 28]; },
 };

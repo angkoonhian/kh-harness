@@ -63,3 +63,10 @@ test('no profile encodes a framework or database opinion', () => {
     }
   }
 });
+
+test('every profile applies the phase-3 steps (26, 27, 28) — intent and rules are language-agnostic', () => {
+  for (const s of [tsSingle, tsWorkspace, py, nothing]) {
+    const steps = selectProfile(s).appliesToSteps();
+    for (const n of [26, 27, 28]) assert.ok(steps.includes(n), `${selectProfile(s).id} must apply step ${n}`);
+  }
+});

@@ -32,6 +32,12 @@ function harnessed() {
   write(d, 'docs/harness/recon.md', '# recon\n');
   write(d, 'HANDOFF.md', '# handoff\n');
   write(d, 'scripts/bootstrap.sh', '#!/bin/sh\n');
+  // Phase 3: an intent document with every section, a registry with one
+  // rule, and OUR re-injection hook — without all three, P3.intent,
+  // P3.rules or P3.reinject would (correctly) propose, and this fixture's
+  // whole point is that a fully harnessed repository is proposed nothing.
+  write(d, 'docs/INTENT.md', ['## Purpose', '## Users', '## How it works', '## Success', '## Failure', '## Non-goals', '## Open questions', ''].join('\n'));
+  write(d, 'docs/harness/RULES.md', '## R1 — tests run before a commit\n- enforced-by: test\n- pointer: package.json\n');
   // P2.protected requires at least one entry under permissions.deny — an empty
   // settings.json is indistinguishable from "no deny rules" and must NOT be
   // treated as protection. Task 8b: it also requires that entry to actually
@@ -49,12 +55,14 @@ function harnessed() {
       PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node .claude/scripts/lint-touched.mjs' }] }],
       Stop: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/verify-touched.mjs' }] }],
       SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command: 'node .claude/scripts/session-brief.mjs' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/rules-brief.mjs' }] }],
     },
   }));
   write(d, '.claude/rules/api.md', '#');
   write(d, '.claude/scripts/lint-touched.mjs', '//');
   write(d, '.claude/scripts/verify-touched.mjs', '//');
   write(d, '.claude/scripts/session-brief.mjs', '//');
+  write(d, '.claude/scripts/rules-brief.mjs', '//');
   // P4.remote is satisfied by having a remote at all; the URL is never contacted.
   execFileSync('git', ['init', '-q', d]);
   execFileSync('git', ['-C', d, 'remote', 'add', 'origin', 'https://example.invalid/x.git']);
@@ -494,12 +502,19 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
   write(d, 'docs/agent-context/inject.js', '//');
   write(d, 'tools/lint.js', '//');
   write(d, 'tools/verify.js', '//');
+  write(d, 'tools/remind.js', '//');
+  // Phase 3: an intent document and a one-rule registry, so P3.intent and
+  // P3.rules are declared and the ONLY phase-3 proposal is P3.reinject —
+  // whose event is occupied by THEIR hook, exactly like the other three.
+  write(d, 'docs/INTENT.md', ['## Purpose', '## Users', '## How it works', '## Success', '## Failure', '## Non-goals', '## Open questions', ''].join('\n'));
+  write(d, 'docs/harness/RULES.md', '## R1 — tests run before a commit\n- enforced-by: test\n- pointer: package.json\n');
   write(d, '.claude/settings.json', JSON.stringify({
     permissions: { deny: ['Edit(migrations/**)'] },
     hooks: {
       SessionStart: [{ matcher: 'startup|resume|compact', hooks: [{ type: 'command', command: 'node docs/agent-context/inject.js' }] }],
       PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node tools/lint.js' }] }],
       Stop: [{ hooks: [{ type: 'command', command: 'node tools/verify.js' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node tools/remind.js' }] }],
     },
   }));
 
@@ -507,7 +522,7 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
   assert.deepEqual(r.harness.claudeDir.hooks, [],
     'fixture assumes nothing lives under .claude/scripts/');
 
-  for (const [id, cmd] of [['P2.sensor', 'tools/lint.js'], ['P2.stopgate', 'tools/verify.js'], ['P4.sessionbrief', 'docs/agent-context/inject.js']]) {
+  for (const [id, cmd] of [['P2.sensor', 'tools/lint.js'], ['P2.stopgate', 'tools/verify.js'], ['P4.sessionbrief', 'docs/agent-context/inject.js'], ['P3.reinject', 'tools/remind.js']]) {
     const c = r.checks.find(x => x.id === id);
     assert.equal(c.state, 'absent', `${id}'s hook is resolved from the registry, but it is not ours`);
     assert.ok(c.proposal, `${id} must still be proposed — their hook says nothing about ours`);
@@ -523,9 +538,10 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
   assert.ok(protectedCheck.proposal);
   assert.ok(protectedCheck.evidence.some(e => e.includes('Edit(migrations/**)')));
 
-  // Four proposals now, where there used to be none — the defect, inverted.
+  // Five proposals now (four hooks + protected paths), where there used to
+  // be none — the defect, inverted.
   assert.doesNotMatch(cli(d), /no proposals/i);
-  assert.match(cli(d), /4 proposals/i);
+  assert.match(cli(d), /5 proposals/i);
 });
 
 // D1: a real repository keeps 456 lines under docs/wiki/ and names it in

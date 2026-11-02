@@ -2,7 +2,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote } from './det
 import { countProposals } from './gap-model.mjs';
 
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
-const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 4: 'Continuity' };
+const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 3: 'Intent', 4: 'Continuity' };
 
 export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} }) {
   const out = [];

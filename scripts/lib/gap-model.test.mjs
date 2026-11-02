@@ -23,10 +23,16 @@ const richHarness = {
   instructions: { path: 'CLAUDE.md', lines: 153 }, agentsMd: null, reconPresent: true,
   claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs'],
     // hookEvents entries are RESOLVED SCRIPT PATHS, never command strings.
-    hookEvents: { PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'] },
+    hookEvents: { PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'], UserPromptSubmit: ['.claude/scripts/rules-brief.mjs'] },
     agents: Array.from({ length: 13 }, (_, i) => `.claude/agents/c${i}.md`), skills: [], commands: [], rules: ['.claude/rules/api.md'] },
   otherEditors: [], architecture: 'docs/ARCHITECTURE.md', handoff: 'HANDOFF.md',
   bootstrap: 'scripts/bootstrap.sh', gitattributes: true, remotes: [{ name: 'origin', hasCredential: false }],
+  // Phase 3: a fully harnessed repository has an intent document with every
+  // section, a registry with at least one rule, and OUR re-injection hook
+  // registered — the three fields detect-harness.mjs computes.
+  intent: { path: 'docs/INTENT.md', found: ['Purpose', 'Users', 'How it works', 'Success', 'Failure', 'Non-goals', 'Open questions'], missing: [], lastReviewed: null },
+  rulesRegistry: { path: 'docs/harness/RULES.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [] },
+  ruleShapedLines: [],
 };
 const fullStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'test', 'typecheck'] }] };
 
@@ -1403,4 +1409,145 @@ test('TWO-PATH AGREEMENT: the redacted comparison and hasEquivalentHook agree wh
   assert.equal(raw, false, 'fixture sanity: the raw path must actually see this as not ours');
   assert.equal(redacted, false, 'fixture sanity: the redacted path must actually see this as not ours');
   assert.equal(raw, redacted, 'the raw and redacted identification of "our own hook" must never disagree');
+});
+
+// --- Phase 3: intent and rules ------------------------------------------
+//
+// Evidence for all three checks is computed ONCE by detect-harness.mjs and
+// carried on `harness` (`intent`, `rulesRegistry`, `ruleShapedLines`), the
+// same way `architecture`/`handoff`/`bootstrap` already are — so the checks
+// stay pure functions of the harness object and these fixtures need no
+// filesystem. A fixture that omits the fields is a repository without them.
+import { INTENT_SECTIONS } from './intent-evidence.mjs';
+import { RULES_BRIEF_PATH } from './propose.mjs';
+
+const fullIntent = { path: 'docs/INTENT.md', found: [...INTENT_SECTIONS], missing: [], lastReviewed: null };
+const filledRegistry = {
+  path: 'docs/harness/RULES.md', count: 3, superseded: 0,
+  byEnforcer: { critic: 1, test: 1, none: 1 }, unenforced: ['R3'],
+  missingPointers: [], problems: [],
+};
+const emptyRegistry = { path: 'docs/harness/RULES.md', count: 0, superseded: 0, byEnforcer: {}, unenforced: [], missingPointers: [], problems: [] };
+const p3Harness = (extra = {}) => ({ ...bareHarness, intent: null, rulesRegistry: null, ruleShapedLines: [], ...extra });
+
+test('P3.intent: proposes when no documentation exists anywhere', () => {
+  const c = byId(gaps(bareStack, p3Harness({ projectDocs: [] })), 'P3.intent');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.step, 26);
+  assert.equal(c.phase, 3);
+  assert.equal(c.proposal, 'run the intent prompt to write docs/INTENT.md');
+});
+
+test('P3.intent: asks (undecidable) when documentation-shaped files exist but no docs/INTENT.md', () => {
+  const c = byId(gaps(bareStack, p3Harness({ projectDocs: ['README.md', 'docs/product.md'] })), 'P3.intent');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null);
+  assert.equal(c.question, "No docs/INTENT.md found, but the repository holds 2 files with a documentation-shaped name (README.md, docs/product.md). Does one of these already state the application's purpose and its success and failure criteria?");
+});
+
+test('P3.intent: declared, naming missing sections', () => {
+  const intent = { path: 'docs/INTENT.md', found: ['Purpose', 'Users'], missing: ['How it works', 'Success', 'Failure', 'Non-goals', 'Open questions'], lastReviewed: null };
+  const c = byId(gaps(bareStack, p3Harness({ intent })), 'P3.intent');
+  assert.equal(c.state, 'declared');
+  assert.equal(c.proposal, null);
+  assert.deepEqual(c.evidence, ['docs/INTENT.md (missing sections: How it works, Success, Failure, Non-goals, Open questions)']);
+});
+
+test('P3.intent: declared with the all-present sentence when nothing is missing, plus last-reviewed when known', () => {
+  const c = byId(gaps(bareStack, p3Harness({ intent: fullIntent })), 'P3.intent');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, ['docs/INTENT.md (all 7 sections present — presence of the shape is what was measured, not the quality of the prose)']);
+  const c2 = byId(gaps(bareStack, p3Harness({ intent: { ...fullIntent, lastReviewed: '2026-11-02' } })), 'P3.intent');
+  assert.ok(c2.evidence.some(e => e === 'last reviewed 2026-11-02'), JSON.stringify(c2.evidence));
+});
+
+test('P3.rules: proposes the scaffold when no registry exists', () => {
+  const c = byId(gaps(bareStack, p3Harness()), 'P3.rules');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.step, 27);
+  assert.equal(c.proposal, 'scaffold docs/harness/RULES.md — generated EMPTY; rules are added by hand, each with the enforcer that holds it');
+});
+
+test('P3.rules: declared with the 0-rules sentence for an unfilled scaffold', () => {
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: emptyRegistry })), 'P3.rules');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, ['docs/harness/RULES.md (0 rules — scaffold not yet filled in)']);
+});
+
+test('P3.rules: declared evidence counts enforcers, names unenforced ids, missing pointers and problems', () => {
+  const reg = { ...filledRegistry, missingPointers: [{ id: 'R1', pointer: '.claude/agents/tenant-scoping.md' }, { id: 'R2', pointer: null }], problems: ['R9: enforced-by "magic" is not one of deny/hook — recorded as none'] };
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: reg })), 'P3.rules');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [
+    'docs/harness/RULES.md: 3 rules — 2 enforced (critic 1, test 1), 1 with enforced-by: none (R3)',
+    'R1: pointer .claude/agents/tenant-scoping.md does not exist',
+    'R2: enforced-by names a mechanism but no pointer says where it is',
+    'registry: R9: enforced-by "magic" is not one of deny/hook — recorded as none',
+  ]);
+});
+
+test('P3.rules: superseded rules are mentioned as a count, never as enforcement', () => {
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...filledRegistry, superseded: 2 } })), 'P3.rules');
+  assert.ok(c.evidence.some(e => e.includes('2 superseded')), JSON.stringify(c.evidence));
+});
+
+test('P3.rules: never reports verified — nothing was executed', () => {
+  for (const rulesRegistry of [null, emptyRegistry, filledRegistry, { ...filledRegistry, unenforced: [], byEnforcer: { test: 3 } }]) {
+    const c = byId(gaps(bareStack, p3Harness({ rulesRegistry })), 'P3.rules');
+    assert.notEqual(c.state, 'verified');
+  }
+});
+
+test('P3.rules: advice names counts and line numbers per file, never a sentence', () => {
+  const h = p3Harness({ ruleShapedLines: [{ file: 'CLAUDE.md', lines: [12, 18, 40, 41] }, { file: '.claude/rules/api.md', lines: [4] }] });
+  const c = byId(gaps(bareStack, h), 'P3.rules');
+  assert.deepEqual(c.advice, [
+    'CLAUDE.md holds 4 rule-shaped lines (lines 12, 18, 40, 41) not in docs/harness/RULES.md — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart',
+    '.claude/rules/api.md holds 1 rule-shaped line (line 4) not in docs/harness/RULES.md — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart',
+  ]);
+});
+
+test('P3.reinject: undecidable, no question, when the registry is absent (P3.rules already says what to do)', () => {
+  const c = byId(gaps(bareStack, p3Harness()), 'P3.reinject');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.step, 28);
+  assert.equal(c.decidable, false);
+  assert.equal(c.proposal, null);
+  assert.equal(c.question, null);
+  assert.deepEqual(c.evidence, ['no docs/harness/RULES.md yet — nothing to inject']);
+});
+
+test('P3.reinject: undecidable WITH the add-rules question when the registry exists but holds no rule', () => {
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: emptyRegistry })), 'P3.reinject');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, false);
+  assert.equal(c.question, 'The re-injection hook has nothing to inject until docs/harness/RULES.md holds at least one rule — add rules, then re-run detect.');
+});
+
+test('P3.reinject: proposes when the registry has a rule and no hook of ours is registered', () => {
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: filledRegistry })), 'P3.reinject');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.decidable, true);
+  assert.equal(c.proposal, "register a UserPromptSubmit hook that re-injects the registry's rules into every prompt, bounded at 1500 bytes");
+});
+
+test('P3.reinject: declared when OUR path is registered on UserPromptSubmit; a foreign hook is disclosed, not credited', () => {
+  const ours = p3Harness({ rulesRegistry: filledRegistry, claudeDir: { ...bareHarness.claudeDir, hookEvents: { UserPromptSubmit: [RULES_BRIEF_PATH] } } });
+  const c = byId(gaps(bareStack, ours), 'P3.reinject');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [`UserPromptSubmit hook: ${RULES_BRIEF_PATH}`]);
+  const theirs = p3Harness({ rulesRegistry: filledRegistry, claudeDir: { ...bareHarness.claudeDir, hookEvents: { UserPromptSubmit: ['their/inject.mjs'] } } });
+  const c2 = byId(gaps(bareStack, theirs), 'P3.reinject');
+  assert.equal(c2.state, 'absent');
+  assert.ok(c2.proposal);
+  assert.deepEqual(c2.evidence, ['UserPromptSubmit hook already registered, but not ours: their/inject.mjs']);
+});
+
+test('P3 checks apply to the generic profile too', () => {
+  const nothing = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
+  const steps = selectProfile(nothing).appliesToSteps();
+  for (const s of [26, 27, 28]) assert.ok(steps.includes(s), `generic must include step ${s}`);
+  const cs = gaps(nothing, p3Harness());
+  for (const id of ['P3.intent', 'P3.rules', 'P3.reinject']) assert.notEqual(byId(cs, id).state, 'n/a', id);
 });

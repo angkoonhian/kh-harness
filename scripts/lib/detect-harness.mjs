@@ -37,6 +37,8 @@ import { readIfPresent, existsAny } from './scan.mjs';
 // was widened to look where detection credits, rather than detection
 // narrowed to look only where the hook did.
 import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
+import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
+import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
   'scripts/bootstrap.sh', 'scripts/bootstrap.ps1', 'scripts/setup.sh', 'scripts/setup.ps1',
@@ -255,7 +257,7 @@ const PROJECT_DOC_EXTENSIONS = ['.md', '.markdown', '.rst', '.adoc', '.txt'];
 // Paths this kit itself writes or scaffolds. A pointer at one of these is the
 // harness pointing at itself, not the repository pointing at its own docs.
 const KIT_OUTPUT_PREFIXES = ['docs/harness/', '.claude/'];
-const KIT_OUTPUT_FILES = new Set(['CLAUDE.md', 'AGENTS.md', 'HANDOFF.md', 'docs/HANDOFF.md']);
+const KIT_OUTPUT_FILES = new Set(['CLAUDE.md', 'AGENTS.md', 'HANDOFF.md', 'docs/HANDOFF.md', INTENT_PATH]);
 
 // Coordinator finding: `requirements.txt`/`constraints.txt` are Python
 // dependency manifests, not documentation — this codebase already treats
@@ -381,7 +383,7 @@ export function detectHarness(root, files) {
   const instructionsPath = claudeMd != null ? 'CLAUDE.md' : (agentsMd != null ? 'AGENTS.md' : null);
   const denyInEffect = denyRulesInEffect(root);
 
-  return {
+  const harness = {
     instructions: { path: instructionsPath, lines: lineCount(claudeMd ?? agentsMd) },
     agentsMd: agentsMd != null ? 'AGENTS.md' : null,
     claudeDir: {
@@ -430,4 +432,15 @@ export function detectHarness(root, files) {
     gitattributes: files.includes('.gitattributes'),
     remotes: remotes(root),
   };
+  // Phase 3 (intent and rules). Computed HERE, once, and carried on the
+  // harness object — the same way `architecture`, `handoff` and `bootstrap`
+  // are — so gap-model.mjs's three P3 checks stay pure functions of this
+  // object and need no filesystem of their own. `rulesRegistryEvidence`
+  // reads `claudeDir.denyRules`/`hookEvents` to resolve `settings:` pointers,
+  // which is why it runs after the object above is complete rather than
+  // inline in it.
+  harness.intent = intentEvidence(root);
+  harness.rulesRegistry = rulesRegistryEvidence(root, harness);
+  harness.ruleShapedLines = ruleShapedLines(root, harness);
+  return harness;
 }
