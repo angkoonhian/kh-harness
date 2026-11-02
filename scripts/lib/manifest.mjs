@@ -62,11 +62,28 @@ export function writeManifest(root, manifest) {
   writeFileSync(p, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
 }
 
+/** CRLF → LF, nothing else. A lone CR is left alone: git never writes one. */
+export function normalizeLineEndings(buf) {
+  return Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
+}
+
 /**
  * Three answers, and every write decision follows from them:
  *   ours-unmodified — we wrote it, it is untouched, we may update or remove it
  *   ours-modified   — we wrote it, the user changed or deleted it: report, never write
  *   theirs          — we never wrote it: never touch it
+ *
+ * Line endings (audit Tier 1, finding 4): the kit writes LF and records LF
+ * hashes, but a checkout with `core.autocrlf=true` — the Windows default —
+ * rewrites every installed file to CRLF, and hashing raw bytes then called
+ * all of them `ours-modified`: apply reported `kept (modified)` for every
+ * file, uninstall kept every file, the upgrade path never fired (measured
+ * on a real repository). So on a raw mismatch, and only when the bytes hold
+ * a CR, the LF-normalised content is hashed too. One way only: the kit
+ * never writes CRLF, so a CRLF hash in the manifest is never matched by an
+ * LF file. The UTF-8 round trip in `normalizeLineEndings` is lossy for
+ * non-UTF-8 bytes, which can only turn a would-be match into a non-match —
+ * the safe direction — and every file the kit writes is UTF-8 text.
  */
 export function classify(root, manifest, relPath) {
   const entry = manifest?.files?.find(f => f.path === relPath);
@@ -89,7 +106,9 @@ export function classify(root, manifest, relPath) {
   } catch {
     return 'ours-modified';
   }
-  return sha256(current) === entry.sha256 ? 'ours-unmodified' : 'ours-modified';
+  if (sha256(current) === entry.sha256) return 'ours-unmodified';
+  if (current.includes(0x0d) && sha256(normalizeLineEndings(current)) === entry.sha256) return 'ours-unmodified';
+  return 'ours-modified';
 }
 
 export { MANIFEST_PATH };

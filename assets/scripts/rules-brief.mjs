@@ -49,9 +49,9 @@ import { join } from 'node:path';
 // failure this whole phase exists to prevent.
 //
 // The remedy named below has a fallback for a reason (whole-branch review,
-// Important 4): `apply` updates the shared asset only when it is still
-// byte-identical to what the kit wrote. On a Windows checkout with
-// `core.autocrlf=true`, or after a hand edit, it is not — apply reports it
+// Important 4): `apply` updates the shared asset only when it is still what
+// the kit wrote (line endings aside — a CRLF checkout is tolerated since the
+// Tier 1 audit fix). After a hand edit it is not — apply reports it
 // `kept (modified)` and the notice would return on every prompt with a
 // remedy that cannot work. `uninstall --yes` then `apply --yes` is the way
 // through in that case, so the one line says both.

@@ -53,7 +53,7 @@
 - verify: node --test scripts/lib/harness-redact.test.mjs scripts/lib/lint-touched.test.mjs scripts/lib/verify-touched.test.mjs
 - last-verified: 2026-11-02
 
-## R6 — Uninstall removes only what the manifest records, byte-identical and stamped, and never a user-authored body
+## R6 — Uninstall removes only what the manifest records, identical up to line endings and stamped, and never a user-authored body
 
 - why: the manifest is a file in the repository and is forgeable; deleting a user's work is the one unrecoverable outcome
 - enforced-by: test

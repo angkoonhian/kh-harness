@@ -1177,6 +1177,24 @@ test('a directory that existed before apply is never removed by uninstall, even 
   assert.equal(existsSync(join(d, 'scripts')), true, 'a directory that existed before this tool ran must never be removed by it');
 });
 
+// --- Audit Tier 1, finding 4: after a CRLF conversion of the kit's own files
+// --- (core.autocrlf=true on Windows), apply must still recognise them ------
+test('apply after a CRLF conversion of the kit\'s own files reports no "kept (modified)"', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const files = manifestOf(d).files.map(f => f.path);
+  assert.ok(files.length >= 3, `fixture sanity: the first apply must have written several files, got ${files.length}`);
+  // What a checkout with core.autocrlf=true does to every text file.
+  for (const rel of files) {
+    const lf = readFileSync(join(d, rel), 'utf8');
+    assert.equal(lf.includes('\r'), false, `fixture sanity: the kit writes LF only (${rel})`);
+    writeFileSync(join(d, rel), lf.replace(/\n/g, '\r\n'));
+  }
+  const out = run(APPLY, d, '--yes');
+  assert.doesNotMatch(out, /kept\s+\S+ \(modified/, `a line-ending rewrite is not a user edit:\n${out}`);
+  assert.match(out, /no actions/, 'nothing is left to do: every file is still recognised as ours');
+});
+
 test('a complete apply-then-uninstall cycle leaves git status clean when settings.json existed before apply (Task 9b finding 5)', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-cleangit-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));

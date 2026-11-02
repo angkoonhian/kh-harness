@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify } from './manifest.mjs';
+import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings } from './manifest.mjs';
 
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-man-')); }
 function write(d, rel, content) {
@@ -176,4 +176,45 @@ test('classify allows benign .. that stays inside the root', () => {
   const m = emptyManifest('0.1.0');
   m.files.push({ path: 'docs/../HANDOFF.md', sha256: sha256('x'), step: 16, writtenAt: 'now' });
   assert.equal(classify(d, m, 'docs/../HANDOFF.md'), 'ours-unmodified');
+});
+
+// --- Audit Tier 1, finding 4: a CRLF checkout made the kit's own files look
+// --- user-modified ----------------------------------------------------------
+//
+// With `core.autocrlf=true` (the Windows default) a checkout, `stash pop` or
+// renormalise rewrites every installed file to CRLF. `classify` hashed raw
+// bytes, so all of them read `ours-modified`: apply said `kept (modified)`
+// for every file, uninstall kept every file, and the upgrade path never
+// fired. Measured on a real repository. The manifest keeps recording LF
+// hashes; the comparison tolerates the one transformation git makes.
+
+test('classify: a file we wrote that a CRLF checkout rewrote is still ours-unmodified', () => {
+  const d = repo();
+  const written = '# Handoff\n\nline one\nline two\n';
+  write(d, 'HANDOFF.md', written.replace(/\n/g, '\r\n'));
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: 'HANDOFF.md', sha256: sha256(written), step: 16, writtenAt: 'now' });
+  assert.equal(classify(d, m, 'HANDOFF.md'), 'ours-unmodified');
+});
+
+test('classify: a CRLF file with a real edit is ours-modified', () => {
+  const d = repo();
+  const written = '# Handoff\n\nline one\nline two\n';
+  write(d, 'HANDOFF.md', written.replace(/\n/g, '\r\n').replace('line two', 'line two EDITED'));
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: 'HANDOFF.md', sha256: sha256(written), step: 16, writtenAt: 'now' });
+  assert.equal(classify(d, m, 'HANDOFF.md'), 'ours-modified');
+});
+
+test('classify: normalisation runs one way only — an LF file never matches a CRLF hash', () => {
+  const d = repo();
+  write(d, 'HANDOFF.md', 'a\nb\n');
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: 'HANDOFF.md', sha256: sha256('a\r\nb\r\n'), step: 16, writtenAt: 'now' });
+  assert.equal(classify(d, m, 'HANDOFF.md'), 'ours-modified', 'the kit never writes CRLF, so a CRLF hash in the manifest is not ours to match');
+});
+
+test('normalizeLineEndings turns CRLF into LF and leaves everything else alone', () => {
+  assert.equal(normalizeLineEndings(Buffer.from('a\r\nb\r\n')).toString('utf8'), 'a\nb\n');
+  assert.equal(normalizeLineEndings(Buffer.from('a\nb\rc')).toString('utf8'), 'a\nb\rc', 'a lone CR is not a line ending git rewrites');
 });

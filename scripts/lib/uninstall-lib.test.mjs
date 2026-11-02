@@ -197,6 +197,30 @@ test('removes a file we wrote that nobody touched', () => {
   assert.equal(existsSync(join(d, 'HANDOFF.md')), false);
 });
 
+// Audit Tier 1, finding 4: a CRLF checkout rewrote every installed file, and
+// `classify` then kept all of them as "user-modified" — uninstall could not
+// remove a single thing it had written. A line-ending rewrite is git's, not
+// the user's.
+test('a scaffold the checkout converted to CRLF is still removed', () => {
+  const { d, manifest } = installed();
+  const lf = readFileSync(join(d, 'HANDOFF.md'), 'utf8');
+  assert.equal(lf.includes('\r'), false, 'fixture sanity: the kit writes LF');
+  writeFileSync(join(d, 'HANDOFF.md'), lf.replace(/\n/g, '\r\n'));
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.remove.map(r => r.path), ['HANDOFF.md'], `a CRLF rewrite is not a user edit: ${JSON.stringify(plan.keep)}`);
+  runUninstall({ root: d, manifest, plan });
+  assert.equal(existsSync(join(d, 'HANDOFF.md')), false);
+});
+
+test('a CRLF scaffold the user also edited is still kept', () => {
+  const { d, manifest } = installed();
+  const lf = readFileSync(join(d, 'HANDOFF.md'), 'utf8');
+  writeFileSync(join(d, 'HANDOFF.md'), lf.replace(/\n/g, '\r\n') + 'My own notes.\r\n');
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.remove, []);
+  assert.equal(plan.keep[0].path, 'HANDOFF.md');
+});
+
 test('keeps a file the user edited and says why', () => {
   const { d, manifest } = installed();
   writeFileSync(join(d, 'HANDOFF.md'), 'mine now\n');
