@@ -143,6 +143,51 @@ function pairedRequirementsFiles(files) {
  * protecting", consulted by both the check (to decide `n/a` vs `absent`)
  * and the generator (to build the actual deny rules).
  */
+const EDIT_RULE = /^Edit\((.*)\)$/;
+
+/**
+ * Which of our protected-path `candidates` a repository's existing deny
+ * rules already cover, decided by what the globs MATCH in `files` rather
+ * than by spelling. Audit Tier 2, finding 13: `P2.protected` compared rule
+ * strings exactly, so a user's `Edit(package-lock.json)` was reported as
+ * "unrelated" and `Edit(*-lock.json)` proposed on top of it.
+ *
+ * A candidate is `covered` when its exact `Edit(<glob>)` is present, or when
+ * every file it matches is matched by at least one user `Edit(...)` rule (a
+ * leading `/` on the user's pattern is project-relative and stripped; rules
+ * for other tools never protect an edit). A rule is `unrelated` when it
+ * covers no file any candidate matches. Both sides use `globToRegExp`, the
+ * same matcher the evidence filter uses — narrower on `**\/` than Claude
+ * Code's own, so the failure direction is a redundant proposal, never a
+ * missed one. Redacted (`null`) rules are neither covering nor unrelated.
+ */
+export function denyRuleCoverage({ candidates, denyRuleList = [], files = [] }) {
+  const rules = denyRuleList.filter(r => typeof r === 'string');
+  const editRules = rules.flatMap(rule => {
+    const m = EDIT_RULE.exec(rule);
+    return m ? [{ rule, re: globToRegExp(m[1].replace(/^\/+/, '')) }] : [];
+  });
+  const covered = [];
+  const uncovered = [];
+  const related = new Set();
+  for (const glob of candidates) {
+    const by = new Set();
+    const exact = `Edit(${glob})`;
+    let all = rules.includes(exact);
+    if (all) { by.add(exact); related.add(exact); }
+    const ourFiles = files.filter(f => globToRegExp(glob).test(f));
+    let everyFile = ourFiles.length > 0;
+    for (const f of ourFiles) {
+      const hits = editRules.filter(e => e.re.test(f));
+      if (hits.length === 0) everyFile = false;
+      for (const h of hits) { by.add(h.rule); related.add(h.rule); }
+    }
+    if (all || everyFile) covered.push({ glob, by: [...by] });
+    else uncovered.push(glob);
+  }
+  return { covered, uncovered, unrelated: rules.filter(r => !related.has(r)) };
+}
+
 export function protectedPathCandidates({ stack, files }) {
   const profile = selectProfile(stack);
   const candidates = [...profile.protectedGlobs(), ...PROTECTED_PATH_CANDIDATES];

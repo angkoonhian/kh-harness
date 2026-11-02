@@ -4,7 +4,7 @@ import { readIfPresent } from './scan.mjs';
 import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
-import { protectedPathCandidates } from './protected-evidence.mjs';
+import { protectedPathCandidates, denyRuleCoverage } from './protected-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote, fixtureExposureNote } from './detect-exposure.mjs';
@@ -866,24 +866,25 @@ const CHECKS = [
       // Task 8b: this used to credit `declared` from `denyRules > 0` alone
       // — ANY existing deny rule, regardless of what it protected. A user
       // who denies edits to their own secrets directory was told their
-      // lockfile and migrations were protected too. `ours` is exactly what
-      // `protectedPathProposal` (propose.mjs) would write — the same
-      // evidence-derived candidates, wrapped the same way — so `declared`
-      // now means every one of OUR rules is already there, not merely that
-      // the deny array is non-empty. `denyRuleList` (detect-harness.mjs) is
-      // the safely-filtered rule list: an entry is verbatim when it is a
-      // path-taking permission (`Edit`/`Read`/`Write`/`Glob`/`Grep`/
-      // `NotebookEdit`, the shape every rule THIS tool ever writes takes),
-      // `null` otherwise — a `Bash(...)` deny rule can embed a literal
-      // credential as its argument (see apply-lib.mjs's own comment on
-      // `renderSettingsDenyDiff`), and `harness` is serialised wholesale
-      // into docs/harness/detect.json on every run. Our own rules are
-      // always `Edit(...)`, so they are never the ones redacted to `null`;
-      // the comparison below is exact either way.
-      const ours = candidates.map(g => `Edit(${g})`);
+      // lockfile and migrations were protected too. `declared` means every
+      // protected path this repository has evidence for is COVERED by a
+      // deny rule already there. Audit Tier 2, finding 13: coverage used
+      // to be decided by exact string against what `protectedPathProposal`
+      // would write, so a user's `Edit(package-lock.json)` was "unrelated"
+      // and `Edit(*-lock.json)` was proposed on top of it; `denyRuleCoverage`
+      // (protected-evidence.mjs, beside the candidates it judges) decides by
+      // what the globs match in the repository's own files. `denyRuleList`
+      // (detect-harness.mjs) is the safely-filtered rule list: an entry is
+      // verbatim when it is a path-taking permission (`Edit`/`Read`/
+      // `Write`/`Glob`/`Grep`/`NotebookEdit`), `null` otherwise — a
+      // `Bash(...)` deny rule can embed a literal credential as its argument
+      // (see apply-lib.mjs's own comment on `renderSettingsDenyDiff`), and
+      // `harness` is serialised wholesale into docs/harness/detect.json.
       const denyList = harness.claudeDir.denyRuleList ?? [];
-      if (ours.every(rule => denyList.includes(rule))) {
-        return { state: 'declared', evidence: [`${ours.length} deny rule(s) matching protected-path evidence found in this repository: ${ours.join(', ')}`] };
+      const { covered, uncovered, unrelated } = denyRuleCoverage({ candidates, denyRuleList: denyList, files });
+      const describe = c => `${c.glob} covered by ${c.by.join(', ')}`;
+      if (uncovered.length === 0) {
+        return { state: 'declared', evidence: [`${covered.length} protected path(s) already covered by deny rules in this repository: ${covered.map(describe).join('; ')}`] };
       }
 
       // Do NOT suppress the proposal because something else is already
@@ -891,20 +892,18 @@ const CHECKS = [
       // instead, so adding rules alongside it is never a surprise.
       // `addDenyRules` (settings-merge.mjs) already adds only the rules
       // that are genuinely new when this is applied, so proposing here is
-      // safe even when some of `ours` is already present.
-      const theirs = denyList.filter(rule => rule !== null && !ours.includes(rule));
+      // safe even when some of the paths are already covered.
       const redactedCount = denyList.filter(rule => rule === null).length;
       const evidence = [];
       // Coordinator finding (Minor): silence here let a top-up (most of
-      // our rules already present, one missing) look identical to a
-      // fresh install — a user who has already added two of three rules
-      // this repository needs gets no signal that the proposal below is
-      // small, not the full set.
-      const alreadyPresent = ours.filter(rule => denyList.includes(rule));
-      if (alreadyPresent.length) {
-        evidence.push(`${alreadyPresent.length} of ${ours.length} deny rule(s) this repository needs ${alreadyPresent.length === 1 ? 'is' : 'are'} already present: ${alreadyPresent.join(', ')}`);
+      // the paths already covered, one not) look identical to a fresh
+      // install — a user who has already covered two of three paths this
+      // repository needs gets no signal that the proposal below is small,
+      // not the full set.
+      if (covered.length) {
+        evidence.push(`${covered.length} of ${candidates.length} protected path(s) already covered: ${covered.map(describe).join('; ')}`);
       }
-      if (theirs.length) evidence.push(`existing deny rule(s) that do not match a protected path this repository has evidence for: ${theirs.join(', ')}`);
+      if (unrelated.length) evidence.push(`existing deny rule(s) that do not match a protected path this repository has evidence for: ${unrelated.join(', ')}`);
       if (redactedCount) evidence.push(`plus ${redactedCount} existing deny rule(s) not shown here (not a path-taking permission)`);
       return { state: 'absent', evidence, proposal: 'create .claude/settings.json with deny rules for protected paths' };
     },

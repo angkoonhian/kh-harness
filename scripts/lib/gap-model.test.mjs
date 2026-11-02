@@ -503,6 +503,28 @@ test('P2.protected IS satisfied when our own rules are present (Task 8b)', () =>
   assert.equal(c.proposal, null);
 });
 
+// Audit Tier 2, finding 13: a user's own rule that protects the files counts,
+// whatever its spelling — see protected-evidence.test.mjs for the matcher.
+test('P2.protected is declared when the user\'s own rules cover every protected file, and names them', () => {
+  const f = typescriptFullFixture(); // package-lock.json and dist/index.js
+  const h = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, denyRules: 2, denyRuleList: ['Edit(package-lock.json)', 'Edit(dist/index.js)'] } };
+  const c = byId(buildGaps({ ...f, harness: h }), 'P2.protected');
+  assert.equal(c.state, 'declared', JSON.stringify(c.evidence));
+  assert.equal(c.proposal, null);
+  assert.match(JSON.stringify(c.evidence), /Edit\(package-lock\.json\)/, 'the covering rule is named');
+  assert.match(JSON.stringify(c.evidence), /Edit\(dist\/index\.js\)/);
+});
+
+test('P2.protected still proposes when a user rule covers only some of the protected files, and says which are covered', () => {
+  const f = typescriptFullFixture();
+  const h = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, denyRules: 1, denyRuleList: ['Edit(package-lock.json)'] } };
+  const c = byId(buildGaps({ ...f, harness: h }), 'P2.protected');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal);
+  assert.match(JSON.stringify(c.evidence), /covered by Edit\(package-lock\.json\)/);
+  assert.doesNotMatch(JSON.stringify(c.evidence), /unrelated/, 'a rule that protects one of our files is not unrelated');
+});
+
 test('a settings.json with zero deny rules is absent, not declared — existence alone is not enough', () => {
   // Task 5b: this used to call `gaps(fullStack, h)` with no `files` at
   // all — defaulting to `[]`, so there was no protected-path EVIDENCE
@@ -1150,7 +1172,7 @@ test('P2.protected discloses when some of our rules are already present (a top-u
   const h = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, denyRules: 1, denyRuleList: ['Edit(*-lock.json)'] } };
   const c = byId(buildGaps({ ...f, harness: h }), 'P2.protected');
   assert.equal(c.state, 'absent');
-  assert.match(c.evidence.join(' '), /1 of 2 deny rule\(s\).*already present.*Edit\(\*-lock\.json\)/,
+  assert.match(c.evidence.join(' '), /1 of 2 protected path\(s\) already covered.*Edit\(\*-lock\.json\)/,
     `the evidence must say this is a top-up, not silence; got ${JSON.stringify(c.evidence)}`);
 });
 
