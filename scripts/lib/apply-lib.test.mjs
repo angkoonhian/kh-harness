@@ -650,6 +650,33 @@ test('a settings-hook proposal with a matcher is written alongside the same comm
   assert.equal(r.skipped.length, 0);
 });
 
+// --- Audit Tier 3, finding 19: the preview of a verbatim asset copy is one line
+const assetCopy = (o = {}) => ({
+  kind: 'file', path: '.claude/scripts/lint-touched.mjs', step: 9, checkId: 'P2.sensor', reason: 'r',
+  assetSource: 'scripts/lint-touched.mjs', contents: '#!/usr/bin/env node\n// stamp\nline one\nline two\n', ...o,
+});
+
+test('renderDiff summarises a NEW file that is a verbatim copy of a shipped asset in one line', () => {
+  const diff = renderDiff(repo(), assetCopy());
+  assert.match(diff, /^\+4 lines — a verbatim copy of assets\/scripts\/lint-touched\.mjs/, diff);
+  assert.doesNotMatch(diff, /\+\+\+ b\//, 'no diff body: the reader can open the asset');
+  assert.match(diff, /nothing of yours is changed/);
+});
+
+test('renderDiff shows the full diff for an UPDATE of a shipped asset', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude', 'scripts'), { recursive: true });
+  writeFileSync(join(d, '.claude/scripts/lint-touched.mjs'), '#!/usr/bin/env node\n// stamp\nline one\n');
+  const diff = renderDiff(d, assetCopy());
+  assert.match(diff, /\+\+\+ b\/\.claude\/scripts\/lint-touched\.mjs/, 'what changes in an installed file must be shown');
+  assert.match(diff, /^\+line two$/m);
+});
+
+test('renderDiff shows the full diff for a new file that is not an asset copy', () => {
+  const diff = renderDiff(repo(), fileProposal());
+  assert.match(diff, /\+\+\+ b\/HANDOFF\.md/);
+});
+
 // --- Whole-branch review, F7: one canonical-form predicate, not two ------
 //
 // `apply.mjs`'s `alreadyCanonical` and `uninstall-lib.mjs`'s `wasCanonical`

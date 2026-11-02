@@ -809,6 +809,24 @@ test('a user\'s shell-form registration of our script is declared and not re-pro
   assert.doesNotMatch(dry, /\(hook: Stop\)/, 'and no second registration is proposed');
 });
 
+// --- Audit Tier 3, finding 19: the dry run is where the diffs are -------------
+test('the dry run shows shipped assets as one line each and the real diff for everything else', () => {
+  const dry = run(APPLY, fixture());
+  assert.match(dry, /^\+\d+ lines — a verbatim copy of assets\/scripts\/verify-touched\.mjs/m, dry.slice(0, 2000));
+  assert.doesNotMatch(dry, /^\+#!\/usr\/bin\/env node$/m, 'no hook script is printed line by line');
+  assert.match(dry, /\+\+\+ b\/HANDOFF\.md/, 'a template-rendered file still shows its full diff');
+  assert.match(dry, /Dry run — nothing written/);
+});
+
+test('apply --yes prints labels and reasons, no file diffs, and still the settings patches', () => {
+  const out = run(APPLY, fixture(), '--yes');
+  assert.match(out, /^--- \.claude\/scripts\/verify-touched\.mjs  \[P2\.stopgate\]$/m, 'each action is still named');
+  assert.doesNotMatch(out, /\+\+\+ b\/HANDOFF\.md/, 'file diffs were for the dry run; --yes reports what it wrote');
+  assert.doesNotMatch(out, /verbatim copy of assets/, 'nor the one-line summaries');
+  assert.match(out, /\+\+\+ b\/\.claude\/settings\.json/, 'a settings patch is a few lines and the most security-relevant write: still shown');
+  assert.match(out, /^wrote      HANDOFF\.md$/m);
+});
+
 test('apply refuses on a default branch unless told otherwise', () => {
   const d = fixture();
   git(d, 'checkout', '-q', '-b', 'master');

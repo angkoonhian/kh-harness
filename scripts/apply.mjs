@@ -316,6 +316,12 @@ process.stdout.write(
 // the DEFAULT path, the one a cautious user reaches for first, and it must
 // never escape as a raw stack trace and exit 1. The CLI's contract is exit
 // 0/2/3, nothing else.
+// Under --yes the labels and reasons are printed and FILE diffs are not
+// (audit Tier 3, finding 19: a first run printed them twice, 1,833 lines
+// each time). The dry run is where those are; --yes reports what it wrote,
+// below. A settings patch — a hook entry or deny rules — is a few lines and
+// the most security-relevant thing this tool writes, so it is still shown.
+const showFileDiffs = !flags.has('--yes');
 try {
   for (const p of proposals) {
     const label = p.kind === 'file' ? p.path
@@ -323,7 +329,8 @@ try {
       : `.claude/settings.json (hook: ${p.event})`;
     process.stdout.write(`--- ${label}  [${p.checkId}]\n`);
     process.stdout.write(`    ${p.reason}\n`);
-    process.stdout.write(renderDiff(root, p) + '\n\n');
+    if (showFileDiffs || p.kind !== 'file') process.stdout.write(renderDiff(root, p) + '\n');
+    process.stdout.write('\n');
   }
 } catch (err) {
   process.stderr.write(`kh-harness: could not render the preview: ${err && err.message ? err.message : String(err)}\n`);

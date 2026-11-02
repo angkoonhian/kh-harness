@@ -471,6 +471,16 @@ export function renderDiff(root, proposal) {
 
   const { targetPath, redirectFrom } = resolveFileTarget(root, proposal);
   const target = join(root, targetPath);
+  // A NEW file that is a verbatim copy of a shipped asset (`assetSource`, set
+  // only by the kit's own generators and pinned against the asset on disk in
+  // propose.test.mjs) is summarised in one line: audit Tier 3, finding 19 —
+  // a first-run dry run printed 1,570 lines of the kit's own hook scripts.
+  // An UPDATE of an installed asset still shows the real diff, since what
+  // changes in a file on disk is exactly what the reader needs to see.
+  if (proposal.assetSource && !existsSync(target)) {
+    const lines = splitLines(proposal.contents).length;
+    return `+${lines} lines — a verbatim copy of assets/${proposal.assetSource} (stamped on line 2); nothing of yours is changed`;
+  }
   const before = existsSync(target) ? readFileSync(target, 'utf8') : '';
   const body = unifiedDiff(before, proposal.contents, targetPath);
 

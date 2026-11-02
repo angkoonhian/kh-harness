@@ -77,7 +77,7 @@ A normal first pass:
 
     node scripts/detect.mjs .        # read the report
     node scripts/apply.mjs .         # read the diffs — nothing is written
-    node scripts/apply.mjs . --yes   # write them
+    node scripts/apply.mjs . --yes   # write them (names each action; the diffs were the dry run's)
     git diff                         # this is the point of the branch gates below
 
 ### `detect`

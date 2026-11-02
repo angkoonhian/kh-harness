@@ -125,6 +125,7 @@ function redactAssetProposal(kitVersion) {
     contents: `// ${STAMP_MARKER} ${kitVersion} (shared asset used by the PostToolUse, Stop and SessionStart hooks). ` +
       `Edit freely — kh-harness will report your changes rather than overwrite them.\n` +
       read('scripts/harness-redact.mjs'),
+    assetSource: 'scripts/harness-redact.mjs',
     reason: 'shared redaction module required by the PostToolUse/Stop hooks',
   };
 }
@@ -189,6 +190,7 @@ function sensorProposal({ kitVersion, stack, check }) {
       '#!/usr/bin/env node\n',
       `#!/usr/bin/env node\n${versionStamp(kitVersion, 9, '//')}\n`,
     ),
+    assetSource: 'scripts/lint-touched.mjs',
     reason: 'no PostToolUse hook registered',
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'PostToolUse', step: 9,
@@ -255,6 +257,7 @@ function stopgateProposal({ kitVersion, stack, check }) {
       '#!/usr/bin/env node\n',
       `#!/usr/bin/env node\n${versionStamp(kitVersion, 10, '//')}\n`,
     ),
+    assetSource: 'scripts/verify-touched.mjs',
     reason: 'no Stop hook registered',
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'Stop', step: 10,
@@ -544,6 +547,7 @@ function reinjectProposal({ kitVersion, harness, check }) {
       '#!/usr/bin/env node\n',
       `#!/usr/bin/env node\n${versionStamp(kitVersion, REINJECT_STEP, '//')}\n`,
     ),
+    assetSource: 'scripts/rules-brief.mjs',
     reason: 'no UserPromptSubmit re-injection hook registered',
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'UserPromptSubmit', step: REINJECT_STEP,
@@ -574,6 +578,7 @@ const GENERATORS = {
       '#!/usr/bin/env node\n',
       `#!/usr/bin/env node\n${versionStamp(kitVersion, 16, '//')}\n`,
     ),
+    assetSource: 'scripts/session-brief.mjs',
     reason: 'no SessionStart brief hook registered',
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'SessionStart', step: 16,
