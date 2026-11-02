@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlin
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
-import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, isWellFormedHooks, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, isWellFormedHooks, detectIndent, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 
@@ -677,6 +677,37 @@ test('renderDiff shows the full diff for a new file that is not an asset copy', 
   assert.match(diff, /\+\+\+ b\/HANDOFF\.md/);
 });
 
+// --- Audit Tier 4, finding 22: settings.json kept its indentation -----------
+//
+// Both writers stringified with two spaces, so a four-space (or tabbed) file
+// came back re-indented throughout — the one change the tool promised not to
+// make. The indentation is read from the file and written back with it.
+test('detectIndent reads two spaces, four spaces and a tab, and defaults to two', () => {
+  assert.equal(detectIndent('{\n  "a": 1\n}'), '  ');
+  assert.equal(detectIndent('{\n    "a": 1\n}'), '    ');
+  assert.equal(detectIndent('{\n\t"a": 1\n}'), '\t');
+  assert.equal(detectIndent('{"a":1}'), '  ', 'a compact file gets the conventional two');
+  assert.equal(detectIndent(null), '  ', 'a file being created gets the conventional two');
+});
+
+test('a four-space settings.json is patched with four spaces', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(secrets/**)'] } }, null, 4) + '\n');
+  applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const after = readFileSync(join(d, '.claude/settings.json'), 'utf8');
+  assert.match(after, /^    "permissions"/m, 'the user\'s own indentation is kept');
+  assert.doesNotMatch(after, /^  "/m, 'nothing is re-indented to two spaces');
+  assert.deepEqual(JSON.parse(after).permissions.deny, ['Edit(secrets/**)']);
+});
+
+test('isCanonicalJson accepts a four-space file as canonical, so no reformat note is printed for it', () => {
+  const four = JSON.stringify({ a: { b: 1 } }, null, 4) + '\n';
+  assert.equal(isCanonicalJson(four), true);
+  assert.equal(isCanonicalJson(JSON.stringify({ a: { b: 1 } }, null, '\t') + '\n'), true);
+  assert.equal(isCanonicalJson('{"a": {"b": 1}}\n'), false, 'inline spacing is still a reformat');
+});
+
 // --- Whole-branch review, F7: one canonical-form predicate, not two ------
 //
 // `apply.mjs`'s `alreadyCanonical` and `uninstall-lib.mjs`'s `wasCanonical`
@@ -704,7 +735,9 @@ test('F7: the same content WITH a trailing newline is canonical too', () => {
 test('F7: genuinely non-canonical formatting is still reported as such', () => {
   for (const raw of [
     '{"a":1}',                            // compact
-    JSON.stringify({ a: 1 }, null, 4),    // different indent
+    // A four-space file is canonical since audit Tier 4 (the writer keeps
+    // the file's own indentation); an INCONSISTENT indent is what cannot be.
+    JSON.stringify({ a: { b: 1 } }, null, 4).replace('\n    "a"', '\n   "a"'),
     JSON.stringify({ a: 1 }, null, 2) + '\n\n', // extra blank line
   ]) {
     assert.equal(isCanonicalJson(raw), false, `must be non-canonical: ${JSON.stringify(raw)}`);

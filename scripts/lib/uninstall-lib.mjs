@@ -8,7 +8,7 @@
 // enough.
 import * as fs from 'node:fs';
 import { join } from 'node:path';
-import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline, isAllowedDirectory, isCanonicalJson, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline, detectIndent, isAllowedDirectory, isCanonicalJson, settingsReformattedNote } from './apply-lib.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
@@ -629,7 +629,7 @@ export function runUninstall({ root, manifest, plan }) {
         // never got `matchingNewline`). `isCanonicalJson` (apply-lib.mjs) is
         // the one predicate both callers read now.
         if (!isCanonicalJson(validated.raw)) settingsReformatted = true;
-        const newContent = JSON.stringify(settings, null, 2) + matchingNewline(validated.raw);
+        const newContent = JSON.stringify(settings, null, detectIndent(validated.raw)) + matchingNewline(validated.raw);
         try {
           fs.writeFileSync(join(root, SETTINGS), newContent, 'utf8');
         } catch {

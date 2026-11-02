@@ -221,6 +221,18 @@ test('a CRLF scaffold the user also edited is still kept', () => {
   assert.equal(plan.keep[0].path, 'HANDOFF.md');
 });
 
+// Audit Tier 4, finding 22: reverting keeps the file's indentation too.
+test('reverting a patch keeps the file\'s four-space indentation', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const original = JSON.stringify({ permissions: { deny: ['Edit(secrets/**)'] } }, null, 4) + '\n';
+  writeFileSync(join(d, '.claude/settings.json'), original);
+  const r = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const plan = planUninstall({ root: d, manifest: r.manifest });
+  runUninstall({ root: d, manifest: r.manifest, plan });
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), original, 'byte-identical after apply then uninstall');
+});
+
 test('keeps a file the user edited and says why', () => {
   const { d, manifest } = installed();
   writeFileSync(join(d, 'HANDOFF.md'), 'mine now\n');

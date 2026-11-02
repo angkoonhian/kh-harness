@@ -338,10 +338,25 @@ function matchingNewline(raw) {
 export function isCanonicalJson(raw) {
   if (raw == null) return true;
   try {
-    return raw === JSON.stringify(JSON.parse(raw), null, 2) + matchingNewline(raw);
+    return raw === JSON.stringify(JSON.parse(raw), null, detectIndent(raw)) + matchingNewline(raw);
   } catch {
     return true;
   }
+}
+
+/**
+ * The indentation `raw` uses — a tab, or the run of spaces on its first
+ * indented line — so a settings write keeps it (audit Tier 4, finding 22: a
+ * four-space file came back re-indented throughout, the one change this
+ * tool promised not to make). Two spaces for a compact file, and for a file
+ * being created (`raw` null). Exported for its test and for
+ * uninstall-lib.mjs, the other writer of the same file.
+ */
+export function detectIndent(raw) {
+  if (raw == null) return '  ';
+  const m = /^([ \t]+)\S/m.exec(raw);
+  if (!m) return '  ';
+  return m[1].startsWith('\t') ? '\t' : m[1];
 }
 
 /**
@@ -656,7 +671,7 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
   // clean up even across later runs that only patch it further.
   if (result.raw === null) nextManifest.settingsCreated = true;
   recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
-  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + matchingNewline(result.raw), SETTINGS_PATH);
+  writeFileDeep(settingsPath, JSON.stringify(next, null, detectIndent(result.raw)) + matchingNewline(result.raw), SETTINGS_PATH);
 
   nextManifest.settingsPatches.push({
     event: proposal.event,
@@ -693,7 +708,7 @@ function applySettingsDenyProposal({ root, proposal, nextManifest, patched, skip
 
   if (result.raw === null) nextManifest.settingsCreated = true;
   recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
-  writeFileDeep(settingsPath, JSON.stringify(next, null, 2) + matchingNewline(result.raw), SETTINGS_PATH);
+  writeFileDeep(settingsPath, JSON.stringify(next, null, detectIndent(result.raw)) + matchingNewline(result.raw), SETTINGS_PATH);
 
   nextManifest.settingsPatches.push({
     event: 'permissions.deny',
