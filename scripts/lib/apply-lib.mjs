@@ -31,7 +31,10 @@ const DIFF_LINE_BAILOUT = 3000;
 // kh-harness from ever touching a user's own files: settings-based
 // containment would appear to work (writes match through `Edit`, not
 // `Write(path)`) and silently would not.
-const ALLOWED_EXACT = new Set(['CLAUDE.md', 'HANDOFF.md', 'docs/ARCHITECTURE.md']);
+// `docs/INTENT.md` (Phase 3) joins `docs/ARCHITECTURE.md` here for the same
+// reason: both are written by the SKILL at a gate, not by any generator, and
+// the allowlist is the one statement of every path this kit may ever write.
+const ALLOWED_EXACT = new Set(['CLAUDE.md', 'HANDOFF.md', 'docs/ARCHITECTURE.md', 'docs/INTENT.md']);
 const ALLOWED_PREFIXES = ['docs/harness/', '.claude/', 'scripts/'];
 
 /** Throws on any path outside the allowlist. Never consulted anywhere but here. */

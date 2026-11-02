@@ -606,3 +606,15 @@ test('F7: an absent, unreadable or unparseable file reports canonical — there 
   assert.equal(isCanonicalJson(null), true, 'absent');
   assert.equal(isCanonicalJson('{ not json'), true, 'unparseable never reaches a settings write');
 });
+
+// Phase 3: docs/INTENT.md is written by the SKILL, not by apply (there is no
+// generator — propose.test.mjs pins that), exactly like docs/ARCHITECTURE.md.
+// It is on the allowlist anyway, for the same reason ARCHITECTURE.md is: a
+// future generator must not be refused by accident, and the allowlist is
+// the single statement of "paths this kit may ever write".
+test('docs/INTENT.md is on the write allowlist, like docs/ARCHITECTURE.md', () => {
+  assert.doesNotThrow(() => assertAllowed('docs/INTENT.md'));
+  // And nothing else under docs/ is admitted by that addition.
+  assert.throws(() => assertAllowed('docs/INTENT.txt'), /not allowed/i);
+  assert.throws(() => assertAllowed('docs/intent/INTENT.md'), /not allowed/i);
+});

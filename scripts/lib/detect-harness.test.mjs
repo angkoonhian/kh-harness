@@ -506,3 +506,12 @@ test('detectHarness carries phase-3 evidence: intent, rulesRegistry and ruleShap
   assert.equal(bare.rulesRegistry, null);
   assert.deepEqual(bare.ruleShapedLines, []);
 });
+
+test('docPointers excludes docs/INTENT.md and docs/harness/RULES.md — phase-3 kit outputs are the harness pointing at itself', () => {
+  const d = repo();
+  write(d, 'CLAUDE.md', 'Purpose: see [intent](docs/INTENT.md); rules: @docs/harness/RULES.md; architecture: `docs/wiki/`.\n');
+  write(d, 'docs/INTENT.md', '## Purpose\n');
+  write(d, 'docs/harness/RULES.md', '# Rules\n');
+  write(d, 'docs/wiki/README.md', '# wiki\n');
+  assert.deepEqual(run(d).docPointers, ['docs/wiki/README.md'], 'only the repository\'s own documentation is credited');
+});
