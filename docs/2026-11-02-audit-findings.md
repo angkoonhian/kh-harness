@@ -82,25 +82,34 @@
 *Status (2026-11-03): fixed on `fix/audit-findings` — a new file that is a verbatim asset copy previews as one line (`assetSource`, pinned against the asset); an update still shows the diff; `--yes` prints labels, reasons and the settings patches, no file diffs. Tests: `renderDiff summarises a NEW file that is a verbatim copy…`, `the dry run shows shipped assets as one line each…`, `apply --yes prints labels and reasons, no file diffs…`.*
 
 **20. Three questions recur on every run with no way to answer them.** `report.mjs:39-41` ("which CLAUDE.md rules cannot be re-derived" — forever), `gap-model.mjs:577-581` (path rules on every non-workspace — a state, not a gap; should be `n/a`), the architecture/intent "is one of these N docs the document?" (P1.architecture honours a CLAUDE.md pointer; P3.intent does not). On this repository 4 of 5 `couldNotDerive` lines are of this kind. `apply.mjs:199-203` then tells the user to run `detect` to read a sentence `apply` already holds. *Fix:* one-time note; `n/a`; accept `docPointers` in P3.intent; print questions inline.
+*Status (2026-11-03): fixed on `fix/audit-findings` — the instruction-file question is asked only while no rules registry exists; P1.pathrules on a single package is `n/a`; P3.intent honours an instruction-file pointer at a document named for intent/purpose/vision/product/PRD; apply prints its questions inline. Tests: `the instruction-file question is asked only while no rules registry exists`, `P1.pathrules is n/a with no question…`, `P3.intent is declared when the instruction file points at…`, `apply prints the questions it could not answer inline…`.*
 
 **21. `detect` modifies a tracked `docs/harness/detect.json`, so the next `apply` refuses.** [confirmed on cashmigo] `generatedAt` changes every run; the path is not in `apply`'s own-writes set. *Fix:* add it to `ownedByUs`; README to say gitignore it.
+*Status (2026-11-03): fixed on `fix/audit-findings` — `DETECT_REPORT_PATH` is excused by `ownedByUs` (on a first run too). Test: `a tracked, re-generated docs/harness/detect.json does not trip the dirty-tree gate`.*
 
 **22. `settings.json` indentation churn** (4-space file rewritten as 2-space). *Fix:* detect indent from the raw text.
+*Status (2026-11-03): fixed on `fix/audit-findings` — `detectIndent` reads the file's own indentation; both writers and `isCanonicalJson` use it. Tests: `a four-space settings.json is patched with four spaces`, `reverting a patch keeps the file's four-space indentation`.*
 
 **23. `detect.json` writes the absolute root path (machine username) into a committed file** and lists every doc-shaped path. *Fix:* basename; cap `projectDocs`.
+*Status (2026-11-03): fixed on `fix/audit-findings` — `repo.name` (basename) replaces `repo.root`; `projectDocs` lists 25 with `projectDocCount` beside it. Tests: `detect.json names the repository, never its absolute path`, `projectDocs is capped at 25 paths with the total beside it`.*
 
 **24. Hook credential mask gaps** (`harness-redact.mjs:109-119`): `npm_`, `gh[ousr]_`, `sk_live_`, `AIza`, JWTs, URL userinfo, `Basic …`, `"password": "x"`, private-key blocks, `glrt-`, `xapp-`, `hf_`, `dckr_pat_`, `pypi-`. Ruff/biome print source snippets, so a secret in a linted file reaches stderr unless a rule matches. *Fix:* ~8 rules (the auditor's list is in the hooks report).
 *Status (2026-11-03): fixed on `fix/audit-findings` — npm, every GitHub prefix, Stripe-style, Google, JWT, URL userinfo, Basic, PEM, GitLab runner, Slack app, Hugging Face, Docker, PyPI and `key: value` in any quoting. Test: `maskCredentials masks today's shapes…` and four more.*
 
 **25. Re-injection hook: no control/bidi stripping, no delimiter.** `rules-brief.mjs:103`. *Fix:* strip `​-‏‪-‮⁦-⁩` and control chars; wrap in `<project-rules source=…>`.
+*Status (2026-11-03): fixed on `fix/audit-findings` — C0/C1 controls and the Unicode bidi, zero-width and BOM format characters are stripped before the mask; the block is `<project-rules source="…">…</project-rules>` with the closing tag inside the byte bound. Tests: `control and bidirectional-format characters never reach the injected context`, `the injected block is delimited and names its source`.*
 
 **26. Marker directory on POSIX is predictable and `mkdirSync` accepts a foreign pre-created dir; `writeFileSync` follows a planted symlink.** `harness-redact.mjs:518-607`. *Fix:* `lstat` + owner check; `O_NOFOLLOW`.
+*Status (2026-11-03): fixed on `fix/audit-findings` — a marker directory that is a link (or, on POSIX, another user's) is refused and the callers fail open; writes use O_NOFOLLOW where the platform has it. Tests: `markerPath refuses a repository marker directory that is a link`, `writeJSONMarker refuses to follow a symlink planted at the marker path`.*
 
 **27. Small things:** `pnpm-workspace.yaml` parser takes every `- item` (`catalog:` becomes a glob); a dangling tracked symlink is a permanent `high` finding; `chmod 0o755` is a no-op on Windows (print the `git update-index --chmod=+x` hint); the `CLAUDE.md` redirect in `apply` is dead code but documented as live; the "separate-git-dir blind spot" comment and test describe a case that is actually detected; `Bearer` placeholders; advice lines listing 41 line numbers (cap at 10).
+*Status (2026-11-03): fixed on `fix/audit-findings` — pnpm `packages:` only; a dangling symlink is a silent skip; the Windows `update-index --chmod=+x` hint is printed; the apply-side CLAUDE.md redirect (unreachable) is removed and CLAUDE.md leaves the allowlist, docs corrected; advice lists ten line numbers. The `.git`-as-file blind-spot comment and test agree with the detector (not detected), so that item was wrong. Tests: `assertAllowed refuses CLAUDE.md`, `pnpm-workspace.yaml catalog entries are not workspace globs`, `a dangling symlink in the scan list is skipped silently`, `P3.rules advice lists at most ten line numbers`, `apply on win32 prints the execute-bit hint`.*
 
 ---
 
 ## Tier 4 — docs, CI, tests
+*Status (2026-11-03): fixed on `fix/audit-findings` — 
+*Status (2026-11-03): fixed on `fix/audit-findings` — README says four hooks and that uninstall reverts the hooks it installed; the CI paragraph describes the `workflow_dispatch` eval job and both credentials; `SKILL.md` Phase 2 is steps 8–12; `ci.yml` runs Node 22 and 24 and installs the CLI before `npm test` on Linux; `plugin.json`'s version is tied to `package.json`'s by a test; `lifecycle.test.mjs` is three files on `lifecycle-fixtures.mjs`; the Stop-gate skip test counts runs instead of milliseconds. The two platform skips (mode bits, junctions) remain Linux-CI-only by design.**
 
 - README: "three hooks" (table has four); "reverts both hooks"; CI section says `ANTHROPIC_API_KEY` and "skips with a notice" (now `workflow_dispatch`-only, prefers the OAuth token); "3 runs per case" (`runs: 1`).
 - `SKILL.md:29` Phase 2 row omits step 12, which its reference and a test cover.
