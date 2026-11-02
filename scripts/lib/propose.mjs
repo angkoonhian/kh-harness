@@ -495,6 +495,44 @@ function rulesScaffoldProposal({ kitVersion }) {
   }];
 }
 
+const REINJECT_STEP = 28;
+
+/**
+ * The re-injection hook (Phase 3, step 28): `rules-brief.mjs` plus the
+ * shared redaction asset plus a `UserPromptSubmit` registration — the same
+ * three-part shape as `P4.sessionbrief`, for the same reasons (see
+ * `redactAssetProposal` on why the shared asset rides along, and
+ * `missingDependencies` in apply-lib.mjs on why `requiresFiles` keeps the
+ * hook from being REGISTERED before its script is on disk).
+ *
+ * No `matcher`: UserPromptSubmit has no tool to match on, and
+ * `buildMatcherEntry` omits the key entirely when none is passed.
+ *
+ * Gated on the registry holding at least one active rule — read from
+ * `harness.rulesRegistry`, the SAME evidence gap-model.mjs's P3.reinject
+ * check decides from, so check and generator agree by construction. This
+ * is the defensive SECOND gate, independent of the check-level `decidable`
+ * flag `buildProposals` enforces centrally — `bootstrapProposal` keeps the
+ * same belt-and-braces for the same reason: a hook with nothing to inject
+ * is noise on every prompt, and no forced check may produce one.
+ */
+function reinjectProposal({ kitVersion, harness, check }) {
+  if (!(harness?.rulesRegistry?.count > 0)) return [];
+  return [{
+    kind: 'file', path: RULES_BRIEF_PATH, step: REINJECT_STEP,
+    contents: read('scripts/rules-brief.mjs').replace(
+      '#!/usr/bin/env node\n',
+      `#!/usr/bin/env node\n${versionStamp(kitVersion, REINJECT_STEP, '//')}\n`,
+    ),
+    reason: 'no UserPromptSubmit re-injection hook registered',
+  }, redactAssetProposal(kitVersion), {
+    kind: 'settings-hook', event: 'UserPromptSubmit', step: REINJECT_STEP,
+    entry: { type: 'command', command: `node ${RULES_BRIEF_PATH}` },
+    requiresFiles: [RULES_BRIEF_PATH, REDACT_PATH],
+    reason: hookRegistrationReason('UserPromptSubmit', check),
+  }];
+}
+
 /** Generators receive the full detection context and return proposals.
  * { kitVersion, harness, root, stack, checks, files, check } are available
  * to all generators — `check` is THIS generator's own entry from `checks`
@@ -536,6 +574,7 @@ const GENERATORS = {
   'P1.bootstrap': bootstrapProposal,
   'P1.pathrules': pathRuleProposal,
   'P3.rules': rulesScaffoldProposal,
+  'P3.reinject': reinjectProposal,
   // No entry for 'P3.intent', deliberately and permanently: like steps 6
   // and 7a, docs/INTENT.md is written by the skill after reading the
   // repository and gated on its full content (propose.test.mjs's "SECRET:

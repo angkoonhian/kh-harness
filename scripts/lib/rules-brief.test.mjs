@@ -1,0 +1,128 @@
+// scripts/lib/rules-brief.test.mjs
+//
+// The UserPromptSubmit hook that puts docs/harness/RULES.md back in front of
+// the model on every prompt. It injects CONTEXT rather than guarding an
+// action, so it fails OPEN (no registry, no output, exit 0) — the opposite
+// of what a guard should do and the right call for a reminder. It is
+// byte-bounded because it runs on every single prompt, and every line it
+// emits passes the shared credential mask.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+
+const SCRIPT = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'rules-brief.mjs');
+const run = (cwd, env = {}) => execFileSync(process.execPath, [SCRIPT], {
+  cwd, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: '', HK_RULES_BRIEF_MAX_BYTES: '', ...env },
+});
+const repo = () => mkdtempSync(join(tmpdir(), 'hk-rules-brief-'));
+function registry(d, text) {
+  mkdirSync(join(d, 'docs', 'harness'), { recursive: true });
+  writeFileSync(join(d, RULES_PATH), text);
+}
+/** Parses the hook's stdout as the one JSON object it must be, and returns
+ * the injected text. */
+function injected(out) {
+  const obj = JSON.parse(out);
+  assert.deepEqual(Object.keys(obj), ['hookSpecificOutput']);
+  assert.equal(obj.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+  assert.equal(typeof obj.hookSpecificOutput.additionalContext, 'string');
+  return obj.hookSpecificOutput.additionalContext;
+}
+
+const TWO_RULES = [
+  '## R1 — Every query is scoped to the current tenant',
+  '- enforced-by: critic',
+  '- pointer: .claude/agents/tenant-scoping.md',
+  '## R2 — Money is integer cents',
+  '- enforced-by: test',
+  '- pointer: tests/money.test.mjs',
+  '',
+].join('\n');
+
+test('emits one JSON object with hookEventName UserPromptSubmit and the rules as additionalContext', () => {
+  const d = repo();
+  registry(d, TWO_RULES);
+  const out = run(d);
+  assert.ok(out.endsWith('\n'), 'one object, one trailing newline');
+  const text = injected(out);
+  assert.match(text, /^Project rules \(docs\/harness\/RULES\.md\):\n/);
+  assert.match(text, /^- R1: Every query is scoped to the current tenant \[enforced-by: critic\]$/m);
+  assert.match(text, /^- R2: Money is integer cents \[enforced-by: test\]$/m);
+});
+
+test('high-priority rules come first, in stable order within a priority', () => {
+  const d = repo();
+  registry(d, [
+    '## A — first normal', '- enforced-by: none',
+    '## B — the urgent one', '- enforced-by: none', '- priority: high',
+    '## C — second normal', '- enforced-by: none',
+    '## D — second urgent', '- enforced-by: none', '- priority: high',
+    '',
+  ].join('\n'));
+  const text = injected(run(d));
+  const order = [...text.matchAll(/^- ([A-D]):/gm)].map(m => m[1]);
+  assert.deepEqual(order, ['B', 'D', 'A', 'C']);
+});
+
+test('superseded rules are not injected', () => {
+  const d = repo();
+  registry(d, '## OLD — do the old thing\n- enforced-by: none\n- status: superseded\n## NEW — do the new thing\n- enforced-by: none\n');
+  const text = injected(run(d));
+  assert.doesNotMatch(text, /OLD/);
+  assert.match(text, /NEW/);
+});
+
+test('the byte bound is honoured and announced, dropping whole rules, never mid-line', () => {
+  const d = repo();
+  const many = Array.from({ length: 12 }, (_, i) => `## R${i} — rule number ${i} with some words to take up space\n- enforced-by: none\n`).join('');
+  registry(d, many);
+  const text = injected(run(d, { HK_RULES_BRIEF_MAX_BYTES: '300' }));
+  assert.ok(Buffer.byteLength(text, 'utf8') <= 300, `got ${Buffer.byteLength(text, 'utf8')} bytes`);
+  assert.match(text, /^… \d+ more rule\(s\) in docs\/harness\/RULES\.md$/m);
+  // Every rule line that did make it is complete.
+  for (const line of text.split('\n').filter(l => l.startsWith('- '))) assert.match(line, /\[enforced-by: none\]$/);
+  // And the full set does fit under the real default.
+  const full = injected(run(d));
+  assert.doesNotMatch(full, /more rule/);
+  assert.equal((full.match(/^- R\d+:/gm) ?? []).length, 12);
+});
+
+test('a credential-shaped value in a rule line is masked before it reaches stdout', () => {
+  const d = repo();
+  // Assembled at runtime so this test file never holds a credential-shaped
+  // literal (the DOGFOOD security test scans this repository).
+  const token = 'ghp_' + 'A'.repeat(24);
+  registry(d, `## R1 — Rotate the deploy token (currently ${token})\n- enforced-by: none\n`);
+  const out = run(d);
+  assert.equal(out.includes(token), false, 'the token must never reach stdout');
+  assert.match(injected(out), /\*\*\*/);
+});
+
+test('no registry → no output, exit 0', () => {
+  const d = repo();
+  assert.equal(run(d), '');
+});
+
+test('a scaffold with zero rules → no output, exit 0', () => {
+  const d = repo();
+  registry(d, '# Rules\n<!--\n## EXAMPLE — not a rule\n- enforced-by: test\n-->\n');
+  assert.equal(run(d), '');
+});
+
+test('only superseded rules → no output, exit 0', () => {
+  const d = repo();
+  registry(d, '## OLD — gone\n- enforced-by: none\n- status: superseded\n');
+  assert.equal(run(d), '');
+});
+
+test('CLAUDE_PROJECT_DIR is honoured from a nested cwd', () => {
+  const d = repo();
+  registry(d, TWO_RULES);
+  mkdirSync(join(d, 'sub', 'deeper'), { recursive: true });
+  assert.match(injected(run(join(d, 'sub', 'deeper'), { CLAUDE_PROJECT_DIR: d })), /R1/);
+  assert.equal(run(join(d, 'sub', 'deeper')), '', 'without it, a nested cwd has no registry and the hook says nothing');
+});
