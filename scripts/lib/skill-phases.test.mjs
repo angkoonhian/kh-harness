@@ -146,3 +146,32 @@ test('LOAD-BEARING: declining a gate leaves nothing written, stated for both ref
     );
   }
 });
+
+// --- Phase 3: intent and rules (phase-3-intent.md) -------------------------
+
+test('step 28 discloses, near its gate, that the hook reads one file and executes nothing else, and names the 1500-byte bound', () => {
+  const t = ref('phase-3-intent.md');
+  assert.match(t, /step 28/i);
+  assert.ok(
+    hasNear(t, /executes?\s+nothing\s+else/i, /\bgate\b/i, 600),
+    'the "executes nothing else" disclosure must sit near the step-28 gate',
+  );
+  assert.ok(
+    hasNear(t, /executes?\s+nothing\s+else/i, /reads?\s+(one|a\s+single)\s+file/i, 300),
+    'and it must say the hook reads ONE file — the disclosure is about scope, not only about execution',
+  );
+  assert.match(t, /\b1500\b\s*bytes/i, 'the byte bound is a number the user decides with, not a vague "bounded"');
+  assert.match(t, /every\s+prompt/i, 'the per-prompt cost must be stated — it is the thing a user would be surprised by');
+});
+
+test('SKILL.md phase table has a phase 3 row, between phases 1 and 2, linking phase-3-intent.md', () => {
+  const skill = readFileSync(resolve(REF, '..', 'SKILL.md'), 'utf8');
+  const rows = skill.split('\n').filter(l => /^\|\s*\d\s*\|/.test(l));
+  const phases = rows.map(l => Number(l.split('|')[1].trim()));
+  assert.deepEqual(phases, [0, 1, 3, 2, 4], 'intent informs which rules matter, and rules inform which sensors and protected paths matter — so 3 runs between 1 and 2');
+  const row3 = rows[phases.indexOf(3)];
+  assert.match(row3, /26,\s*27,\s*28/);
+  assert.match(row3, /references\/phase-3-intent\.md/);
+  assert.match(row3, /prompt/);
+  assert.match(row3, /script/);
+});

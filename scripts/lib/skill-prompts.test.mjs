@@ -63,3 +63,37 @@ test('the credential rule is stated where recon will meet credentials', () => {
   const t = ref('phase-0-recon.md');
   assert.match(t, /never[^.]*value/i, 'spec §6: report location and type, never the value');
 });
+
+// --- Phase 3: intent and rules (phase-3-intent.md) -------------------------
+
+test('the intent step writes docs/INTENT.md after reading the repository, and routes unknowns to Open questions rather than guessing', () => {
+  const t = ref('phase-3-intent.md');
+  assert.match(t, /\bwrite\b[^.]*docs\/INTENT\.md/i, 'must instruct writing the file, not merely mention its path');
+  assert.doesNotMatch(t, /\bnever\b[^.]*\bwrite\b[^.]*docs\/INTENT\.md/i);
+  // The seven sections are named, in the reference's own prose.
+  for (const s of ['Purpose', 'Users', 'How it works', 'Success', 'Failure', 'Non-goals', 'Open questions']) {
+    assert.ok(t.includes(s), `section "${s}" must be named`);
+  }
+  // A section that cannot be answered goes under Open questions — the
+  // kit's couldNotDerive discipline, landed in a human document.
+  assert.match(t, /open\s+questions[^.]{0,200}\b(rather|instead|not)\b[^.]{0,80}\bguess/i,
+    'unanswerable sections go under Open questions rather than a guess');
+});
+
+test('the intent step has no template — a templated statement of purpose is a guess', () => {
+  const t = ref('phase-3-intent.md');
+  assert.doesNotMatch(t, /INTENT\.md\.tmpl/);
+  assert.match(t, /no\s+(starting\s+)?template/i);
+});
+
+test('the rules step never invents an enforcer: enforced-by is none unless a real one was found and named', () => {
+  const t = ref('phase-3-intent.md');
+  assert.match(t, /never\s+invent[^.]*enforcer/i);
+  assert.match(t, /enforced-by:\s*none/i);
+  assert.match(t, /generated\s+EMPTY/i, 'the scaffold is generated empty, and the reference says so');
+});
+
+test('every phase-3 prompt-gated step names its gate with a wait/stop', () => {
+  const hits = (ref('phase-3-intent.md').match(/\bgate\b[\s\S]{0,200}?\b(wait|stop)\b/gi) ?? []).length;
+  assert.ok(hits >= 2, `phase-3-intent.md pairs "gate" with wait/stop ${hits} times; it owns 2 prompt-gated steps (26, 27's fill)`);
+});
