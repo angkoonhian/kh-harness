@@ -36,12 +36,16 @@
 *Status (2026-11-02): fixed on `fix/audit-findings` — gates run under `--yes` only; a dry run prints a `note:` per gate `--yes` would trip. Test: `a dry run on the default branch is not refused and notes what --yes would do`.*
 
 **6. `ls-files -s` is split on whitespace, truncating paths with spaces.** `scan.mjs:102-104`. A gitlink at `my sub dir` is recorded as `my`. *Fix:* split at the first tab.
+*Status (2026-11-03): fixed on `fix/audit-findings` — split at the first tab. Test: `a submodule whose path holds a space is recorded under its full path`.*
 
 **7. `settings.json` `hooks` shape is unvalidated; identical commands under different matchers are treated as equal.** `apply-lib.mjs:264-271` validates `permissions` only; `{"hooks":{"Stop":{…}}}` → TypeError → exit 2 after the dry run promised success. `settings-merge.mjs:49-53` `hasEquivalentHook` ignores the matcher, so a user's same command under `Bash` suppresses our `Write|Edit` entry. *Fix:* validate hooks like permissions; compare matcher too.
+*Status (2026-11-03): fixed on `fix/audit-findings` — `isWellFormedHooks` refuses the undocumented shapes at the one read, so the dry run and `--yes` say the same thing; `hasEquivalentHook` compares the matcher (omitted, `""` and `"*"` alike). Tests: `renderDiff never throws on a malformed hooks block…`, `hasEquivalentHook distinguishes the same command under a different matcher`.*
 
 **8. The manifest is written once, non-atomically, at the end, and never records the upgrading version.** `manifest.mjs:222-226`, `apply.mjs:350`, `apply-lib.mjs:733`. A kill mid-batch orphans every written file as `theirs` forever; `kitVersion` stays 0.1.0 after 0.2.0 files land. *Fix:* write `.tmp` + `renameSync`; set `nextManifest.kitVersion = kitVersion`.
+*Status (2026-11-03): fixed on `fix/audit-findings` — temp file plus rename; `kitVersion` set whenever a run wrote or patched. Tests: `applyProposals records the kit version that wrote`; the atomic write is guarded by `writeManifest leaves no temporary file behind…` and verified by reading.*
 
 **9. `--verify` mutates the tree it verifies and hides what failed.** `verify.mjs:4,9`. `build` runs (wrote 1,350 `.js` files into `src/` on a fixture), output is `stdio:'ignore'`, a timeout is recorded as `exitCode:1`. *Fix:* drop `build` or warn; record `timedOut`; capture bounded output; set `CI=1`.
+*Status (2026-11-03): fixed on `fix/audit-findings` — `build` joins `install` on the never-run list; `timedOut` recorded; `CI=1`; output still never captured. Tests: `never runs build — it writes into the tree`, `defaultRun marks a command killed by the timeout as timedOut`.*
 
 **10. Stop gate and lint sensor do far more work than the edit warrants.** `verify-touched.mjs:277-304` runs the whole typecheck/test on turns that changed nothing (read-only Q&A turns included). `lint-touched.mjs:453` appends the file to `eslint .`, which still lints the whole project; appended to a pipeline (`a | b`, `a && b`) the path lands on the last stage (a `tee` tail overwrote the edited file in a probe). The lint timeout kills only the shell and orphans the linter (`:463-471`), the bug `verify-touched` already fixed for itself. *Fix:* fingerprint HEAD + `status --porcelain` and skip an unchanged tree; strip a trailing `.` target before appending; never append to a command containing `|&;` or `$(`; share `killTree`.
 
@@ -50,12 +54,16 @@
 **12. `verify-touched` misreports on overflow and writes invisible messages.** `:223-232` discards the whole chunk that crosses `maxBuffer` and kills, so a passing verbose command exits 2 "blaming redaction"; `:346-357` write stderr with exit 0, which Claude Code never shows. *Fix:* slice the chunk, let the command finish; use `{"systemMessage": …}` on stdout.
 
 **13. `P2.protected` compares deny rules by exact string.** `gap-model.mjs:875,885`. A user's `Edit(package-lock.json)` is reported as "unrelated" and `Edit(*-lock.json)` is proposed on top. *Fix:* compare by what the globs match in `files` (both helpers exist in `glob.mjs`).
+*Status (2026-11-03): fixed on `fix/audit-findings` — `denyRuleCoverage` decides by what the globs match in `files`; the evidence names the covering rule. Tests: `scripts/lib/protected-evidence.test.mjs`, `P2.protected is declared when the user's own rules cover every protected file, and names them`.*
 
 **14. The fallback walk enumerates `node_modules` before filtering.** `scan.mjs:219-228`. A non-git checkout with 20,000 files under `node_modules`: 2,633 ms vs 11 ms with directory-level pruning. *Fix:* a ten-line recursive walk that skips `EXCLUDE_DIRS` at the directory.
+*Status (2026-11-03): fixed on `fix/audit-findings` — `walkFiles` prunes at the directory and never follows a link — the recursive readdir also descended into a Windows junction, which the new test caught. Tests: `the fallback walk never enters an excluded directory`, `the fallback walk does not follow a symlinked directory`.*
 
 **15. `uninstall` exits 0 with a hook still registered, and leaks `why` into the manifest.** `uninstall.mjs:220`, `uninstall-lib.mjs:831,938`. *Fix:* count `patchesNotReverted` in the exit-2 condition; strip `why` before persisting.
+*Status (2026-11-03): fixed on `fix/audit-findings` — exit 2 when a patch could not be reverted. The `why` field on a kept patch is kept on purpose: the tests pin it as the durable record of the reason. Test: `uninstall --yes exits 2 when a recorded hook could not be reverted, and says which`.*
 
 **16. `detect` can crash with exit 1.** `detect.mjs:66-68` unguarded `mkdirSync`/`writeFileSync` (`docs` is a file, EACCES). README says a crash is a bug. *Fix:* try/catch → exit 2.
+*Status (2026-11-03): fixed on `fix/audit-findings` — one stderr line and exit 2. Test: `detect exits 2 with one stderr line when docs/harness/detect.json cannot be written`.*
 
 ---
 
