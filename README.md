@@ -160,6 +160,7 @@ without being asked each time:
 | `PostToolUse` | after each `Write`/`Edit` | the **owning package's `lint` script**, on the one file just edited, bounded at 30s |
 | `Stop` | at the end of each turn | the **root package's `typecheck` script**, or `test` if there is no `typecheck`, over the **whole repository**, bounded at 120s |
 | `SessionStart` | at session start | nothing — it reads `HANDOFF.md` (or `docs/HANDOFF.md`) and prints the top of it |
+| `UserPromptSubmit` | on every prompt | nothing — it reads `docs/harness/RULES.md` and adds up to 1500 bytes of its rules to the prompt's context, high priority first (installed only once the registry holds a rule) |
 
 A repository's own lint or test script is arbitrary code in every project; that
 is not new. What changes is **automation**: you stop typing it, and a `git pull`
@@ -173,6 +174,47 @@ hooks and removes both scripts.
 Neither hook is installed unless its check reported `absent` **and** you ran
 `apply --yes`. Both hooks' output is bounded and passes a two-layer credential
 filter before any of it reaches the model.
+
+## Intent and rules
+
+Phase 3 adds the two documents that say what the application is *for* and
+which rules follow from that — the layer every other capability here is
+mechanics for.
+
+**`docs/INTENT.md`** has seven sections: Purpose, Users, How it works,
+Success, Failure, Non-goals, Open questions. The skill drafts it from the
+repository (there is no template) and gates on the full content; anything
+the repository cannot answer goes under Open questions rather than a guess.
+`detect` reports which sections are present — the shape, never the
+quality of the prose.
+
+**`docs/harness/RULES.md`** is a registry: one rule per heading, each with
+the mechanism that enforces it:
+
+    ## R1 — Every database query is scoped to the current tenant
+    - why: a cross-tenant read is a data breach, not a bug
+    - enforced-by: critic        # deny | hook | lint | test | critic | ci | review | none
+    - pointer: .claude/agents/tenant-scoping.md
+
+A rule with `enforced-by: none` is a claim Claude is merely told; one with
+a resolving pointer is held by something. `detect` reports the counts, any
+pointer that no longer exists, and (as advice, by line number only) the
+rule-shaped sentences still sitting in `CLAUDE.md` outside the registry.
+It never reports `verified` here: nothing is executed. `apply` scaffolds
+the registry **empty** — every example sits inside an HTML comment — and
+never writes a rule; the skill proposes entries, with `enforced-by: none`
+unless a real enforcer was found and named.
+
+Once the registry holds a rule, `apply` proposes the `UserPromptSubmit`
+hook above, which re-states the rules on every prompt. Studies in 2026
+found that compliance with told rules decays within a session and that
+longer instruction files do not help; per-prompt re-injection is the one
+mechanism that counters it, which is why it is a hook and not a longer
+`CLAUDE.md`.
+
+This repository keeps both documents for itself (`docs/INTENT.md`,
+`docs/harness/RULES.md`), and a test fails if a section goes missing, a
+pointer stops resolving, or a rule is ever recorded as a bare claim.
 
 ## The manifest
 

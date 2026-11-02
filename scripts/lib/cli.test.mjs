@@ -148,3 +148,9 @@ test('F5: the README discloses that installing the hooks executes this repositor
   assert.match(readme, /automatic/i);
   assert.ok(readme.includes('.claude/kh-harness.manifest.json'), 'the manifest is part of the contract a user must know');
 });
+
+test('the execution disclosure names the UserPromptSubmit re-injection hook and says it executes nothing', () => {
+  assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit/);
+  assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit[\s\S]{0,400}executes nothing/i);
+  assert.match(EXECUTION_DISCLOSURE, /1500 bytes/);
+});

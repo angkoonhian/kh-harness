@@ -77,7 +77,13 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
   ran \`apply --yes\`.
 
   The SessionStart hook only reads HANDOFF.md (or docs/HANDOFF.md) and prints
-  the top of it. It executes nothing.`;
+  the top of it. It executes nothing.
+
+  UserPromptSubmit (per prompt)  reads docs/harness/RULES.md and adds up to
+                                 1500 bytes of its rules to the prompt's
+                                 context, high priority first. It executes
+                                 nothing. Proposed only once the registry
+                                 holds at least one rule.`;
 
 export const EXIT_CODES = `EXIT CODES
   0  did what it said
