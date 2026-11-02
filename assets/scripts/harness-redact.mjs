@@ -266,6 +266,148 @@ export function findHandoff(root) {
   return null;
 }
 
+// --- The rules registry: location and parser -----------------------------
+//
+// Phase 3 (intent and rules — see docs/superpowers/specs/2026-11-02-intent-
+// and-rules-design.md). `docs/harness/RULES.md` is where a repository
+// records its own rules, each with the mechanism that ENFORCES it, so a rule
+// Claude is merely told (`enforced-by: none`) can be told apart from one it
+// cannot break (a deny rule, a hook, a lint, a test, a critic).
+//
+// The parser lives HERE, in the shared hook asset, for exactly the reason
+// `findHandoff` does: two things must agree on what a rule is — `detect`
+// (scripts/lib/rules-evidence.mjs, which credits `P3.rules`) and the
+// installed `rules-brief.mjs` hook (which re-injects the rules into every
+// prompt). The hook is copied verbatim into a user's `.claude/scripts/`,
+// where the only module beside it is this one, so a parser in
+// `scripts/lib/` could never reach it. Same import direction, same reason,
+// same cost (none at runtime: node builtins only).
+//
+// Why Markdown with `key: value` bullets and not JSON or YAML: this file is
+// written and edited by a HUMAN — the kit scaffolds the shape and never
+// writes a rule — so it must stay pleasant to edit by hand, and the kit has
+// no YAML parser (zero dependencies). A 40-line parser is the cheaper
+// choice. Anthropic's observation that models alter JSON less than Markdown
+// applies to machine-maintained state; this is not that.
+//
+// HTML comments are stripped FIRST. That is what makes the shipped
+// template's worked example inert: everything the kit itself puts in the
+// scaffold sits inside one comment, so a user who never edits the file has
+// a registry of zero rules, never a registry of our example pretending to
+// be theirs. (`markdownRemainder` in uninstall-lib.mjs relies on the same
+// property from the other side, to recognise an unfilled scaffold.)
+
+export const RULES_PATH = 'docs/harness/RULES.md';
+
+/** Every value `enforced-by` may take. `none` is a claim, not an enforcer —
+ * it is recorded so the registry can say plainly which rules are told and
+ * which are held, and `review` means a human reviewer is the mechanism. */
+export const ENFORCERS = Object.freeze(['deny', 'hook', 'lint', 'test', 'critic', 'ci', 'review', 'none']);
+
+export function findRules(root) {
+  return existsSync(join(root, RULES_PATH)) ? RULES_PATH : null;
+}
+
+// `## <id> — <rule>`: the id is one token (letters, digits, `_`, `.`, `-`,
+// starting with a letter); the separator is an em-dash, en-dash or hyphen
+// run, or just whitespace; the rule is whatever follows, trimmed.
+const RULE_HEADING = /^##\s+([A-Za-z][\w.-]*)(?:\s+[—–-]+\s+|\s+)(\S.*)$/;
+const ANY_H2 = /^##(\s|$)/;
+const KEY_LINE = /^\s*[-*]\s*([A-Za-z][\w-]*)\s*:\s*(.*)$/;
+
+/** Canonical field for a key as a user might spell it: `enforced-by`,
+ * `enforcedBy`, `enforced_by`, `Enforced-By` all mean `enforcedBy`. */
+function fieldFor(key) {
+  const k = key.toLowerCase().replace(/[-_]/g, '');
+  if (k === 'enforcedby') return 'enforcedBy';
+  if (k === 'lastverified') return 'lastVerified';
+  if (k === 'why' || k === 'pointer' || k === 'verify' || k === 'priority' || k === 'status') return k;
+  return null; // unknown keys are ignored, as Claude Code ignores unknown frontmatter
+}
+
+/**
+ * Parses the registry text. Never throws; `null`/non-string input is an
+ * empty registry. Returns `{ rules, problems }` where every problem is a
+ * one-line human sentence naming the rule id or the line number — never a
+ * rule's own text, since a rule line may carry anything and this output
+ * reaches `docs/harness/detect.json`, which is committed. The one value
+ * echoed is a rejected `enforced-by` token, because naming what was
+ * rejected is the only way the sentence can be acted on.
+ *
+ * Each rule: `{ id, rule, why, enforcedBy, pointer, verify, priority, status,
+ * lastVerified, line }`. `status` is `active` (default) or `superseded` — a
+ * superseded rule stays in the file as a record but is excluded from
+ * re-injection and from the enforcement counts; `lastVerified` is a
+ * YYYY-MM-DD string or null (anything else is reported, never guessed at).
+ * `enforcedBy` is always one of ENFORCERS (an absent or unknown value is
+ * recorded as `none` AND reported, so a typo cannot silently promote a
+ * claim to an enforcer); `priority` is `high` or `normal`; `line` is the
+ * 1-based line of the heading in the ORIGINAL text (comments are blanked,
+ * not removed, so line numbers survive the strip).
+ */
+export function parseRules(text) {
+  if (typeof text !== 'string' || text.length === 0) return { rules: [], problems: [] };
+  // Blank out comments but keep their newlines, so `line` stays honest.
+  const stripped = text.replace(/<!--[\s\S]*?-->/g, m => m.replace(/[^\n]/g, ''));
+  const lines = stripped.split(/\r?\n/);
+  const rules = [];
+  const problems = [];
+  const seen = new Set();
+  let current = null;
+  const close = () => {
+    if (!current) return;
+    if (current.enforcedBy === undefined) {
+      problems.push(`${current.id}: no enforced-by line — recorded as none`);
+      current.enforcedBy = 'none';
+    }
+    rules.push(current);
+    current = null;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (ANY_H2.test(line)) {
+      close();
+      const m = line.match(RULE_HEADING);
+      if (!m) {
+        problems.push(`line ${i + 1}: heading is not "<id> — <rule>"`);
+        continue;
+      }
+      const id = m[1];
+      if (seen.has(id)) {
+        problems.push(`duplicate id ${id} at line ${i + 1} — the first definition is kept`);
+        continue;
+      }
+      seen.add(id);
+      current = { id, rule: m[2].trim(), why: null, enforcedBy: undefined, pointer: null, verify: null, priority: 'normal', status: 'active', lastVerified: null, line: i + 1 };
+      continue;
+    }
+    if (!current) continue;
+    const k = line.match(KEY_LINE);
+    if (!k) continue;
+    const field = fieldFor(k[1]);
+    if (!field) continue;
+    const value = k[2].trim();
+    if (field === 'enforcedBy') {
+      const v = value.toLowerCase();
+      if (ENFORCERS.includes(v)) current.enforcedBy = v;
+      else { problems.push(`${current.id}: enforced-by "${v}" is not one of ${ENFORCERS.join('/')} — recorded as none`); current.enforcedBy = 'none'; }
+    } else if (field === 'priority') {
+      current.priority = value.toLowerCase() === 'high' ? 'high' : 'normal';
+    } else if (field === 'status') {
+      const v = value.toLowerCase();
+      if (v === 'active' || v === 'superseded') current.status = v;
+      else problems.push(`${current.id}: status "${v}" is not active or superseded — recorded as active`);
+    } else if (field === 'lastVerified') {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) current.lastVerified = value;
+      else problems.push(`${current.id}: last-verified is not a YYYY-MM-DD date — recorded as unknown`);
+    } else {
+      current[field] = value.length ? value : null;
+    }
+  }
+  close();
+  return { rules, problems };
+}
+
 // --- Session-scoped marker state, shared by both hooks' own bounding -----
 //
 // Both lint-touched.mjs (dedupe a standing lint error per file) and
