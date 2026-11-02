@@ -34,6 +34,7 @@ import {
   maskCredentials,
   readJSONMarker,
   rootTag,
+  runBounded,
   safeSessionId,
   signatureOf,
   writeJSONMarker,
@@ -224,6 +225,26 @@ test('maskCredentials masks a PEM block on one line, by its header alone, and ac
   assert.equal(maskCredentials(`${header} MIIEowIBAAKCAQEA ${footer}`), '***');
   assert.equal(maskCredentials(`key: ${header}`), 'key: ***', 'a header alone — what a line-at-a-time mask sees — is enough');
   assert.equal(maskCredentials(`${header}\nMIIEowIBAAKCAQEA\n${footer}\ntrailing`), '***\ntrailing');
+});
+
+// --- runBounded / killTree (shared process runner, audit Tier 3) -----------
+
+test('runBounded resolves with overflowed, the captured prefix and the command\'s own exit code — it no longer kills on overflow', async () => {
+  const r = await runBounded(`node -e "process.stdout.write('y'.repeat(5000)); process.exit(4)"`, {
+    cwd: process.cwd(), env: process.env, timeoutMs: 10_000, maxBuffer: 1000,
+  });
+  assert.equal(r.overflowed, true);
+  assert.equal(r.timedOut, false);
+  assert.equal(r.status, 4, 'the command ran to its own end');
+  assert.ok(r.stdout.length <= 1000 && r.stdout.length > 0, `the first maxBuffer bytes are kept: ${r.stdout.length}`);
+});
+
+test('runBounded reports a timeout as timedOut with no exit status', async () => {
+  const r = await runBounded('node -e "setTimeout(() => {}, 10000)"', {
+    cwd: process.cwd(), env: process.env, timeoutMs: 300, maxBuffer: 1000, killGraceMs: 2000,
+  });
+  assert.equal(r.timedOut, true);
+  assert.equal(r.overflowed, false);
 });
 
 // --- boundReport -------------------------------------------------------

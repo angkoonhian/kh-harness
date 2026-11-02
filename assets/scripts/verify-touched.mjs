@@ -44,13 +44,14 @@
 //     writeJSONMarker).
 //
 // Reads the Stop payload from stdin and takes CLAUDE_PROJECT_DIR as the
-// project root, falling back to process.cwd(). Never writes to stdout,
-// never writes inside the repository, and every spawn is bounded. The
+// project root, falling back to process.cwd(). Writes to stdout only the
+// `systemMessage` notice of an exit-0 turn (Claude Code shows nothing from
+// stderr then), never writes inside the repository, and every spawn is
+// bounded. The
 // redaction applied to the command's own output, and the marker/signature
 // machinery above, are shared with lint-touched.mjs via harness-redact.mjs
 // — see that file's own comments for why a shared chokepoint exists at all.
 import { readFileSync } from 'node:fs';
-import { spawn, spawnSync } from 'node:child_process';
 import { delimiter, join } from 'node:path';
 import {
   boundReport,
@@ -61,6 +62,7 @@ import {
   pathTokenExemptions,
   projectRoot,
   readJSONMarker,
+  runBounded,
   safeSessionId,
   signatureOf,
   writeJSONMarker,
@@ -135,126 +137,17 @@ function pickVerifyCommand(scripts) {
   return null;
 }
 
-/**
- * Kills the ENTIRE process tree `child` roots, not merely `child` itself.
- * `spawnSync`'s own `timeout` option (the original implementation of this
- * file) only ever signals the direct child — with `shell: true` that is
- * the SHELL, not whatever the shell went on to run, so a `tsc`/test-runner
- * process the shell started survives a timeout kill and keeps running,
- * one orphan per turn, forever, measured.
- *
- * POSIX: `detached: true` at spawn time (see runVerification) makes the
- * shell the leader of a NEW process group; `process.kill(-pid, signal)`
- * (a NEGATIVE pid) signals every process in that group, which ordinarily
- * includes anything the shell spawns, since a child inherits its parent's
- * process group unless it explicitly calls `setsid`/`setpgid` itself.
- *
- * win32 has no POSIX process groups; `taskkill /T /F` walks the OS's own
- * process tree (via the same mechanism Task Manager's "End process tree"
- * uses) regardless of how the tree was spawned, which is the standard
- * win32 equivalent.
- */
-function killTree(child) {
-  if (!child.pid) return;
-  try {
-    if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-    } else {
-      process.kill(-child.pid, 'SIGKILL');
-    }
-  } catch {
-    // A kill that cannot even be issued (process already gone, permission
-    // denied) must never throw — see this file's "never throw" invariant.
-  }
-}
+// The bounded runner and the process-tree kill live in harness-redact.mjs
+// (`runBounded`, `killTree`) since audit Tier 3, shared with lint-touched.mjs.
 
 /**
- * Runs `command` under a shell, bounded by `timeoutMs` and `maxBuffer`,
- * resolving to a result shaped like `spawnSync`'s own (`status`, `signal`,
- * `error`, `stdout`, `stderr`) plus `timedOut`/`overflowed` flags the
- * caller uses to tell "our own kill" apart from any other way the process
- * could have ended. Never throws; a spawn failure resolves rather than
- * rejects, exactly like `spawnSync` returning an `error` field instead of
- * throwing.
+ * An exit-0 notice. Claude Code never shows a hook's stderr when it exits 0
+ * (audit Tier 3, finding 12: the "already reported" and "cap reached" lines
+ * were invisible); `systemMessage` is the documented field "shown to the
+ * user", and stdout is where it goes.
  */
-function runVerification(command, { cwd, env, timeoutMs, maxBuffer }) {
-  return new Promise(resolvePromise => {
-    let settled = false;
-    let timedOut = false;
-    let overflowed = false;
-    let killIssued = false;
-    let stdout = '';
-    let stderr = '';
-    let timer;
-    let graceTimer = null;
-
-    const finish = result => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (graceTimer) clearTimeout(graceTimer);
-      resolvePromise(result);
-    };
-
-    let child;
-    try {
-      child = spawn(command, {
-        cwd,
-        env,
-        shell: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // POSIX only — see killTree's comment. A no-op flag on win32,
-        // where taskkill does the real work regardless.
-        detached: process.platform !== 'win32',
-      });
-    } catch (error) {
-      finish({ status: null, signal: null, error, stdout: '', stderr: '', timedOut: false, overflowed: false });
-      return;
-    }
-
-    const issueKill = () => {
-      if (killIssued) return;
-      killIssued = true;
-      killTree(child);
-      graceTimer = setTimeout(() => {
-        finish({ status: null, signal: 'SIGKILL', error: null, stdout, stderr, timedOut, overflowed });
-      }, KILL_GRACE_MS);
-    };
-
-    const append = (current, chunk) => {
-      if (overflowed) return current;
-      const next = current + chunk;
-      if (next.length > maxBuffer) {
-        overflowed = true;
-        issueKill(); // mirrors spawnSync's own maxBuffer behaviour: the process is killed, not merely un-listened-to
-        return current;
-      }
-      return next;
-    };
-
-    child.stdout?.on('data', chunk => { stdout = append(stdout, chunk.toString('utf8')); });
-    child.stderr?.on('data', chunk => { stderr = append(stderr, chunk.toString('utf8')); });
-
-    timer = setTimeout(() => {
-      timedOut = true;
-      issueKill();
-    }, timeoutMs);
-
-    child.on('error', error => {
-      finish({ status: null, signal: null, error, stdout, stderr, timedOut, overflowed });
-    });
-    child.on('exit', (code, signal) => {
-      finish({
-        status: code,
-        signal,
-        error: overflowed ? Object.assign(new Error('ENOBUFS'), { code: 'ENOBUFS' }) : null,
-        stdout,
-        stderr,
-        timedOut,
-        overflowed,
-      });
-    });
-  });
+function notice(text) {
+  process.stdout.write(JSON.stringify({ systemMessage: text }) + '\n');
 }
 
 async function main() {
@@ -297,10 +190,11 @@ async function main() {
 
   let result;
   try {
-    result = await runVerification(picked.command, {
+    result = await runBounded(picked.command, {
       cwd: root,
       timeoutMs: VERIFY_TIMEOUT_MS,
       maxBuffer: VERIFY_MAX_BUFFER,
+      killGraceMs: KILL_GRACE_MS,
       env: { ...process.env, PATH },
     });
   } catch {
@@ -325,14 +219,15 @@ async function main() {
     return 2;
   }
 
-  // ENOBUFS (output exceeded VERIFY_MAX_BUFFER) is not a verification
-  // failure in itself — the command DID run and DID fail, only the
-  // capture buffer, not the command, hit a limit; what was captured
-  // before the cutoff is still reported below. Any OTHER error (a spawn
-  // failure) or signal that is not our own timeout/overflow kill is never
-  // reported as a verification failure.
-  const isOverflow = result.error?.code === 'ENOBUFS';
-  if ((result.error || result.signal) && !isOverflow) return 0;
+  // An overflow (output exceeded VERIFY_MAX_BUFFER) is not a verification
+  // failure in itself: the command ran to its own end — audit Tier 3,
+  // finding 12: it used to be KILLED at the cutoff and then blamed, so a
+  // passing but verbose command blocked the turn — and `result.status` is
+  // its own. What was captured before the cut is reported below, with the
+  // cut named in the header. Any error (a spawn failure) or signal (a kill
+  // that was not our own timeout) is never reported as a verification
+  // failure.
+  if (result.error || result.signal) return 0;
 
   if (result.status === 0) return 0; // verification passed — nothing to say, nothing to track
 
@@ -347,17 +242,13 @@ async function main() {
   const redacted = dropCommandFragments(rawLines, [picked.command], pathTokenExemptions(picked.command)).map(maskCredentials);
 
   if (count >= MAX_BLOCKS_PER_SESSION) {
-    process.stderr.write(
-      `kh-harness: the stop gate's ${MAX_BLOCKS_PER_SESSION}-block cap for this session has been reached — letting the turn end.\n`,
-    );
+    notice(`kh-harness: the stop gate's ${MAX_BLOCKS_PER_SESSION}-block cap for this session has been reached — letting the turn end.`);
     return 0;
   }
 
   const signature = signatureOf(redacted);
   if (lastSignature === signature) {
-    process.stderr.write(
-      `kh-harness: this is the same "${picked.kind}" failure already reported this session — letting the turn end.\n`,
-    );
+    notice(`kh-harness: this is the same "${picked.kind}" failure already reported this session — letting the turn end.`);
     return 0;
   }
 
@@ -384,7 +275,10 @@ async function main() {
       `and could not be shown here safely — run \`npm run ${picked.kind}\` locally to see the failure.\n`,
     );
   } else {
-    process.stderr.write(boundReport(redacted, `kh-harness: the repository's "${picked.kind}" script failed:\n`) + '\n');
+    const cut = result.overflowed
+      ? ` (output cut at ${Math.round(VERIFY_MAX_BUFFER / 1024)} KB; run \`npm run ${picked.kind}\` for the rest)`
+      : '';
+    process.stderr.write(boundReport(redacted, `kh-harness: the repository's "${picked.kind}" script failed${cut}:\n`) + '\n');
   }
   return 2;
 }

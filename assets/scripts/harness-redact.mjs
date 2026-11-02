@@ -73,6 +73,7 @@
 // Attribution — deciding what the output is even ABOUT — is each caller's
 // own concern and stays in the caller; it has nothing to do with redaction
 // and does not belong in a shared chokepoint.
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
@@ -682,6 +683,124 @@ export function writeJSONMarker(path, state) {
   } catch {
     return false;
   }
+}
+
+// --- Running a repository's own command, bounded ---------------------------
+//
+// Shared by the two process hooks (audit Tier 3, finding 10): lint-touched.mjs
+// used `spawnSync` with a `timeout`, which signals only the SHELL and leaves
+// the linter running — the orphan verify-touched.mjs had already fixed for
+// itself with the runner below. One runner, two callers.
+
+/**
+ * Kills the ENTIRE process tree `child` roots, not merely `child` itself.
+ * `spawnSync`'s own `timeout` option only ever signals the direct child —
+ * with `shell: true` that is the SHELL, not whatever the shell went on to
+ * run, so a `tsc`/test-runner process the shell started survives a timeout
+ * kill and keeps running, one orphan per turn, forever, measured.
+ *
+ * POSIX: `detached: true` at spawn time (see runBounded) makes the shell the
+ * leader of a NEW process group; `process.kill(-pid, signal)` (a NEGATIVE
+ * pid) signals every process in that group, which ordinarily includes
+ * anything the shell spawns, since a child inherits its parent's process
+ * group unless it explicitly calls `setsid`/`setpgid` itself.
+ *
+ * win32 has no POSIX process groups; `taskkill /T /F` walks the OS's own
+ * process tree (via the same mechanism Task Manager's "End process tree"
+ * uses) regardless of how the tree was spawned, which is the standard win32
+ * equivalent.
+ */
+export function killTree(child) {
+  if (!child.pid) return;
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    } else {
+      process.kill(-child.pid, 'SIGKILL');
+    }
+  } catch {
+    // A kill that cannot even be issued (process already gone, permission
+    // denied) must never throw — a hook never throws.
+  }
+}
+
+/**
+ * Runs `command` under a shell, bounded by `timeoutMs` and `maxBuffer`,
+ * resolving to a result shaped like `spawnSync`'s own (`status`, `signal`,
+ * `error`, `stdout`, `stderr`) plus `timedOut`/`overflowed`. A timeout
+ * kills the whole tree (see killTree) and waits up to `killGraceMs` for it
+ * to go. An overflow does NOT kill (audit Tier 3, finding 12: it used to,
+ * so a passing but verbose command was blamed for the cutoff): the first
+ * `maxBuffer` characters of each stream are kept, the rest is dropped, the
+ * command runs to its own end and `status` is its own. Never throws; a
+ * spawn failure resolves with `error` set, exactly like `spawnSync`.
+ */
+export function runBounded(command, { cwd, env, timeoutMs, maxBuffer, killGraceMs = 5_000 }) {
+  return new Promise(resolvePromise => {
+    let settled = false;
+    let timedOut = false;
+    let overflowed = false;
+    let killIssued = false;
+    let stdout = '';
+    let stderr = '';
+    let timer;
+    let graceTimer = null;
+
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
+      resolvePromise(result);
+    };
+
+    let child;
+    try {
+      child = spawn(command, {
+        cwd,
+        env,
+        shell: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // POSIX only — see killTree's comment. A no-op flag on win32,
+        // where taskkill does the real work regardless.
+        detached: process.platform !== 'win32',
+      });
+    } catch (error) {
+      finish({ status: null, signal: null, error, stdout: '', stderr: '', timedOut: false, overflowed: false });
+      return;
+    }
+
+    const issueKill = () => {
+      if (killIssued) return;
+      killIssued = true;
+      killTree(child);
+      graceTimer = setTimeout(() => {
+        finish({ status: null, signal: 'SIGKILL', error: null, stdout, stderr, timedOut, overflowed });
+      }, killGraceMs);
+    };
+
+    const append = (current, chunk) => {
+      if (current.length >= maxBuffer) { overflowed = true; return current; }
+      const room = maxBuffer - current.length;
+      if (chunk.length > room) overflowed = true;
+      return current + chunk.slice(0, room);
+    };
+
+    child.stdout?.on('data', chunk => { stdout = append(stdout, chunk.toString('utf8')); });
+    child.stderr?.on('data', chunk => { stderr = append(stderr, chunk.toString('utf8')); });
+
+    timer = setTimeout(() => {
+      timedOut = true;
+      issueKill();
+    }, timeoutMs);
+
+    child.on('error', error => {
+      finish({ status: null, signal: null, error, stdout, stderr, timedOut, overflowed });
+    });
+    child.on('exit', (code, signal) => {
+      finish({ status: code, signal, error: null, stdout, stderr, timedOut, overflowed });
+    });
+  });
 }
 
 /**

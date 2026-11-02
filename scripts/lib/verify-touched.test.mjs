@@ -15,9 +15,10 @@ sandboxMarkerDir();
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'verify-touched.mjs');
 
-// Unlike lint-touched.mjs, this hook can exit 0 while STILL writing to
-// stderr (the "already reported"/"cap reached" dedupe messages) — so,
-// unlike lint-touched.test.mjs's own run() helper, this one cannot rely on
+// Unlike lint-touched.mjs, this hook can exit 0 while STILL saying
+// something (the "already reported"/"cap reached" notices, as a
+// systemMessage on stdout since audit Tier 3) — so, unlike
+// lint-touched.test.mjs's own run() helper, this one cannot rely on
 // execFileSync's success path (which returns only stdout and discards
 // stderr entirely when the child exits 0). spawnSync captures both streams
 // unconditionally, regardless of exit code.
@@ -149,6 +150,44 @@ test('a diagnostic naming a config file passed on the command line survives reda
   assert.match(r.stderr, /tsconfig\.build\.json: error TS5023/);
 });
 
+// --- Audit Tier 3, finding 12: overflow discarded the run; exit-0 notices
+// --- went to stderr, which Claude Code never shows ---------------------------
+
+/** A verification script written to a FILE, so its text is never part of
+ * the command's own tokens (see the fixture note on failingRepo). */
+function scriptedRepo(body) {
+  const d = repo({ typecheck: 'node verify.cjs' });
+  writeFileSync(join(d, 'verify.cjs'), body);
+  return d;
+}
+
+test('a typecheck whose output exceeds the buffer and then fails still blocks with what was captured and a cut note', () => {
+  const d = scriptedRepo("process.stdout.write('first-line\\n' + 'x'.repeat(200000)); process.exit(3);\n");
+  const r = run(d, payload(), { HK_VERIFY_MAX_BUFFER: '65536' });
+  assert.equal(r.code, 2, `the command failed; the buffer, not the command, hit a limit: ${JSON.stringify(r).slice(0, 300)}`);
+  assert.match(r.stderr, /first-line/, 'what was captured before the cut is reported');
+  assert.match(r.stderr, /output cut at 64 KB/, 'and the cut is said, with the command to run for the rest');
+  assert.match(r.stderr, /npm run typecheck/);
+});
+
+test('a typecheck whose output exceeds the buffer and then passes does not block', () => {
+  const d = scriptedRepo("process.stdout.write('x'.repeat(200000)); process.exit(0);\n");
+  const r = run(d, payload(), { HK_VERIFY_MAX_BUFFER: '65536' });
+  assert.equal(r.code, 0, 'an overflow is not a failure; it used to be reported as one after killing the command');
+  assert.equal(r.stderr.trim(), '');
+});
+
+test('the "same failure already reported" notice is a systemMessage on stdout, which the user sees, not a stderr line, which nobody does', () => {
+  const s = sid();
+  const d = repo({ typecheck: 'node -e "console.error(\'typecheck: same problem\'); process.exit(1)"' });
+  assert.equal(run(d, payload({ session_id: s })).code, 2, 'sanity: the first call blocks');
+  const r2 = run(d, payload({ session_id: s }));
+  assert.equal(r2.code, 0);
+  assert.equal(r2.stderr.trim(), '', 'stderr with exit 0 is never shown by Claude Code');
+  const out = JSON.parse(r2.stdout);
+  assert.match(out.systemMessage, /already reported/i);
+});
+
 test('the report is prefixed by which command failed (test fallback)', () => {
   const d = repo({ test: 'node -e "console.error(\'boom\'); process.exit(1)"' });
   const r = run(d, payload());
@@ -167,7 +206,7 @@ test('LOAD-BEARING: a second Stop in the same session does NOT block', () => {
   // verify-touched.mjs's header comment) — this is pinning OUR OWN
   // stricter, signature-keyed bound, which exists independently of it.
   assert.equal(r2.code, 0, 'the signature-keyed bound must not loop on an identical failure');
-  assert.match(r2.stderr, /already/i, 'it still says why it is letting go');
+  assert.match(JSON.parse(r2.stdout).systemMessage, /already/i, 'it still says why it is letting go — where the user can see it');
 });
 
 test('a different session blocks independently', () => {
@@ -476,6 +515,8 @@ test('CAP: a fourth distinct failure in the same session does not block — the 
   setProblem(d, 'problem-D');
   const r4 = run(d, payload({ session_id: s }));
   assert.equal(r4.code, 0, 'a fourth distinct failure must not block once the session has already blocked 3 times');
+  assert.match(JSON.parse(r4.stdout).systemMessage, /cap/i, 'the cap is announced where the user can see it');
+  assert.equal(r4.stderr.trim(), '');
 });
 
 // --- Finding 1: never block with an empty report body ---------------------
