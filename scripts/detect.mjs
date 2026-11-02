@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // scripts/detect.mjs
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { listFiles } from './lib/scan.mjs';
 import { detectStack } from './lib/detect-stack.mjs';
 import { detectHarness } from './lib/detect-harness.mjs';
 import { detectExposures } from './lib/detect-exposure.mjs';
 import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps } from './lib/gap-model.mjs';
-import { buildReport, renderSummary } from './lib/report.mjs';
+import { buildReport, renderSummary, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { verifyCommands } from './lib/verify.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { readManifest } from './lib/manifest.mjs';
@@ -69,8 +69,8 @@ if (flags.has('--verify')) {
 // present as a file, or a read-only tree, used to escape as a stack trace
 // and exit 1 — and the README says a crash is a bug, not a contract. Exit 2
 // with the path and the error code; nothing else was written.
-const outDir = join(root, 'docs', 'harness');
-const outPath = join(outDir, 'detect.json');
+const outPath = join(root, DETECT_REPORT_PATH);
+const outDir = dirname(outPath);
 try {
   mkdirSync(outDir, { recursive: true });
   writeFileSync(outPath, JSON.stringify(report, null, 2) + '\n', 'utf8');

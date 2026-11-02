@@ -84,7 +84,9 @@ A normal first pass:
 
 Reports every capability as one of `verified` / `declared` / `absent` /
 `failing` / `n/a`, with the evidence it read. Writes exactly one file into the
-target repository, `docs/harness/detect.json`, and changes nothing else.
+target repository, `docs/harness/detect.json`, and changes nothing else. Commit
+that file or ignore it as you prefer: `apply`'s dirty-tree gate treats it as the
+kit's own write, so a re-generated report never blocks the next `apply`.
 
 An `absent` capability carries either a `→` **proposal** (`apply` can write
 this) or a **question** (detection could not decide, so it asks rather than

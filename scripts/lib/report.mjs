@@ -50,6 +50,11 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   return out;
 }
 
+/** The one file `detect` writes — named here so `apply`'s dirty-tree gate
+ * can excuse it as the kit's own write (audit Tier 4, finding 21: a tracked
+ * report, re-generated with a new `generatedAt`, refused the next apply). */
+export const DETECT_REPORT_PATH = 'docs/harness/detect.json';
+
 export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks, nested = [] }) {
   return {
     schema: 1,

@@ -14,7 +14,7 @@ import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps, countProposals } from './lib/gap-model.mjs';
 import { gitInfo, defaultBranches } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
-import { deriveCouldNotDerive, exposureSectionLines } from './lib/report.mjs';
+import { deriveCouldNotDerive, exposureSectionLines, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
@@ -55,7 +55,9 @@ const git = gitInfo(root);
 // no automatic repair. A CORRUPT manifest cannot be trusted to name what
 // is "ours" either, so `ownedByUs` stays empty in that case and the gate
 // below falls back to its original, strict behaviour — the corrupt-
-// manifest refusal after detection still fires regardless.
+// manifest refusal after detection still fires regardless. A MISSING
+// manifest (a first run) is not a corrupt one: the kit's own fixed paths —
+// the manifest and detect's report — are still ours to excuse.
 const manifestResult = readManifestResult(root);
 
 /**
@@ -67,15 +69,17 @@ const manifestResult = readManifestResult(root);
  * else is not "ours" merely because it shares that path. The manifest file
  * itself is always ours: it is this tool's own bookkeeping, and a run that
  * updates it (new `installedAt`, a new file entry) is expected to leave it
- * modified if the user has ever committed it.
+ * modified if the user has ever committed it. So is `detect`'s report
+ * (audit Tier 4, finding 21): its `generatedAt` changes on every run, and
+ * a user who commits it was refused on every apply that followed a detect.
  */
 function ownedByUs(manifest) {
-  const owned = new Set([MANIFEST_PATH]);
+  const owned = new Set([MANIFEST_PATH, DETECT_REPORT_PATH]);
   for (const f of manifest?.files ?? []) owned.add(f.path);
   if ((manifest?.settingsPatches ?? []).length > 0) owned.add(SETTINGS_PATH);
   return owned;
 }
-const ourPaths = manifestResult.state === 'ok' ? ownedByUs(manifestResult.manifest) : new Set();
+const ourPaths = manifestResult.state === 'corrupt' ? new Set() : ownedByUs(manifestResult.manifest);
 
 /**
  * True only for changes to tracked files NOT already accounted for by

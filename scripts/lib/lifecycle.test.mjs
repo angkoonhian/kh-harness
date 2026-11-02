@@ -835,6 +835,18 @@ test('apply prints the questions it could not answer inline, not a pointer to de
   assert.doesNotMatch(dry, /node scripts\/detect\.mjs/, 'the user is not sent to another command to read a sentence apply already holds');
 });
 
+// --- Audit Tier 4, finding 21: the report the kit writes tripped the gate ----
+test('a tracked, re-generated docs/harness/detect.json does not trip the dirty-tree gate', () => {
+  const d = fixture();
+  run(DETECT, d);
+  git(d, 'add', 'docs/harness/detect.json');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'commit the report');
+  run(DETECT, d); // generatedAt changes: the tracked report is now modified
+  const status = execFileSync('git', ['-C', d, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' });
+  assert.match(status, /docs\/harness\/detect\.json/, 'fixture sanity: the second detect really did dirty the tracked report');
+  assert.doesNotThrow(() => run(APPLY, d, '--yes'), 'the report is the kit\'s own write, like the manifest');
+});
+
 test('apply refuses on a default branch unless told otherwise', () => {
   const d = fixture();
   git(d, 'checkout', '-q', '-b', 'master');
