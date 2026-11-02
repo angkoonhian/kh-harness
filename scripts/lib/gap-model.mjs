@@ -7,7 +7,7 @@ import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
-import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote } from './detect-exposure.mjs';
+import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote, fixtureExposureNote } from './detect-exposure.mjs';
 // Task 8b: the only three facts gap-model.mjs needs from propose.mjs — the
 // exact resolved script path EACH hook generator registers, so a check can
 // ask "is OURS here" instead of "is anything here". Importing the constant,
@@ -331,6 +331,11 @@ const CHECKS = [
     // exposures/detect.json unchanged. Only the PROMINENT class may fail
     // this check; a repository with nothing but reference-valued hits is
     // `verified`, with the collapsed count disclosed rather than hidden.
+    // Audit Tier 1, finding 1: within the prominent class, a literal hit in
+    // a test or fixture path arrives at severity `low` (detect-exposure.mjs's
+    // `pathRole`) and does not fail the check either — it is counted and
+    // cited via `fixtureExposureNote`, never hidden. A token is high
+    // wherever it sits and always fails.
     // Whole-branch review, F1: `verified` used to be reachable while files
     // went unexamined, and the sentence it printed — "no credential patterns
     // matched" — is a claim about the REPOSITORY, not about what was read. A
@@ -347,18 +352,23 @@ const CHECKS = [
     check: ({ exposures }) => {
       const { prominent, collapsedCount } = splitExposures(exposures);
       const { credentials, unreadable } = partitionProminent(prominent);
-      const note = collapsedCount ? [collapsedExposureNote(collapsedCount)] : [];
-      if (unreadable.length || credentials.length) {
+      const blocking = credentials.filter(e => e.severity !== 'low');
+      const fixtures = credentials.length - blocking.length;
+      const notes = [
+        ...(fixtures ? [fixtureExposureNote(fixtures)] : []),
+        ...(collapsedCount ? [collapsedExposureNote(collapsedCount)] : []),
+      ];
+      if (unreadable.length || blocking.length) {
         return {
           state: 'failing',
           evidence: [
             ...(unreadable.length ? [unexaminedExposureNote(unreadable.length)] : []),
-            ...(credentials.length ? [prominentExposureNote(credentials.length)] : []),
-            ...note,
+            ...(blocking.length ? [prominentExposureNote(blocking.length)] : []),
+            ...notes,
           ],
         };
       }
-      return { state: 'verified', evidence: collapsedCount ? note : [CLEAN_SWEEP_NOTE] };
+      return { state: 'verified', evidence: notes.length ? notes : [CLEAN_SWEEP_NOTE] };
     },
   },
   {

@@ -97,10 +97,17 @@ tool will never write, because closing it means editing your package manifest
 | `--json` | Prints the full report to stdout instead of the human summary. Warnings go to stderr, so stdout stays parseable. |
 
 `P0.security` scans tracked files, git remote URLs and the two `.claude`
-settings files for credential shapes. It never prints a value, only a location.
-A file it could **not read** is reported as a finding of its own and the check
-cannot say `verified` while one exists — a sweep that skipped a file in silence
-is the one failure this check must never have.
+settings files for credential shapes. It never prints a value, only a location
+and a line number. A file it could **not read** is reported as a finding of its
+own and the check cannot say `verified` while one exists — a sweep that
+skipped a file in silence is the one failure this check must never have.
+
+A literal password-shaped value in a **test or fixture path** (`tests/`,
+`__tests__/`, `fixtures/`, `*.test.*`, …) is listed at severity `low` and
+does not by itself make the check `failing`; a provider token is `high`
+wherever it sits, because a live key in a test file is still a live key. The
+role lowers severity, never visibility — every finding is still listed and
+still in `detect.json`.
 
 **This repository passes its own check.** `node scripts/detect.mjs .` reports
 `P0.security verified` on kh-harness itself, and a test (`DOGFOOD:

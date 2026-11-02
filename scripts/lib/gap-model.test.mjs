@@ -752,6 +752,39 @@ test('a literal-valued credentials-in-doc hit still fails the check and is count
   assert.ok(/^1 credential finding\b/.test(c.evidence[0]));
 });
 
+// --- Audit Tier 1, finding 1 (second half): a fixture credential is listed
+// --- at severity low and does not by itself fail the check ----------------
+
+test('a repository whose only literal credential hits are in test paths is verified, and the fixture count is disclosed', () => {
+  const exposures = [
+    { kind: 'credentials-in-doc', location: 'tests/fixtures/db.yml', severity: 'low', valueKind: 'literal', pathRole: 'test', line: 3 },
+    { kind: 'credentials-in-doc', location: 'src/a.spec.ts', severity: 'low', valueKind: 'literal', pathRole: 'test', line: 9 },
+  ];
+  const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
+  assert.equal(c.state, 'verified', 'fixture passwords alone must not fail the check');
+  assert.ok(c.evidence.some(e => /^2 /.test(e) && /test or fixture path/.test(e) && /Exposures/.test(e)),
+    `the fixture hits must be disclosed, not hidden: ${JSON.stringify(c.evidence)}`);
+  assert.equal(c.evidence.some(e => e.includes('no credential patterns matched')), false,
+    'the clean-sweep sentence is for a sweep that found nothing at all');
+});
+
+test('one literal credential outside a test path still fails the check even when fixture hits are present', () => {
+  const exposures = [
+    { kind: 'credentials-in-doc', location: 'tests/fixtures/db.yml', severity: 'low', valueKind: 'literal', pathRole: 'test', line: 3 },
+    { kind: 'credentials-in-doc', location: 'docs/db.md', severity: 'medium', valueKind: 'literal', line: 1 },
+  ];
+  const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
+  assert.equal(c.state, 'failing');
+  assert.ok(c.evidence.some(e => /^1 credential finding\b/.test(e)), 'only the non-fixture finding is counted as failing');
+  assert.ok(c.evidence.some(e => /^1 .*test or fixture path/.test(e)), 'the fixture hit is still disclosed alongside');
+});
+
+test('a token in a test path still fails the check', () => {
+  const exposures = [{ kind: 'token-in-repo-file', location: 'tests/env.txt', severity: 'high', line: 1 }];
+  const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
+  assert.equal(c.state, 'failing');
+});
+
 // --- Whole-branch review, F1: a file the sweep could not read -------------
 //
 // The quoting bug was only how an unreadable path reached the scanner. The

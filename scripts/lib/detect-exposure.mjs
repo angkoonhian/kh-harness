@@ -190,6 +190,16 @@ export function collapsedExposureNote(count) {
 }
 
 /**
+ * The one shared sentence for the fixture class — literal credential hits in
+ * test or fixture paths, listed at severity `low` — so `P0.security`'s
+ * evidence and the reader's expectation of the Exposures section agree.
+ */
+export function fixtureExposureNote(count) {
+  const s = count === 1 ? '' : 's';
+  return `${count} credential-shaped literal${s} in test or fixture path${s} — listed under "Exposures" at severity low; a fixture password does not fail this check by itself, but read the list`;
+}
+
+/**
  * The one shared sentence for "this sweep is incomplete". Written as one
  * place for the same reason `collapsedExposureNote` is: `P0.security` and the
  * rendered section must not be able to describe the same incompleteness two
@@ -232,6 +242,33 @@ const SKIP_EXT = [
   '.map',
 ];
 const SKIP_DIRS = ['node_modules/', '.git/', 'dist/', 'build/'];
+
+// Audit Tier 1, finding 1 (second half). `P0.security` read `failing` on
+// every real repository this kit was pointed at, over passwords in test
+// fixtures — and "it always says failing" is how a real finding becomes
+// noise. A path ROLE lowers the severity of a literal `credentials-in-doc`
+// hit in a test or fixture path to `low`; the finding is still returned,
+// still listed under Exposures and still in detect.json. This is not an
+// ignore list: nothing is hidden, nothing is configurable, and a provider
+// TOKEN keeps its severity wherever it sits, because a live key in a test
+// file is still a live key. Matched on whole directory segments and whole
+// filenames, never substrings — `contest/`, `latest.ts` and
+// `testing-utils.ts` are not test paths.
+const TEST_DIR_SEGMENTS = new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'fixtures', '__fixtures__', 'testdata', 'mocks', '__mocks__', 'e2e']);
+const TEST_FILE_PATTERNS = [/\.(?:test|spec)\.[^.]+$/, /^test_.*\.py$/, /_test\.(?:py|go)$/];
+
+/**
+ * `'test'` when `rel` sits in a test, fixture or mock directory or is a
+ * test-named file; otherwise `null`. Exported so the report and the check
+ * can be tested against the same definition the sweep uses.
+ */
+export function pathRole(rel) {
+  const segments = rel.split('/');
+  const base = segments.pop();
+  if (segments.some(s => TEST_DIR_SEGMENTS.has(s))) return 'test';
+  if (TEST_FILE_PATTERNS.some(re => re.test(base))) return 'test';
+  return null;
+}
 
 function isBinaryExtension(base) {
   const lower = base.toLowerCase();
@@ -401,10 +438,17 @@ function scanFile(root, rel, isLocalSettings) {
 
   const credential = credentialFinding(text);
   if (credential) {
-    findings.push({
+    const finding = {
       kind: 'credentials-in-doc', location: rel, severity: 'medium',
       valueKind: credential.valueKind, line: credential.line,
-    });
+    };
+    // Recorded only where it changed the severity, so a consumer can tell
+    // "low because of where it is" from any other low.
+    if (credential.valueKind === 'literal' && pathRole(rel) === 'test') {
+      finding.severity = 'low';
+      finding.pathRole = 'test';
+    }
+    findings.push(finding);
   }
 
   return { findings, reason: null };

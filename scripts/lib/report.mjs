@@ -99,7 +99,7 @@ export function exposureSectionLines(exposures, nested = []) {
     }
     heading += ' — values are never printed; rotate by hand:';
     lines.push(heading);
-    for (const e of credentials) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}`);
+    for (const e of credentials) lines.push(`  ! ${e.severity.padEnd(6)} ${e.kind} at ${e.location}${e.line ? ':' + e.line : ''}`);
     if (collapsedCount) lines.push(`  ~ ${collapsedExposureNote(collapsedCount)}`);
     lines.push('');
   }

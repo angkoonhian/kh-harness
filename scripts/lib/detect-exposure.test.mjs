@@ -11,7 +11,7 @@ import { detectStack } from './detect-stack.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { fileURLToPath } from 'node:url';
-import { detectExposures, classifyCredentialValue, splitExposures, isProminentExposure, collapsedExposureNote } from './detect-exposure.mjs';
+import { detectExposures, classifyCredentialValue, splitExposures, isProminentExposure, collapsedExposureNote, pathRole, fixtureExposureNote } from './detect-exposure.mjs';
 
 const SECRET = 'glpat-' + 'A'.repeat(20);
 
@@ -511,6 +511,60 @@ test('classifyCredentialValue: environment interpolation is a reference', () => 
   }
   // A literal that merely starts with a dollar sign is still a literal.
   assert.equal(classifyCredentialValue('$uper$ecret99'), 'literal');
+});
+
+// --- Audit Tier 1, finding 1 (second half): a fixture password is listed,
+// --- never silently, and does not by itself fail the check ---------------
+//
+// A path ROLE lowers severity, never visibility: there is still no ignore
+// list, and every finding below is in the returned list. Only a literal
+// `credentials-in-doc` hit is affected; a provider token is high wherever
+// it sits, because a live key is live in a test file too.
+
+test('pathRole: test directories and test-named files are "test"; everything else is null', () => {
+  for (const p of ['tests/db.json', 'src/__tests__/a.ts', 'spec/x.rb', 'fixtures/creds.yml', 'a/b/testdata/x', 'src/__mocks__/api.ts', 'e2e/login.ts', 'src/a.test.ts', 'src/a.spec.js', 'pkg/test_db.py', 'pkg/db_test.py', 'pkg/db_test.go']) {
+    assert.equal(pathRole(p), 'test', p);
+  }
+  for (const p of ['src/db.ts', 'docs/testing.md', 'contest/x.ts', 'src/latest.ts', '.env', 'src/testing-utils.ts', 'attest/x.go']) {
+    assert.equal(pathRole(p), null, p);
+  }
+});
+
+test('a literal password under tests/ is reported at severity low with pathRole test — listed, never dropped', () => {
+  const d = repo();
+  write(d, 'tests/fixtures/db.yml', credLine('hunter2hunter2'));
+  const found = run(d);
+  assert.equal(found.length, 1, 'the finding is still returned');
+  assert.equal(found[0].kind, 'credentials-in-doc');
+  assert.equal(found[0].valueKind, 'literal');
+  assert.equal(found[0].severity, 'low');
+  assert.equal(found[0].pathRole, 'test');
+});
+
+test('the same literal password outside a test path stays medium with no pathRole', () => {
+  const d = repo();
+  write(d, 'config/db.yml', credLine('hunter2hunter2'));
+  const found = run(d);
+  assert.equal(found[0].severity, 'medium');
+  assert.equal('pathRole' in found[0], false);
+});
+
+test('a provider token under tests/ stays high — a live key is live wherever it sits', () => {
+  const d = repo();
+  write(d, 'tests/fixtures/env.txt', `TOKEN=${SECRET}\n`);
+  const found = run(d);
+  assert.equal(found[0].kind, 'token-in-repo-file');
+  assert.equal(found[0].severity, 'high');
+  assert.equal('pathRole' in found[0], false, 'the role is recorded only where it changed the severity');
+});
+
+test('fixtureExposureNote names the count, the severity and where to read them', () => {
+  const one = fixtureExposureNote(1);
+  assert.match(one, /^1 /);
+  assert.match(one, /test or fixture path/);
+  assert.match(one, /severity low/);
+  assert.match(one, /Exposures/);
+  assert.match(fixtureExposureNote(3), /^3 .*literals/);
 });
 
 // --- Coordinator ruling (post-review, concern 5): kh-harness passes its own

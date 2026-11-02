@@ -175,6 +175,19 @@ test('renderSummary shows a literal credentials-in-doc hit prominently and colla
   assert.ok(s.includes('not shown here'));
 });
 
+test('renderSummary prints the line number after the location when a finding carries one', () => {
+  const exposures = [
+    { kind: 'credentials-in-doc', location: 'docs/real.md', severity: 'medium', valueKind: 'literal', line: 7 },
+    { kind: 'credentials-in-doc', location: 'tests/db.yml', severity: 'low', valueKind: 'literal', pathRole: 'test', line: 2 },
+    { kind: 'token-in-remote-url', location: 'git remote "origin"', severity: 'high' },
+  ];
+  const s = renderSummary(buildReport({ ...base, exposures }));
+  assert.ok(s.includes('credentials-in-doc at docs/real.md:7'), s);
+  assert.ok(s.includes('low    credentials-in-doc at tests/db.yml:2'), 'a fixture hit is listed with its severity, not hidden');
+  assert.ok(s.includes('token-in-remote-url at git remote "origin"'), 'a finding without a line prints exactly as before');
+  assert.equal(s.includes('git remote "origin":'), false);
+});
+
 test('renderSummary omits the collapsed-count line entirely when there is nothing to collapse', () => {
   const r = buildReport({ ...base, exposures: [{ kind: 'token-in-remote-url', location: 'origin', severity: 'high' }] });
   assert.equal(renderSummary(r).includes('code reference'), false);
