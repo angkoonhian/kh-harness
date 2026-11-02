@@ -75,7 +75,7 @@
 // and does not belong in a shared chokepoint.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { constants, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -601,17 +601,41 @@ export function rootTag(root) {
  * the development machine, which is a credible mechanism for a rare,
  * unattributable failure in a suite that sets sub-second timeouts.
  */
+/**
+ * True when `dir` is a real directory of ours: not a link (a symlink or
+ * junction planted at a predictable path redirects every marker read and
+ * write — audit Tier 4, finding 26), and on POSIX not another user's. A
+ * refusal means "no marker directory": `markerPath` returns null and every
+ * caller's existing fail-open path takes over.
+ */
+function ownDirectory(dir) {
+  let st;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return false;
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) return false;
+  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return false;
+  return true;
+}
+
+/** Creates `dir` if absent and returns it, or null when it is not ours. */
+function ensureOwnDirectory(dir) {
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    // best-effort — see comment above; ownDirectory decides from what is there
+  }
+  return ownDirectory(dir) ? dir : null;
+}
+
 export function markerDir() {
   const override = process.env.HK_MARKER_DIR;
   const dir = override && override.length > 0
     ? override
     : join(tmpdir(), `kh-harness-stop-${userTag()}`);
-  try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  } catch {
-    // best-effort — see comment above
-  }
-  return dir;
+  return ensureOwnDirectory(dir);
 }
 
 /**
@@ -651,12 +675,10 @@ export function markerDir() {
  * (see `writeJSONMarker`, which reports failure rather than pretending).
  */
 export function markerPath(root, sessionId, namespace) {
-  const dir = join(markerDir(), rootTag(root));
-  try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  } catch {
-    // best-effort — see comment above
-  }
+  const base = markerDir();
+  if (base === null) return null;
+  const dir = ensureOwnDirectory(join(base, rootTag(root)));
+  if (dir === null) return null;
   return join(dir, `${namespace}-${sessionId}`);
 }
 
@@ -685,7 +707,16 @@ export function readJSONMarker(path, fallback) {
  */
 export function writeJSONMarker(path, state) {
   try {
-    writeFileSync(path, JSON.stringify(state), 'utf8');
+    // Never through a link planted at the marker's own path: O_NOFOLLOW
+    // where the platform defines it (POSIX); elsewhere an lstat first.
+    if (constants.O_NOFOLLOW === undefined) {
+      let st = null;
+      try { st = lstatSync(path); } catch { /* absent: fine */ }
+      if (st && st.isSymbolicLink()) return false;
+      writeFileSync(path, JSON.stringify(state), 'utf8');
+    } else {
+      writeFileSync(path, JSON.stringify(state), { encoding: 'utf8', flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW });
+    }
     return true;
   } catch {
     return false;

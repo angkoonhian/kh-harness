@@ -10,7 +10,7 @@
 // entirely on indirection through its two callers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, basename, dirname } from 'node:path';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -359,6 +359,54 @@ test('markerPath differs by root for the same session_id and namespace', () => {
   const a = mkdtempSync(join(tmpdir(), 'hk-redact-'));
   const b = mkdtempSync(join(tmpdir(), 'hk-redact-'));
   assert.notEqual(markerPath(a, 'same-session', 'stop'), markerPath(b, 'same-session', 'stop'));
+});
+
+// --- Audit Tier 4, finding 26: the marker directory is never a link ------------
+//
+// The marker directory under the OS temp directory is predictable, and
+// `mkdirSync({ recursive: true })` accepts a pre-existing entry whatever it
+// is: a symlink or junction planted there by another user redirected every
+// marker read and write. A link is refused — the callers' existing fail-open
+// paths take over (the marker reads as its fallback, the write reports
+// false) — and on POSIX so is a directory owned by someone else.
+
+/** A directory link of the kind the platform lets an unprivileged user make. */
+function linkDir(target, at, t) {
+  try {
+    symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
+    return true;
+  } catch (e) {
+    t.skip(`cannot create a directory link here: ${e.message}`);
+    return false;
+  }
+}
+
+test('markerPath refuses a repository marker directory that is a link', (t) => {
+  const elsewhere = mkdtempSync(join(tmpdir(), 'hk-marker-elsewhere-'));
+  const root = mkdtempSync(join(tmpdir(), 'hk-marker-root-'));
+  const at = join(markerDir(), rootTag(root));
+  if (!linkDir(elsewhere, at, t)) return;
+  assert.equal(markerPath(root, 'sess1', 'stop'), null, 'a linked directory is not ours to write under');
+  assert.equal(readJSONMarker(null, { count: 0 }).count, 0, 'and the callers fall open');
+  assert.equal(writeJSONMarker(null, { count: 1 }), false);
+  assert.deepEqual(readdirSync(elsewhere), [], 'nothing was written behind the link');
+});
+
+test('writeJSONMarker refuses to follow a symlink planted at the marker path', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'hk-marker-root-'));
+  const victim = join(mkdtempSync(join(tmpdir(), 'hk-marker-victim-')), 'victim.txt');
+  writeFileSync(victim, 'untouched');
+  const path = markerPath(root, 'sess2', 'stop');
+  assert.ok(path, 'fixture sanity: a plain directory yields a path');
+  try {
+    symlinkSync(victim, path, 'file');
+  } catch (e) {
+    t.skip(`cannot create a file symlink here: ${e.message}`);
+    return;
+  }
+  const wrote = writeJSONMarker(path, { count: 1 });
+  assert.equal(readFileSync(victim, 'utf8'), 'untouched', 'the link target is never written through');
+  assert.equal(wrote, false);
 });
 
 // --- readJSONMarker / writeJSONMarker --------------------------------------
