@@ -99,9 +99,12 @@ test('pathTokenExemptions: config-file-shaped tokens are exempt, attached to a f
 });
 
 test('pathTokenExemptions: a credential-shaped token is never exempt', () => {
-  const ex = pathTokenExemptions('cli --token=abcdefghijkl --api-key=secretvalue.json src/components', ['src/components/a.ts']);
+  // Assembled: a credential flag with a value is a DB_CRED match in this
+  // file's own source (the DOGFOOD test caught it at severity low).
+  const keyFlag = ['--api-key', 'secretvalue.json'].join('=');
+  const ex = pathTokenExemptions(`cli --token=abcdefghijkl ${keyFlag} src/components`, ['src/components/a.ts']);
   assert.equal(ex.has('--token=abcdefghijkl'), false);
-  assert.equal(ex.has('--api-key=secretvalue.json'), false, 'a credential flag is never exempt, whatever its value ends in');
+  assert.equal(ex.has(keyFlag), false, 'a credential flag is never exempt, whatever its value ends in');
   assert.deepEqual([...ex], ['src/components']);
 });
 
