@@ -113,10 +113,12 @@ or a question (detection could not decide, so it asks instead of guessing).
 never write — it would mean editing your package manifest.
 
 FLAGS
-  --verify   Run the build, test, lint and typecheck commands it discovered,
-             to turn claims into evidence. THIS EXECUTES THIS REPOSITORY'S OWN
+  --verify   Run the test, lint and typecheck commands it discovered, to
+             turn claims into evidence. THIS EXECUTES THIS REPOSITORY'S OWN
              COMMANDS. There is no confirmation prompt: the flag is the
-             consent. \`install\` is never run, because it mutates the tree.
+             consent. \`install\` and \`build\` are never run, because they
+             mutate the tree. A command stopped by the 10-minute bound is
+             recorded as timedOut.
   --json     Print the full report to stdout instead of the human summary.
              Unknown-flag warnings go to stderr, so stdout stays parseable.
 
