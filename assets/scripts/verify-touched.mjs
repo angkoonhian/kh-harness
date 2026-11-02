@@ -51,7 +51,9 @@
 // redaction applied to the command's own output, and the marker/signature
 // machinery above, are shared with lint-touched.mjs via harness-redact.mjs
 // — see that file's own comments for why a shared chokepoint exists at all.
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import {
   boundReport,
@@ -141,6 +143,45 @@ function pickVerifyCommand(scripts) {
 // (`runBounded`, `killTree`) since audit Tier 3, shared with lint-touched.mjs.
 
 /**
+ * A fingerprint of the working tree — HEAD, `git status` for tracked and
+ * untracked files, and the size and mtime of every path status lists — or
+ * null outside a repository or when git cannot answer. Audit Tier 3,
+ * finding 10: the whole typecheck re-ran on turns that changed nothing (a
+ * read-only Q&A turn included). A fingerprint equal to the one recorded
+ * after the last PASSING run means there is nothing new to verify, at the
+ * cost of one `git status` and a few stats instead of a typecheck. Content
+ * is not hashed: a tracked file edited twice between turns keeps its status
+ * line but not its mtime and size, which is what the stats are for.
+ */
+function treeFingerprint(root) {
+  const git = args => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  let head;
+  let status;
+  try {
+    head = git(['rev-parse', '--verify', '-q', 'HEAD']).trim();
+  } catch {
+    head = 'unborn';
+  }
+  try {
+    status = git(['status', '--porcelain', '-z', '--untracked-files=all']);
+  } catch {
+    return null;
+  }
+  const hash = createHash('sha256').update(head).update('\0').update(status);
+  for (const record of status.split('\0')) {
+    if (record.length < 4) continue;
+    const path = record.slice(3);
+    try {
+      const st = statSync(join(root, path));
+      hash.update(`${path}\0${st.size}\0${st.mtimeMs}\0`);
+    } catch {
+      hash.update(`${path}\0gone\0`);
+    }
+  }
+  return hash.digest('hex');
+}
+
+/**
  * An exit-0 notice. Claude Code never shows a hook's stderr when it exits 0
  * (audit Tier 3, finding 12: the "already reported" and "cap reached" lines
  * were invisible); `systemMessage` is the documented field "shown to the
@@ -176,14 +217,23 @@ async function main() {
   if (!picked) return 0; // neither typecheck nor test exists — nothing to verify
 
   const path = markerPath(root, sessionId, 'stop');
-  const marker = readJSONMarker(path, { count: 0, lastSignature: null, timedOut: false });
+  const marker = readJSONMarker(path, { count: 0, lastSignature: null, timedOut: false, verifiedFingerprint: null });
   const count = Number.isFinite(Number(marker.count)) && Number(marker.count) >= 0 ? Number(marker.count) : 0;
   const lastSignature = typeof marker.lastSignature === 'string' ? marker.lastSignature : null;
+  const verifiedFingerprint = typeof marker.verifiedFingerprint === 'string' ? marker.verifiedFingerprint : null;
 
   // A prior turn in this SAME session already established this command
   // cannot finish within the bound — re-running it would pay the full
   // VERIFY_TIMEOUT_MS again to learn nothing new. Skip entirely.
   if (marker.timedOut === true) return 0;
+
+  // Nothing changed since the last PASSING run of this session: nothing to
+  // verify — see treeFingerprint. Outside a repository there is no
+  // fingerprint and every turn runs.
+  const fingerprint = treeFingerprint(root);
+  if (fingerprint !== null && fingerprint === verifiedFingerprint) return 0;
+  // Keeps the rest of the marker (count, lastSignature) as it is.
+  const remember = extra => writeJSONMarker(path, { count, lastSignature, timedOut: false, verifiedFingerprint: null, ...extra });
 
   const binDir = join(root, 'node_modules', '.bin');
   const PATH = [binDir, process.env.PATH ?? process.env.Path ?? ''].filter(Boolean).join(delimiter);
@@ -210,7 +260,7 @@ async function main() {
     // own content-derived signature.
     const signature = signatureOf([`TIMEOUT: "${picked.kind}" did not finish within the bound`]);
     if (lastSignature === signature) return 0;
-    const wrote = writeJSONMarker(path, { count: count + 1, lastSignature: signature, timedOut: true });
+    const wrote = remember({ count: count + 1, lastSignature: signature, timedOut: true });
     if (!wrote) return 0; // fail open — see this file's header comment
     process.stderr.write(
       `kh-harness: the repository's "${picked.kind}" script did not finish within ${Math.round(VERIFY_TIMEOUT_MS / 1000)}s ` +
@@ -229,7 +279,12 @@ async function main() {
   // failure.
   if (result.error || result.signal) return 0;
 
-  if (result.status === 0) return 0; // verification passed — nothing to say, nothing to track
+  if (result.status === 0) {
+    // Verification passed — nothing to say; remember the tree it passed
+    // on, so an unchanged tree is not verified again this session.
+    if (fingerprint !== null) remember({ verifiedFingerprint: fingerprint });
+    return 0;
+  }
 
   const rawLines = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.split(/\r?\n/).filter(l => l.trim());
   // The shared redaction chokepoint — identical layering to
@@ -252,7 +307,7 @@ async function main() {
     return 0;
   }
 
-  const wrote = writeJSONMarker(path, { count: count + 1, lastSignature: signature, timedOut: false });
+  const wrote = remember({ count: count + 1, lastSignature: signature });
   // Fail OPEN: the marker is the sole thing bounding how many times this
   // script may block. If it cannot be written, blocking anyway would make
   // every future invocation this session see `count: 0` forever and block

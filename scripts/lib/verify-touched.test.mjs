@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
@@ -186,6 +186,73 @@ test('the "same failure already reported" notice is a systemMessage on stdout, w
   assert.equal(r2.stderr.trim(), '', 'stderr with exit 0 is never shown by Claude Code');
   const out = JSON.parse(r2.stdout);
   assert.match(out.systemMessage, /already reported/i);
+});
+
+// --- Audit Tier 3, finding 10 (the Stop gate's share): the whole typecheck
+// --- re-ran on turns that changed nothing -------------------------------------
+//
+// A read-only Q&A turn paid the full verification. The gate now fingerprints
+// the tree (HEAD, git status, and the size and mtime of every changed or
+// untracked file) after a PASSING run and skips a turn whose fingerprint
+// matches; a failing run clears it. Outside a repository every Stop runs.
+
+/** A committed repository whose typecheck appends one byte to a file
+ * OUTSIDE the repository (so the run itself never changes the tree) and
+ * exits with the code in the file the test controls. */
+function countingRepo({ git = true } = {}) {
+  const d = mkdtempSync(join(tmpdir(), 'hk-stop-fp-'));
+  const runs = join(mkdtempSync(join(tmpdir(), 'hk-stop-runs-')), 'runs.txt');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { typecheck: 'node count.cjs' } }));
+  writeFileSync(join(d, 'count.cjs'), "const fs = require('fs'); fs.appendFileSync(process.env.HK_TEST_RUNS, 'x'); process.exit(Number(process.env.HK_TEST_EXIT || 0));\n");
+  mkdirSync(join(d, 'src'));
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;\n');
+  if (git) {
+    execFileSync('git', ['init', '-q', d]);
+    execFileSync('git', ['-C', d, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'], { stdio: 'ignore' });
+  }
+  const count = () => (existsSync(runs) ? readFileSync(runs, 'utf8').length : 0);
+  return { d, runs, count };
+}
+
+test('a Stop with no tree change after a passing verification does not run the command again', () => {
+  const { d, runs, count } = countingRepo();
+  const s = sid();
+  assert.equal(run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs }).code, 0);
+  assert.equal(count(), 1, 'sanity: the first Stop ran the command');
+  assert.equal(run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs }).code, 0);
+  assert.equal(count(), 1, 'nothing changed, so nothing to verify');
+});
+
+test('an edit to a tracked file, or a new untracked file, makes the next Stop run again', () => {
+  const { d, runs, count } = countingRepo();
+  const s = sid();
+  run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 2;\n');
+  run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  assert.equal(count(), 2, 'a tracked edit is a change');
+  run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  assert.equal(count(), 2, 'and once verified, it is not re-verified');
+  writeFileSync(join(d, 'src', 'b.ts'), '');
+  run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  assert.equal(count(), 3, 'a new untracked file is a change');
+});
+
+test('a failing verification clears the fingerprint, so the next Stop runs again even with no change', () => {
+  const { d, runs, count } = countingRepo();
+  const s = sid();
+  const r1 = run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs, HK_TEST_EXIT: '1' });
+  assert.equal(r1.code, 2, 'sanity: the failure blocked');
+  run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs, HK_TEST_EXIT: '1' });
+  assert.equal(count(), 2, 'a failed run is never remembered as verified');
+});
+
+test('outside a git repository every Stop runs', () => {
+  const { d, runs, count } = countingRepo({ git: false });
+  const s = sid();
+  run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  run(d, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  assert.equal(count(), 2, 'no git, no fingerprint, no skip');
 });
 
 test('the report is prefixed by which command failed (test fallback)', () => {
