@@ -94,8 +94,10 @@ export function matcherCovers(theirs, ours) {
  * and `${CLAUDE_PROJECT_DIR}/.claude/scripts/x.mjs` are the same path.
  */
 export function normalizeHookPath(token) {
+  // Quotes go wherever they sit: `"${CLAUDE_PROJECT_DIR}"/x` closes the
+  // quote before the path, a real shell idiom (Tier 3 review, Minor 8).
   return String(token)
-    .replace(/^["']+|["']+$/g, '')
+    .replace(/["']/g, '')
     .replace(/^\$\{CLAUDE_PROJECT_DIR\}[\\/]|^\$CLAUDE_PROJECT_DIR[\\/]/, '')
     .split('\\').join('/')
     .replace(/^\.\//, '');

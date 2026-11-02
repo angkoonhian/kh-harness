@@ -255,6 +255,37 @@ test('outside a git repository every Stop runs', () => {
   assert.equal(count(), 2, 'no git, no fingerprint, no skip');
 });
 
+// --- Tier 3 final review, Critical 1: a project rooted below the git toplevel
+// --- lost the size/mtime signal and skipped verification after one pass ----
+//
+// `git status --porcelain` paths are repository-root relative whatever the
+// working directory, so stat-ing them against the project root (a monorepo
+// package) never found a file: every path hashed as `gone`, a file edited
+// twice between turns kept its status line, and the typecheck was skipped —
+// the false pass the whole gate exists to prevent.
+test('a project rooted below the git toplevel still re-verifies a file edited twice', () => {
+  const top = mkdtempSync(join(tmpdir(), 'hk-stop-mono-'));
+  const runs = join(mkdtempSync(join(tmpdir(), 'hk-stop-runs-')), 'runs.txt');
+  const pkg = join(top, 'packages', 'web');
+  mkdirSync(join(pkg, 'src'), { recursive: true });
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'web', scripts: { typecheck: 'node count.cjs' } }));
+  writeFileSync(join(pkg, 'count.cjs'), "require('fs').appendFileSync(process.env.HK_TEST_RUNS, 'x'); process.exit(0);\n");
+  writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 1;\n');
+  execFileSync('git', ['init', '-q', top]);
+  execFileSync('git', ['-C', top, 'add', '-A'], { stdio: 'ignore' });
+  execFileSync('git', ['-C', top, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'], { stdio: 'ignore' });
+  const count = () => (existsSync(runs) ? readFileSync(runs, 'utf8').length : 0);
+  const s = sid();
+  run(pkg, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  assert.equal(count(), 1, 'sanity: the first Stop ran the command');
+  writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 2;\n');
+  run(pkg, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  assert.equal(count(), 2, 'a tracked edit is a change');
+  writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 3; // edited again, same status line\n');
+  run(pkg, payload({ session_id: s }), { HK_TEST_RUNS: runs });
+  assert.equal(count(), 3, 'the second edit keeps the status line; only the stat can see it, and it must be taken against the git toplevel');
+});
+
 test('the report is prefixed by which command failed (test fallback)', () => {
   const d = repo({ test: 'node -e "console.error(\'boom\'); process.exit(1)"' });
   const r = run(d, payload());

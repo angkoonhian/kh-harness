@@ -154,6 +154,14 @@ test('a trailing bare "." target is replaced by the edited file, not joined by i
   assert.match(r.stderr, /argv=src\/a\.ts$/m, `the one file, not the whole project plus the file: ${r.stderr}`);
 });
 
+test('a bare "." target anywhere in a plain command is replaced by the edited file (eslint . --ext .ts)', () => {
+  // Tier 3 final review, Minor 7: only a TRAILING dot was dropped, so the
+  // commonest ESLint 8 form still linted the whole project plus the file.
+  const r = run(argvRepo('node lint.cjs . --ext .ts'), edit);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /argv=--ext,\.ts,src\/a\.ts$/m, r.stderr);
+});
+
 test('a lint script with a chain runs unmodified — the path is never appended to its last stage', () => {
   // `||` so the second stage runs after the first fails; it echoes its own
   // argv too, which is where an appended path used to land.
@@ -578,7 +586,7 @@ test('BUFFER: lint output larger than the configured maxBuffer is still reported
   // default, so ENOBUFS never fired — the test passed for a reason
   // unrelated to what it claimed to check: removing `maxBuffer` entirely
   // (so spawnSync silently falls back to its own 1MB default, ignoring
-  // HK_LINT_MAX_BUFFER completely), or removing the whole `isOverflow`
+  // HK_LINT_MAX_BUFFER completely), or removing the overflow
   // carve-out, both left the suite green. Worse, a fixture that merely
   // EXCEEDS a small configured maxBuffer is not enough either: Node may
   // still deliver the whole thing in one read and only flag ENOBUFS

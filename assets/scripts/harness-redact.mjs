@@ -166,25 +166,32 @@ export function dropCommandFragments(lines, commands, exemptions = new Set()) {
  * Masking keeps the line and the key; only the value is replaced.
  */
 export const CREDENTIAL_RULES = [
-  [/\bsk-[A-Za-z0-9_-]{6,}/g, '***'],
-  [/\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{6,}/g, '***'],
-  [/\bglpat-[A-Za-z0-9_-]{6,}/g, '***'],
-  [/\bglrt-[A-Za-z0-9_-]{6,}/g, '***'],
-  [/\bgh[opsur]_[A-Za-z0-9]{6,}/g, '***'],
-  [/\bgithub_pat_[A-Za-z0-9_]{6,}/g, '***'],
-  [/\bnpm_[A-Za-z0-9]{6,}/g, '***'],
+  // Floors sit a little BELOW the sweep's (detect-exposure.mjs): a mask that
+  // stars a shorter string than the sweep would flag is the safe direction,
+  // while a blanket {6,} masked ordinary identifiers such as npm_config_cache,
+  // hf_transfer and ghp_client out of real diagnostics (Tier 3 review,
+  // Minor 4). Ten characters of body is where the identifiers stop and the
+  // tokens begin.
+  [/\bsk-[A-Za-z0-9_-]{10,}/g, '***'],
+  [/\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g, '***'],
+  [/\bglpat-[A-Za-z0-9_-]{10,}/g, '***'],
+  [/\bglrt-[A-Za-z0-9_-]{10,}/g, '***'],
+  [/\bgh[opsur]_[A-Za-z0-9]{10,}/g, '***'],
+  [/\bgithub_pat_[A-Za-z0-9_]{10,}/g, '***'],
+  [/\bnpm_[A-Za-z0-9]{36}\b/g, '***'],
   [/\bAKIA[A-Za-z0-9]{12,}/g, '***'],
-  [/\bAIza[0-9A-Za-z_-]{20,}/g, '***'],
-  [/\bxox[abprs]-[A-Za-z0-9-]{6,}/g, '***'],
-  [/\bxapp-[A-Za-z0-9-]{6,}/g, '***'],
-  [/\bhf_[A-Za-z0-9]{6,}/g, '***'],
-  [/\bdckr_pat_[A-Za-z0-9_-]{6,}/g, '***'],
-  [/\bpypi-[A-Za-z0-9_-]{6,}/g, '***'],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/g, '***'],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, '***'],
+  [/\bxapp-[A-Za-z0-9-]{10,}/g, '***'],
+  [/\bhf_[A-Za-z0-9]{12,}/g, '***'],
+  [/\bdckr_pat_[A-Za-z0-9_-]{10,}/g, '***'],
+  [/\bpypi-[A-Za-z0-9_-]{10,}/g, '***'],
   // A JWT: three base64url segments, the first always `eyJ` (`{"`).
-  [/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g, '***'],
-  // Userinfo in a URL: `scheme://user:secret@host` — the user name is kept,
-  // the secret is not. A URL with no password is left alone.
-  [/(:\/\/[^/\s:@]+:)[^@\s/]+@/g, '$1***@'],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '***'],
+  // Userinfo in a URL: `scheme://user:secret@host` — the user name (which
+  // may be empty, as in `redis://:secret@host`) is kept, the secret is not.
+  // A URL with no password is left alone.
+  [/(:\/\/[^/\s:@]*:)[^@\s/]+@/g, '$1***@'],
   [/\bBearer\s+\S+/gi, 'Bearer ***'],
   [/\bBasic\s+[A-Za-z0-9+/=]{12,}/g, 'Basic ***'],
   // A PEM block, on one line or across several (lines are masked one at a

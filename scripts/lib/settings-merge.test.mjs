@@ -109,6 +109,11 @@ test('hasEquivalentHook treats a shell-form and an exec-form registration of the
   assert.equal(hasEquivalentHook(hasShell, 'PostToolUse', { command: 'node theirs.mjs' }, 'Write|Edit'), false, 'two shell forms compare as strings');
 });
 
+test('normalizeHookPath strips a quote that closes before the path, a real shell idiom', () => {
+  // Tier 3 final review, Minor 8: `node "${CLAUDE_PROJECT_DIR}"/.claude/scripts/x.mjs`.
+  assert.deepEqual(hookPathTokens({ command: 'node "${CLAUDE_PROJECT_DIR}"/.claude/scripts/x.mjs' }), ['node', '.claude/scripts/x.mjs']);
+});
+
 // --- optional matcher (PostToolUse needs one; SessionStart never has) -----
 
 test('addHookEntry with no matcher argument omits the matcher key entirely (unchanged behaviour)', () => {

@@ -494,7 +494,7 @@ export function renderDiff(root, proposal) {
   // changes in a file on disk is exactly what the reader needs to see.
   if (proposal.assetSource && !existsSync(target)) {
     const lines = splitLines(proposal.contents).length;
-    return `+${lines} lines — a verbatim copy of assets/${proposal.assetSource} (stamped on line 2); nothing of yours is changed`;
+    return `+${lines} lines — a verbatim copy of assets/${proposal.assetSource} plus the kit's stamp line at the top; nothing of yours is changed`;
   }
   const before = existsSync(target) ? readFileSync(target, 'utf8') : '';
   const body = unifiedDiff(before, proposal.contents, targetPath);

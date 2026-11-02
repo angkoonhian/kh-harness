@@ -45,7 +45,8 @@ const LINT_TIMEOUT_MS = Number(process.env.HK_LINT_TIMEOUT_MS) || 30_000;
 const STDIN_TIMEOUT_MS = Number(process.env.HK_STDIN_TIMEOUT_MS) || 5_000;
 // Generous but bounded: raised from spawnSync's 1MB default so a verbose
 // `eslint .` whole-project run (the fallback path below) does not overflow
-// and get silently discarded — see the overflow handling near `isOverflow`.
+// and get silently discarded — `runBounded` keeps the first LINT_MAX_BUFFER
+// characters and lets the linter finish (see the call below).
 // Overridable (like HK_LINT_TIMEOUT_MS) so a test can cross the threshold
 // with a small fixture instead of generating megabytes of real output.
 const LINT_MAX_BUFFER = Number(process.env.HK_LINT_MAX_BUFFER) || 10 * 1024 * 1024;
@@ -63,9 +64,8 @@ const LINT_MAX_BUFFER = Number(process.env.HK_LINT_MAX_BUFFER) || 10 * 1024 * 10
  * interpolated into the command string at all. Anything else is NEVER
  * appended — the lint script runs unmodified, and ruling 1's attribution
  * filter (mentionsFile) still does its job, because that filter is already
- * required regardless of whether the path was appended (`eslint .` ignores
- * an appended path anyway). Appending is a performance optimization only;
- * correctness never depends on it.
+ * required regardless of whether the path was appended. Appending is a
+ * performance optimization only; correctness never depends on it.
  *
  * This is NOT, by itself, a containment guarantee: the class admits `.` and
  * `/`, so it happily matches `../x.ts`. Containment is enforced separately,
@@ -219,15 +219,17 @@ function readPyLintScript(ownerDir) {
  * A `;` is deliberately NOT a separator here: it is far more often inside
  * a quoted `node -e` body than between shell commands, and the cost of
  * missing a `;`-chain is the pre-existing behaviour, not a new one.
- * A trailing bare `.` or `./` target is dropped first, so `eslint .` lints
- * the one file instead of the whole project plus the one file. Attribution
+ * A bare `.` or `./` token anywhere in the command is dropped first, so
+ * `eslint .` and `eslint . --ext .ts` lint the one file instead of the whole
+ * project plus the one file (Tier 3 review, Minor 7). Attribution
  * (`mentionsFile`) does not depend on any of this; appending is a cost
  * optimisation and the unmodified script still reports correctly.
  */
 const COMPOUND_COMMAND = /[|`\n]|&&|\$\(/;
 function appendTarget(lintScript, quotedPath) {
   if (COMPOUND_COMMAND.test(lintScript)) return lintScript;
-  return `${lintScript.replace(/\s+\.(?:\/)?$/, '')} ${quotedPath}`;
+  const kept = lintScript.split(/\s+/).filter(t => t !== '.' && t !== './');
+  return `${kept.join(' ')} ${quotedPath}`;
 }
 
 // Belt-and-braces quoting for the allowlisted case only — SAFE_RELATIVE_PATH
@@ -450,7 +452,7 @@ async function main() {
   const lintScript = isJs ? readLintScript(ownerDir) : readPyLintScript(ownerDir);
   if (!lintScript) return 0;
 
-  // Resolved relative to ownerDir — which is spawnSync's own `cwd` below —
+  // Resolved relative to ownerDir — which is runBounded's own `cwd` below —
   // not root-relative `filePath`. Appending the root-relative form handed
   // a nested package's linter a path that does not exist relative to
   // where it actually runs, producing a bogus "file not found" blamed on
@@ -514,7 +516,7 @@ async function main() {
     ]);
   }
 
-  if (result.status === 0) return 0; // clean (status is null on overflow, so this never short-circuits it away)
+  if (result.status === 0) return 0; // clean — on overflow too: the linter's own exit code decides, with what was captured reported below
 
   const base = basename(filePath);
   const combined = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;

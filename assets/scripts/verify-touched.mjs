@@ -47,9 +47,9 @@
 // project root, falling back to process.cwd(). Writes to stdout only the
 // `systemMessage` notice of an exit-0 turn (Claude Code shows nothing from
 // stderr then), never writes inside the repository, and every spawn is
-// bounded. The
-// redaction applied to the command's own output, and the marker/signature
-// machinery above, are shared with lint-touched.mjs via harness-redact.mjs
+// bounded. The redaction applied to the command's own output, and the
+// marker/signature machinery above, are shared with lint-touched.mjs via
+// harness-redact.mjs
 // — see that file's own comments for why a shared chokepoint exists at all.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -154,25 +154,44 @@ function pickVerifyCommand(scripts) {
  * line but not its mtime and size, which is what the stats are for.
  */
 function treeFingerprint(root) {
-  const git = args => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  // Bounded like every other spawn in this file: a hung filesystem, or a
+  // project under a directory that is itself a repository, must not hold
+  // the turn. A failure here means "no fingerprint": the gate runs as before.
+  const git = args => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
+  let top;
   let head;
   let status;
+  try {
+    // `git status --porcelain` paths are REPOSITORY-root relative whatever
+    // the working directory (Tier 3 review, Critical 1: stat-ing them
+    // against a project rooted below the toplevel — a monorepo package —
+    // found nothing, hashed every path as `gone`, and a file edited twice
+    // between turns was skipped as unchanged).
+    top = git(['rev-parse', '--show-toplevel']).trim();
+    status = git(['status', '--porcelain', '-z', '--untracked-files=all']);
+  } catch {
+    return null;
+  }
   try {
     head = git(['rev-parse', '--verify', '-q', 'HEAD']).trim();
   } catch {
     head = 'unborn';
   }
-  try {
-    status = git(['status', '--porcelain', '-z', '--untracked-files=all']);
-  } catch {
-    return null;
-  }
+  // Not seen here, by design: an IGNORED file never appears in status, so a
+  // verification that depends on a gitignored input Claude edits is skipped
+  // — the one blind spot of fingerprinting the index instead of the disk.
   const hash = createHash('sha256').update(head).update('\0').update(status);
-  for (const record of status.split('\0')) {
+  const records = status.split('\0');
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
     if (record.length < 4) continue;
+    const xy = record.slice(0, 2);
     const path = record.slice(3);
+    // A rename or copy emits the ORIGINAL path as the next record; the
+    // status text already covers it, and it is not a path to stat.
+    if (xy.includes('R') || xy.includes('C')) i += 1;
     try {
-      const st = statSync(join(root, path));
+      const st = statSync(join(top, path));
       hash.update(`${path}\0${st.size}\0${st.mtimeMs}\0`);
     } catch {
       hash.update(`${path}\0gone\0`);

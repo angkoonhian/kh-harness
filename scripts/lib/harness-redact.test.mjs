@@ -247,6 +247,18 @@ test('runBounded reports a timeout as timedOut with no exit status', async () =>
   assert.equal(r.overflowed, false);
 });
 
+// --- Tier 3 final review, Important 3 and Minor 4 ---------------------------
+test('maskCredentials masks a URL password with an empty user name, the standard Redis form', () => {
+  const url = ['redis://:hunter2hunter2', 'cache:6379/0'].join('@');
+  assert.equal(maskCredentials(`REDIS_URL=${url}`), 'REDIS_URL=redis://:***@cache:6379/0');
+});
+
+test('maskCredentials leaves ordinary identifiers that merely start like a vendor prefix alone', () => {
+  for (const line of ['npm_config_cache is unset; npm_lifecycle_event=test', 'install hf_transfer for faster downloads', 'const ghp_client = make()', 'see xapp-config.md']) {
+    assert.equal(maskCredentials(line), line, line);
+  }
+});
+
 // --- boundReport -------------------------------------------------------
 
 test('boundReport truncates past MAX_REPORT_LINES with a notice', () => {
