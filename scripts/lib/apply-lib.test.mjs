@@ -618,6 +618,21 @@ test('applyProposals never throws on a malformed hooks block — skips it as unp
   }
 });
 
+// --- Audit Tier 2, finding 8 (second half): the manifest's kitVersion never
+// --- moved off the version that first created it -----------------------------
+test('applyProposals records the kit version that wrote', () => {
+  const d = repo();
+  const r = applyProposals({ root: d, proposals: [fileProposal()], manifest: emptyManifest('0.1.0'), kitVersion: '0.2.0' });
+  assert.equal(r.written.length, 1, 'fixture sanity: something was written');
+  assert.equal(r.manifest.kitVersion, '0.2.0', 'a 0.2.0 file on disk under a 0.1.0 manifest is a false record');
+});
+
+test('a run that writes nothing leaves the recorded kit version alone', () => {
+  const d = repo();
+  const r = applyProposals({ root: d, proposals: [], manifest: emptyManifest('0.1.0'), kitVersion: '0.2.0' });
+  assert.equal(r.manifest.kitVersion, '0.1.0');
+});
+
 // --- Whole-branch review, F7: one canonical-form predicate, not two ------
 //
 // `apply.mjs`'s `alreadyCanonical` and `uninstall-lib.mjs`'s `wasCanonical`

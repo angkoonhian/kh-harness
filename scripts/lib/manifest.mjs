@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { join, dirname, resolve, relative } from 'node:path';
 
 const MANIFEST_PATH = '.claude/kh-harness.manifest.json';
@@ -56,10 +56,26 @@ export function readManifest(root) {
   return readManifestResult(root).manifest;
 }
 
+/**
+ * Written to a temporary sibling and renamed into place, so the manifest on
+ * disk is always either the previous one or the new one, whole. Audit Tier
+ * 2, finding 8: an in-place write killed midway left a truncated file that
+ * read back as `corrupt` — and `apply` refuses on a corrupt manifest, so
+ * every file that run had written was orphaned behind a refusal. On any
+ * failure the temporary file is removed and the error propagates; the
+ * caller (apply.mjs) already reports a manifest write failure by path.
+ */
 export function writeManifest(root, manifest) {
   const p = join(root, MANIFEST_PATH);
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  const tmp = `${p}.tmp-${process.pid}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+    renameSync(tmp, p);
+  } catch (err) {
+    try { rmSync(tmp, { force: true }); } catch { /* the error below is the one to report */ }
+    throw err;
+  }
 }
 
 /** CRLF → LF, nothing else. A lone CR is left alone: git never writes one. */

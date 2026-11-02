@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings } from './manifest.mjs';
@@ -217,4 +217,32 @@ test('classify: normalisation runs one way only — an LF file never matches a C
 test('normalizeLineEndings turns CRLF into LF and leaves everything else alone', () => {
   assert.equal(normalizeLineEndings(Buffer.from('a\r\nb\r\n')).toString('utf8'), 'a\nb\n');
   assert.equal(normalizeLineEndings(Buffer.from('a\nb\rc')).toString('utf8'), 'a\nb\rc', 'a lone CR is not a line ending git rewrites');
+});
+
+// --- Audit Tier 2, finding 8: the manifest was written in place, once, at
+// --- the end of a run -------------------------------------------------------
+//
+// A kill between the write starting and finishing left a truncated manifest
+// (read back as `corrupt`, so apply refused forever) or none; either way
+// every file written that run was orphaned as `theirs`. Written to a
+// temporary sibling and renamed into place: the old manifest is intact until
+// the new one is whole.
+
+test('writeManifest leaves no temporary file behind and the manifest reads back whole', () => {
+  const d = repo();
+  const m = emptyManifest('0.1.0');
+  m.files.push({ path: 'HANDOFF.md', sha256: sha256('x'), step: 16, writtenAt: '2026-09-29T00:00:00Z' });
+  writeManifest(d, m);
+  assert.deepEqual(readdirSync(join(d, '.claude')), ['kh-harness.manifest.json']);
+  assert.deepEqual(readManifest(d), m);
+});
+
+test('writeManifest that cannot replace the target leaves the previous state intact and no temporary file', () => {
+  const d = repo();
+  const target = join(d, '.claude', 'kh-harness.manifest.json');
+  // A directory at the manifest's path is one thing `rename` cannot replace.
+  mkdirSync(target, { recursive: true });
+  assert.throws(() => writeManifest(d, emptyManifest('0.1.0')));
+  assert.equal(statSync(target).isDirectory(), true, 'the target is untouched');
+  assert.deepEqual(readdirSync(join(d, '.claude')), ['kh-harness.manifest.json'], 'no .tmp sibling is left behind');
 });

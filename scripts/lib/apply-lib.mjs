@@ -771,6 +771,12 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
     }
   }
 
+  // The version that last WROTE, not the one that first created the
+  // manifest (audit Tier 2, finding 8): a 0.2.0 asset on disk under a
+  // manifest still saying 0.1.0 was a false record. A run that changed
+  // nothing leaves it alone.
+  if (written.length || patched.length) nextManifest.kitVersion = kitVersion;
+
   return { written, patched, skipped, redirected, failed, manifest: nextManifest };
 }
 
