@@ -97,12 +97,16 @@ function detectNestedRepositories(root) {
     // Untracked entries. Used twice below; git is asked once.
     const untracked = gitPaths(root, ['ls-files', '-o', '--exclude-standard']);
 
-    // Detect submodules: entries with mode 160000 in git ls-files -s
+    // Detect submodules: entries with mode 160000 in git ls-files -s. Each
+    // record is `<mode> <object> <stage>\t<path>`; the path begins after
+    // the first TAB and may itself hold spaces (audit Tier 2, finding 6: a
+    // whitespace split recorded `my sub dir` as `my`).
     for (const line of gitPaths(root, ['ls-files', '-s']) ?? []) {
-      const parts = line.split(/\s+/);
-      if (parts[0] === '160000' && parts[3]) {
-        nested.push({ path: parts[3], kind: 'submodule' });
-      }
+      const tab = line.indexOf('\t');
+      if (tab < 0) continue;
+      const mode = line.slice(0, tab).split(' ')[0];
+      const path = line.slice(tab + 1);
+      if (mode === '160000' && path) nested.push({ path, kind: 'submodule' });
     }
 
     // Detect nested independent repositories: untracked directories containing .git

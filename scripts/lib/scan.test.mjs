@@ -73,6 +73,24 @@ test('a fixture with a nested repository is reported as nested-repo', () => {
   assert.ok(detected.some(n => n.kind === 'nested-repo' && n.path === 'nested-repo'));
 });
 
+// Audit Tier 2, finding 6: `ls-files -s` records were split on whitespace,
+// so a gitlink at `my sub dir` was recorded as `my`. The record format is
+// `<mode> <object> <stage>\t<path>` — the path begins after the first tab.
+test('a submodule whose path holds a space is recorded under its full path', () => {
+  const d = fixture();
+  try {
+    // A gitlink entry written straight into the index: the same record a
+    // real `git submodule add` produces, without the network or the
+    // protocol allow-list a real add would need.
+    execFileSync('git', ['-C', d, 'update-index', '--add', '--cacheinfo', '160000', '4b825dc642cb6eb9a060e54bf8d69288fbee4904', 'my sub dir'], { stdio: 'ignore' });
+  } catch (e) {
+    console.log(`  (skipped: git update-index failed: ${e.message})`);
+    return;
+  }
+  const { nested } = listFiles(d);
+  assert.deepEqual(nested.filter(n => n.kind === 'submodule'), [{ path: 'my sub dir', kind: 'submodule' }]);
+});
+
 test('a repository with no nesting returns empty nested array', () => {
   const { nested } = listFiles(fixture());
   assert.equal(Array.isArray(nested), true);
