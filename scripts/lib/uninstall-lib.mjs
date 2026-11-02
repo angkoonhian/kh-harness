@@ -12,7 +12,7 @@ import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline, 
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
-import { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH } from './propose.mjs';
+import { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, RULES_BRIEF_PATH } from './propose.mjs';
 
 const SETTINGS = '.claude/settings.json';
 
@@ -120,6 +120,11 @@ const GENERATOR_PRODUCIBLE_EXACT = new Set([
   REDACT_PATH,
   BRIEF_PATH,
   CLAUDE_REDIRECT_PATH,
+  // Phase 3: the rules-registry scaffold and the re-injection hook. The
+  // registry is the third artefact whose designed workflow is the user
+  // writing into our file (see `templateFor` and `hasUserAuthoredBody`).
+  RULES_PATH,
+  RULES_BRIEF_PATH,
 ]);
 // `.claude/rules/<slug>.md` — one per non-root workspace package, a path
 // pathrules-evidence.mjs derives dynamically from the repository's own
@@ -269,6 +274,11 @@ const TEMPLATES = new URL('../../assets/templates/', import.meta.url);
 function templateFor(relPath) {
   if (relPath === 'HANDOFF.md') return 'HANDOFF.md.tmpl';
   if (relPath.startsWith('.claude/rules/') && relPath.endsWith('.md')) return 'path-rule.md.tmpl';
+  // The registry's whole scaffold body is one HTML comment under one
+  // heading (propose.mjs's `rulesScaffoldProposal`), so a filled-in
+  // registry — the user's own rules — is exactly what `markdownRemainder`
+  // surfaces as user-authored, and this gate keeps it.
+  if (relPath === RULES_PATH) return 'RULES.md.tmpl';
   return null;
 }
 

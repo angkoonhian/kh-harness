@@ -1,0 +1,48 @@
+{{stamp}}
+
+# Rules
+
+<!--
+  This is this repository's RULES REGISTRY: one entry per rule the project
+  holds, each naming the mechanism that ENFORCES it. kh-harness scaffolded
+  the shape and will never write a rule here — the rules are yours. It reads
+  this file to report two things apart that otherwise look the same:
+
+    a rule Claude is merely TOLD      (enforced-by: none)   — a claim
+    a rule something actually HOLDS   (deny/hook/lint/test/critic/ci/review)
+
+  A rule with `enforced-by: none` is a claim; it is the automation backlog.
+  kh-harness proposes the cheapest enforcer it can derive for each one.
+
+  FORMAT — one level-2 heading per rule, then `key: value` bullets:
+
+    ## <id> — <the rule, one sentence, imperative>
+    - why: <one line: what goes wrong without it>
+    - enforced-by: deny | hook | lint | test | critic | ci | review | none
+    - pointer: <repository path, or settings:permissions.deny, or settings:hooks.<Event>>
+    - verify: <a command a human can run to confirm the enforcer works>
+    - priority: high | normal        (optional; `high` rules are re-injected first)
+    - status: active | superseded     (optional; superseded rules are kept as a record, not counted)
+    - last-verified: YYYY-MM-DD       (optional; when the pointer was last confirmed to work)
+
+  `id` is one token (letters, digits, `.`, `_`, `-`), stable, never reused.
+  `pointer` is required for every enforcer except `none` and `review`; a
+  pointer that stops resolving is reported — that is the drift signal.
+
+  WORKED EXAMPLE (inside this comment, so it is never loaded as a rule —
+  write your own below the comment rather than uncommenting this one):
+
+    ## R1 — Every database query is scoped to the current tenant
+    - why: a cross-tenant read is a data breach, not a bug
+    - enforced-by: critic
+    - pointer: .claude/agents/tenant-scoping.md
+    - verify: npm test -- tenant
+    - priority: high
+
+  Two things kh-harness installs read this file: `detect` (which reports
+  the counts above and any pointer that no longer exists) and, once at
+  least one rule exists, the UserPromptSubmit hook `rules-brief.mjs`, which
+  puts the rules back in front of Claude on every prompt — bounded, high-
+  priority first — because compliance with a rule stated once decays as a
+  session runs. Keep each rule to one sentence: the hook has 1500 bytes.
+-->

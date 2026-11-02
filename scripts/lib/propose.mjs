@@ -6,6 +6,11 @@ import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
+// The registry's location is owned by the shared hook asset (see its own
+// comment on why the parser lives there); re-exported below so uninstall-
+// lib.mjs reads every producible path from this one module, as it does for
+// the other five.
+import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -461,6 +466,35 @@ function pathRuleProposal({ kitVersion, stack }) {
   }));
 }
 
+const RULES_STEP = 27;
+
+/**
+ * The rules-registry scaffold (Phase 3, step 27): `docs/harness/RULES.md`
+ * from a template whose entire body — schema, enforcer list, one worked
+ * example — sits inside a single static HTML comment under one heading.
+ * Same discipline as `pathRuleProposal`: the kit scaffolds the SHAPE and
+ * never a rule, because a rule it invented would be exactly the opinion-
+ * without-basis this project refuses, loaded into the model's context as
+ * if the repository had stated it.
+ *
+ * Two properties other modules rely on, both pinned in propose.test.mjs:
+ *   - `parseRules(contents)` yields zero rules — harness-redact.mjs blanks
+ *     HTML comments before parsing, so the example is inert until a human
+ *     writes a rule OUTSIDE the comment;
+ *   - `markdownRemainder(contents)` is empty and equals the raw template's
+ *     — uninstall-lib.mjs's `hasUserAuthoredBody` compares the on-disk file
+ *     against the RAW template to decide whether the user has written into
+ *     it, and the only placeholder is `{{stamp}}`, which renders to a
+ *     comment. A filled registry is therefore always kept on uninstall.
+ */
+function rulesScaffoldProposal({ kitVersion }) {
+  return [{
+    kind: 'file', path: RULES_PATH, step: RULES_STEP,
+    contents: render(read('templates/RULES.md.tmpl'), { stamp: versionStamp(kitVersion, RULES_STEP, '<!--') + ' -->' }),
+    reason: 'no rules registry found',
+  }];
+}
+
 /** Generators receive the full detection context and return proposals.
  * { kitVersion, harness, root, stack, checks, files, check } are available
  * to all generators — `check` is THIS generator's own entry from `checks`
@@ -501,6 +535,11 @@ const GENERATORS = {
   'P2.stopgate': stopgateProposal,
   'P1.bootstrap': bootstrapProposal,
   'P1.pathrules': pathRuleProposal,
+  'P3.rules': rulesScaffoldProposal,
+  // No entry for 'P3.intent', deliberately and permanently: like steps 6
+  // and 7a, docs/INTENT.md is written by the skill after reading the
+  // repository and gated on its full content (propose.test.mjs's "SECRET:
+  // P3.intent has no registered generator" pins this).
 };
 
 /**
@@ -560,4 +599,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // generator (a pyproject-only Python repo: `detect` advertised a proposal,
 // `apply` produced nothing) without any test failing, because nothing
 // checked the two against each other.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, GENERATORS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, RULES_PATH, GENERATORS };
