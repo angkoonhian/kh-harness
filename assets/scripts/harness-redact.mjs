@@ -153,17 +153,47 @@ export function dropCommandFragments(lines, commands, exemptions = new Set()) {
   });
 }
 
-/** Layer 2. Credential-shaped values, independent of where they came from. */
+/**
+ * Layer 2. Credential-shaped values, independent of where they came from.
+ * Ruff and biome print source snippets, so a secret in a linted file reaches
+ * this mask whether or not the command mentioned it; the list therefore
+ * tracks the shapes the sweep (scripts/lib/detect-exposure.mjs) knows, plus
+ * what only ever appears in OUTPUT: a JWT, a URL's userinfo, a Basic header,
+ * a `key: value` line in any of its spellings, and a PEM block (audit Tier
+ * 3, finding 24). Order matters only where rules overlap: the key-value rule
+ * runs last so a vendor token after `api_key:` is already starred by then.
+ * Masking keeps the line and the key; only the value is replaced.
+ */
 export const CREDENTIAL_RULES = [
   [/\bsk-[A-Za-z0-9_-]{6,}/g, '***'],
+  [/\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{6,}/g, '***'],
   [/\bglpat-[A-Za-z0-9_-]{6,}/g, '***'],
-  [/\bghp_[A-Za-z0-9]{6,}/g, '***'],
+  [/\bglrt-[A-Za-z0-9_-]{6,}/g, '***'],
+  [/\bgh[opsur]_[A-Za-z0-9]{6,}/g, '***'],
   [/\bgithub_pat_[A-Za-z0-9_]{6,}/g, '***'],
+  [/\bnpm_[A-Za-z0-9]{6,}/g, '***'],
   [/\bAKIA[A-Za-z0-9]{12,}/g, '***'],
+  [/\bAIza[0-9A-Za-z_-]{20,}/g, '***'],
   [/\bxox[abprs]-[A-Za-z0-9-]{6,}/g, '***'],
+  [/\bxapp-[A-Za-z0-9-]{6,}/g, '***'],
+  [/\bhf_[A-Za-z0-9]{6,}/g, '***'],
+  [/\bdckr_pat_[A-Za-z0-9_-]{6,}/g, '***'],
+  [/\bpypi-[A-Za-z0-9_-]{6,}/g, '***'],
+  // A JWT: three base64url segments, the first always `eyJ` (`{"`).
+  [/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g, '***'],
+  // Userinfo in a URL: `scheme://user:secret@host` — the user name is kept,
+  // the secret is not. A URL with no password is left alone.
+  [/(:\/\/[^/\s:@]+:)[^@\s/]+@/g, '$1***@'],
   [/\bBearer\s+\S+/gi, 'Bearer ***'],
+  [/\bBasic\s+[A-Za-z0-9+/=]{12,}/g, 'Basic ***'],
+  // A PEM block, on one line or across several (lines are masked one at a
+  // time by the hooks, so the single-line form is what usually arrives).
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '***'],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----.*/g, '***'],
   [/(--(?:token|auth-token|api-key)=)\S+/gi, '$1***'],
-  [/\b(password|api_key)=\S+/gi, '$1=***'],
+  // `password=x`, `password: x`, `"password": "x"`, `api_key: x` … — the
+  // same key list the sweep uses, in any quoting, `=` or `:`.
+  [/((?:["']?)(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|auth[_-]?token)(?:["']?)\s*[:=]\s*)["']?[^\s"',;]+["']?/gi, '$1***'],
 ];
 
 export function maskCredentials(line) {

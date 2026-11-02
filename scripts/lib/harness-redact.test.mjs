@@ -171,6 +171,61 @@ test('maskCredentials never drops the line — only the value', () => {
   assert.doesNotMatch(masked, /sk-live-ABCDEFGHIJ/);
 });
 
+// --- Audit Tier 3, finding 24: the mask knew six vendor shapes --------------
+//
+// Every secret below is assembled from parts (see this file's header): the
+// sweep must keep seeing these shapes wherever they genuinely appear,
+// including in this repository.
+
+test('maskCredentials masks today\'s shapes: npm, GitHub, Stripe-style, Google, JWT and the common vendor prefixes', () => {
+  const cases = [
+    ['npm', ['npm', 'A'.repeat(36)].join('_'), 'A'.repeat(36)],
+    ['GitHub server-to-server', ['ghs', 'B'.repeat(20)].join('_'), 'B'.repeat(20)],
+    ['Stripe-style', ['sk_live', 'C'.repeat(16)].join('_'), 'C'.repeat(16)],
+    ['Google', ['AIza', 'D'.repeat(35)].join(''), 'D'.repeat(35)],
+    ['JWT', ['eyJhbGciOiJIUzI1NiJ9', 'e'.repeat(20), 'f'.repeat(20)].join('.'), 'e'.repeat(20)],
+    ['GitLab runner', ['glrt', 'G'.repeat(20)].join('-'), 'G'.repeat(20)],
+    ['Slack app', ['xapp', 'H'.repeat(20)].join('-'), 'H'.repeat(20)],
+    ['Hugging Face', ['hf', 'I'.repeat(20)].join('_'), 'I'.repeat(20)],
+    ['Docker', ['dckr_pat', 'J'.repeat(20)].join('_'), 'J'.repeat(20)],
+    ['PyPI', ['pypi', 'K'.repeat(20)].join('-'), 'K'.repeat(20)],
+  ];
+  for (const [name, token, secret] of cases) {
+    const masked = maskCredentials(`found ${token} in config`);
+    assert.equal(masked.includes(secret), false, `${name}: ${masked}`);
+    assert.match(masked, /^found .* in config$/, `${name}: the line survives, only the value goes`);
+  }
+});
+
+test('maskCredentials masks a URL\'s password and keeps the rest of the URL', () => {
+  const url = ['https://deploy:hunter2hunter2', 'host.invalid/repo.git'].join('@');
+  assert.equal(maskCredentials(`fetched ${url} failed`), 'fetched https://deploy:***@host.invalid/repo.git failed');
+  assert.equal(maskCredentials('see https://host.invalid/x for details'), 'see https://host.invalid/x for details', 'no userinfo, nothing to mask');
+});
+
+test('maskCredentials masks a Basic header value', () => {
+  const line = ['Authorization: Basic', 'QWxhZGRpbjpvcGVuIHNlc2FtZQ=='].join(' ');
+  assert.equal(maskCredentials(line), 'Authorization: Basic ***');
+});
+
+test('maskCredentials masks key: value forms in any quoting, with the same key list the sweep uses', () => {
+  const colon = (k, v) => [k, v].join(': ');
+  assert.equal(maskCredentials(colon('password', 'hunter2hunter2')), 'password: ***');
+  assert.equal(maskCredentials(colon('"password"', '"hunter2hunter2",')), '"password": ***,');
+  assert.equal(maskCredentials(colon('api_key', 'hunter2hunter2')), 'api_key: ***');
+  assert.equal(maskCredentials(colon('client_secret', 'hunter2hunter2')), 'client_secret: ***');
+  assert.equal(maskCredentials(colon('password', 'null')), 'password: ***', 'the mask does not judge the value; the sweep does');
+  assert.equal(maskCredentials('the password is set elsewhere'), 'the password is set elsewhere', 'a key without a value is prose');
+});
+
+test('maskCredentials masks a PEM block on one line, by its header alone, and across lines', () => {
+  const header = ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ');
+  const footer = ['-----END RSA', 'PRIVATE KEY-----'].join(' ');
+  assert.equal(maskCredentials(`${header} MIIEowIBAAKCAQEA ${footer}`), '***');
+  assert.equal(maskCredentials(`key: ${header}`), 'key: ***', 'a header alone — what a line-at-a-time mask sees — is enough');
+  assert.equal(maskCredentials(`${header}\nMIIEowIBAAKCAQEA\n${footer}\ntrailing`), '***\ntrailing');
+});
+
 // --- boundReport -------------------------------------------------------
 
 test('boundReport truncates past MAX_REPORT_LINES with a notice', () => {
