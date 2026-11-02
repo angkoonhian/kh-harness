@@ -70,6 +70,19 @@ function harnessed() {
 }
 const cli = (d, ...args) => execFileSync(process.execPath, [CLI, d, ...args], { encoding: 'utf8' });
 
+// --- Audit Tier 2, finding 16: detect could crash with exit 1 ----------------
+test('detect exits 2 with one stderr line when docs/harness/detect.json cannot be written', () => {
+  const d = bare();
+  writeFileSync(join(d, 'docs'), 'a file where the docs directory should be');
+  let err;
+  try { cli(d); } catch (e) { err = e; }
+  assert.ok(err, 'the report could not be written, so the run cannot succeed');
+  assert.equal(err.status, 2, `exit 1 is a crash, and the README says a crash is a bug: ${err.stderr}`);
+  assert.match(String(err.stderr), /could not write/i);
+  assert.match(String(err.stderr), /detect\.json/);
+  assert.doesNotMatch(String(err.stderr), /\n\s+at /, 'no stack trace');
+});
+
 test('writes detect.json into the target repo', () => {
   const d = bare();
   cli(d);

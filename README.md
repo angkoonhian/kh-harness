@@ -251,7 +251,7 @@ scaffold is empty by construction.
 | | |
 |---|---|
 | `0` | did what it said |
-| `2` | could not act (bad path, unreadable settings, a write or removal failed) |
+| `2` | could not act (bad path, unreadable settings, a write or removal failed, `detect` could not write its report) |
 | `3` | refused to act (default branch, dirty tree, corrupt manifest, no manifest) |
 
 Nothing else. A crash is a bug, not a contract.

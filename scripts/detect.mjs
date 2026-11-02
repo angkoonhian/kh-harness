@@ -65,9 +65,18 @@ if (flags.has('--verify')) {
   report.verification = verifyCommands({ root, stack, profile });
 }
 
-// The one and only write.
+// The one and only write. Guarded (audit Tier 2, finding 16): `docs`
+// present as a file, or a read-only tree, used to escape as a stack trace
+// and exit 1 — and the README says a crash is a bug, not a contract. Exit 2
+// with the path and the error code; nothing else was written.
 const outDir = join(root, 'docs', 'harness');
-mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, 'detect.json'), JSON.stringify(report, null, 2) + '\n', 'utf8');
+const outPath = join(outDir, 'detect.json');
+try {
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(outPath, JSON.stringify(report, null, 2) + '\n', 'utf8');
+} catch (err) {
+  process.stderr.write(`kh-harness: could not write ${outPath} (${err?.code ?? err?.message ?? 'unknown error'}) — the report was not saved, and nothing else is written by detect.\n`);
+  process.exit(2);
+}
 
 process.stdout.write(flags.has('--json') ? JSON.stringify(report, null, 2) + '\n' : renderSummary(report) + '\n');
