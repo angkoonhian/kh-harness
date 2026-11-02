@@ -29,7 +29,13 @@
 //   - Superseded rules are skipped: they are a record, not a claim.
 //   - Every emitted line passes `maskCredentials`, the same shared mask the
 //     other hooks apply to stderr — a rule's text is the user's prose and may
-//     carry anything.
+//     carry anything — and `stripUnsafe` first: C0/C1 control characters and
+//     the Unicode bidirectional and zero-width format characters are removed,
+//     so a right-to-left override in a rule cannot reach the model (audit
+//     Tier 4, finding 25).
+//   - The block is wrapped in `<project-rules source="…">` … `</project-rules>`,
+//     so the model can tell the injected rules from the prompt they arrive
+//     beside, and knows the file they come from.
 //
 // The parser (`parseRules`) and the registry's location (`findRules`,
 // `RULES_PATH`) come from harness-redact.mjs, the one module shared with
@@ -95,12 +101,22 @@ if (active.length === 0) process.exit(0);
 // preserved within each group.
 const ordered = [...active.filter(r => r.priority === 'high'), ...active.filter(r => r.priority !== 'high')];
 
+// C0 and C1 controls except tab and newline, and the Unicode format
+// characters that reorder or hide text: zero-width (U+200B–U+200F), bidi
+// embeddings and overrides (U+202A–U+202E), bidi isolates (U+2066–U+2069)
+// and the byte-order mark.
+const UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+const stripUnsafe = s => s.replace(UNSAFE, '');
+
+const open = `<project-rules source="${RULES_PATH}">`;
+const close = '</project-rules>';
 const header = `Project rules (${RULES_PATH}):`;
-const lines = [header];
-let used = Buffer.byteLength(header, 'utf8');
+const lines = [open, header];
+// The closing tag is reserved up front so the bound holds with it in place.
+let used = Buffer.byteLength(open, 'utf8') + 1 + Buffer.byteLength(header, 'utf8') + 1 + Buffer.byteLength(close, 'utf8');
 let shown = 0;
 for (const r of ordered) {
-  const line = maskCredentials(`- ${r.id}: ${r.rule} [enforced-by: ${r.enforcedBy}]`);
+  const line = maskCredentials(stripUnsafe(`- ${r.id}: ${r.rule} [enforced-by: ${r.enforcedBy}]`));
   const remaining = ordered.length - shown - 1;
   // Reserve room for the "… N more" notice if this is not the last rule,
   // so adding this line can never force the notice itself over the cap.
@@ -114,7 +130,8 @@ for (const r of ordered) {
 if (shown < ordered.length) lines.push(`… ${ordered.length - shown} more rule(s) in ${RULES_PATH}`);
 // Nothing fit at all (an absurdly small bound): still say where the rules
 // are, rather than emit an empty context.
-if (shown === 0 && lines.length === 1) lines.push(`… ${ordered.length} more rule(s) in ${RULES_PATH}`);
+if (shown === 0 && lines.length === 2) lines.push(`… ${ordered.length} more rule(s) in ${RULES_PATH}`);
+lines.push(close);
 
 process.stdout.write(JSON.stringify({
   hookSpecificOutput: {

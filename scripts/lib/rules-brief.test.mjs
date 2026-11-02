@@ -49,7 +49,7 @@ test('emits one JSON object with hookEventName UserPromptSubmit and the rules as
   const out = run(d);
   assert.ok(out.endsWith('\n'), 'one object, one trailing newline');
   const text = injected(out);
-  assert.match(text, /^Project rules \(docs\/harness\/RULES\.md\):\n/);
+  assert.match(text, /^<project-rules source="docs\/harness\/RULES\.md">\nProject rules \(docs\/harness\/RULES\.md\):\n/);
   assert.match(text, /^- R1: Every query is scoped to the current tenant \[enforced-by: critic\]$/m);
   assert.match(text, /^- R2: Money is integer cents \[enforced-by: test\]$/m);
 });
@@ -100,6 +100,36 @@ test('a credential-shaped value in a rule line is masked before it reaches stdou
   const out = run(d);
   assert.equal(out.includes(token), false, 'the token must never reach stdout');
   assert.match(injected(out), /\*\*\*/);
+});
+
+// --- Audit Tier 4, finding 25: control and bidi characters, and a delimiter --
+//
+// A rule's text is the user's prose and reaches the model on every prompt.
+// A right-to-left override or a C0 control character in it would reach the
+// model too; and an undelimited block is indistinguishable from the prompt.
+test('control and bidirectional-format characters never reach the injected context', () => {
+  const d = repo();
+  registry(d, `## R1 — Never ‮evom‬ the ledger\u0007 file​\n- enforced-by: none\n`);
+  const text = injected(run(d));
+  for (const ch of ['‮', '‬', '\u0007', '​']) assert.equal(text.includes(ch), false, `U+${ch.codePointAt(0).toString(16)} must be stripped`);
+  assert.match(text, /Never evom the ledger file/, 'the visible text survives');
+});
+
+test('the injected block is delimited and names its source', () => {
+  const d = repo();
+  registry(d, TWO_RULES);
+  const text = injected(run(d));
+  assert.ok(text.startsWith(`<project-rules source="${RULES_PATH}">\n`), text.slice(0, 80));
+  assert.ok(text.endsWith('\n</project-rules>'), text.slice(-40));
+});
+
+test('the byte bound counts the delimiter', () => {
+  const d = repo();
+  const many = Array.from({ length: 12 }, (_, i) => `## R${i} — rule number ${i} with some words to take up space\n- enforced-by: none\n`).join('');
+  registry(d, many);
+  const text = injected(run(d, { HK_RULES_BRIEF_MAX_BYTES: '300' }));
+  assert.ok(Buffer.byteLength(text, 'utf8') <= 300, `got ${Buffer.byteLength(text, 'utf8')} bytes`);
+  assert.ok(text.endsWith('</project-rules>'));
 });
 
 test('no registry → no output, exit 0', () => {
