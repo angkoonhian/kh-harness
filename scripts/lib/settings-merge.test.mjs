@@ -35,6 +35,19 @@ test('hasEquivalentHook detects an existing command', () => {
   assert.equal(hasEquivalentHook({}, 'SessionStart', ENTRY.command), false);
 });
 
+// Audit Tier 2, finding 7 (second half): the same command under a DIFFERENT
+// matcher is a different hook — a user's `node x.mjs` under `Bash` used to
+// suppress our `Write|Edit` registration of the same script.
+test('hasEquivalentHook distinguishes the same command under a different matcher', () => {
+  const { settings } = addHookEntry({}, 'PostToolUse', ENTRY, 'Bash');
+  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command, 'Write|Edit'), false, 'theirs is under Bash; ours would be under Write|Edit');
+  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command, 'Bash'), true);
+  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command), false, 'no matcher means "every tool", which is not the same as Bash');
+  const { settings: unmatched } = addHookEntry({}, 'SessionStart', ENTRY);
+  assert.equal(hasEquivalentHook(unmatched, 'SessionStart', ENTRY.command), true, 'an absent matcher on both sides is equivalent');
+  assert.equal(hasEquivalentHook(unmatched, 'SessionStart', ENTRY.command, undefined), true);
+});
+
 // --- optional matcher (PostToolUse needs one; SessionStart never has) -----
 
 test('addHookEntry with no matcher argument omits the matcher key entirely (unchanged behaviour)', () => {

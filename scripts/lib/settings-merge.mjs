@@ -46,10 +46,27 @@ export function addHookEntry(settings, event, entry, matcher) {
   };
 }
 
-export function hasEquivalentHook(settings, event, command) {
+/** Claude Code treats an omitted matcher, `""` and `"*"` alike: every
+ * tool. Normalised so the comparison below cannot tell them apart either. */
+function matchAllOrSelf(matcher) {
+  return matcher === undefined || matcher === '' || matcher === '*' ? undefined : matcher;
+}
+
+/**
+ * True when `command` is already registered on `event` under the SAME
+ * matcher. Audit Tier 2, finding 7: the matcher used to be ignored, so a
+ * user's own `node x.mjs` under `Bash` suppressed our `Write|Edit`
+ * registration of the same script — a different hook, since the matcher is
+ * what decides when it fires. (The entry hash `addHookEntry` records has
+ * always included the matcher; only this check did not.)
+ */
+export function hasEquivalentHook(settings, event, command, matcher) {
   const matchers = settings?.hooks?.[event];
   if (!Array.isArray(matchers)) return false;
-  return matchers.some(m => Array.isArray(m?.hooks) && m.hooks.some(h => h?.command === command));
+  const wanted = matchAllOrSelf(matcher);
+  return matchers.some(m => Array.isArray(m?.hooks)
+    && matchAllOrSelf(m.matcher) === wanted
+    && m.hooks.some(h => h?.command === command));
 }
 
 export function addDenyRules(settings, globs) {

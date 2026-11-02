@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlin
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
-import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, isWellFormedHooks, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 
@@ -566,6 +566,56 @@ test('applyProposals never throws on a malformed permissions.deny — skips it a
   assert.equal(r.patched.length, 0);
   assert.equal(r.failed.length, 0, 'this is a refusal, not a write failure');
   assert.equal(r.skipped[0].why, 'unparseable');
+});
+
+// --- Audit Tier 2, finding 7: a malformed `hooks` block crashed --yes after
+// --- the dry run had promised success ----------------------------------------
+//
+// `readSettingsResult` validated `permissions` but not `hooks`, so
+// `{"hooks":{"Stop":{…}}}` reached `addHookEntry`'s `.push` and threw a
+// TypeError — exit 2 after a dry run that showed a clean diff. The same
+// discipline as the malformed-deny shapes above: refuse at the one read,
+// and both callers route through the paths they already have.
+
+const MALFORMED_HOOKS_SHAPES = [
+  ['hooks is an array', { hooks: [] }],
+  ['an event is an object, not an array', { hooks: { Stop: {} } }],
+  ['a matcher entry is a string', { hooks: { Stop: ['node x.mjs'] } }],
+  ['a matcher entry\'s hooks is an object', { hooks: { Stop: [{ hooks: {} }] }, permissions: { deny: [] } }],
+];
+const stopHookProposal = { kind: 'settings-hook', event: 'Stop', step: 10, entry: { type: 'command', command: 'node verify.mjs' }, checkId: 'P2.stopgate', reason: 'r' };
+
+test('isWellFormedHooks accepts the shapes Claude Code documents and nothing else', () => {
+  for (const ok of [undefined, {}, { Stop: [] }, { Stop: [{ hooks: [{ type: 'command', command: 'x' }] }] }, { PostToolUse: [{ matcher: 'Edit', hooks: [] }] }, { Stop: [{ matcher: 'x' }] }]) {
+    assert.equal(isWellFormedHooks(ok), true, JSON.stringify(ok));
+  }
+  for (const [label, shape] of MALFORMED_HOOKS_SHAPES) assert.equal(isWellFormedHooks(shape.hooks), false, label);
+  assert.equal(isWellFormedHooks(null), false);
+  assert.equal(isWellFormedHooks('hooks'), false);
+});
+
+test('renderDiff never throws on a malformed hooks block — reports it like unparseable JSON instead', () => {
+  for (const [label, shape] of MALFORMED_HOOKS_SHAPES) {
+    const d = repo();
+    mkdirSync(join(d, '.claude'), { recursive: true });
+    writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(shape));
+    assert.doesNotThrow(() => renderDiff(d, stopHookProposal), label);
+    assert.match(renderDiff(d, stopHookProposal), /could not be parsed as a JSON object/, `${label}: the dry run must say what --yes will say`);
+  }
+});
+
+test('applyProposals never throws on a malformed hooks block — skips it as unparseable, writes nothing', () => {
+  for (const [label, shape] of MALFORMED_HOOKS_SHAPES) {
+    const d = repo();
+    mkdirSync(join(d, '.claude'), { recursive: true });
+    const original = JSON.stringify(shape);
+    writeFileSync(join(d, '.claude/settings.json'), original);
+    let r;
+    assert.doesNotThrow(() => { r = applyProposals({ root: d, proposals: [stopHookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' }); }, label);
+    assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), original, `${label}: must not touch a settings.json it cannot safely merge into`);
+    assert.equal(r.patched.length, 0, label);
+    assert.equal(r.skipped[0]?.why, 'unparseable', label);
+  }
 });
 
 // --- Whole-branch review, F7: one canonical-form predicate, not two ------

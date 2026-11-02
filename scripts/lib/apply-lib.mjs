@@ -226,6 +226,22 @@ function unifiedDiff(before, after, label) {
 }
 
 /**
+ * True for a `hooks` block shaped the way Claude Code documents it —
+ * `{ "<Event>": [ { "matcher"?: string, "hooks"?: [ … ] } ] }` — or for an
+ * absent one. Audit Tier 2, finding 7: `readSettingsResult` validated
+ * `permissions` and not `hooks`, so `{"hooks":{"Stop":{}}}` passed the read,
+ * `addHookEntry` then threw a TypeError on `.push`, and `--yes` exited 2
+ * after a dry run that had shown a clean diff. Exported for its test only.
+ */
+export function isWellFormedHooks(hooks) {
+  if (hooks === undefined) return true;
+  if (hooks === null || typeof hooks !== 'object' || Array.isArray(hooks)) return false;
+  return Object.values(hooks).every(matchers => Array.isArray(matchers) && matchers.every(m =>
+    m !== null && typeof m === 'object' && !Array.isArray(m) && (m.hooks === undefined || Array.isArray(m.hooks)),
+  ));
+}
+
+/**
  * Reads `.claude/settings.json`. Distinguishes "absent" (fine — treated as
  * `{}`) from "present but unreadable as a settings object" (parse error, or
  * valid JSON that is not a plain object — an array, a string, null, ...).
@@ -267,6 +283,10 @@ function readSettingsResult(root) {
   }
   const deny = permissions?.deny;
   if (deny !== undefined && !Array.isArray(deny)) {
+    return { ok: false };
+  }
+  // Same discipline for `hooks` — see isWellFormedHooks.
+  if (!isWellFormedHooks(parsed.hooks)) {
     return { ok: false };
   }
 
@@ -612,7 +632,7 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
   }
 
   const settings = result.settings;
-  if (hasEquivalentHook(settings, proposal.event, proposal.entry?.command)) {
+  if (hasEquivalentHook(settings, proposal.event, proposal.entry?.command, proposal.matcher)) {
     skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
     return;
   }
