@@ -37,7 +37,23 @@
 // disagree about what a rule is.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { findRules, maskCredentials, parseRules, projectRoot, RULES_PATH } from './harness-redact.mjs';
+
+// UPGRADE SKEW, found on a real repository: kh-harness 0.1.0's
+// harness-redact.mjs was already installed beside this hook, and that copy
+// has no `parseRules` — a static named import died at link time with a
+// stack trace on every prompt. A dynamic import lets this hook probe the
+// asset's shape and fail VISIBLY instead: one stderr line naming the fix,
+// exit 1 (Claude Code shows a hook-error notice; exit 2 would BLOCK the
+// prompt, which a reminder must never do), and nothing on stdout. Silent
+// exit 0 was rejected: a reminder that quietly stopped arriving is the
+// failure this whole phase exists to prevent.
+const asset = await import('./harness-redact.mjs');
+const NEEDED = ['findRules', 'maskCredentials', 'parseRules', 'projectRoot', 'RULES_PATH'];
+if (NEEDED.some(name => !(name in asset))) {
+  process.stderr.write('kh-harness rules-brief: .claude/scripts/harness-redact.mjs is older than this hook and lacks what it needs — re-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset.\n');
+  process.exit(1);
+}
+const { findRules, maskCredentials, parseRules, projectRoot, RULES_PATH } = asset;
 
 export const RULES_BRIEF_MAX_BYTES = 1500;
 // Overridable only so a test can exercise the truncation path cheaply;

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { render, versionStamp, STAMP_MARKER } from './render.mjs';
+import { classify, sha256 } from './manifest.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
@@ -610,7 +611,8 @@ const GENERATORS = {
  */
 export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files, generators = {} }) {
   const registry = { ...GENERATORS, ...generators };
-  const alreadyWritten = new Set((manifest?.files ?? []).map(f => f.path));
+  const recorded = new Map((manifest?.files ?? []).map(f => [f.path, f]));
+  const alreadyWritten = new Set(recorded.keys());
   const out = [];
   for (const c of checks) {
     // Both gates, read from the check — never re-derived here.
@@ -618,7 +620,29 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
     const gen = registry[c.id];
     if (!gen) continue;
     for (const p of gen({ kitVersion, harness, root, stack, checks, files, check: c })) {
-      if (p.kind === 'file' && alreadyWritten.has(p.path)) continue;
+      if (p.kind === 'file' && alreadyWritten.has(p.path)) {
+        // UPGRADE SKEW (found by the Phase 3 trial on a real repository): a
+        // prior run's harness-redact.mjs was recorded in the manifest, so
+        // the dedupe kept the 0.1.0 copy while installing a hook that
+        // imports `parseRules` from it — a hook that died at import on
+        // every prompt. The spec's own manifest table (§8) says a file
+        // whose bytes still match its manifest hash is "ours and
+        // unmodified — may be UPDATED"; apply-lib.mjs's `applyFileProposal`
+        // has implemented that update branch all along. Only this dedupe
+        // never offered it anything. So: a recorded path is re-proposed
+        // when, and only when, (a) `root` is known, (b) `classify` says the
+        // on-disk file is still byte-identical to what we wrote — a user's
+        // edit, or a deletion, keeps the old rule — and (c) the generated
+        // content differs, so there is something to update. The `reason`
+        // says all of that, because it is printed at the gate.
+        const entry = recorded.get(p.path);
+        const upgradable = root && entry
+          && classify(root, manifest, p.path) === 'ours-unmodified'
+          && sha256(p.contents) !== entry.sha256;
+        if (!upgradable) continue;
+        out.push({ ...p, checkId: c.id, reason: `update ${p.path} — unmodified since kh-harness wrote it, and the generated content has changed (${p.reason})` });
+        continue;
+      }
       out.push({ ...p, checkId: c.id });
       if (p.kind === 'file') alreadyWritten.add(p.path);
     }
