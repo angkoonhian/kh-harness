@@ -6,21 +6,26 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # 22 is the floor package.json declares; 24 is current. Both run, so
+        # the floor is exercised and not merely claimed.
+        node: ['22', '24']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
-      - run: npm test
+          node-version: ${{ matrix.node }}
       # The manifest is platform-independent JSON — the validator reads the same bytes on
       # every OS — so this gate runs once, on Linux only, same as Task 6's eval step.
+      # Installed BEFORE npm test so the LOAD-BEARING plugin-manifest test in the suite
+      # runs there instead of skipping for want of the binary.
       - name: Install Claude Code CLI
         if: runner.os == 'Linux'
         # Deliberately unpinned: the point of this gate is to notice when the installed
         # CLI's validation behavior changes. If this step turns CI red on a commit that
         # didn't touch the plugin, the CLI released a new version, not a plugin regression.
         run: npm install -g @anthropic-ai/claude-code
+      - run: npm test
       - name: Validate the plugin manifest
         if: runner.os == 'Linux'
         shell: bash

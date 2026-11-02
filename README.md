@@ -166,7 +166,7 @@ itself created are removed; a directory that existed beforehand never is.
 
 ## What installing the hooks means — read this before `apply`
 
-`apply` can install three Claude Code hooks. Two of them cause **this
+`apply` can install four Claude Code hooks. Two of them cause **this
 repository's own scripts to be executed automatically**, by Claude Code,
 without being asked each time:
 
@@ -188,8 +188,8 @@ that edits `scripts.lint` therefore changes what now runs by itself.
 
 The `Stop` gate's cost scales with the size of the **repository**, not the size
 of the edit. On a large codebase expect 10–30s added per turn. If that is the
-wrong trade for you, do not install it — or `uninstall` it, which reverts both
-hooks and removes both scripts.
+wrong trade for you, do not install it — or `uninstall` it, which reverts the
+hooks it installed and removes their scripts.
 
 Neither hook is installed unless its check reported `absent` **and** you ran
 `apply --yes`. Both hooks' output is bounded and passes a two-layer credential
@@ -323,8 +323,9 @@ the skill routes to are covered by the unit suite instead.
 
 Evaluation suites exist under `evals/` and run via `claude plugin eval`. Each
 run spawns a full `claude` child process, so locally they use whatever
-credential you are already logged in with — no API key needed. CI is the
-case that needs `ANTHROPIC_API_KEY`, because no interactive login exists
-there; the workflow skips with a notice rather than failing red until that
-secret is set. Note the defaults: 3 runs per case across 2 arms, so the two
-cases here are 12 agent runs per invocation.
+credential you are already logged in with — no API key needed. In CI the
+`eval` job runs only on `workflow_dispatch`, on `CLAUDE_CODE_OAUTH_TOKEN`
+(the subscription credential, from `claude setup-token`) or, failing that,
+`ANTHROPIC_API_KEY` (API billing); with neither secret set the job shows as
+skipped, never as passed. Each invocation runs every case with and without
+the plugin.

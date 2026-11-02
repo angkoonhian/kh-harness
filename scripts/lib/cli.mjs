@@ -73,7 +73,7 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
   A repository's own lint/test script is arbitrary code in every project; what
   changes here is that you stop typing it. A \`git pull\` that edits
   \`scripts.lint\` therefore changes what runs by itself. \`uninstall\` reverses
-  both hooks. Neither is installed unless its check reported \`absent\` and you
+  the hooks it installed. Neither is installed unless its check reported \`absent\` and you
   ran \`apply --yes\`.
 
   Each hook is registered in Claude Code's exec form — \`node\` plus the
