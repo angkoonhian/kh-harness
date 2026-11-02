@@ -201,6 +201,34 @@ test('hookEvents groups several events and several hooks per event', () => {
   assert.deepEqual(ev.Stop, [null]);
 });
 
+// --- Tier 2 final review, Important 1: the matcher reaches detection ----------
+//
+// `hookEvents` is a flat list of script paths with the matcher discarded, so
+// our lint-touched.mjs registered under `Bash` read as a per-edit sensor in
+// place. `hookRegistrations` keeps the matcher beside the resolved script —
+// still never the command string — and is what `registeredHook` decides
+// from.
+test('hookRegistrations records each hook\'s resolved script with its normalised matcher, never the command', () => {
+  const d = repo();
+  write(d, 'bin/fmt.sh', '#');
+  write(d, 'bin/lint.sh', '#');
+  write(d, '.claude/settings.json', JSON.stringify({
+    hooks: {
+      PostToolUse: [
+        { matcher: 'Write|Edit', hooks: [{ type: 'command', command: 'sh bin/fmt.sh --write' }] },
+        { matcher: 'Edit', hooks: [{ type: 'command', command: 'sh bin/lint.sh' }] },
+      ],
+      Stop: [{ hooks: [{ type: 'command', command: 'make verify' }] }],
+      SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'sh bin/fmt.sh' }] }],
+    },
+  }));
+  const regs = run(d).claudeDir.hookRegistrations;
+  assert.deepEqual(regs.PostToolUse, [{ script: 'bin/fmt.sh', matcher: 'Edit|Write' }, { script: 'bin/lint.sh', matcher: 'Edit' }], 'a plain alternation is sorted, so Write|Edit and Edit|Write are one matcher');
+  assert.deepEqual(regs.Stop, [{ script: null, matcher: null }]);
+  assert.deepEqual(regs.SessionStart, [{ script: 'bin/fmt.sh', matcher: null }], '"*" is every source, the same as an omitted matcher');
+  assert.equal(JSON.stringify(regs).includes('--write'), false, 'the command itself is never recorded');
+});
+
 test('hookEvents also reads .claude/settings.local.json', () => {
   const d = repo();
   write(d, 'a.mjs', '//');

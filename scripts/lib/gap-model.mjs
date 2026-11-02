@@ -5,6 +5,7 @@ import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates, denyRuleCoverage } from './protected-evidence.mjs';
+import { matcherCovers, normalizeMatcher } from './settings-merge.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote, fixtureExposureNote } from './detect-exposure.mjs';
@@ -16,7 +17,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // one source of truth, so the check and the generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, SENSOR_MATCHER } from './propose.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 
@@ -224,14 +225,17 @@ function typecheckAdvice(pkg, files, root) {
  * is occupied.
  *
  * This is the same identification `apply-lib.mjs`'s `hasEquivalentHook` uses
- * (an exact command match against the real settings object), expressed
- * against the representation THIS layer already carries safely: `hookEvents`
- * resolves each hook's command to a script PATH (or `null` when it can't),
- * never the raw command string, specifically so a credential embedded in a
- * hook's arguments never reaches `harness` — which is serialised wholesale
- * into docs/harness/detect.json on every run. Calling `hasEquivalentHook`
- * itself here would need the raw settings object threaded into this check,
- * which has nowhere safe to live: stashing it on `harness` would undo that
+ * — the script, under a matcher that fires whenever ours would
+ * (`matcherCovers`, settings-merge.mjs; Tier 2 review, Important 1: crediting
+ * by path alone read our per-edit sensor registered under `Bash` as in
+ * place) — expressed against the representation THIS layer carries safely:
+ * `hookRegistrations` resolves each hook's command to a script PATH (or
+ * `null` when it can't) beside its normalised matcher, never the raw command
+ * string, specifically so a credential embedded in a hook's arguments never
+ * reaches `harness` — which is serialised wholesale into
+ * docs/harness/detect.json on every run. Calling `hasEquivalentHook` itself
+ * here would need the raw settings object threaded into this check, which
+ * has nowhere safe to live: stashing it on `harness` would undo that
  * redaction for every hook on every event, not just the one this check
  * cares about.
  *
@@ -243,9 +247,19 @@ function typecheckAdvice(pkg, files, root) {
  * `absent` + the proposal, with evidence naming what else is already there,
  * so adding a second entry to the same event is never a surprise.
  */
-function registeredHook(harness, event, ourPath, proposal, { manifest, root } = {}) {
-  const scripts = harness.claudeDir.hookEvents?.[event] ?? [];
-  if (scripts.includes(ourPath)) {
+function registeredHook(harness, event, ourPath, proposal, { manifest, root, matcher } = {}) {
+  const registrations = harness.claudeDir.hookRegistrations?.[event] ?? [];
+  const scripts = registrations.map(r => r.script);
+  const ours = registrations.filter(r => r.script === ourPath);
+  if (ours.length && !ours.some(r => matcherCovers(r.matcher, matcher))) {
+    // Registered, but under a matcher that does not fire when ours would:
+    // not the capability, and the user is told exactly why.
+    return {
+      state: 'absent', proposal,
+      evidence: ours.map(r => `${event} hook: ${ourPath} is registered, but under matcher "${r.matcher}", which does not fire for ${normalizeMatcher(matcher)} — a registration that does is still needed`),
+    };
+  }
+  if (ours.length) {
     // Coordinator finding (Minor): this used to list EVERY resolved script
     // on the event, presenting a user's own, unrelated hook as part of
     // OUR credit. List only ours — if theirs is worth mentioning, it is
@@ -795,7 +809,7 @@ const CHECKS = [
     // ASK, not propose.
     check: ({ harness, stack, manifest, root }) => {
       const hook = registeredHook(harness, 'PostToolUse', LINT_TOUCHED_PATH,
-        'install scripts/lint-touched.mjs and register a PostToolUse hook', { manifest, root });
+        'install scripts/lint-touched.mjs and register a PostToolUse hook', { manifest, root, matcher: SENSOR_MATCHER });
       if (hook.state === 'declared') return hook;
       if (hasLintScript(stack)) return hook;
       // Coordinator finding (Minor): occupant evidence (what registeredHook
@@ -903,7 +917,9 @@ const CHECKS = [
       if (covered.length) {
         evidence.push(`${covered.length} of ${candidates.length} protected path(s) already covered: ${covered.map(describe).join('; ')}`);
       }
-      if (unrelated.length) evidence.push(`existing deny rule(s) that do not match a protected path this repository has evidence for: ${unrelated.join(', ')}`);
+      // "Could not relate", not "do not protect": this tool's matcher is
+      // narrower than Claude Code's on `**/` (Tier 2 review, Minor 4).
+      if (unrelated.length) evidence.push(`existing deny rule(s) this tool's matcher could not relate to a protected path this repository has evidence for: ${unrelated.join(', ')}`);
       if (redactedCount) evidence.push(`plus ${redactedCount} existing deny rule(s) not shown here (not a path-taking permission)`);
       return { state: 'absent', evidence, proposal: 'create .claude/settings.json with deny rules for protected paths' };
     },

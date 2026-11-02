@@ -39,6 +39,7 @@ import { readIfPresent, existsAny } from './scan.mjs';
 import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
 import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
+import { normalizeMatcher } from './settings-merge.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
   'scripts/bootstrap.sh', 'scripts/bootstrap.ps1', 'scripts/setup.sh', 'scripts/setup.ps1',
@@ -212,32 +213,44 @@ function commandScript(command, files) {
  * Shape parsed (Claude Code's):
  *   { "hooks": { "<Event>": [ { "matcher": "…", "hooks": [ { "command": "…" } ] } ] } }
  *
- * Each registered hook contributes ONE entry: its resolved script path, or
- * `null` when none resolves. The command string itself is never recorded — see
- * commandScript below. An event's entry count is therefore how many hooks are
- * wired to it, which is what the checks read.
+ * Each registered hook contributes ONE entry: its resolved script path (or
+ * `null` when none resolves) and its normalised matcher. The command string
+ * itself is never recorded — see commandScript below. `hookEvents` is the
+ * same registry reduced to paths, for pointer resolution.
  *
  * Never throws: a missing file, bad JSON or any malformed shape yields `{}`.
  */
-function hookEvents(root, files) {
+function hookRegistrations(root, files) {
   const out = {};
   for (const rel of SETTINGS_FILES) {
     const hooks = parseSettings(root, rel)?.hooks;
     if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) continue;
     for (const [event, matchers] of Object.entries(hooks)) {
       for (const matcher of Array.isArray(matchers) ? matchers : []) {
+        // Tier 2 review, Important 1: the matcher decides WHEN a hook fires,
+        // so it is recorded beside the resolved script — our per-edit sensor
+        // under `Bash` is not a per-edit sensor. Normalised by the same
+        // function the write-time dedupe uses. Never the command string.
+        const m = normalizeMatcher(typeof matcher?.matcher === 'string' ? matcher.matcher : undefined);
         for (const entry of Array.isArray(matcher?.hooks) ? matcher.hooks : []) {
           const command = typeof entry?.command === 'string' ? entry.command.trim() : '';
           if (!command) continue;
-          (out[event] ??= []).push(commandScript(command, files));
+          (out[event] ??= []).push({ script: commandScript(command, files), matcher: m });
         }
       }
     }
   }
-  for (const event of Object.keys(out)) {
-    const uniq = [...new Set(out[event])];
-    // Resolved paths first, in a stable order; one trailing null if any hook
-    // on this event could not be resolved to a path.
+  return out;
+}
+
+/** The registry as script paths per event, derived from `hookRegistrations`
+ * — what `rules-evidence.mjs` resolves `settings:hooks.<Event>` pointers
+ * against. Resolved paths first, in a stable order; one trailing null if
+ * any hook on the event could not be resolved to a path. */
+function hookEvents(registrations) {
+  const out = {};
+  for (const [event, regs] of Object.entries(registrations)) {
+    const uniq = [...new Set(regs.map(r => r.script))];
     out[event] = [...uniq.filter(p => p !== null).sort(), ...(uniq.includes(null) ? [null] : [])];
   }
   return out;
@@ -382,6 +395,8 @@ export function detectHarness(root, files) {
   const agentsMd = readIfPresent(root, 'AGENTS.md');
   const instructionsPath = claudeMd != null ? 'CLAUDE.md' : (agentsMd != null ? 'AGENTS.md' : null);
   const denyInEffect = denyRulesInEffect(root);
+  // One parse of both settings files for every hook field below.
+  const registrations = hookRegistrations(root, files);
 
   const harness = {
     instructions: { path: instructionsPath, lines: lineCount(claudeMd ?? agentsMd) },
@@ -412,7 +427,8 @@ export function detectHarness(root, files) {
       // IS committed. See `registeredHook`'s own comment on that discipline.
       // Checked while fixing F2, and left alone on purpose.
       hooks: under(files, '.claude/scripts/'),
-      hookEvents: hookEvents(root, files),
+      hookRegistrations: registrations,
+      hookEvents: hookEvents(registrations),
       agents: under(files, '.claude/agents/', '.md'),
       skills: under(files, '.claude/skills/', '.md'),
       commands: under(files, '.claude/commands/', '.md'),

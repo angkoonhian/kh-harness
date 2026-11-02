@@ -46,26 +46,60 @@ export function addHookEntry(settings, event, entry, matcher) {
   };
 }
 
-/** Claude Code treats an omitted matcher, `""` and `"*"` alike: every
- * tool. Normalised so the comparison below cannot tell them apart either. */
-function matchAllOrSelf(matcher) {
-  return matcher === undefined || matcher === '' || matcher === '*' ? undefined : matcher;
+/**
+ * A matcher, normalised. Claude Code treats an omitted matcher, `""` and
+ * `"*"` alike — every tool (or every source) — so those become `null`. A
+ * plain alternation of names (`Write|Edit`, `Edit, Write`) is a SET: it is
+ * returned sorted and `|`-joined, so order cannot tell two equal sets apart.
+ * Anything holding another character is a regular expression and is kept as
+ * written. Shared with detect-harness.mjs (`hookRegistrations`) so detection
+ * and the write-time dedupe cannot disagree about what a matcher means.
+ */
+export function normalizeMatcher(matcher) {
+  if (matcher === undefined || matcher === null || matcher === '' || matcher === '*') return null;
+  const m = String(matcher).trim();
+  if (m === '' || m === '*') return null;
+  if (/^[\w\s|,-]+$/.test(m)) return [...new Set(m.split(/[|,]/).map(s => s.trim()).filter(Boolean))].sort().join('|');
+  return m;
+}
+
+const PLAIN_LIST = /^[\w-]+(?:\|[\w-]+)*$/;
+
+/**
+ * True when a hook registered under `theirs` fires whenever one registered
+ * under `ours` would: ours needs no matcher (then any registration of the
+ * script counts — narrowing a SessionStart brief to `startup|resume` is the
+ * user's choice, not a missing hook), theirs is every tool, the two sets are
+ * equal, or theirs is a superset. A regular expression is never assumed to
+ * cover a list. Tier 2 review, Important 1: `registeredHook` credited by
+ * script path alone, so our per-edit sensor registered under `Bash` — a
+ * hook that never fires on an edit — read as `declared`.
+ */
+export function matcherCovers(theirs, ours) {
+  const o = normalizeMatcher(ours);
+  if (o === null) return true;
+  const t = normalizeMatcher(theirs);
+  if (t === null || t === o) return true;
+  if (PLAIN_LIST.test(t) && PLAIN_LIST.test(o)) {
+    const have = new Set(t.split('|'));
+    return o.split('|').every(name => have.has(name));
+  }
+  return false;
 }
 
 /**
- * True when `command` is already registered on `event` under the SAME
- * matcher. Audit Tier 2, finding 7: the matcher used to be ignored, so a
- * user's own `node x.mjs` under `Bash` suppressed our `Write|Edit`
- * registration of the same script — a different hook, since the matcher is
- * what decides when it fires. (The entry hash `addHookEntry` records has
- * always included the matcher; only this check did not.)
+ * True when `command` is already registered on `event` under a matcher that
+ * covers `matcher` (see matcherCovers). Audit Tier 2, finding 7: the matcher
+ * used to be ignored, so a user's own `node x.mjs` under `Bash` suppressed
+ * our `Write|Edit` registration of the same script — a different hook, since
+ * the matcher is what decides when it fires. (The entry hash `addHookEntry`
+ * records has always included the matcher; only this check did not.)
  */
 export function hasEquivalentHook(settings, event, command, matcher) {
   const matchers = settings?.hooks?.[event];
   if (!Array.isArray(matchers)) return false;
-  const wanted = matchAllOrSelf(matcher);
   return matchers.some(m => Array.isArray(m?.hooks)
-    && matchAllOrSelf(m.matcher) === wanted
+    && matcherCovers(m.matcher, matcher)
     && m.hooks.some(h => h?.command === command));
 }
 

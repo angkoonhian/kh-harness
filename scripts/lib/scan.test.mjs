@@ -58,14 +58,14 @@ test('the fallback walk never enters an excluded directory', () => {
   writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;');
   const big = join(d, 'node_modules', 'big');
   mkdirSync(big, { recursive: true });
-  for (let i = 0; i < 5000; i++) writeFileSync(join(big, `f${i}.js`), '//');
+  for (let i = 0; i < 1500; i++) writeFileSync(join(big, `f${i}.js`), '//');
 
   walkFiles(d); // warm the directory cache so the timings below measure the walks, not the disk
   // The WALK is timed, not listFiles (which first spends ~170 ms asking git
   // whether this is a repository), and RELATIVE to enumerating everything in
   // the same process, so load from the rest of the suite scales both sides
   // (a fixed bound flaked at 426 ms under the full suite). Enumerating lists
-  // 5,000 entries; pruning reads three directories.
+  // 1,500 entries; pruning reads three directories.
   const t0 = performance.now();
   readdirSync(d, { recursive: true, withFileTypes: true });
   const enumerateMs = performance.now() - t0;

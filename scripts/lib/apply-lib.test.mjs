@@ -633,6 +633,23 @@ test('a run that writes nothing leaves the recorded kit version alone', () => {
   assert.equal(r.manifest.kitVersion, '0.1.0');
 });
 
+// Tier 2 final review, Minor 8: the matcher travels from the proposal into the
+// dedupe — guarded here through applyProposals, not only in settings-merge.
+test('a settings-hook proposal with a matcher is written alongside the same command registered under a different matcher', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
+    hooks: { PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node .claude/scripts/lint-touched.mjs' }] }] },
+  }));
+  const p = {
+    kind: 'settings-hook', event: 'PostToolUse', step: 9, matcher: 'Write|Edit',
+    entry: { type: 'command', command: 'node .claude/scripts/lint-touched.mjs' }, checkId: 'P2.sensor', reason: 'r',
+  };
+  const r = applyProposals({ root: d, proposals: [p], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(r.patched.length, 1, 'under Bash it never fires on an edit, so ours is a different hook');
+  assert.equal(r.skipped.length, 0);
+});
+
 // --- Whole-branch review, F7: one canonical-form predicate, not two ------
 //
 // `apply.mjs`'s `alreadyCanonical` and `uninstall-lib.mjs`'s `wasCanonical`

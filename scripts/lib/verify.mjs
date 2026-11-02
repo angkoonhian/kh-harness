@@ -25,8 +25,10 @@ export function defaultRun(root, dir, command, { timeoutMs = DEFAULT_TIMEOUT_MS 
     execSync(command, { cwd: join(root, dir), stdio: 'ignore', timeout: timeoutMs, env: { ...process.env, CI: '1' } });
     return { exitCode: 0, durationMs: Date.now() - started, timedOut: false };
   } catch (err) {
-    // execSync reports a timeout as `killed` with the kill signal and no status.
-    const timedOut = err?.killed === true || err?.signal === 'SIGTERM';
+    // Node sets `code: 'ETIMEDOUT'` on exactly the timeout kill, on every
+    // platform; `killed`/`signal` are set by any SIGTERM, not only ours
+    // (Tier 2 review, Important 2).
+    const timedOut = err?.code === 'ETIMEDOUT';
     return { exitCode: typeof err?.status === 'number' ? err.status : (timedOut ? null : 1), durationMs: Date.now() - started, timedOut };
   }
 }

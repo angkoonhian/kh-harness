@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addHookEntry, hasEquivalentHook, revertPatch, addDenyRules } from './settings-merge.mjs';
+import { addHookEntry, hasEquivalentHook, normalizeMatcher, matcherCovers, revertPatch, addDenyRules } from './settings-merge.mjs';
 
 const ENTRY = { type: 'command', command: 'node .claude/scripts/session-brief.mjs' };
 
@@ -42,10 +42,40 @@ test('hasEquivalentHook distinguishes the same command under a different matcher
   const { settings } = addHookEntry({}, 'PostToolUse', ENTRY, 'Bash');
   assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command, 'Write|Edit'), false, 'theirs is under Bash; ours would be under Write|Edit');
   assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command, 'Bash'), true);
-  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command), false, 'no matcher means "every tool", which is not the same as Bash');
+  // Reversed by the Tier 2 review fix pass: a narrower registration of a
+  // match-all proposal counts — narrowing is the user's choice (see
+  // matcherCovers). Our generators never propose PostToolUse without one.
+  assert.equal(hasEquivalentHook(settings, 'PostToolUse', ENTRY.command), true, 'a narrower registration of a match-all proposal still counts');
   const { settings: unmatched } = addHookEntry({}, 'SessionStart', ENTRY);
   assert.equal(hasEquivalentHook(unmatched, 'SessionStart', ENTRY.command), true, 'an absent matcher on both sides is equivalent');
   assert.equal(hasEquivalentHook(unmatched, 'SessionStart', ENTRY.command, undefined), true);
+});
+
+// Tier 2 final review, Minor 7 (and the shared definition behind Important 1):
+// a matcher is a SET of tool names, so order is irrelevant and a wider set
+// covers; a narrower registration of a match-all proposal still counts.
+test('normalizeMatcher: every-tool forms are null, a plain alternation is a sorted set, a regex is kept', () => {
+  for (const all of [undefined, '', '*']) assert.equal(normalizeMatcher(all), null);
+  assert.equal(normalizeMatcher('Write|Edit'), 'Edit|Write');
+  assert.equal(normalizeMatcher('Edit, Write'), 'Edit|Write');
+  assert.equal(normalizeMatcher('^Notebook.*'), '^Notebook.*');
+});
+
+test('matcherCovers: a wider or reordered list covers; a narrower one does not; a match-all proposal is covered by anything', () => {
+  assert.equal(matcherCovers('Edit|Write', 'Write|Edit'), true);
+  assert.equal(matcherCovers('Write|Edit|NotebookEdit', 'Write|Edit'), true);
+  assert.equal(matcherCovers('*', 'Write|Edit'), true);
+  assert.equal(matcherCovers('Bash', 'Write|Edit'), false);
+  assert.equal(matcherCovers('Edit', 'Write|Edit'), false);
+  assert.equal(matcherCovers('startup|resume', undefined), true, 'narrowing an event we need no matcher for is the user\'s choice');
+  assert.equal(matcherCovers('^Edit.*', 'Write|Edit'), false, 'a regex is never assumed to cover a list');
+});
+
+test('hasEquivalentHook treats Edit|Write as Write|Edit and a wider list as covering', () => {
+  const { settings: reordered } = addHookEntry({}, 'PostToolUse', ENTRY, 'Edit|Write');
+  assert.equal(hasEquivalentHook(reordered, 'PostToolUse', ENTRY.command, 'Write|Edit'), true);
+  const { settings: wider } = addHookEntry({}, 'PostToolUse', ENTRY, 'Write|Edit|NotebookEdit');
+  assert.equal(hasEquivalentHook(wider, 'PostToolUse', ENTRY.command, 'Write|Edit'), true);
 });
 
 // --- optional matcher (PostToolUse needs one; SessionStart never has) -----

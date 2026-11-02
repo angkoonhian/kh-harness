@@ -81,6 +81,22 @@ test('detect exits 2 with one stderr line when docs/harness/detect.json cannot b
   assert.match(String(err.stderr), /could not write/i);
   assert.match(String(err.stderr), /detect\.json/);
   assert.doesNotMatch(String(err.stderr), /\n\s+at /, 'no stack trace');
+  assert.equal(String(err.stdout ?? ''), '', 'no half-report on stdout');
+});
+
+// Tier 2 final review, Important 1, end to end: our sensor script registered
+// under a matcher that never fires on an edit is not a sensor in place.
+test('detect reports P2.sensor absent when the sensor script is registered under Bash', () => {
+  const d = harnessed();
+  const settingsPath = join(d, '.claude', 'settings.json');
+  const s = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  s.hooks.PostToolUse[0].matcher = 'Bash';
+  writeFileSync(settingsPath, JSON.stringify(s));
+  const r = JSON.parse(cli(d, '--json'));
+  const sensor = r.checks.find(c => c.id === 'P2.sensor');
+  assert.equal(sensor.state, 'absent', JSON.stringify(sensor));
+  assert.match(sensor.evidence.join(' '), /Bash/);
+  assert.equal(JSON.stringify(r).includes('node .claude/scripts/lint-touched.mjs'), false, 'the command string still never reaches the report');
 });
 
 test('writes detect.json into the target repo', () => {

@@ -41,3 +41,15 @@ test('denyRuleCoverage: a Read(...) rule never covers an edit, and a rule coveri
   assert.deepEqual(r.covered, []);
   assert.deepEqual(r.unrelated, ['Read(package-lock.json)', 'Edit(secrets/**)'], 'a redacted (null) rule is neither');
 });
+
+// Tier 2 final review, Minor 3: Claude Code's path forms. A bare pattern or
+// `./pattern` is project-relative, so is one `/`; `//pattern` is an absolute
+// filesystem path and `~/pattern` is under the home directory — neither can
+// be related to a project path, so neither ever covers.
+test('denyRuleCoverage: ./ and one leading / are project-relative; // and ~/ never cover', () => {
+  assert.deepEqual(denyRuleCoverage({ candidates, denyRuleList: ['Edit(./package-lock.json)'], files }).covered.map(c => c.glob), ['*-lock.json']);
+  assert.deepEqual(denyRuleCoverage({ candidates, denyRuleList: ['Edit(/package-lock.json)'], files }).covered.map(c => c.glob), ['*-lock.json']);
+  const abs = denyRuleCoverage({ candidates, denyRuleList: ['Edit(//package-lock.json)', 'Edit(~/package-lock.json)'], files });
+  assert.deepEqual(abs.covered, [], 'an absolute or home path is not this project\'s lockfile');
+  assert.deepEqual(abs.unrelated, ['Edit(//package-lock.json)', 'Edit(~/package-lock.json)']);
+});

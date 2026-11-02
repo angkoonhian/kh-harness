@@ -226,9 +226,10 @@ function unifiedDiff(before, after, label) {
 }
 
 /**
- * True for a `hooks` block shaped the way Claude Code documents it —
- * `{ "<Event>": [ { "matcher"?: string, "hooks"?: [ … ] } ] }` — or for an
- * absent one. Audit Tier 2, finding 7: `readSettingsResult` validated
+ * True for a `hooks` block the merge can safely traverse —
+ * `{ "<Event>": [ { "matcher"?, "hooks"?: [ … ] } ] }`, the containers Claude
+ * Code documents; the types inside them are not judged — or for an absent
+ * one. Audit Tier 2, finding 7: `readSettingsResult` validated
  * `permissions` and not `hooks`, so `{"hooks":{"Stop":{}}}` passed the read,
  * `addHookEntry` then threw a TypeError on `.push`, and `--yes` exited 2
  * after a dry run that had shown a clean diff. Exported for its test only.

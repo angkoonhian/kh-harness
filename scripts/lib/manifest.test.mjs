@@ -246,3 +246,13 @@ test('writeManifest that cannot replace the target leaves the previous state int
   assert.equal(statSync(target).isDirectory(), true, 'the target is untouched');
   assert.deepEqual(readdirSync(join(d, '.claude')), ['kh-harness.manifest.json'], 'no .tmp sibling is left behind');
 });
+
+// Tier 2 final review, Minor 5: a temporary file left by a hard kill between
+// the write and the rename is unambiguously ours, and nothing else would ever
+// remove it. The next write clears stale ones first.
+test('writeManifest removes a stale temporary sibling left by an interrupted run', () => {
+  const d = repo();
+  write(d, '.claude/kh-harness.manifest.json.tmp-424242', '{ "schema": 1, "files": [');
+  writeManifest(d, emptyManifest('0.1.0'));
+  assert.deepEqual(readdirSync(join(d, '.claude')), ['kh-harness.manifest.json']);
+});

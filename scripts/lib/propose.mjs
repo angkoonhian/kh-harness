@@ -163,6 +163,11 @@ function redactAssetProposal(kitVersion) {
  * that fires and does nothing, which is the false-assurance shape this
  * project has already paid for twice.
  */
+/** The tools the per-edit sensor fires for — see the comment above. Named
+ * so `P2.sensor` (gap-model.mjs) judges a registration against exactly what
+ * this generator writes. */
+const SENSOR_MATCHER = 'Write|Edit';
+
 function sensorProposal({ kitVersion, stack, check }) {
   if (!hasLintScript(stack)) return [];
   return [{
@@ -174,7 +179,7 @@ function sensorProposal({ kitVersion, stack, check }) {
     reason: 'no PostToolUse hook registered',
   }, redactAssetProposal(kitVersion), {
     kind: 'settings-hook', event: 'PostToolUse', step: 9,
-    matcher: 'Write|Edit',
+    matcher: SENSOR_MATCHER,
     entry: { type: 'command', command: `node ${LINT_TOUCHED_PATH}` },
     // Review finding 5: a hook must never be ACTIVATED (registered in
     // settings.json) unless the script it runs, and everything that
@@ -696,4 +701,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // generator (a pyproject-only Python repo: `detect` advertised a proposal,
 // `apply` produced nothing) without any test failing, because nothing
 // checked the two against each other.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, RULES_PATH, GENERATORS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS };

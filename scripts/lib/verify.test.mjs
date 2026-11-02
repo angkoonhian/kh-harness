@@ -94,6 +94,7 @@ test('defaultRun marks a command killed by the timeout as timedOut', () => {
   try {
     const result = defaultRun('.', '.', `node "${sleeper}"`, { timeoutMs: 300 });
     assert.equal(result.timedOut, true);
+    assert.equal(result.exitCode, null, 'a command that never exited has no exit code');
     assert.ok(result.durationMs < 4000, 'the bound, not the command, decided when this ended');
   } finally {
     unlinkSync(sleeper);

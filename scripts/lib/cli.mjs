@@ -118,7 +118,8 @@ FLAGS
              COMMANDS. There is no confirmation prompt: the flag is the
              consent. \`install\` and \`build\` are never run, because they
              mutate the tree. A command stopped by the 10-minute bound is
-             recorded as timedOut.
+             recorded as timedOut with no exit code; commands run with CI=1,
+             so a test runner's watch mode is off.
   --json     Print the full report to stdout instead of the human summary.
              Unknown-flag warnings go to stderr, so stdout stays parseable.
 

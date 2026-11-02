@@ -153,9 +153,12 @@ const EDIT_RULE = /^Edit\((.*)\)$/;
  * "unrelated" and `Edit(*-lock.json)` proposed on top of it.
  *
  * A candidate is `covered` when its exact `Edit(<glob>)` is present, or when
- * every file it matches is matched by at least one user `Edit(...)` rule (a
- * leading `/` on the user's pattern is project-relative and stripped; rules
- * for other tools never protect an edit). A rule is `unrelated` when it
+ * every file it matches is matched by at least one user `Edit(...)` rule.
+ * Claude Code's path forms: a bare pattern, `./pattern` and `/pattern` are
+ * project-relative (the prefix is stripped); `//pattern` is an absolute
+ * filesystem path and `~/pattern` is under the home directory, so neither
+ * can be related to a project path and neither ever covers (Tier 2 review,
+ * Minor 3). Rules for other tools never protect an edit. A rule is `unrelated` when it
  * covers no file any candidate matches. Both sides use `globToRegExp`, the
  * same matcher the evidence filter uses — narrower on `**\/` than Claude
  * Code's own, so the failure direction is a redundant proposal, never a
@@ -165,7 +168,8 @@ export function denyRuleCoverage({ candidates, denyRuleList = [], files = [] }) 
   const rules = denyRuleList.filter(r => typeof r === 'string');
   const editRules = rules.flatMap(rule => {
     const m = EDIT_RULE.exec(rule);
-    return m ? [{ rule, re: globToRegExp(m[1].replace(/^\/+/, '')) }] : [];
+    if (!m || /^(?:\/\/|~\/)/.test(m[1])) return [];
+    return [{ rule, re: globToRegExp(m[1].replace(/^(?:\.\/|\/)/, '')) }];
   });
   const covered = [];
   const uncovered = [];

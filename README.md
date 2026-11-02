@@ -94,7 +94,7 @@ tool will never write, because closing it means editing your package manifest
 
 | Flag | What it does |
 |---|---|
-| `--verify` | Runs the test, lint and typecheck commands it discovered, to turn claims into evidence. **This executes this repository's own commands.** There is no confirmation prompt: the flag is the consent. `install` and `build` are never run, because they mutate the tree. Each record carries the exit code, the duration and whether the 10-minute bound stopped it (`timedOut`); output is never captured. |
+| `--verify` | Runs the test, lint and typecheck commands it discovered, to turn claims into evidence. **This executes this repository's own commands.** There is no confirmation prompt: the flag is the consent. `install` and `build` are never run, because they mutate the tree. Each record carries the exit code (`null` for a command the bound stopped), the duration and whether the 10-minute bound stopped it (`timedOut`); commands run with `CI=1`, so a test runner's watch mode is off and snapshots are not written; output is never captured. |
 | `--json` | Prints the full report to stdout instead of the human summary. Warnings go to stderr, so stdout stays parseable. |
 
 `P0.security` scans tracked files, git remote URLs and the two `.claude`

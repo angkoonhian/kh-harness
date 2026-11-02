@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
-import { join, dirname, resolve, relative } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, readdirSync } from 'node:fs';
+import { join, dirname, basename, resolve, relative } from 'node:path';
 
 const MANIFEST_PATH = '.claude/kh-harness.manifest.json';
 
@@ -63,11 +63,17 @@ export function readManifest(root) {
  * read back as `corrupt` — and `apply` refuses on a corrupt manifest, so
  * every file that run had written was orphaned behind a refusal. On any
  * failure the temporary file is removed and the error propagates; the
- * caller (apply.mjs) already reports a manifest write failure by path.
+ * caller (apply.mjs) already reports a manifest write failure by path. A
+ * temporary left by a hard kill (nothing else would ever remove it, and the
+ * prefix is unambiguously ours) is cleared before the next write.
  */
 export function writeManifest(root, manifest) {
   const p = join(root, MANIFEST_PATH);
   mkdirSync(dirname(p), { recursive: true });
+  const stalePrefix = `${basename(MANIFEST_PATH)}.tmp-`;
+  for (const name of readdirSync(dirname(p))) {
+    if (name.startsWith(stalePrefix)) rmSync(join(dirname(p), name), { force: true });
+  }
   const tmp = `${p}.tmp-${process.pid}`;
   try {
     writeFileSync(tmp, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
