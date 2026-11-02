@@ -45,5 +45,5 @@ Final: Ruling (deviation 11): every gate refusal is printed, not only the first 
 Final: minor (deferred): 9 — ENV_REFERENCE accepts ${VAR:-literal} as a reference
 Final: minor (deferred): 12 — api_key: ${{ secrets.X }} with spaces yields no finding rather than a reference (the \S{8,} capture stops at the space)
 Final: minor (deferred): 13 — the Exposures heading "rotate by hand" also heads low fixture entries
-Final: Ruling on "Declined to judge" lines: Bearer prose body, `\S{8,}` heuristics on password:/pwd:/api_key:, e2e//mocks/ demotion, missing *_spec.rb/*Test.java patterns, no kit version bump, no git-error field in detect --json, extra dry-run spawns — all stand as designed; the version bump and the detect.json field are Tier 3/4 material. Cost if wrong: a reader of detect --json cannot tell a git failure from a non-repository without stderr.
+Final: Ruling on "Declined to judge" lines: Bearer prose body, `\S{8,}` heuristics on the password, pwd and api_key keys, e2e//mocks/ demotion, missing *_spec.rb/*Test.java patterns, no kit version bump, no git-error field in detect --json, extra dry-run spawns — all stand as designed; the version bump and the detect.json field are Tier 3/4 material. Cost if wrong: a reader of detect --json cannot tell a git failure from a non-repository without stderr.
 Final suite: npm test → 915 tests, 914 pass, 0 fail
