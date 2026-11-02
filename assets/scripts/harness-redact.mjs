@@ -55,9 +55,12 @@
 //   reporter prints only the text after an unbalanced quote) — so every
 //   whitespace-delimited token of length >= 8 drawn from the command(s) is
 //   treated as sensitive, and any surviving line containing one is dropped
-//   outright. `exemptions` carries whatever the caller appended to its own
-//   command (a file path, say) that legitimately belongs in a real
-//   diagnostic and must never be treated as a redactable fragment.
+//   outright. `exemptions` carries whatever legitimately belongs in a real
+//   diagnostic and must never be treated as a redactable fragment: what
+//   the caller appended to its own command (the edited file), and — via
+//   `pathTokenExemptions` — the command's own path and config-file tokens
+//   (`eslint src/components`, `tsc -p tsconfig.build.json`), which every
+//   diagnostic names and which are not secrets.
 //
 //   Layer 2 (maskCredentials): a credential-SHAPE allowlist, independent of
 //   layer 1 — catches a credential-shaped value arriving from ANYWHERE in
@@ -89,6 +92,47 @@ export function commandTokens(command, exemptions = new Set()) {
     tokens.push(t);
   }
   return tokens;
+}
+
+// A command token that names a config file: a config-shaped extension, or a
+// dotted `*rc` name (`.eslintrc`, `.eslintrc.cjs`), standing alone or attached
+// to a flag (`--config=eslint.config.js`). Anchored at the end of the token so
+// a value that merely ENDS in one of these characters sequences after a
+// credential flag is still excluded by the flag check in
+// `pathTokenExemptions`.
+const CONFIG_SHAPED = /(?:\.(?:json|ya?ml|toml|[cm]?[jt]s|cfg|ini|conf)|(?:^|[/=])\.[\w-]+rc(?:\.\w+)?)$/i;
+// A flag whose NAME is credential-shaped is never exempt, whatever its value
+// looks like: `--token=secrets.json` is still a token.
+const CREDENTIAL_FLAG = /^--?(?:[\w-]*(?:token|key|secret|password|passwd|pwd|auth)[\w-]*)=/i;
+
+/**
+ * The tokens of `command` that name a PATH or a CONFIG FILE rather than
+ * anything secret, for use as layer-1 exemptions. Audit Tier 1, finding 2
+ * (docs/2026-11-02-audit-findings.md): with `eslint src/components`,
+ * `ruff check backend/app` or `eslint -c .eslintrc.cjs .`, every diagnostic
+ * named the path or config the command named, so `dropCommandFragments`
+ * treated every diagnostic as an echo of the command and the hook reported
+ * nothing — the sensor's one job, failing silently.
+ *
+ * Exempt: (a) a token that is a DIRECTORY prefix of one of `paths` (whole
+ * segments — `src/comp` is not a prefix of `src/components/x`), with a
+ * leading `./` or trailing `/` tolerated, or the path itself; (b) a token
+ * shaped like a config file (`CONFIG_SHAPED`). Never exempt: a token whose
+ * flag name is credential-shaped (`CREDENTIAL_FLAG`). Only tokens `commandTokens`
+ * would produce are returned, so the result composes with it directly.
+ */
+export function pathTokenExemptions(command, paths = []) {
+  const normalized = paths.map(p => p.replace(/^\.\//, '').replace(/\/+$/, ''));
+  const isDirPrefixOrSelf = token => {
+    const t = token.replace(/^\.\//, '').replace(/\/+$/, '');
+    return t.length > 0 && normalized.some(p => p === t || p.startsWith(t + '/'));
+  };
+  const exempt = new Set();
+  for (const token of commandTokens(command)) {
+    if (CREDENTIAL_FLAG.test(token)) continue;
+    if (isDirPrefixOrSelf(token) || CONFIG_SHAPED.test(token)) exempt.add(token);
+  }
+  return exempt;
 }
 
 /**

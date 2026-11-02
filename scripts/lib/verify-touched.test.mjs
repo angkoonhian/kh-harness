@@ -139,6 +139,16 @@ test('blocks once with exit 2 and the reason on stderr when verification fails',
   assert.equal(r.stdout.trim(), '', 'stdout is invisible to Claude and must not be used');
 });
 
+// Audit Tier 1, finding 2 (the Stop gate's share): a typecheck command that
+// names its config (`tsc -p tsconfig.build.json`) made every diagnostic that
+// mentioned the config an "echo of the command", dropped before Claude saw it.
+test('a diagnostic naming a config file passed on the command line survives redaction', () => {
+  const d = repo({ typecheck: 'node -e "console.error(process.argv[1] + \': error TS5023 unknown option\'); process.exit(1)" -- tsconfig.build.json' });
+  const r = run(d, payload());
+  assert.equal(r.code, 2, `the diagnostic must reach Claude: ${JSON.stringify(r)}`);
+  assert.match(r.stderr, /tsconfig\.build\.json: error TS5023/);
+});
+
 test('the report is prefixed by which command failed (test fallback)', () => {
   const d = repo({ test: 'node -e "console.error(\'boom\'); process.exit(1)"' });
   const r = run(d, payload());

@@ -25,6 +25,7 @@ import {
   maskCredentials,
   MAX_BLOCKS_PER_SESSION,
   markerPath,
+  pathTokenExemptions,
   readJSONMarker,
   projectRoot,
   safeSessionId,
@@ -504,7 +505,11 @@ async function main() {
   const base = basename(filePath);
   const combined = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   const attributed = extractAttributedBlocks(combined.split(/\r?\n/), filePath, base);
-  const exemptions = new Set([relToOwner, basename(relToOwner)]);
+  // The edited file, its basename, and every token of the lint script that
+  // names a directory of that file or a config file (`eslint src/components`,
+  // `eslint -c .eslintrc.cjs`) — a diagnostic naming those is the report,
+  // not an echo of the command. See pathTokenExemptions in harness-redact.mjs.
+  const exemptions = new Set([relToOwner, basename(relToOwner), ...pathTokenExemptions(lintScript, [relToOwner])]);
   const survived = dropCommandFragments(attributed, [lintScript, fullCommand], exemptions);
   const reported = survived.map(maskCredentials);
   if (reported.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all

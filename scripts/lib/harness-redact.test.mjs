@@ -25,6 +25,7 @@ import {
   commandTokens,
   CREDENTIAL_RULES,
   dropCommandFragments,
+  pathTokenExemptions,
   MAX_BLOCKS_PER_SESSION,
   MAX_REPORT_BYTES,
   MAX_REPORT_LINES,
@@ -68,6 +69,47 @@ test('dropCommandFragments never drops an exempted token even though it is part 
   const lines = ['src/long-file-name.ts:1 problem'];
   const survived = dropCommandFragments(lines, ['eslint src/long-file-name.ts'], new Set(['src/long-file-name.ts']));
   assert.deepEqual(survived, lines);
+});
+
+// --- pathTokenExemptions (audit Tier 1, finding 2) -------------------------
+//
+// Layer 1 dropped every diagnostic for `eslint src/components`, `ruff check
+// backend/app` and `eslint -c .eslintrc.cjs .`: each diagnostic names the
+// path or config the command names, so each was treated as an echo of the
+// command. A path or a config file name is not a secret.
+
+test('pathTokenExemptions: a directory prefix of a touched path is exempt', () => {
+  assert.deepEqual([...pathTokenExemptions('eslint src/components --max-warnings 0', ['src/components/Button.tsx'])], ['src/components']);
+});
+
+test('pathTokenExemptions: a ./-prefixed directory, a trailing slash and the path itself are exempt', () => {
+  const ex = pathTokenExemptions('ruff check ./backend/app backend/app/ backend/app/models.py', ['backend/app/models.py']);
+  assert.deepEqual([...ex].sort(), ['./backend/app', 'backend/app/', 'backend/app/models.py']);
+});
+
+test('pathTokenExemptions: a directory that is not a prefix of any touched path is not exempt', () => {
+  assert.equal(pathTokenExemptions('eslint src/components', ['src/pages/Home.tsx']).size, 0);
+  // `src/comp` is a string prefix but not a directory prefix.
+  assert.equal(pathTokenExemptions('eslint src/comp', ['src/components/Button.tsx']).size, 0);
+});
+
+test('pathTokenExemptions: config-file-shaped tokens are exempt, attached to a flag or not', () => {
+  const ex = pathTokenExemptions('eslint -c .eslintrc.cjs --config=eslint.config.js . && tsc -p tsconfig.build.json && ruff check --config ruff.toml .');
+  assert.deepEqual([...ex].sort(), ['--config=eslint.config.js', '.eslintrc.cjs', 'ruff.toml', 'tsconfig.build.json']);
+});
+
+test('pathTokenExemptions: a credential-shaped token is never exempt', () => {
+  const ex = pathTokenExemptions('cli --token=abcdefghijkl --api-key=secretvalue.json src/components', ['src/components/a.ts']);
+  assert.equal(ex.has('--token=abcdefghijkl'), false);
+  assert.equal(ex.has('--api-key=secretvalue.json'), false, 'a credential flag is never exempt, whatever its value ends in');
+  assert.deepEqual([...ex], ['src/components']);
+});
+
+test('dropCommandFragments with pathTokenExemptions keeps a diagnostic naming the linted directory and still drops a token fragment', () => {
+  const command = 'eslint src/components --token=abcdefghijkl';
+  const lines = ['src/components/Button.tsx:1:1 error no-unused-vars', 'auth: --token=abcdefghijkl rejected'];
+  const survived = dropCommandFragments(lines, [command], pathTokenExemptions(command, ['src/components/Button.tsx']));
+  assert.deepEqual(survived, ['src/components/Button.tsx:1:1 error no-unused-vars']);
 });
 
 // --- maskCredentials / CREDENTIAL_RULES (layer 2) --------------------------

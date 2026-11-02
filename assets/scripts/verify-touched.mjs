@@ -58,6 +58,7 @@ import {
   MAX_BLOCKS_PER_SESSION,
   markerPath,
   maskCredentials,
+  pathTokenExemptions,
   projectRoot,
   readJSONMarker,
   safeSessionId,
@@ -339,8 +340,11 @@ async function main() {
   // The shared redaction chokepoint — identical layering to
   // lint-touched.mjs's own stderr, because this output reaches stderr too
   // and the command's own body can carry a credential exactly as a
-  // `scripts.lint` body has, twice, in this project's own history.
-  const redacted = dropCommandFragments(rawLines, [picked.command]).map(maskCredentials);
+  // `scripts.lint` body has, twice, in this project's own history. A token
+  // of the command that names a config file (`tsc -p tsconfig.build.json`)
+  // is exempt from the fragment rule, or every diagnostic mentioning the
+  // config would be dropped as an echo of the command.
+  const redacted = dropCommandFragments(rawLines, [picked.command], pathTokenExemptions(picked.command)).map(maskCredentials);
 
   if (count >= MAX_BLOCKS_PER_SESSION) {
     process.stderr.write(

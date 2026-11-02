@@ -109,6 +109,26 @@ test('TIMEOUT: a run that emits an attributable line and THEN hangs is still not
   assert.equal(r.stderr.trim(), '', 'nothing from a timed-out run is ever reported');
 });
 
+// --- Audit Tier 1, finding 2: a lint script that names the edited file's
+// --- directory used to lose every diagnostic to layer-1 redaction --------
+//
+// `eslint src/components` is an ordinary lint script. Every diagnostic it
+// prints names a path under `src/components`, which is also a token of the
+// command, so every line was dropped as an "echo of the command" and the
+// hook exited 0 with nothing to say. The sensor's one job, failing silently.
+test('a lint script that names the edited file\'s directory still reports its diagnostics', () => {
+  // The linter is a FILE, as a real one is, so the command carries only
+  // `node lint.cjs src/components` — a `-e` body would put the diagnostic's
+  // own text into the command's tokens (see the fixture note above).
+  const d = repo('node lint.cjs src/components');
+  writeFileSync(join(d, 'lint.cjs'), "console.error(process.argv[2] + '/Button.tsx:1:1 error x'); process.exit(1);\n");
+  mkdirSync(join(d, 'src', 'components'), { recursive: true });
+  writeFileSync(join(d, 'src', 'components', 'Button.tsx'), 'export const b = 1;\n');
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/components/Button.tsx' } });
+  assert.equal(r.code, 2, `the diagnostic must reach Claude: ${JSON.stringify(r)}`);
+  assert.match(r.stderr, /Button\.tsx:1:1 error x/);
+});
+
 // --- Ruling 1: attribution — report only what mentions the edited file ----
 //
 // `scripts.lint` is commonly something like `eslint .`, so appending the
