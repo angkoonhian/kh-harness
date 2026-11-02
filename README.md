@@ -131,9 +131,9 @@ Writes the files and settings patches `detect` proposed. Nothing else, ever:
   which would appear to work and silently would not) bounds every path.
 - **Filesystem containment** is checked before any write, so a symlink or
   junction cannot route a write out of the repository.
-- A file this tool did not write is **never overwritten**. An existing
-  `CLAUDE.md` is never touched at all — a proposal for it is redirected to
-  `docs/harness/CLAUDE.proposed.md` for you to merge by hand.
+- A file this tool did not write is **never overwritten**. `CLAUDE.md` is
+  never written by `apply` at all — it is not on the allowlist; the skill
+  drafts `docs/harness/CLAUDE.proposed.md` for you to merge by hand.
 - A file you have since **edited** is left alone and reported as `kept`.
 - There is **no `--force`**. Not a flag, not an option, not a code path. git is
   the escape hatch, which is what the two refusals below exist to protect.

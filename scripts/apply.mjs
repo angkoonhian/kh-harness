@@ -417,12 +417,18 @@ try {
   manifestError = err && err.message ? err.message : String(err);
 }
 
-for (const w of result.written) process.stdout.write(`wrote      ${w.path}\n`);
+for (const w of result.written) {
+  process.stdout.write(`wrote      ${w.path}\n`);
+  // chmod is a no-op on Windows: the execute bit lives in git's index there,
+  // and only the user can put it in (audit Tier 4, finding 27).
+  if (w.mode && process.platform === 'win32') {
+    process.stdout.write(`note: Windows cannot record the execute bit — run \`git update-index --chmod=+x ${w.path}\` before committing\n`);
+  }
+}
 for (const p of result.patched) process.stdout.write(`patched    .claude/settings.json (${p.event})\n`);
 if (result.patched.length > 0 && !settingsWasCanonical) {
   process.stdout.write(settingsReformattedNote('applying the patch above') + '\n');
 }
-for (const r of result.redirected) process.stdout.write(`redirected ${r.from} -> ${r.to}\n`);
 for (const s of result.skipped) process.stdout.write(`skipped    ${s.path} (${s.why})\n`);
 for (const f of result.failed) process.stderr.write(`failed     ${f.path}: ${f.error}\n`);
 reportDrift();

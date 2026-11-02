@@ -1,7 +1,7 @@
 // scripts/lib/detect-exposure.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -607,6 +607,18 @@ test('a scan-list path that is a directory is skipped silently, as a non-regular
   const d = repo();
   write(d, 'src/a.ts', '');
   assert.deepEqual(detectExposures(d, ['src', 'src/a.ts'], { remotes: [] }), []);
+});
+
+test('a dangling symlink in the scan list is skipped silently — it holds no bytes to examine', (t) => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  try {
+    symlinkSync(join(d, 'gone.ts'), join(d, 'link.ts'), 'file');
+  } catch (e) {
+    t.skip(`cannot create a file symlink here: ${e.message}`);
+    return;
+  }
+  assert.deepEqual(detectExposures(d, ['README.md', 'link.ts'], { remotes: [] }), [], 'audit Tier 4, finding 27: this used to be a permanent high finding');
 });
 
 // --- Coordinator ruling (post-review, concern 5): kh-harness passes its own

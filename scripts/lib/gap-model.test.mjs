@@ -980,6 +980,14 @@ test('the documentation-shaped questions state the total count, not the length o
   }
 });
 
+test('P3.rules advice lists at most ten line numbers and says how many more', () => {
+  const lines = Array.from({ length: 15 }, (_, i) => 3 * i + 1);
+  const c = byId(gaps(bareStack, p3Harness({ ruleShapedLines: [{ file: 'CLAUDE.md', lines }] })), 'P3.rules');
+  const advice = c.advice.join(' ');
+  assert.match(advice, /15 rule-shaped lines/);
+  assert.match(advice, /lines 1, 4, 7, 10, 13, 16, 19, 22, 25, 28 … and 5 more/, advice);
+});
+
 test('P1.pathrules is declared when .claude/rules/ already holds a file, workspace or not', () => {
   const c = byId(gaps(bareStack, richHarness, [], undefined, richHarness.claudeDir.rules), 'P1.pathrules');
   assert.equal(c.state, 'declared');

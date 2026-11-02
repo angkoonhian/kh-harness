@@ -700,8 +700,11 @@ const CHECKS = [
     // by COUNT and LINE NUMBER, never by sentence — rules-evidence.mjs's
     // own comment on why: this reaches the committed detect.json.
     check: ({ harness }) => {
+      // At most ten line numbers per file (audit Tier 4, finding 27: one
+      // advice line listed 41).
+      const listed = lines => lines.length > 10 ? `${lines.slice(0, 10).join(', ')} … and ${lines.length - 10} more` : lines.join(', ');
       const advice = (harness.ruleShapedLines ?? []).map(({ file, lines }) =>
-        `${file} holds ${lines.length} rule-shaped line${lines.length === 1 ? '' : 's'} (line${lines.length === 1 ? '' : 's'} ${lines.join(', ')}) not in ${RULES_PATH} — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart`);
+        `${file} holds ${lines.length} rule-shaped line${lines.length === 1 ? '' : 's'} (line${lines.length === 1 ? '' : 's'} ${listed(lines)}) not in ${RULES_PATH} — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart`);
       const reg = harness.rulesRegistry ?? null;
       if (!reg) {
         return { state: 'absent', advice, proposal: `scaffold ${RULES_PATH} — generated EMPTY; rules are added by hand, each with the enforcer that holds it` };

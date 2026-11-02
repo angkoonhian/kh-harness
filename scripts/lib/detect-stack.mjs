@@ -71,9 +71,18 @@ function workspacePatterns(root, rootPkg) {
   if (Array.isArray(rootPkg?.workspaces?.packages)) return rootPkg.workspaces.packages;
   const ws = readIfPresent(root, 'pnpm-workspace.yaml');
   if (ws) {
-    return ws.split('\n')
-      .map(l => l.match(/^\s*-\s*['"]?([^'"#]+?)['"]?\s*$/))
-      .filter(Boolean).map(m => m[1].trim()).filter(Boolean);
+    // Only the `packages:` list is globs: a `catalog:` or
+    // `onlyBuiltDependencies:` entry is not a workspace member (audit Tier 4,
+    // finding 27). A top-level key ends the list.
+    const patterns = [];
+    let inPackages = false;
+    for (const l of ws.split('\n')) {
+      if (/^\S/.test(l)) { inPackages = /^packages\s*:/.test(l); continue; }
+      if (!inPackages) continue;
+      const m = l.match(/^\s*-\s*['"]?([^'"#]+?)['"]?\s*$/);
+      if (m && m[1].trim()) patterns.push(m[1].trim());
+    }
+    return patterns;
   }
   return null;
 }

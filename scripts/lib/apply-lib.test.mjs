@@ -21,13 +21,13 @@ const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 const fileProposal = (o = {}) => ({ kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r', ...o });
 
 test('the allowlist admits the kit\'s own paths', () => {
-  for (const p of ['CLAUDE.md', 'HANDOFF.md', 'docs/ARCHITECTURE.md', 'docs/harness/x.json', '.claude/settings.json', 'scripts/bootstrap.sh']) {
+  for (const p of ['HANDOFF.md', 'docs/ARCHITECTURE.md', 'docs/INTENT.md', 'docs/harness/x.json', '.claude/settings.json', 'scripts/bootstrap.sh']) {
     assert.doesNotThrow(() => assertAllowed(p), p);
   }
 });
 
 test('the allowlist REFUSES anything else', () => {
-  for (const p of ['src/index.ts', 'package.json', '../escape.md', '/etc/passwd', 'docs/README.md', '.git/config']) {
+  for (const p of ['src/index.ts', 'package.json', '../escape.md', '/etc/passwd', 'docs/README.md', '.git/config', 'CLAUDE.md']) {
     assert.throws(() => assertAllowed(p), /not allowed/i, p);
   }
 });
@@ -268,30 +268,6 @@ test('a proposal targeting a disallowed path throws before anything is written',
 });
 
 // --- Fix round 1 -----------------------------------------------------------
-
-test('CLAUDE.md that already exists is redirected, never written in place', () => {
-  const d = repo();
-  writeFileSync(join(d, 'CLAUDE.md'), '# hand-tuned notes\nkeep me\n');
-  const p = { kind: 'file', path: 'CLAUDE.md', step: 1, contents: '# generated\n', checkId: 'P1.instructions', reason: 'r' };
-  const { written, redirected, manifest } = applyProposals({ root: d, proposals: [p], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
-  assert.equal(readFileSync(join(d, 'CLAUDE.md'), 'utf8'), '# hand-tuned notes\nkeep me\n', 'CLAUDE.md must never be touched');
-  assert.equal(readFileSync(join(d, 'docs/harness/CLAUDE.proposed.md'), 'utf8'), '# generated\n');
-  assert.deepEqual(redirected, [{ from: 'CLAUDE.md', to: 'docs/harness/CLAUDE.proposed.md' }]);
-  assert.equal(written.length, 1);
-  assert.equal(written[0].path, 'docs/harness/CLAUDE.proposed.md');
-  assert.equal(manifest.files.some(f => f.path === 'CLAUDE.md'), false, 'no manifest entry for the untouched file');
-});
-
-test('renderDiff for an existing CLAUDE.md previews the redirect target, not a deletion of the user\'s file', () => {
-  const d = repo();
-  writeFileSync(join(d, 'CLAUDE.md'), '# hand-tuned notes\nkeep me\n');
-  const p = { kind: 'file', path: 'CLAUDE.md', step: 1, contents: '# generated\n', checkId: 'P1.instructions', reason: 'r' };
-  const diff = renderDiff(d, p);
-  assert.doesNotMatch(diff, /-keep me/, 'must never present the user\'s own file as being deleted');
-  assert.doesNotMatch(diff, /-# hand-tuned notes/);
-  assert.match(diff, /CLAUDE\.proposed\.md/, 'must name the redirect target');
-  assert.match(diff, /\+# generated/, 'must preview the content that will actually be written');
-});
 
 test('the input manifest is not mutated, including nested arrays', () => {
   const d = repo();
@@ -706,6 +682,23 @@ test('isCanonicalJson accepts a four-space file as canonical, so no reformat not
   assert.equal(isCanonicalJson(four), true);
   assert.equal(isCanonicalJson(JSON.stringify({ a: { b: 1 } }, null, '\t') + '\n'), true);
   assert.equal(isCanonicalJson('{"a": {"b": 1}}\n'), false, 'inline spacing is still a reformat');
+});
+
+// --- Audit Tier 4, finding 27: apply never writes CLAUDE.md ----------------
+//
+// The redirect of a CLAUDE.md proposal to docs/harness/CLAUDE.proposed.md
+// was unreachable: no generator has ever proposed CLAUDE.md (P1.instructions
+// is a prompt, and the SKILL writes the .proposed file itself). Dead code
+// documented as live is a false sentence; the path leaves the allowlist
+// instead, so a future generator cannot write it without a deliberate change.
+test('assertAllowed refuses CLAUDE.md — apply never writes it', () => {
+  assert.throws(() => assertAllowed('CLAUDE.md'), /not allowed/i);
+  const d = repo();
+  writeFileSync(join(d, 'CLAUDE.md'), '# hand-tuned notes\nkeep me\n');
+  const p = { kind: 'file', path: 'CLAUDE.md', step: 1, contents: '# generated\n', checkId: 'P1.instructions', reason: 'r' };
+  assert.throws(() => applyProposals({ root: d, proposals: [p], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' }), /not allowed/i);
+  assert.equal(readFileSync(join(d, 'CLAUDE.md'), 'utf8'), '# hand-tuned notes\nkeep me\n');
+  assert.equal(existsSync(join(d, 'docs/harness/CLAUDE.proposed.md')), false, 'nothing is redirected anywhere either');
 });
 
 // --- Whole-branch review, F7: one canonical-form predicate, not two ------

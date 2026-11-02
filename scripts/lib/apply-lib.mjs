@@ -17,7 +17,6 @@ import { classify, emptyManifest, sha256 } from './manifest.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
 
 const SETTINGS_PATH = '.claude/settings.json';
-const CLAUDE_REDIRECT_PATH = 'docs/harness/CLAUDE.proposed.md';
 
 // A hand-rolled O(n·m) LCS diff is fine for the kit's own small template and
 // script files. It is not fine for an arbitrary file a future proposal might
@@ -34,7 +33,12 @@ const DIFF_LINE_BAILOUT = 3000;
 // `docs/INTENT.md` (Phase 3) joins `docs/ARCHITECTURE.md` here for the same
 // reason: both are written by the SKILL at a gate, not by any generator, and
 // the allowlist is the one statement of every path this kit may ever write.
-const ALLOWED_EXACT = new Set(['CLAUDE.md', 'HANDOFF.md', 'docs/ARCHITECTURE.md', 'docs/INTENT.md']);
+// Never CLAUDE.md: the file most likely to hold decisions that cannot be
+// re-derived from source. No generator proposes it — P1.instructions is a
+// prompt, and the skill drafts docs/harness/CLAUDE.proposed.md itself for
+// the user to merge — so the allowlist refuses it outright rather than
+// carrying a redirect no proposal could reach (audit Tier 4, finding 27).
+const ALLOWED_EXACT = new Set(['HANDOFF.md', 'docs/ARCHITECTURE.md', 'docs/INTENT.md']);
 const ALLOWED_PREFIXES = ['docs/harness/', '.claude/', 'scripts/'];
 
 /** Throws on any path outside the allowlist. Never consulted anywhere but here. */
@@ -457,24 +461,8 @@ function renderSettingsDenyDiff(root, proposal) {
 }
 
 /**
- * Where a file proposal will actually land. CLAUDE.md is the file most
- * likely to be hand-tuned and to hold decisions that cannot be re-derived
- * from source: if it already exists — no matter who wrote it, or when — the
- * proposal is redirected to a sibling the user can diff and merge by hand,
- * rather than written in place.
- */
-function resolveFileTarget(root, proposal) {
-  if (proposal.path === 'CLAUDE.md' && existsSync(join(root, 'CLAUDE.md'))) {
-    return { targetPath: CLAUDE_REDIRECT_PATH, redirectFrom: 'CLAUDE.md' };
-  }
-  return { targetPath: proposal.path, redirectFrom: null };
-}
-
-/**
  * Unified-style diff of a proposal against what is on disk today (or
- * nothing). For a redirected CLAUDE.md, this previews the diff against the
- * redirect target — never against CLAUDE.md itself, which is never touched,
- * so the preview must never present the user's own lines as being deleted.
+ * nothing).
  */
 export function renderDiff(root, proposal) {
   if (proposal.kind === 'settings-hook') {
@@ -484,7 +472,7 @@ export function renderDiff(root, proposal) {
     return renderSettingsDenyDiff(root, proposal);
   }
 
-  const { targetPath, redirectFrom } = resolveFileTarget(root, proposal);
+  const targetPath = proposal.path;
   const target = join(root, targetPath);
   // A NEW file that is a verbatim copy of a shipped asset (`assetSource`, set
   // only by the kit's own generators and pinned against the asset on disk in
@@ -499,9 +487,7 @@ export function renderDiff(root, proposal) {
   const before = existsSync(target) ? readFileSync(target, 'utf8') : '';
   const body = unifiedDiff(before, proposal.contents, targetPath);
 
-  return redirectFrom
-    ? `(${redirectFrom} already exists and is left untouched — previewing the redirect to ${targetPath} instead)\n${body}`
-    : body;
+  return body;
 }
 
 /**
@@ -573,9 +559,8 @@ function recordCreatedDirs(root, nextManifest, relPath) {
   nextManifest.dirsCreated = [...created];
 }
 
-function applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected, chmod }) {
-  const { targetPath, redirectFrom } = resolveFileTarget(root, proposal);
-  if (redirectFrom) redirected.push({ from: redirectFrom, to: targetPath });
+function applyFileProposal({ root, proposal, nextManifest, written, skipped, chmod }) {
+  const targetPath = proposal.path;
 
   const cls = classify(root, nextManifest, targetPath);
   const abs = join(root, targetPath);
@@ -594,7 +579,7 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
     recordCreatedDirs(root, nextManifest, targetPath);
     writeFileDeep(abs, proposal.contents, targetPath, proposal.mode, chmod);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: newHash, step: proposal.step, writtenAt: new Date().toISOString() });
-    written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
+    written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId, mode: proposal.mode });
     return;
   }
 
@@ -602,7 +587,7 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, red
     recordCreatedDirs(root, nextManifest, targetPath);
     writeFileDeep(abs, proposal.contents, targetPath, proposal.mode, chmod);
     upsertFileEntry(nextManifest.files, { path: targetPath, sha256: sha256(proposal.contents), step: proposal.step, writtenAt: new Date().toISOString() });
-    written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId });
+    written.push({ path: targetPath, step: proposal.step, checkId: proposal.checkId, mode: proposal.mode });
     return;
   }
 
@@ -759,9 +744,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   for (const proposal of proposals) {
     if (proposal.kind === 'file') {
       assertAllowed(proposal.path);
-      const { targetPath } = resolveFileTarget(root, proposal);
-      assertAllowed(targetPath);
-      assertContained(root, targetPath);
+      assertContained(root, proposal.path);
     } else if (proposal.kind === 'settings-hook' || proposal.kind === 'settings-deny') {
       assertAllowed(SETTINGS_PATH);
       assertContained(root, SETTINGS_PATH);
@@ -773,7 +756,6 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   const written = [];
   const patched = [];
   const skipped = [];
-  const redirected = [];
   const failed = [];
 
   const nextManifest = structuredClone(manifest ?? emptyManifest(kitVersion));
@@ -785,7 +767,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   for (const proposal of proposals) {
     try {
       if (proposal.kind === 'file') {
-        applyFileProposal({ root, proposal, nextManifest, written, skipped, redirected, chmod });
+        applyFileProposal({ root, proposal, nextManifest, written, skipped, chmod });
       } else if (proposal.kind === 'settings-hook') {
         applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped });
       } else {
@@ -803,7 +785,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   // nothing leaves it alone.
   if (written.length || patched.length) nextManifest.kitVersion = kitVersion;
 
-  return { written, patched, skipped, redirected, failed, manifest: nextManifest };
+  return { written, patched, skipped, failed, manifest: nextManifest };
 }
 
 // `ALLOWED_PREFIXES`/`ALLOWED_EXACT` are exported for exactly one purpose:
@@ -812,4 +794,4 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
 // production caller should import these to re-derive its own allowlist
 // logic; `assertAllowed`/`isAllowedDirectory` are the two sanctioned
 // readers of them.
-export { SETTINGS_PATH, CLAUDE_REDIRECT_PATH, matchingNewline, ALLOWED_PREFIXES, ALLOWED_EXACT };
+export { SETTINGS_PATH, matchingNewline, ALLOWED_PREFIXES, ALLOWED_EXACT };

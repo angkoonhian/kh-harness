@@ -1,5 +1,5 @@
 // scripts/lib/detect-exposure.mjs
-import { openSync, fstatSync, readSync, closeSync } from 'node:fs';
+import { openSync, fstatSync, readSync, closeSync, lstatSync } from 'node:fs';
 import { join, basename } from 'node:path';
 
 const MAX_BYTES = 512 * 1024;
@@ -314,6 +314,14 @@ function isBinaryExtension(base) {
  * Returns `{ buf, reason, missing }`; `missing` is true for ENOENT so the
  * always-probe path can stay quiet without re-testing existence.
  */
+function isDanglingLink(abs) {
+  try {
+    return lstatSync(abs).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 function openAndRead(root, rel) {
   if (SKIP_DIRS.some(p => rel.startsWith(p) || rel.includes('/' + p))) return { buf: null, reason: null, missing: false };
   if (isBinaryExtension(basename(rel))) return { buf: null, reason: null, missing: false };
@@ -325,6 +333,10 @@ function openAndRead(root, rel) {
     // A directory opens on POSIX and fails with EISDIR on Windows: both are
     // "not a regular file", which is a deliberate skip, not an alarm.
     if (code === 'EISDIR') return { buf: null, reason: null, missing: false };
+    // A dangling symlink: the link is listed, its target is not there, and
+    // there are no bytes to examine — a deliberate skip, not a permanent
+    // high finding (audit Tier 4, finding 27).
+    if (code === 'ENOENT' && isDanglingLink(join(root, rel))) return { buf: null, reason: null, missing: false };
     return { buf: null, reason: `could not be opened (${code})`, missing: code === 'ENOENT' };
   }
   try {

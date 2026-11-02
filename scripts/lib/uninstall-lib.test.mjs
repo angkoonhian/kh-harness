@@ -165,8 +165,11 @@ test('CRITICAL: isGeneratorProducible catches a forged CLAUDE.md even when its c
   const plan = planUninstall({ root: d, manifest });
   assert.equal(plan.remove.length, 0, 'must not be scheduled for removal');
   assert.equal(plan.keep[0].path, 'CLAUDE.md');
-  assert.equal(plan.keep[0].why, 'not-generator-producible',
-    'the stamp alone would have said this content was ours -- only the path check catches it');
+  // Two independent path gates refuse this now: CLAUDE.md left the write
+  // allowlist (audit Tier 4, finding 27), so gate 1 fires first; the
+  // generator-producible check behind it would refuse it just the same.
+  assert.ok(['outside-allowlist', 'not-generator-producible'].includes(plan.keep[0].why),
+    `the stamp alone would have said this content was ours -- only a path check catches it (got ${plan.keep[0].why})`);
 });
 
 test('CRITICAL: carriesOurStamp catches a forged entry for a LEGITIMATE path whose real content is the user\'s own', () => {

@@ -45,6 +45,19 @@ test('pnpm workspace finds member packages', () => {
 // default since 1.2 — verified against Bun 1.4.2 — while `bun.lockb`
 // (binary) is the legacy format from 1.1 and earlier. Detection keyed to
 // `bun.lockb` alone missed every current-Bun repository entirely.
+test('pnpm-workspace.yaml catalog entries are not workspace globs', () => {
+  // Audit Tier 4, finding 27: every `- item` line was taken as a pattern, so a
+  // `catalog:` or `onlyBuiltDependencies:` entry became a workspace glob.
+  const d = repo();
+  write(d, 'package.json', JSON.stringify({ name: 'root', private: true }));
+  write(d, 'pnpm-lock.yaml', '');
+  write(d, 'pnpm-workspace.yaml', 'packages:\n  - "packages/*"\ncatalog:\n  react: ^18\nonlyBuiltDependencies:\n  - esbuild\n');
+  write(d, 'packages/api/package.json', JSON.stringify({ name: '@x/api', scripts: {} }));
+  write(d, 'esbuild/package.json', JSON.stringify({ name: 'not-a-member' }));
+  const s = run(d);
+  assert.deepEqual(s.packages.map(p => p.name).sort(), ['@x/api', 'root'], 'only the packages: list is a glob list');
+});
+
 test('bun via bun.lock (the default lockfile name since Bun 1.2)', () => {
   const d = repo();
   write(d, 'package.json', JSON.stringify({ name: 'app', scripts: { test: 'node test.js' } }));

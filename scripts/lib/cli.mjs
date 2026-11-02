@@ -142,8 +142,8 @@ is the escape hatch.
 
 Additive only, and structurally so: a write allowlist in code (not a settings
 rule), filesystem containment checked before any write, and a file this tool
-did not write is never overwritten. An existing \`CLAUDE.md\` is never touched —
-a proposal for it is redirected to \`docs/harness/CLAUDE.proposed.md\` for you
+did not write is never overwritten. \`CLAUDE.md\` is never written by this
+command at all — the skill drafts \`docs/harness/CLAUDE.proposed.md\` for you
 to merge by hand.
 
 FLAGS

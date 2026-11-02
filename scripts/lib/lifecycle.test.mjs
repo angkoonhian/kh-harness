@@ -847,6 +847,14 @@ test('a tracked, re-generated docs/harness/detect.json does not trip the dirty-t
   assert.doesNotThrow(() => run(APPLY, d, '--yes'), 'the report is the kit\'s own write, like the manifest');
 });
 
+test('apply on win32 prints the execute-bit hint after writing bootstrap.sh', (t) => {
+  if (process.platform !== 'win32') { t.skip('the hint is for Windows, where chmod is a no-op'); return; }
+  const d = workspaceFixture();
+  const out = run(APPLY, d, '--yes');
+  assert.match(out, /^wrote      scripts\/bootstrap\.sh$/m, 'fixture sanity: the bootstrap script was written');
+  assert.match(out, /note: Windows cannot record the execute bit — run `git update-index --chmod=\+x scripts\/bootstrap\.sh` before committing/);
+});
+
 test('apply refuses on a default branch unless told otherwise', () => {
   const d = fixture();
   git(d, 'checkout', '-q', '-b', 'master');
@@ -1135,7 +1143,7 @@ test('a forged manifest entry for CLAUDE.md does not delete it — kept, with a 
     'byte-for-byte untouched, not merely "still exists"');
   assert.doesNotMatch(out, /Removed:[^]*CLAUDE\.md/, 'must never be listed under Removed:');
   assert.match(out, /CLAUDE\.md/, 'the user must be told it was considered and kept');
-  assert.match(out, /not-generator-producible/, 'and told why — the structural reason, since this path is never one any generator writes');
+  assert.match(out, /outside-allowlist|not-generator-producible/, 'and told why — a structural reason: this path is on no allowlist and is never one any generator writes');
 });
 
 // Coordinator finding (Major — a false `declared` introduced by the

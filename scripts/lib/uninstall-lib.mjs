@@ -8,7 +8,7 @@
 // enough.
 import * as fs from 'node:fs';
 import { join } from 'node:path';
-import { assertAllowed, assertContained, CLAUDE_REDIRECT_PATH, matchingNewline, detectIndent, isAllowedDirectory, isCanonicalJson, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, assertContained, matchingNewline, detectIndent, isAllowedDirectory, isCanonicalJson, settingsReformattedNote } from './apply-lib.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
@@ -107,10 +107,10 @@ const SETTINGS = '.claude/settings.json';
  *                         writes into them. Same accepted residual as
  *                         bootstrap.sh.
  *   `docs/harness/CLAUDE.proposed.md`
- *                         NOT covered, and does not need to be: it exists
- *                         to be read and merged INTO `CLAUDE.md` by hand,
- *                         not written into. `CLAUDE.md` itself is refused
- *                         by gate 1 regardless of content.
+ *                         Not here at all: the SKILL drafts it (a prompt),
+ *                         `apply` never writes it, so nothing of ours can be
+ *                         recorded there. `CLAUDE.md` itself is refused by
+ *                         gate 1 regardless of content.
  */
 const GENERATOR_PRODUCIBLE_EXACT = new Set([
   'HANDOFF.md',
@@ -119,7 +119,6 @@ const GENERATOR_PRODUCIBLE_EXACT = new Set([
   VERIFY_TOUCHED_PATH,
   REDACT_PATH,
   BRIEF_PATH,
-  CLAUDE_REDIRECT_PATH,
   // Phase 3: the rules-registry scaffold and the re-injection hook. The
   // registry is the third artefact whose designed workflow is the user
   // writing into our file (see `templateFor` and `hasUserAuthoredBody`).
