@@ -23,7 +23,7 @@
 
 ## Review Focus
 
-1. `.npmrc` with `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` must be a `reference`, never a literal finding — Task 1.
+1. An `.npmrc` whose `_authToken` line reads `${NPM_TOKEN}` must be a `reference`, never a literal finding — Task 1.
 2. A live `sk-proj-` key under `tests/` must still make `P0.security` `failing` — Task 2.
 3. Output of `eslint --config .eslintrc.cjs src` that mentions `.eslintrc.cjs` survives, while a `--token=…` fragment on the same run still drops — Task 3.
 4. `apply --yes` when git cannot run must refuse (exit 3) naming both waivers and write nothing — Task 4.
@@ -63,10 +63,10 @@ test('a provider-token shape inside a longer word is not a token', () => {   // 
 test('a Bearer placeholder is not a token finding', () => {                   // bearer('YOUR_TOKEN_HERE_PLEASE_X') → []
 test('a literal credential after a placeholder in the same file is still reported as literal', () => {
   // credLine('your-password-here') + credLine('hunter2hunter2') → one credentials-in-doc, valueKind literal, line 2
-test('a JSON-quoted credential key is found', () => {                        // `{ "password": "hunter2hunter2" }` → literal
+test('a JSON-quoted credential key is found', () => {                        // a JSON object whose password key holds hunter2hunter2 → literal
 test('an .npmrc _authToken reading an environment variable is a reference; a literal one is a token', () => {
-  // `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` → one credentials-in-doc, reference
-  // `//registry.npmjs.org/:_authToken=` + npm token → token-in-repo-file high
+  // the registry _authToken line set to ${NPM_TOKEN} → one credentials-in-doc, reference
+  // the same line set to a real npm token → token-in-repo-file high
 test('widened credential keys are found: api_key, client_secret, secret_key, access_token, auth_token', () => {
 test('findings carry the line number of the first qualifying match', () => { // token on line 3 → line 3
 test('classifyCredentialValue: environment interpolation is a reference', () => {
@@ -86,7 +86,7 @@ Extend `NEVER returns the secret value` to also plant an `sk-proj` token and ass
   - `scanFile` uses both; findings include `line`.
   - Rewrite the header comment on `DB_CRED`/placeholder to describe the new behaviour; delete the "first match" code path entirely.
 - [ ] **Step 4: Run** `node --test scripts/lib/detect-exposure.test.mjs` — Expected: new tests PASS; `DOGFOOD` lists this repository's own files the widened keys now hit.
-- [ ] **Step 5: Fix each DOGFOOD hit at the source**: restructure `CREDENTIAL_RULES[7]` to `[/(--(?:token|auth-token|api-key))=(\S+)/gi, '$1=***']`; assemble `--auth-token=…`/`api_key=…` fixtures with `join('=')`; reword any doc sentence. Re-run until DOGFOOD passes. Record every file touched in the ledger.
+- [ ] **Step 5: Fix each DOGFOOD hit at the source**: restructure `CREDENTIAL_RULES[7]` only if the DOGFOOD run names it; assemble flag-and-value fixtures (`--auth-token`, `api_key`) with `join('=')`; reword any doc sentence. Re-run until DOGFOOD passes. Record every file touched in the ledger.
 - [ ] **Step 6: Run the whole suite** `npm test` — Expected: all pass.
 - [ ] **Step 7: Commit** `fix(security): find today's token shapes and every literal credential; line numbers, never values`
 

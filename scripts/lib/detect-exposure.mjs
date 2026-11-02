@@ -34,21 +34,44 @@ const ALWAYS_PROBE = [
   '.netrc',
 ];
 
+// Provider-token shapes. Every pattern is global (every match in a file is
+// examined, see `tokenFinding`) and anchored at a word boundary: the old
+// `/sk-[A-Za-z0-9]{20,}/` matched inside `desk-…`. Audit Tier 1, finding 1
+// (docs/2026-11-02-audit-findings.md): the previous list predated today's
+// shapes — an OpenAI `sk-proj-…` key failed the old `sk-` rule at its first
+// hyphen, and `npm_`, `github_pat_` and `AIza` were not listed at all — so a
+// tree holding all three reported `verified`.
 const TOKEN_PATTERNS = [
-  /glpat-[A-Za-z0-9_-]{16,}/,
-  /gh[pousr]_[A-Za-z0-9]{16,}/,
-  /sk-[A-Za-z0-9]{20,}/,
-  /(sk|pk|rk)_(live|test)_[A-Za-z0-9]{10,}/,
-  /AKIA[0-9A-Z]{16}/,
-  /Bearer\s+[A-Za-z0-9._-]{20,}/i,
-  /xox[baprs]-[A-Za-z0-9-]{10,}/,
+  /\bglpat-[A-Za-z0-9_-]{16,}/g,
+  /\bgh[pousr]_[A-Za-z0-9]{16,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{22,}/g,
+  /\bsk-[A-Za-z0-9_-]{20,}/g,
+  /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g,
+  /\bAKIA[0-9A-Z]{16}/g,
+  /\bnpm_[A-Za-z0-9]{36}/g,
+  /\bAIza[0-9A-Za-z_-]{35}/g,
+  /\bBearer\s+[A-Za-z0-9._-]{20,}/gi,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}/g,
 ];
 
-const PEM_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+const PEM_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/g;
 
-const DB_CRED = /(password|passwd|pwd)\s*[:=]\s*(\S{8,})/i;
+// A credential-shaped KEY followed by a value of eight or more non-space
+// characters. Global: every match in a file is examined (a placeholder on
+// line 1 used to hide a literal on line 2). The optional closing quote lets
+// a JSON key (`"password": "…"`) match. The key list is deliberately
+// compound-only beyond the three password spellings: bare `token:` and
+// `secret:` were probed against this repository and matched 48 and 8 lines
+// of ordinary prose, which would bury the check in noise. `auth[_-]?token`
+// also covers `.npmrc`'s `_authToken`.
+const DB_CRED = /(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*(\S{8,})/gi;
 
-const PLACEHOLDER =/(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|^(password|secret|todo)$)/i;
+// Tested on the VALUE only — of a credential line, or of a token match with
+// its `Bearer ` scheme removed. It used to be tested on key+value for
+// credential lines, so a key that happened to contain `example` hid a real
+// value; and it was never applied to tokens, so `Bearer YOUR_TOKEN_HERE` was
+// a permanent high finding.
+const PLACEHOLDER = /(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|^(password|secret|todo)$)/i;
 
 // Task 9b, finding 1: a credential-shaped key (`password:`, `pwd=`, ...)
 // whose VALUE is a code reference — a property access, a function call, or a
@@ -71,6 +94,16 @@ const PLACEHOLDER =/(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|
 // `reference`. When in doubt, this returns `literal`.
 const REFERENCE_VALUE = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\([^()]*\)|\[[^[\]]*\])+[;,]?$/;
 
+// The other way a file reads a secret from somewhere else: shell, dotenv,
+// `.npmrc` and CI interpolation — `$VAR`, `${VAR}`, `%VAR%`, `${{ secrets.X }}` —
+// optionally quoted (including a markdown backtick, so a documented example
+// is not a finding) and optionally followed by one statement delimiter. The
+// most common `.npmrc` line in existence — `_authToken` set to `${NPM_TOKEN}` —
+// is exactly this shape and used to classify `literal`. A value that merely
+// STARTS with a dollar sign (`$uper$ecret`) is not an interpolation and
+// stays `literal`.
+const ENV_REFERENCE = /^["'`]?(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{\{[^}]*\}\}|\$\{[A-Za-z_][A-Za-z0-9_:.-]*\}|%[A-Za-z_][A-Za-z0-9_]*%)["'`]?[;,]?$/;
+
 /**
  * Classifies a `credentials-in-doc` match's VALUE half (never the key) as
  * `'literal'` (a real string/token — stays a prominent finding) or
@@ -83,7 +116,7 @@ const REFERENCE_VALUE = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|
  */
 export function classifyCredentialValue(value) {
   if (typeof value !== 'string' || value.length === 0) return 'literal';
-  return REFERENCE_VALUE.test(value) ? 'reference' : 'literal';
+  return REFERENCE_VALUE.test(value) || ENV_REFERENCE.test(value) ? 'reference' : 'literal';
 }
 
 /**
@@ -241,6 +274,50 @@ function isPlaceholder(value) {
   return PLACEHOLDER.test(value);
 }
 
+/** 1-based line of a character offset; the one thing from a user's file,
+ * besides its path, that a finding may carry into detect.json. */
+function lineOf(text, index) {
+  let line = 1;
+  for (let i = 0; i < index; i++) if (text.charCodeAt(i) === 10) line++;
+  return line;
+}
+
+/**
+ * The first token-shaped match in `text` that is not a placeholder, as
+ * `{ line }`, or null. Every pattern's every match is considered: a file
+ * whose only Bearer value is `YOUR_TOKEN_HERE` is clean, a file whose
+ * second `sk-` match is real is a finding.
+ */
+function tokenFinding(text) {
+  let first = null;
+  for (const re of [...TOKEN_PATTERNS, PEM_PATTERN]) {
+    for (const m of text.matchAll(re)) {
+      if (isPlaceholder(m[0].replace(/^Bearer\s+/i, ''))) continue;
+      if (first === null || m.index < first) first = m.index;
+      break; // earliest surviving match of THIS pattern found; the next pattern may be earlier still
+    }
+  }
+  return first === null ? null : { line: lineOf(text, first) };
+}
+
+/**
+ * The credential-line verdict for one file, as `{ valueKind, line }`, or
+ * null. Every `DB_CRED` match is examined and placeholders are skipped; the
+ * file is `literal` if ANY surviving value is a literal (reported at that
+ * line), else `reference` if any survives at all. One finding per file,
+ * as before — the line number is what tells the user which one.
+ */
+function credentialFinding(text) {
+  let reference = null;
+  for (const m of text.matchAll(DB_CRED)) {
+    const value = m[1];
+    if (isPlaceholder(value)) continue;
+    if (classifyCredentialValue(value) === 'literal') return { valueKind: 'literal', line: lineOf(text, m.index) };
+    reference ??= { valueKind: 'reference', line: lineOf(text, m.index) };
+  }
+  return reference;
+}
+
 /**
  * Read a file's text content, deciding the encoding from its bytes rather
  * than assuming UTF-8. Order matters (see task-5-report.md, fix round 4):
@@ -316,20 +393,18 @@ function scanFile(root, rel, isLocalSettings) {
   if (reason) return { findings, reason };
   if (!text) return { findings, reason: null };
 
-  const hasToken = TOKEN_PATTERNS.some(re => re.test(text)) || PEM_PATTERN.test(text);
-  if (hasToken) {
+  const token = tokenFinding(text);
+  if (token) {
     const kind = isLocalSettings ? 'token-in-local-settings' : 'token-in-repo-file';
-    findings.push({ kind, location: rel, severity: 'high' });
+    findings.push({ kind, location: rel, severity: 'high', line: token.line });
   }
 
-  if (DB_CRED.test(text)) {
-    const match = text.match(DB_CRED);
-    if (match && !isPlaceholder(match[0])) {
-      findings.push({
-        kind: 'credentials-in-doc', location: rel, severity: 'medium',
-        valueKind: classifyCredentialValue(match[2]),
-      });
-    }
+  const credential = credentialFinding(text);
+  if (credential) {
+    findings.push({
+      kind: 'credentials-in-doc', location: rel, severity: 'medium',
+      valueKind: credential.valueKind, line: credential.line,
+    });
   }
 
   return { findings, reason: null };

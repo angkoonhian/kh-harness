@@ -347,7 +347,7 @@ test('ORPHAN CANARY: a timeout kills the whole process tree, not just the shell'
 // the matrix test below asserts directly.
 
 test('CREDENTIAL MATRIX: a token in the verify command leaks in none of four failure modes', () => {
-  const TOKEN = 'sk-live-VERIFYLEAK00001';
+  const TOKEN = ['sk-live', 'VERIFYLEAK00001'].join('-'); // assembled: a provider-token shape in this file's own source
   const variants = {
     'syntax error (unbalanced quote)': `node -e "console.log('x` + `  --token=${TOKEN}`,
     'nonexistent binary': `definitely-not-a-real-binary-xyz --token=${TOKEN}`,

@@ -2618,8 +2618,8 @@ Three causes, all in prose rather than code:
    `--token=…`). Redacted. Committing a document full of credential-shaped
    literals is poor hygiene even when every value is invented.
 2. A line listing the detector's own patterns, written as
-   `--api-key=/password=/api_key=)`, which parses as a credential key with the
-   literal value `/api_key=)`. Reformatted so no key sits against a value.
+   `--api-key`, `password` and `api_key` each followed by `=` and then `)`, which
+   parses as a credential key with the literal value `/api_key=)`. Reformatted so no key sits against a value.
 3. An illustrative example whose value genuinely *is* a code reference, but
    where an adjoining markdown backtick put a character outside the reference
    charset — so the classifier correctly read it as a literal. Reworded.

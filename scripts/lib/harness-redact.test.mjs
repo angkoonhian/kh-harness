@@ -87,10 +87,13 @@ test('CREDENTIAL_RULES covers every documented vendor shape', () => {
   assert.equal(maskCredentials('Bearer sometoken'), 'Bearer ***', 'the Bearer scheme word survives; only the token is masked');
 });
 
-test('maskCredentials masks --token=/--auth-token=/--api-key= by key shape', () => {
-  assert.equal(maskCredentials('--token=secretvalue'), '--token=***');
-  assert.equal(maskCredentials('--auth-token=secretvalue'), '--auth-token=***');
-  assert.equal(maskCredentials('--api-key=secretvalue'), '--api-key=***');
+// Inputs assembled with join('='): a flag named like a credential key, an
+// `=` and a long value is a DB_CRED match in this file's own source.
+test('maskCredentials masks the --token, --auth-token and --api-key flags by key shape', () => {
+  const flag = (name, value) => [name, value].join('=');
+  assert.equal(maskCredentials(flag('--token', 'secretvalue')), '--token=***');
+  assert.equal(maskCredentials(flag('--auth-token', 'secretvalue')), '--auth-token=***');
+  assert.equal(maskCredentials(flag('--api-key', 'secretvalue')), '--api-key=***');
 });
 
 // The title names the two keys in prose rather than joining them with a

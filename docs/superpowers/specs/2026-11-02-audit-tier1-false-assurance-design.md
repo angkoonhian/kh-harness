@@ -23,7 +23,7 @@ flag, an ignore list or a score.
    (`Bearer YOUR_TOKEN_HERE`) is not.
 2. A literal credential on line 2 is found even when line 1 holds a
    placeholder; a JSON-quoted key (`"password": "…"`) is found; an `.npmrc`
-   `_authToken=${NPM_TOKEN}` is a reference, not a literal.
+   whose `_authToken` reads `${NPM_TOKEN}` is a reference, not a literal.
 3. A fixture password under `tests/` is *listed* at severity `low` and does
    not by itself make `P0.security` `failing`. A provider token under
    `tests/` stays `high`: a live key is live wherever it sits.

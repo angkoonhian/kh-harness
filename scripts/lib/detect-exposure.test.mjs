@@ -72,11 +72,16 @@ test('finds a provider token in a tracked file', () => {
 
 test('NEVER returns the secret value', () => {
   const d = repo();
-  write(d, '.env.example', `TOKEN=${SECRET}\n`);
+  const PROJECT_KEY = ['sk-proj', 'H'.repeat(40)].join('-');
+  write(d, '.env.example', `TOKEN=${SECRET}\nOPENAI=${PROJECT_KEY}\n`);
   write(d, '.claude/settings.local.json', JSON.stringify({ x: `Bearer ${SECRET}` }));
+  write(d, 'docs/db.md', credLine('hunter2hunter2'));
   const serialised = JSON.stringify(run(d));
   assert.equal(serialised.includes(SECRET), false);
   assert.equal(serialised.includes('glpat-'), false);
+  assert.equal(serialised.includes(PROJECT_KEY), false);
+  assert.equal(serialised.includes('sk-proj'), false);
+  assert.equal(serialised.includes('hunter2'), false, 'a credential VALUE never leaves the detector, only its location and line');
 });
 
 test('flags a credential in a remote url', () => {
@@ -129,7 +134,8 @@ test('finds token in gitignored .claude/settings.local.json', () => {
 // Fix 2: Source files are scanned
 test('finds token in JavaScript source file', () => {
   const d = repo();
-  write(d, 'src/config.js', `const API_KEY = 'sk-${'A'.repeat(25)}';\n`);
+  // The key is assembled too: `API_KEY = '…'` is itself a credential line.
+  write(d, 'src/config.js', `const ${['API', 'KEY'].join('_')} = 'sk-${'A'.repeat(25)}';\n`);
   const found = run(d);
   const hasToken = found.some(e => e.location === 'src/config.js' && e.kind === 'token-in-repo-file');
   assert.ok(hasToken, 'Should find token in .js file');
@@ -137,7 +143,7 @@ test('finds token in JavaScript source file', () => {
 
 test('finds token in Python source file', () => {
   const d = repo();
-  write(d, 'config.py', `API_KEY = "sk-${'B'.repeat(25)}"\n`);
+  write(d, 'config.py', `${['API', 'KEY'].join('_')} = "sk-${'B'.repeat(25)}"\n`);
   const found = run(d);
   const hasToken = found.some(e => e.location === 'config.py' && e.kind === 'token-in-repo-file');
   assert.ok(hasToken, 'Should find token in .py file');
@@ -398,6 +404,115 @@ test('collapsedExposureNote names the count and says where the rest live', () =>
   assert.match(note, /detect\.json/);
 });
 
+// --- Audit Tier 1, finding 1: the sweep said `verified` over live-shaped
+// --- secrets (docs/2026-11-02-audit-findings.md) --------------------------
+//
+// Every token below is assembled from parts, per this file's header: the
+// detector must keep seeing these shapes wherever they genuinely appear,
+// including in this repository, so none may exist here as a literal.
+
+/** A `key: value` credential line for any key — `credLine` is the
+ * `password` special case. Key and value are separate literals. */
+const keyLine = (key, value) => [key, value].join(': ') + '\n';
+
+test('finds today\'s provider token shapes: OpenAI project, Anthropic, npm, fine-grained GitHub, Google', () => {
+  const shapes = {
+    'openai-project': ['sk-proj', 'A'.repeat(40)].join('-'),
+    'anthropic': ['sk-ant-api03', 'B'.repeat(40)].join('-'),
+    'npm': ['npm', 'C'.repeat(36)].join('_'),
+    'github-fine-grained': ['github_pat', 'D'.repeat(30)].join('_'),
+    'google': ['AIza', 'E'.repeat(35)].join(''),
+  };
+  for (const [name, token] of Object.entries(shapes)) {
+    const d = repo();
+    write(d, 'config.txt', `KEY=${token}\n`);
+    const found = run(d);
+    assert.ok(found.some(e => e.kind === 'token-in-repo-file' && e.severity === 'high'), `${name} must be found: ${JSON.stringify(found)}`);
+  }
+});
+
+test('a provider-token shape inside a longer word is not a token', () => {
+  const d = repo();
+  // `desk-` followed by 25 token characters contains `sk-…` as a substring.
+  write(d, 'notes.md', `desk-${'F'.repeat(25)} is a furniture SKU\n`);
+  assert.deepEqual(run(d), []);
+});
+
+test('a Bearer placeholder is not a token finding', () => {
+  const d = repo();
+  write(d, 'docs/api.md', `Authorization: ${bearer('YOUR_TOKEN_HERE_PLEASE_X')}\n`);
+  assert.deepEqual(run(d), []);
+});
+
+test('a literal credential after a placeholder in the same file is still reported as literal', () => {
+  const d = repo();
+  write(d, 'docs/db.md', credLine('your-password-here') + credLine('hunter2hunter2'));
+  const found = run(d);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].kind, 'credentials-in-doc');
+  assert.equal(found[0].valueKind, 'literal', 'the placeholder on line 1 must not hide the literal on line 2');
+  assert.equal(found[0].line, 2);
+});
+
+test('a JSON-quoted credential key is found', () => {
+  const d = repo();
+  write(d, 'config/db.json', JSON.stringify({ [['pass', 'word'].join('')]: 'hunter2hunter2' }, null, 2) + '\n');
+  const found = run(d);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].kind, 'credentials-in-doc');
+  assert.equal(found[0].valueKind, 'literal');
+});
+
+test('an .npmrc _authToken reading an environment variable is a reference; a literal one is a token', () => {
+  const viaEnv = repo();
+  write(viaEnv, '.npmrc', ['//registry.npmjs.org/:_authToken', '${NPM_TOKEN}'].join('=') + '\n');
+  const ref = run(viaEnv);
+  assert.equal(ref.length, 1, JSON.stringify(ref));
+  assert.equal(ref[0].kind, 'credentials-in-doc');
+  assert.equal(ref[0].valueKind, 'reference', 'an environment interpolation reads the secret from elsewhere');
+
+  const literal = repo();
+  write(literal, '.npmrc', ['//registry.npmjs.org/:_authToken', ['npm', 'G'.repeat(36)].join('_')].join('=') + '\n');
+  const kinds = run(literal).map(e => e.kind);
+  assert.ok(kinds.includes('token-in-repo-file'), `a real npm token in .npmrc is a token finding: ${kinds}`);
+});
+
+test('widened credential keys are found: api_key, client_secret, secret_key, access_token, auth_token', () => {
+  for (const key of ['api_key', 'API-KEY', 'client_secret', 'SECRET_KEY', 'access_token', 'auth-token', 'authToken']) {
+    const d = repo();
+    write(d, 'settings.yml', keyLine(key, 'hunter2hunter2'));
+    const found = run(d);
+    assert.equal(found.length, 1, `${key}: ${JSON.stringify(found)}`);
+    assert.equal(found[0].kind, 'credentials-in-doc', key);
+    assert.equal(found[0].valueKind, 'literal', key);
+  }
+});
+
+test('a bare "token:" or "secret:" key is not credential-shaped (prose would drown the check)', () => {
+  const d = repo();
+  write(d, 'docs/glossary.md', keyLine('token', 'something the parser returns') + keyLine('secret', 'whatever the user keeps'));
+  assert.deepEqual(run(d), []);
+});
+
+test('findings carry the line number of the first qualifying match, never the value', () => {
+  const d = repo();
+  write(d, 'config.env', `# settings\n\nTOKEN=${SECRET}\n` + credLine('your-password-here') + credLine('hunter2hunter2'));
+  const found = run(d);
+  const token = found.find(e => e.kind === 'token-in-repo-file');
+  const cred = found.find(e => e.kind === 'credentials-in-doc');
+  assert.equal(token.line, 3);
+  assert.equal(cred.line, 5, 'the placeholder on line 4 is skipped; the literal on line 5 is the finding');
+  assert.equal(JSON.stringify(found).includes('hunter2'), false);
+});
+
+test('classifyCredentialValue: environment interpolation is a reference', () => {
+  for (const v of ['$DB_PASSWORD', '${DB_PASSWORD}', '%DB_PASSWORD%', '${{ secrets.DB_PASSWORD }}', '${DB_PASSWORD},', '"${DB_PASSWORD}"']) {
+    assert.equal(classifyCredentialValue(v), 'reference', v);
+  }
+  // A literal that merely starts with a dollar sign is still a literal.
+  assert.equal(classifyCredentialValue('$uper$ecret99'), 'literal');
+});
+
 // --- Coordinator ruling (post-review, concern 5): kh-harness passes its own
 // --- credential check, and a regression is visible rather than normalised --
 //
@@ -429,7 +544,7 @@ test('DOGFOOD: kh-harness passes its own P0.security check', () => {
 
   // The message names every finding, because a bare count is useless to
   // whoever broke this: they need to know which file and which kind.
-  const listed = exposures.map(e => `${e.severity} ${e.kind} at ${e.location}${e.reason ? ' — ' + e.reason : ''}`);
+  const listed = exposures.map(e => `${e.severity} ${e.kind} at ${e.location}${e.line ? ':' + e.line : ''}${e.reason ? ' — ' + e.reason : ''}`);
   const WHAT_TO_DO = [
     'kh-harness must pass its own credential check — see the README section that states it does.',
     '',

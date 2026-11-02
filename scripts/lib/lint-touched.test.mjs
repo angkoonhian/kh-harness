@@ -144,8 +144,10 @@ test('ATTRIBUTION: a lint failure naming the edited file by its basename alone s
 // string, the spawn arguments, or process.env — even when the spawn itself
 // fails outright.
 test('NEVER-ECHO: a token-shaped literal in the lint command itself never appears in stdout or stderr', () => {
-  const token = 'sk-live-FAKE1234567890TOKENVALUE';
-  const script = `node -e "console.error('src/a.ts:1 broke'); process.exit(1)" -- --auth-token=${token}`;
+  // Both assembled: the token is a provider shape, and `--auth-token=` plus a
+  // value is a credential line, in this file's own source.
+  const token = ['sk-live', 'FAKE1234567890TOKENVALUE'].join('-');
+  const script = `node -e "console.error('src/a.ts:1 broke'); process.exit(1)" -- ${['--auth-token', token].join('=')}`;
   const d = repo(script);
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 2, 'the failure does mention the edited file, so it is reported');
@@ -157,7 +159,7 @@ test('NEVER-ECHO: a lint command that cannot even be spawned exits 0 without nam
   // scripts.lint names a binary that cannot possibly exist on PATH, and
   // the "binary" name itself carries a token-shaped literal — if the spawn
   // failure path ever echoed the command for diagnostics, this would leak.
-  const token = 'sk-live-SPAWNFAIL0000000000';
+  const token = ['sk-live', 'SPAWNFAIL0000000000'].join('-'); // assembled: a provider-token shape in this file's own source
   const d = repo(`this-binary-does-not-exist-${token}`);
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 0, 'a spawn failure is never reported as a lint failure');
@@ -170,7 +172,7 @@ test('NEVER-ECHO: a token survives in no output even when the lint run times out
   // two of the three places output could reach stderr; the timeout path is
   // the third. The token lives in the command's own (non-flag-shaped, via
   // `--`) arguments so node's own CLI parser does not reject it outright.
-  const token = 'sk-live-TIMEOUTLEAK0000001';
+  const token = ['sk-live', 'TIMEOUTLEAK0000001'].join('-');
   const d = repo(`node -e "setTimeout(() => { console.error('src/a.ts late'); process.exit(1); }, 4000)" -- --token=${token}`);
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } }, { HK_LINT_TIMEOUT_MS: '200' });
   assert.equal(r.code, 0);
@@ -190,7 +192,7 @@ test('NEVER-ECHO: a token survives in no output even when the lint run times out
 // `fullCommand` is computed by the SAME formula the hook uses, and proves
 // redaction removes it even though mentionsFile would otherwise pass it.
 test('CRITICAL: a line reproducing the raw lint command is redacted, even though it mentions the edited file', () => {
-  const token = 'sk-live-ECHOLEAK0001REAL';
+  const token = ['sk-live', 'ECHOLEAK0001REAL'].join('-');
   const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
   mkdirSync(join(d, 'src'), { recursive: true });
   writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;\n');
@@ -669,12 +671,13 @@ test('BLOCK: a continuation line carrying a credential-shaped value is redacted,
   const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
   mkdirSync(join(d, 'src'), { recursive: true });
   writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;' + NL);
-  writeFileSync(join(d, 'runlint.cjs'), stylishLintScript('src/a.ts', 'found token sk-live-CONTINUATIONLEAK0001 in config'));
+  const leaked = ['sk-live', 'CONTINUATIONLEAK0001'].join('-');
+  writeFileSync(join(d, 'runlint.cjs'), stylishLintScript('src/a.ts', `found token ${leaked} in config`));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
 
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 2);
-  assert.doesNotMatch(r.stderr, /sk-live-CONTINUATIONLEAK0001/, 'a credential in a continuation line must be masked');
+  assert.doesNotMatch(r.stderr, new RegExp(leaked), 'a credential in a continuation line must be masked');
   assert.match(r.stderr, /found token/, 'the surrounding continuation text still survives — masked, not dropped');
   assert.match(r.stderr, /\*\*\*/);
 });
@@ -783,12 +786,13 @@ test('LAYER 2 ONLY: a credential-shaped value in a genuine diagnostic (not echoe
   // layer 2's credential-shape masking can catch it from here — exactly
   // the "arriving from anywhere, including the linted file's own content"
   // case ruling 2's layer 2 exists for.
+  const leaked = ['sk-live', 'DIAGNOSTICLEAK0001'].join('-');
   const d = repo(
-    'node -e "console.error([\'src/a.ts:1\',\'hardcoded\',\'secret\',\'sk-live-DIAGNOSTICLEAK0001\',\'found\'].join(String.fromCharCode(32))); process.exit(1)"',
+    `node -e "console.error(['src/a.ts:1','hardcoded','secret','${leaked}','found'].join(String.fromCharCode(32))); process.exit(1)"`,
   );
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 2, 'a genuine diagnostic mentioning a credential is still reported — masked, not dropped');
-  assert.doesNotMatch(r.stderr, /sk-live-DIAGNOSTICLEAK0001/, 'the credential value itself must not reach stderr');
+  assert.doesNotMatch(r.stderr, new RegExp(leaked), 'the credential value itself must not reach stderr');
   assert.match(r.stderr, /hardcoded/, 'the surrounding diagnostic text survives — only the credential is masked');
   assert.match(r.stderr, /\*\*\*/, 'the masked value leaves a visible placeholder, not a silently vanished word');
 });
@@ -807,7 +811,7 @@ test('MASK: a GitHub PAT (ghp_...) in a genuine diagnostic is masked, not droppe
   assert.match(r.stderr, /\*\*\*/);
 });
 
-test('MASK: a generic --auth-token=/password= style value is masked by key shape, not by vendor prefix', () => {
+test('MASK: a generic --auth-token or password assignment is masked by key shape, not by vendor prefix', () => {
   // `password=` plus a long value is a DB_CRED match, so it is assembled.
   const ASSIGNMENT = ['password', 'hunter2plaintext'].join('=');
   const d = repo(

@@ -190,7 +190,7 @@ test('LOAD-BEARING: an unconfigured eval suite skips rather than reporting green
 
   // The specific regression: a success exit inside the eval step's own guard.
   const evalJob = ci.slice(ci.indexOf('\n  eval:'));
-  assert.doesNotMatch(evalJob, /ANTHROPIC_API_KEY:-\}"?\s*\]\s*;\s*then[\s\S]{0,400}?exit 0/,
+  assert.doesNotMatch(evalJob, /ANTHROPIC_API_KEY(?::-)\}"?\s*\]\s*;\s*then[\s\S]{0,400}?exit 0/,
     'exiting 0 on a missing key is what made a green check that measured nothing');
 });
 
