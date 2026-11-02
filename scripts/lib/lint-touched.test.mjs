@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, sep } from 'node:path';
@@ -128,6 +128,90 @@ test('a lint script that names the edited file\'s directory still reports its di
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/components/Button.tsx' } });
   assert.equal(r.code, 2, `the diagnostic must reach Claude: ${JSON.stringify(r)}`);
   assert.match(r.stderr, /Button\.tsx:1:1 error x/);
+});
+
+// --- Audit Tier 3, finding 10: the appended path, and the orphaned linter ---
+//
+// `eslint .` plus the edited file still lints the whole project; appended to
+// a pipeline or chain the path lands on the LAST stage (a `tee` tail
+// overwrote the edited file in a probe); and `spawnSync({ timeout })` killed
+// only the shell, leaving the linter running. The fixture linter below
+// echoes its own argv into an attributable line so the command actually
+// run is observable.
+
+/** A lint script that is a FILE (so its text is never a command token),
+ * printing the edited file's name with the arguments it received. */
+function argvRepo(lintScript) {
+  const d = repo(lintScript);
+  writeFileSync(join(d, 'lint.cjs'), "console.error('src/a.ts:1 argv=' + process.argv.slice(2).join(',')); process.exit(1);\n");
+  return d;
+}
+const edit = { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } };
+
+test('a trailing bare "." target is replaced by the edited file, not joined by it', () => {
+  const r = run(argvRepo('node lint.cjs .'), edit);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /argv=src\/a\.ts$/m, `the one file, not the whole project plus the file: ${r.stderr}`);
+});
+
+test('a lint script with a chain runs unmodified — the path is never appended to its last stage', () => {
+  // `||` so the second stage runs after the first fails; it echoes its own
+  // argv too, which is where an appended path used to land.
+  const d = argvRepo('node lint.cjs || node lint2.cjs');
+  writeFileSync(join(d, 'lint2.cjs'), "console.error('src/a.ts:2 second=' + process.argv.slice(2).join(',')); process.exit(1);\n");
+  const r = run(d, edit);
+  assert.equal(r.code, 2, 'the failure is still reported');
+  assert.match(r.stderr, /argv=$/m, `nothing appended to the first stage: ${r.stderr}`);
+  assert.match(r.stderr, /second=$/m, `nothing appended to the last stage either: ${r.stderr}`);
+});
+
+test('a lint script with a pipeline or a command substitution runs unmodified', () => {
+  for (const script of ['node lint.cjs | node -e "process.stdin.pipe(process.stderr)"', 'node lint.cjs $(echo)']) {
+    const r = run(argvRepo(script), edit);
+    assert.doesNotMatch(r.stderr, /argv=.*src\/a\.ts/, `${script}: the path must not be appended`);
+  }
+});
+
+test('ORPHAN CANARY: a timed-out lint run kills the whole process tree, not just the shell', async () => {
+  // Mirrors verify-touched.test.mjs's canary: a grandchild heartbeat that
+  // must stop advancing once the hook has returned. The teardown kills both
+  // pids itself, whatever the hook managed, so a regression here never
+  // leaks a process on the machine running this suite.
+  const d = repo('node canary.cjs');
+  const heartbeat = join(d, 'heartbeat.txt');
+  const pidsFile = join(d, 'pids.txt');
+  writeFileSync(
+    join(d, 'canary.cjs'),
+    [
+      "const { spawn } = require('child_process');",
+      `const heartbeatPath = ${JSON.stringify(heartbeat)};`,
+      `const pidsPath = ${JSON.stringify(pidsFile)};`,
+      "const grandchild = spawn(process.execPath, ['-e', 'let n=0; setInterval(() => { n++; require(\"fs\").writeFileSync(process.argv[1], String(n)); }, 50);', heartbeatPath], { stdio: 'ignore' });",
+      "require('fs').writeFileSync(pidsPath, process.pid + '\\n' + grandchild.pid + '\\n');",
+      "console.error('src/a.ts:1 launched canary');",
+      'setInterval(() => {}, 1000);',
+    ].join('\n'),
+  );
+  try {
+    const r = run(d, edit, { HK_LINT_TIMEOUT_MS: '300' });
+    assert.equal(r.code, 0, 'a timeout is not a lint failure');
+    await new Promise(res => setTimeout(res, 400));
+    const afterKill = existsSync(heartbeat) ? readFileSync(heartbeat, 'utf8') : null;
+    assert.ok(afterKill !== null, 'sanity: the canary grandchild actually started');
+    await new Promise(res => setTimeout(res, 400));
+    assert.equal(readFileSync(heartbeat, 'utf8'), afterKill, 'the heartbeat must stop advancing — no grandchild survived the timeout kill');
+  } finally {
+    let pids = [];
+    try {
+      if (existsSync(pidsFile)) pids = readFileSync(pidsFile, 'utf8').split(/\s+/).map(Number).filter(Number.isFinite);
+    } catch { /* best-effort teardown */ }
+    for (const pid of pids) {
+      try {
+        if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        else process.kill(pid, 'SIGKILL');
+      } catch { /* already gone */ }
+    }
+  }
 });
 
 // --- Ruling 1: attribution — report only what mentions the edited file ----

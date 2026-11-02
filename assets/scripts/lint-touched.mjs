@@ -17,7 +17,6 @@
 // uncovered file, an out-of-root file, a missing lint script, or a linter
 // that hangs all end the same way — silently, exit 0.
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve, isAbsolute, basename, delimiter, relative, sep } from 'node:path';
 import {
   boundReport,
@@ -28,6 +27,7 @@ import {
   pathTokenExemptions,
   readJSONMarker,
   projectRoot,
+  runBounded,
   safeSessionId,
   signatureOf,
   writeJSONMarker,
@@ -209,6 +209,25 @@ function readPyLintScript(ownerDir) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The edited file is appended only to a PLAIN command (audit Tier 3,
+ * finding 10). A script holding a pipeline, a chain, a substitution or a
+ * newline is run unmodified: appended to `a | b` or `a && b` the path lands
+ * on the LAST stage (a `tee` tail overwrote the edited file in a probe).
+ * A `;` is deliberately NOT a separator here: it is far more often inside
+ * a quoted `node -e` body than between shell commands, and the cost of
+ * missing a `;`-chain is the pre-existing behaviour, not a new one.
+ * A trailing bare `.` or `./` target is dropped first, so `eslint .` lints
+ * the one file instead of the whole project plus the one file. Attribution
+ * (`mentionsFile`) does not depend on any of this; appending is a cost
+ * optimisation and the unmodified script still reports correctly.
+ */
+const COMPOUND_COMMAND = /[|`\n]|&&|\$\(/;
+function appendTarget(lintScript, quotedPath) {
+  if (COMPOUND_COMMAND.test(lintScript)) return lintScript;
+  return `${lintScript.replace(/\s+\.(?:\/)?$/, '')} ${quotedPath}`;
 }
 
 // Belt-and-braces quoting for the allowlisted case only — SAFE_RELATIVE_PATH
@@ -452,21 +471,24 @@ async function main() {
   // redacted in two layers (see dropCommandFragments, maskCredentials)
   // before writeReport is ever called.
   const fullCommand = SAFE_RELATIVE_PATH.test(relToOwner)
-    ? `${lintScript} ${quoteArg(relToOwner)}`
+    ? appendTarget(lintScript, quoteArg(relToOwner))
     : lintScript;
   const binDirs = [join(ownerDir, 'node_modules', '.bin'), join(root, 'node_modules', '.bin')];
   const PATH = [...binDirs, process.env.PATH ?? process.env.Path ?? ''].filter(Boolean).join(delimiter);
 
   const before = statSnapshot(absPath);
 
+  // The shared bounded runner (harness-redact.mjs): a timeout kills the
+  // whole process tree, not merely the shell — `spawnSync({ timeout })` used
+  // to leave the linter running, the orphan verify-touched.mjs had already
+  // fixed for itself (audit Tier 3, finding 10). An overflow keeps the first
+  // LINT_MAX_BUFFER characters and lets the linter finish: the linter DID
+  // run and DID produce output worth reporting.
   let result;
   try {
-    result = spawnSync(fullCommand, {
+    result = await runBounded(fullCommand, {
       cwd: ownerDir,
-      timeout: LINT_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8',
-      shell: true,
+      timeoutMs: LINT_TIMEOUT_MS,
       maxBuffer: LINT_MAX_BUFFER,
       env: { ...process.env, PATH },
     });
@@ -475,17 +497,9 @@ async function main() {
   }
   if (!result) return 0;
 
-  // ENOBUFS (output exceeded LINT_MAX_BUFFER) is NOT a lint failure, but
-  // unlike a spawn failure or a real timeout, the linter DID run and DID
-  // produce output worth reporting — only the pipe buffer, not the
-  // linter, hit a limit. Reporting what was captured (rather than
-  // discarding it, which is spawnSync's own default behaviour) is the
-  // whole fix; everything below already tolerates a truncated/null
-  // `result.status` the same way it tolerates a clean exit.
-  const isOverflow = result.error?.code === 'ENOBUFS';
-  // Any OTHER error (spawn failure) or signal (most commonly our own
-  // timeout kill) is never reported as a lint failure.
-  if ((result.error || result.signal) && !isOverflow) return 0;
+  // A spawn failure, a timeout (our own kill) or any other signal is never
+  // reported as a lint failure.
+  if (result.error || result.signal || result.timedOut) return 0;
 
   // The file the edit touched may have been rewritten by scripts.lint
   // itself (an auto-fixing `--fix`/`--write` linter) — checked BEFORE the
