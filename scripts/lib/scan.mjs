@@ -93,20 +93,32 @@ function isExcludedPath(entry) {
 // that mattered is how a reader concludes the list is exhaustive.
 function detectNestedRepositories(root) {
   const nested = [];
+  // Audit Tier 3, finding 17: `listFiles` used to ask git a fourth time for
+  // `ls-files -co --exclude-standard`, which is exactly the paths of `-s`
+  // (fetched here for the gitlink scan) plus `-o --exclude-standard` (fetched
+  // here for nested repositories). Both answers are returned beside `nested`
+  // so `listFiles` derives the list instead; ~80 ms per spawn on Windows.
+  let tracked = null;
+  let untracked = null;
   try {
     // Untracked entries. Used twice below; git is asked once.
-    const untracked = gitPaths(root, ['ls-files', '-o', '--exclude-standard']);
+    untracked = gitPaths(root, ['ls-files', '-o', '--exclude-standard']);
 
     // Detect submodules: entries with mode 160000 in git ls-files -s. Each
     // record is `<mode> <object> <stage>\t<path>`; the path begins after
     // the first TAB and may itself hold spaces (audit Tier 2, finding 6: a
     // whitespace split recorded `my sub dir` as `my`).
-    for (const line of gitPaths(root, ['ls-files', '-s']) ?? []) {
+    const staged = gitPaths(root, ['ls-files', '-s']);
+    if (staged !== null) tracked = [];
+    for (const line of staged ?? []) {
       const tab = line.indexOf('\t');
       if (tab < 0) continue;
       const mode = line.slice(0, tab).split(' ')[0];
       const path = line.slice(tab + 1);
-      if (mode === '160000' && path) nested.push({ path, kind: 'submodule' });
+      if (!path) continue;
+      // Every stage of an unmerged path is one record; the path is listed once.
+      if (tracked[tracked.length - 1] !== path) tracked.push(path);
+      if (mode === '160000') nested.push({ path, kind: 'submodule' });
     }
 
     // Detect nested independent repositories: untracked directories containing .git
@@ -180,14 +192,15 @@ function detectNestedRepositories(root) {
       }
     }
   } catch {
-    // If any git operation fails entirely, return empty
-    return [];
+    // If any git operation fails entirely, return empty — and no file lists,
+    // so listFiles falls back to the walk.
+    return { nested: [], tracked: null, untracked: null };
   }
 
   // Sort for stable output and deduplicate
   const uniqueNested = Array.from(new Map(nested.map(n => [n.path, n])).values());
   uniqueNested.sort((a, b) => a.path.localeCompare(b.path));
-  return uniqueNested;
+  return { nested: uniqueNested, tracked, untracked };
 }
 
 /**
@@ -203,10 +216,12 @@ function detectNestedRepositories(root) {
  * nothing", and only the former may fall through to the walk.
  */
 export function listFiles(root) {
-  const nested = detectNestedRepositories(root);
-  const tracked = gitPaths(root, ['ls-files', '-co', '--exclude-standard']);
-  if (tracked !== null) {
-    let files = tracked
+  const { nested, tracked, untracked } = detectNestedRepositories(root);
+  if (tracked !== null && untracked !== null) {
+    // The union git's `ls-files -co --exclude-standard` would print — see
+    // detectNestedRepositories. `-s` and `-o` are disjoint by definition,
+    // so concatenation is the union.
+    let files = [...tracked, ...untracked]
       .filter(f => !f.startsWith('node_modules/') && !f.includes('/node_modules/') && !f.endsWith('/'));
 
     // Filter out files beneath nested repositories

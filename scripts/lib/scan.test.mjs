@@ -94,6 +94,44 @@ test('the fallback walk does not follow a symlinked directory', (t) => {
   assert.deepEqual(files, ['package.json'], 'nothing behind the link is listed');
 });
 
+// --- Audit Tier 3, finding 17: four ls-files spawns, one derivable -------------
+//
+// `ls-files -co --exclude-standard` is exactly the paths of `-s` (already
+// fetched for the gitlink scan) plus `-o --exclude-standard` (already fetched
+// for nested repositories). The contract the derivation must keep is pinned
+// here against git's own answer, on a repository with every kind of entry.
+test('the file list equals git\'s own ls-files -co --exclude-standard on a repository with tracked, staged, untracked, ignored and gitlink entries', (t) => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-scan-co-'));
+  writeFileSync(join(d, 'package.json'), '{}');
+  mkdirSync(join(d, 'src'));
+  writeFileSync(join(d, 'src', 'tracked.ts'), '');
+  writeFileSync(join(d, '.gitignore'), 'ignored.log\nnode_modules/\n');
+  writeFileSync(join(d, 'ignored.log'), '');
+  mkdirSync(join(d, 'node_modules', 'pkg'), { recursive: true });
+  writeFileSync(join(d, 'node_modules', 'pkg', 'index.js'), '');
+  try {
+    execFileSync('git', ['init', '-q', d], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, 'add', 'package.json', 'src/tracked.ts', '.gitignore'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { stdio: 'ignore' });
+    writeFileSync(join(d, 'src', 'staged.ts'), '');
+    execFileSync('git', ['-C', d, 'add', 'src/staged.ts'], { stdio: 'ignore' });
+    writeFileSync(join(d, 'src', 'untracked.ts'), '');
+    execFileSync('git', ['-C', d, 'update-index', '--add', '--cacheinfo', '160000', '4b825dc642cb6eb9a060e54bf8d69288fbee4904', 'vendor/lib'], { stdio: 'ignore' });
+  } catch (e) {
+    t.skip(`git is unavailable: ${e.message}`);
+    return;
+  }
+  const truth = execFileSync('git', ['-C', d, 'ls-files', '-co', '--exclude-standard', '-z'], { encoding: 'utf8' })
+    .split('\0').filter(Boolean)
+    .filter(f => !f.startsWith('node_modules/') && !f.includes('/node_modules/') && !f.endsWith('/'))
+    .filter(f => !f.startsWith('vendor/lib/'));
+  const { files, source, nested } = listFiles(d);
+  assert.equal(source, 'git');
+  assert.deepEqual(nested, [{ path: 'vendor/lib', kind: 'submodule' }]);
+  assert.deepEqual([...files].sort(), [...truth].sort());
+  assert.ok(files.includes('src/staged.ts') && files.includes('src/untracked.ts') && !files.includes('ignored.log'), 'staged and untracked in, ignored out');
+});
+
 test('readIfPresent returns null for a missing file', () => {
   assert.equal(readIfPresent(fixture(), 'nope.txt'), null);
 });
