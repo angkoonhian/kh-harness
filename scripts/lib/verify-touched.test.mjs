@@ -464,7 +464,10 @@ test('ORPHAN CANARY: a timeout kills the whole process tree, not just the shell'
     let pids = [];
     try {
       if (existsSync(pidsFile)) {
-        pids = readFileSync(pidsFile, 'utf8').split(/\s+/).map(s => s.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
+        // Positive integers only: on POSIX, kill(0) and kill(-n) signal a
+        // whole process group — the runner's own, for 0 (see the same
+        // teardown in lint-touched.test.mjs).
+        pids = readFileSync(pidsFile, 'utf8').split(/\s+/).map(Number).filter(n => Number.isInteger(n) && n > 0);
       }
     } catch {
       // best-effort — a teardown that itself throws must never mask the

@@ -209,9 +209,15 @@ test('ORPHAN CANARY: a timed-out lint run kills the whole process tree, not just
     await new Promise(res => setTimeout(res, 400));
     assert.equal(readFileSync(heartbeat, 'utf8'), afterKill, 'the heartbeat must stop advancing — no grandchild survived the timeout kill');
   } finally {
+    // Only a positive integer may reach process.kill: the file ends in a
+    // newline, so the split yields a trailing '' and Number('') is 0 — and
+    // on POSIX kill(0) signals the CALLER's whole process group, i.e. the
+    // test runner. That SIGKILLed node --test on Linux (and left the
+    // grandchild holding CI's stdout pipe, so the job hung) while win32,
+    // which has no process groups, never noticed.
     let pids = [];
     try {
-      if (existsSync(pidsFile)) pids = readFileSync(pidsFile, 'utf8').split(/\s+/).map(Number).filter(Number.isFinite);
+      if (existsSync(pidsFile)) pids = readFileSync(pidsFile, 'utf8').split(/\s+/).map(Number).filter(n => Number.isInteger(n) && n > 0);
     } catch { /* best-effort teardown */ }
     for (const pid of pids) {
       try {
