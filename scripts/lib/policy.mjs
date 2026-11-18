@@ -1,0 +1,99 @@
+// scripts/lib/policy.mjs
+//
+// The owner's promotion policy: the only way a learned gate moves past
+// `observe` on this machine without the owner approving it by hand. It lives
+// in the per-machine data directory, outside the repository, and its hash is
+// what a promotion under policy records in the ledger. Without a policy file
+// nothing is promoted automatically.
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+
+const POLICY_FILE = 'policy.json';
+
+const isNonNegativeInteger = v => Number.isSafeInteger(v) && v >= 0;
+
+const FIELDS = {
+  minTrialFirings: { valid: isNonNegativeInteger, expected: 'a non-negative integer' },
+  minTrialSessions: { valid: isNonNegativeInteger, expected: 'a non-negative integer' },
+  maxAction: { valid: v => v === 'warn' || v === 'block', expected: "'warn' or 'block'" },
+};
+
+/**
+ * Null when `raw` is a valid policy, else the reason it is not. Every field
+ * is required and no other field is allowed, so a misspelt key is reported
+ * instead of silently ignored while the hash still covers it.
+ */
+function invalidReason(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return 'the policy is not a JSON object';
+  for (const key of Object.keys(raw)) {
+    if (!Object.hasOwn(FIELDS, key)) return `unknown field ${JSON.stringify(key)}`;
+  }
+  for (const [field, { valid, expected }] of Object.entries(FIELDS)) {
+    if (!Object.hasOwn(raw, field)) return `${field} is missing`;
+    if (!valid(raw[field])) return `${field} must be ${expected}`;
+  }
+  return null;
+}
+
+const policyHash = policy => createHash('sha256').update(canonicalJson(policy), 'utf8').digest('hex');
+
+/** The repository's promotion policy on this machine. Never throws. */
+export function readPolicy(root) {
+  let text;
+  try {
+    text = readFileSync(join(repoDataDir(root), POLICY_FILE), 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { state: 'absent' };
+    return { state: 'unreadable', reason: `the policy file cannot be read (${error?.code ?? 'unknown error'})` };
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { state: 'unreadable', reason: 'the policy file is not valid JSON' };
+  }
+  const reason = invalidReason(raw);
+  if (reason !== null) return { state: 'unreadable', reason };
+  const policy = { minTrialFirings: raw.minTrialFirings, minTrialSessions: raw.minTrialSessions, maxAction: raw.maxAction };
+  return { state: 'ok', policy, sha256: policyHash(policy) };
+}
+
+/**
+ * Writes the policy and returns its SHA-256. The file is written beside its
+ * destination and renamed over it, so a reader sees the old policy or the
+ * new one, never a partial file. Throws on a policy `readPolicy` would
+ * reject.
+ */
+export function writePolicy(root, policy) {
+  const reason = invalidReason(policy);
+  if (reason !== null) throw new Error(`invalid policy: ${reason}`);
+  const dir = repoDataDir(root);
+  mkdirSync(dir, { recursive: true });
+  const target = join(dir, POLICY_FILE);
+  const temp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(temp, JSON.stringify(policy, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+    renameSync(temp, target);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+  return policyHash(policy);
+}
+
+/**
+ * Whether `policy` authorises promoting a learning with this trial record.
+ * A null policy (no policy file) authorises nothing. Both thresholds are
+ * inclusive. A learning with any firing marked wrong, or whose evidence
+ * includes a session flagged for outside content, is never promoted by
+ * policy. How far it may be promoted is `policy.maxAction`, the caller's
+ * concern.
+ */
+export function policyAllows(policy, { firings, sessions, wrong, external }) {
+  if (policy === null) return false;
+  if (wrong > 0 || external) return false;
+  return firings >= policy.minTrialFirings && sessions >= policy.minTrialSessions;
+}
