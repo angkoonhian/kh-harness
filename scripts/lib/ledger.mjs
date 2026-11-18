@@ -5,13 +5,17 @@
 // hash-chained, each line carrying the SHA-256 of the line before it. It is
 // never committed, so no merge can break the chain. Only the kit's CLI
 // writes it.
-import { createHash } from 'node:crypto';
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { appendFileSync, closeSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 
 export const LEDGER_KINDS = Object.freeze(['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong']);
+
+// A live writer holds the lock for milliseconds; a lock this old was left
+// by a writer that died holding it.
+export const LEDGER_LOCK_STALE_MS = 30_000;
 
 const LEDGER_FILE = 'ledger.jsonl';
 const LOCK_WAIT_MS = 5000;
@@ -108,12 +112,47 @@ function splitLines(buf) {
 
 const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
+const sameFile = (a, b) => a.ino === b.ino && a.mtimeMs === b.mtimeMs;
+
+/**
+ * Removes the lock at `lockPath` when, at time `at`, it is older than
+ * `LEDGER_LOCK_STALE_MS`, and says whether it did. The lock is first renamed
+ * to a name of this process's own, which only one claimant can do; if what
+ * was renamed is not the file found stale (a writer released the stale lock
+ * and took a fresh one in between), it is linked back, unless another writer
+ * already holds the lock again.
+ */
+function breakStaleLock(lockPath, at) {
+  let found;
+  try {
+    found = statSync(lockPath);
+  } catch {
+    return false;
+  }
+  if (at - found.mtimeMs <= LEDGER_LOCK_STALE_MS) return false;
+  const claimed = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    renameSync(lockPath, claimed);
+  } catch {
+    return false;
+  }
+  const taken = sameFile(statSync(claimed), found);
+  if (!taken) {
+    try {
+      linkSync(claimed, lockPath);
+    } catch {
+      // the lock is held again by another writer; the fresh one is lost
+    }
+  }
+  unlinkSync(claimed);
+  return taken;
+}
+
 /** Runs `fn` holding the ledger's lock file, so a read of the last line and
- * the append that chains to it are one step across processes. A lock left
- * by a crashed writer is not broken: the append fails, naming the file. */
-function withLock(dir, fn) {
+ * the append that chains to it are one step across processes. */
+function withLock(dir, now, fn) {
   const lockPath = join(dir, `${LEDGER_FILE}.lock`);
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const deadline = now() + LOCK_WAIT_MS;
   let fd;
   for (;;) {
     try {
@@ -121,7 +160,8 @@ function withLock(dir, fn) {
       break;
     } catch (error) {
       if (!LOCK_CONTENDED.has(error?.code)) throw error;
-      if (Date.now() >= deadline) throw new Error(`ledger is locked: ${lockPath} has existed for ${LOCK_WAIT_MS} ms; remove it if no kit command is running`);
+      if (error.code === 'EEXIST' && breakStaleLock(lockPath, now())) continue;
+      if (now() >= deadline) throw new Error(`ledger is locked: ${lockPath} has been held for over ${LOCK_WAIT_MS} ms`);
       pause(LOCK_RETRY_MS);
     }
   }
@@ -137,16 +177,17 @@ function withLock(dir, fn) {
  * Appends one event to the ledger, adding `ts` (now) and `prev` (the
  * SHA-256 of the previous line's bytes, null for the first line). Throws,
  * writing nothing, when the entry is not the ledger's schema; the caller
- * supplies neither `ts` nor `prev`.
+ * supplies neither `ts` nor `prev`. `now` is the clock for `ts`, the lock
+ * wait and the lock's age.
  */
-export function appendLedger(root, entry) {
+export function appendLedger(root, entry, { now = Date.now } = {}) {
   const problem = entryProblem(entry, ENTRY_FIELDS);
   if (problem !== null) throw new Error(`ledger entry refused: ${problem}`);
   const { kind, learningId, contentSha256, evidence, base, learned, approvedBy, detail } = entry;
   const { signature, sessions, firstTs, lastTs, external } = evidence;
   const dir = repoDataDir(root);
   mkdirSync(dir, { recursive: true });
-  withLock(dir, () => {
+  withLock(dir, now, () => {
     const buf = ledgerBytes(root) ?? Buffer.alloc(0);
     const lines = splitLines(buf);
     const prev = lines.length === 0 ? null : sha256Hex(lines.at(-1));
@@ -154,7 +195,7 @@ export function appendLedger(root, entry) {
       kind, learningId, contentSha256,
       evidence: { signature, sessions, firstTs, lastTs, external },
       base, learned, approvedBy, detail,
-      ts: new Date().toISOString(),
+      ts: new Date(now()).toISOString(),
       prev,
     };
     // A torn last line stays a line of its own, which `verifyLedger` reports.
