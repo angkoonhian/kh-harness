@@ -212,14 +212,19 @@ if (result.patchesNotReverted.length > 0) {
   }
 }
 
-if (plan.keep.length > 0) {
+// A patch declined for lack of provenance is kept the way a file is: listed
+// with its reason, and never a failure.
+if (plan.keep.length > 0 || result.patchesKept.length > 0) {
   console.log('Kept:');
   for (const k of plan.keep) {
     console.log(`  ${k.path} (${k.why})`);
   }
+  for (const p of result.patchesKept) {
+    console.log(`  ${p.container} (${p.why})`);
+  }
 }
 
-if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && result.refused.length === 0 && plan.keep.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0) {
+if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && result.refused.length === 0 && plan.keep.length === 0 && result.patchesKept.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0) {
   console.log('nothing was left behind');
 }
 
