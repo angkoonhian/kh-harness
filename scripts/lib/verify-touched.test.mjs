@@ -152,6 +152,31 @@ test('a diagnostic naming a config file passed on the command line survives reda
   assert.match(r.stderr, /tsconfig\.build\.json: error TS5023/);
 });
 
+test('a typecheck script naming -p packages/app still reports its tsc lines', () => {
+  const d = repo({ typecheck: 'node tsc.cjs -p packages/app' });
+  mkdirSync(join(d, 'packages', 'app', 'src'), { recursive: true });
+  writeFileSync(join(d, 'tsc.cjs'),
+    "console.log(\"packages/app/src/index.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.\"); process.exit(2);\n");
+  const r = run(d, payload());
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /packages\/app\/src\/index\.ts\(3,7\): error TS2322/, `the tsc line must reach Claude: ${JSON.stringify(r.stderr)}`);
+});
+
+test('a private key printed across several lines of test output is masked in full', () => {
+  // Assembled: a PEM header is a credential in this file's own source.
+  const kind = ['RSA', 'PRIVATE', 'KEY'].join(' ');
+  const body = ['MIIEowIBAAKCAQEAbodylineone0123456789abcdef', 'Q2hhbmdlZEJvZHlMaW5lVHdvMDEyMzQ1Njc4OWFiY2Rl'];
+  const key = [`-----BEGIN ${kind}-----`, ...body, `-----END ${kind}-----`];
+  const d = repo({ test: 'node verify.cjs' });
+  writeFileSync(join(d, 'verify.cjs'),
+    `console.error(${JSON.stringify(['FAIL src/config.test.js', 'received:', ...key, 'expected: undefined'].join('\n'))}); process.exit(1);\n`);
+  const r = run(d, payload());
+  assert.equal(r.code, 2);
+  for (const line of body) assert.equal(r.stderr.includes(line), false, `a key body line reached stderr: ${JSON.stringify(r.stderr)}`);
+  assert.match(r.stderr, /FAIL src\/config\.test\.js/, 'the diagnostic around the key survives');
+  assert.match(r.stderr, /expected: undefined/, 'the line after the key survives');
+});
+
 // --- Audit Tier 3, finding 12: overflow discarded the run; exit-0 notices
 // --- went to stderr, which Claude Code never shows ---------------------------
 

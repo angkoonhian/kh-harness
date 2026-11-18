@@ -21,7 +21,7 @@ import { dirname, join, resolve, isAbsolute, basename, delimiter, relative, sep 
 import {
   boundReport,
   dropCommandFragments,
-  maskCredentials,
+  maskText,
   MAX_REPORTS_SINCE_CLEAN,
   markerPath,
   pathTokenExemptions,
@@ -266,7 +266,7 @@ function mentionsFile(line, filePath, base) {
  * that is not anchored to the edited path, which makes them the natural
  * home for the next leak, so the caller (main) MUST run the full return
  * value of this function through the same dropCommandFragments /
- * maskCredentials chokepoint as any other line, never a parallel path.
+ * maskText chokepoint as any other line, never a parallel path.
  * The block closes at the first blank line or the first non-indented
  * line; a later line must mention the file again to open a new one.
  */
@@ -495,7 +495,7 @@ async function main() {
   // all, rather than escaped. `scripts.lint`'s TEXT is NEVER printed,
   // logged, or included in any error message below — only its own
   // captured output ever reaches stderr, filtered for attribution, then
-  // redacted in two layers (see dropCommandFragments, maskCredentials)
+  // redacted in two layers (see dropCommandFragments, maskText)
   // before writeReport is ever called.
   const fullCommand = SAFE_RELATIVE_PATH.test(relToOwner)
     ? appendTarget(lintScript, quoteArg(relToOwner))
@@ -556,8 +556,9 @@ async function main() {
   // not an echo of the command. See pathTokenExemptions in harness-redact.mjs.
   const exemptions = new Set([relToOwner, basename(relToOwner), ...pathTokenExemptions(lintScript, [relToOwner])]);
   const survived = dropCommandFragments(attributed, [lintScript, fullCommand], exemptions);
-  const reported = survived.map(maskCredentials);
-  if (reported.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
+  if (survived.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
+  // Masked as one text, so a private key's body lines are masked with its header.
+  const reported = maskText(survived.join('\n')).split('\n');
 
   const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
   if (decision.action === 'terse') return writeReport([decision.message]);
