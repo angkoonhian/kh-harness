@@ -177,6 +177,17 @@ test('a private key printed across several lines of test output is masked in ful
   assert.match(r.stderr, /expected: undefined/, 'the line after the key survives');
 });
 
+test('a bare credential value from the verify command is dropped when the output prints it alone', () => {
+  const value = ['abcdEFGH', 'ijklMNOP', 'qrst1234'].join(''); // assembled: a bearer value in this file's own source
+  const header = ['Authorization', ` Bearer ${value}`].join(':'); // assembled: an authorization header in this file's own source
+  const d = repo({ typecheck: `node smoke.cjs --header "${header}"` });
+  writeFileSync(join(d, 'smoke.cjs'), "console.error('typecheck: oops\\nretrying with ' + process.argv[3].split(' ').pop()); process.exit(1);\n");
+  const r = run(d, payload());
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /typecheck: oops/);
+  assert.equal(r.stderr.includes(value), false, `the bare value reached stderr: ${JSON.stringify(r.stderr)}`);
+});
+
 test('a line echoing a verify command that carries a credential is still dropped', () => {
   const token = ['sk-live', 'ECHOLEAK0002REAL'].join('-'); // assembled: a provider-token shape in this file's own source
   const command = `node echo.cjs ${token}`;

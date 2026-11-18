@@ -340,6 +340,11 @@ test('every body line of a PEM private key is masked by maskText', () => {
   assert.equal(masked, ['before', '***', '***', '***', '***', '***', 'after'].join('\n'), 'line count is kept and the text after the footer is not masked');
 });
 
+test('maskText keeps the leading spaces and tabs of every masked key line', () => {
+  const text = [`  ${PEM_HEADER}`, '  MIIEowIBAAKCAQEAx1', '\tq2w3e4r5t6y7u8i9o0', `  ${PEM_FOOTER}`, '  after'].join('\n');
+  assert.equal(maskText(text), ['  ***', '  ***', '\t***', '  ***', '  after'].join('\n'));
+});
+
 test('maskText keeps CRLF line endings and masks every line it is given', () => {
   const assignment = ['password', 'hunter2hunter2'].join('=');
   const crlf = maskText(['ok', assignment, ''].join('\r\n'));

@@ -321,9 +321,11 @@ export function maskCredentials(line) {
 
 /**
  * Masks multi-line text: every line as `maskCredentials` would, and every
- * line from a PEM private-key header through its footer replaced by `***`.
- * Line endings, `\n` or `\r\n`, are kept, and so is the line count. A header
- * with no footer masks to the end of the text.
+ * line from a PEM private-key header through its footer replaced by `***`
+ * after its own leading spaces and tabs. Line endings, `\n` or `\r\n`, are
+ * kept, and so is the line count; the indentation is kept because a
+ * caller may group lines by it (eslint's stylish blocks). A header with no
+ * footer masks to the end of the text.
  */
 export function maskText(text) {
   const parts = stripAnsi(text).split(/(\r?\n)/);
@@ -332,7 +334,7 @@ export function maskText(text) {
     const line = parts[i];
     if (inKey) {
       inKey = !PEM_FOOTER.test(line);
-      parts[i] = '***';
+      parts[i] = line.match(/^[ \t]*/)[0] + '***';
       continue;
     }
     parts[i] = maskLine(line);
