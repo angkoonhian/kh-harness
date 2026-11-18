@@ -13,9 +13,27 @@ import { readJsonFile } from './read-json.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
-import { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, RULES_BRIEF_PATH } from './propose.mjs';
+import { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, RULES_BRIEF_PATH, GENERATOR_SCRIPT_PATHS, protectedDenyRules } from './propose.mjs';
+import { listFiles } from './scan.mjs';
+import { detectStack } from './detect-stack.mjs';
 
 const SETTINGS = '.claude/settings.json';
+
+/**
+ * What our generators could have written into this repository's settings,
+ * the provenance `revertPatch` demands before removing a patch. Deny rules
+ * are derived from the repository as it stands now, the same evidence the
+ * generator reads; a rule whose evidence has since gone is kept, never
+ * guessed at.
+ */
+function producibleSettings(root) {
+  const { files } = listFiles(root);
+  const stack = detectStack(root, files);
+  return {
+    producibleHookScripts: new Set(GENERATOR_SCRIPT_PATHS),
+    producibleDenyRules: new Set(protectedDenyRules({ stack, files })),
+  };
+}
 
 /**
  * CRITICAL (coordinator finding): the manifest is a file IN the repository
@@ -467,7 +485,9 @@ export function planUninstall({ root, manifest }) {
   // — below, `removeSettingsFile` — asks the identical question the real
   // run answers, rather than guessing from patch count alone.
   let simulatedSettings = validated.valid ? validated.object : null;
-  for (const p of manifest?.settingsPatches ?? []) {
+  const patches = manifest?.settingsPatches ?? [];
+  const producible = validated.valid && patches.length > 0 ? producibleSettings(root) : null;
+  for (const p of patches) {
     if (validated.reason === 'settings-missing') {
       // No settings file means no hook is registered: there is nothing to
       // revert and nothing left behind. Treating this as a failure kept the
@@ -479,12 +499,12 @@ export function planUninstall({ root, manifest }) {
     } else if (!validated.valid) {
       keepPatches.push({ ...p, why: validated.reason });
     } else {
-      const r = revertPatch(simulatedSettings, p);
-      if (r.reverted) {
+      const r = revertPatch(simulatedSettings, p, producible);
+      if (r.kept.length === 0) {
         simulatedSettings = r.settings;
         revert.push(p);
       } else {
-        keepPatches.push({ ...p, why: 'patch-modified' });
+        for (const k of r.kept) keepPatches.push({ ...k.patch, why: k.reason });
       }
     }
   }
@@ -577,6 +597,7 @@ export function runUninstall({ root, manifest, plan }) {
       let settings = validated.object;
       let settingsChanged = false;
       const revertedInMemory = [];
+      const producible = producibleSettings(root);
 
       // The revertable set is re-derived from the manifest here, exactly as
       // planUninstall derives it — the file path already works this way, and
@@ -587,14 +608,13 @@ export function runUninstall({ root, manifest, plan }) {
       // registered while the run reports success and exits 0. The fresh
       // revertPatch result below is what decides.
       for (const p of manifestPatches) {
-        const r = revertPatch(settings, p);
-        if (r.reverted) {
+        const r = revertPatch(settings, p, producible);
+        if (r.kept.length === 0) {
           settings = r.settings;
           settingsChanged = true;
           revertedInMemory.push(p);
         } else {
-          // Patch exists but could not be reverted (user edited it).
-          patchesNotReverted.push({ ...p, why: 'patch-modified' });
+          for (const k of r.kept) patchesNotReverted.push({ ...k.patch, why: k.reason });
         }
       }
 
