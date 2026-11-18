@@ -1,0 +1,367 @@
+<title>kh-harness audit and self-improvement</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (max 62rem); summary first, then a filterable findings ledger, research, autonomy map, roadmap. */
+:root{
+  --bg:#f5f7f9; --surface:#ffffff; --sunk:#ebeff3; --line:#d5dce4;
+  --fg:#161c26; --muted:#566273; --accent:#0b6b74; --accent-soft:#dff0f1;
+  --crit:#b3261e; --crit-bg:#fbe6e4; --high:#b4540a; --high-bg:#fbeadb;
+  --med:#7a6200; --med-bg:#f7efcc; --low:#4d5b6c; --low-bg:#e6ebf0;
+  --ok:#1f7a45; --ok-bg:#dff2e6;
+  --display:"Space Grotesk","Segoe UI",system-ui,sans-serif;
+  --body:"Inter","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#10151c; --surface:#18202a; --sunk:#131a22; --line:#2c3846;
+    --fg:#e6ebf1; --muted:#9aa8b8; --accent:#5cc4cc; --accent-soft:#143a3f;
+    --crit:#ff8f86; --crit-bg:#45201d; --high:#ffb070; --high-bg:#43290f;
+    --med:#e8cf66; --med-bg:#3a3210; --low:#aab7c6; --low-bg:#27313d;
+    --ok:#7fd6a0; --ok-bg:#16361f; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10151c; --surface:#18202a; --sunk:#131a22; --line:#2c3846;
+  --fg:#e6ebf1; --muted:#9aa8b8; --accent:#5cc4cc; --accent-soft:#143a3f;
+  --crit:#ff8f86; --crit-bg:#45201d; --high:#ffb070; --high-bg:#43290f;
+  --med:#e8cf66; --med-bg:#3a3210; --low:#aab7c6; --low-bg:#27313d;
+  --ok:#7fd6a0; --ok-bg:#16361f; color-scheme:dark;
+}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.6}
+.wrap{max-width:62rem;margin:0 auto;padding-block:2.5rem 4rem;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:3rem}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:clamp(1.9rem,4.5vw,2.7rem);font-weight:600}
+h2{font-size:1.5rem;font-weight:600}
+h3{font-size:1.05rem;font-weight:600}
+p{margin:0;max-width:68ch}
+section{display:flex;flex-direction:column;gap:1.1rem}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.1rem;color:var(--fg)}
+.muted{color:var(--muted)}
+code{font-family:var(--mono);font-size:.86em;background:var(--sunk);padding:.08em .35em;border-radius:4px;overflow-wrap:anywhere}
+ul{margin:0;padding-left:1.2rem;display:flex;flex-direction:column;gap:.45rem;max-width:72ch}
+.counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:.75rem}
+.count{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.8rem 1rem}
+.count b{display:block;font-family:var(--display);font-size:1.8rem;font-variant-numeric:tabular-nums;line-height:1.1}
+.count span{font-size:.82rem;color:var(--muted)}
+.count.crit b{color:var(--crit)} .count.high b{color:var(--high)} .count.med b{color:var(--med)} .count.low b{color:var(--low)} .count.ok b{color:var(--ok)}
+.answer{background:var(--accent-soft);border-radius:10px;padding:1.2rem 1.3rem;display:flex;flex-direction:column;gap:.7rem}
+.answer h2{font-size:1.25rem}
+.three{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1rem}
+.three > div{border-top:3px solid var(--accent);padding-top:.7rem;display:flex;flex-direction:column;gap:.4rem;min-width:0}
+.three p{font-size:.94rem}
+.filters{display:flex;flex-wrap:wrap;gap:.5rem 1.2rem;align-items:center}
+.fgroup{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center}
+.fgroup > span{font-size:.8rem;color:var(--muted);margin-right:.2rem}
+button.f{font:inherit;font-size:.84rem;padding:.3rem .7rem;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--fg);cursor:pointer}
+button.f[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+button.f:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.ledger{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.row{display:grid;grid-template-columns:5.2rem 1fr;gap:.2rem 1rem;padding:.85rem 0;border-bottom:1px solid var(--line)}
+.row .meta{display:flex;flex-direction:column;gap:.3rem;align-items:flex-start}
+.row .id{font-family:var(--mono);font-size:.8rem;color:var(--muted)}
+.row .body{min-width:0;display:flex;flex-direction:column;gap:.25rem}
+.row .body p{font-size:.93rem;max-width:none}
+.row .fix{color:var(--muted)}
+.tag{font-family:var(--mono);font-size:.7rem;letter-spacing:.04em;text-transform:uppercase;padding:.12rem .45rem;border-radius:4px;white-space:nowrap}
+.tag.critical{background:var(--crit-bg);color:var(--crit)} .tag.high{background:var(--high-bg);color:var(--high)}
+.tag.medium{background:var(--med-bg);color:var(--med)} .tag.low{background:var(--low-bg);color:var(--low)}
+.tag.auto{background:var(--ok-bg);color:var(--ok)} .tag.policy{background:var(--med-bg);color:var(--med)} .tag.human{background:var(--high-bg);color:var(--high)}
+.tag.ev{background:var(--low-bg);color:var(--low)}
+@media (max-width:520px){.row{grid-template-columns:1fr}.row .meta{flex-direction:row;align-items:center}}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.92rem;min-width:34rem}
+th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.loop{display:grid;grid-template-columns:repeat(auto-fit,minmax(13.5rem,1fr));gap:.75rem;counter-reset:s}
+.step{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.85rem 1rem;display:flex;flex-direction:column;gap:.4rem;min-width:0;counter-increment:s}
+.step h3::before{content:counter(s) ". ";color:var(--muted);font-family:var(--mono);font-size:.85em}
+.step p{font-size:.9rem}
+.tracks{display:flex;flex-direction:column;gap:1.2rem}
+.track{display:grid;grid-template-columns:9rem 1fr;gap:.4rem 1.2rem;padding-top:1rem;border-top:1px solid var(--line)}
+.track .when{font-family:var(--mono);font-size:.8rem;color:var(--accent)}
+.track > div{min-width:0;display:flex;flex-direction:column;gap:.5rem}
+@media (max-width:620px){.track{grid-template-columns:1fr}}
+footer{font-size:.85rem;color:var(--muted);border-top:1px solid var(--line);padding-top:1rem}
+a{color:var(--accent)}
+</style>
+
+<div class="wrap">
+
+<header style="display:flex;flex-direction:column;gap:1rem">
+  <span class="eyebrow">kh-harness 0.1.0 · branch angkoonhian/fireworm at 25ae270 · 18 Nov 2026</span>
+  <h1>Audit findings and a plan for a harness that improves itself</h1>
+  <p class="lede">The write path is disciplined and the tests pass. The weak point is narrower: wherever a check could not look, or a hook chose to stay quiet, the kit reports that everything is fine. That has to be fixed before a learning loop is built on top of it, because the loop would learn from those signals.</p>
+  <div class="counts">
+    <div class="count ok"><b>1009/1010</b><span>tests pass, one legitimate Windows skip</span></div>
+    <div class="count crit"><b>1</b><span>critical finding</span></div>
+    <div class="count high"><b>18</b><span>high</span></div>
+    <div class="count med"><b>36</b><span>medium</span></div>
+    <div class="count low"><b>21</b><span>low</span></div>
+  </div>
+  <p class="muted" style="font-size:.9rem">Three read-only audits (CLI core, generated hooks, skill and product) and five research threads. Findings marked "ran" were reproduced in throwaway repositories; the rest were reasoned from code or documentation and say so.</p>
+</header>
+
+<section class="answer">
+  <span class="eyebrow">Your question</span>
+  <h2>Can it improve the harness autonomously? Yes, inside a policy you set once.</h2>
+  <p>The loop can run on its own for almost every step: watching sessions, spotting a repeated mistake, drafting a rule with an enforcer, testing it against recorded history, trialling it silently, and retiring it when it stops earning its place.</p>
+  <p>Two kinds of change should not happen without you: anything that can <strong>block work</strong>, and anything that puts <strong>text into the model's prompt</strong>. Those are where the documented failures happened. You can still make them automatic by writing a promotion policy, for example "promote after 5 silent firings with no false positives". The policy file is yours, and the loop cannot edit it.</p>
+  <p>So the design is slower than full autonomy, and it is still autonomous: you set the bar once, and the harness clears it or does not.</p>
+</section>
+
+<section>
+  <span class="eyebrow">Audit</span>
+  <h2>Three patterns explain most of the findings</h2>
+  <div class="three">
+    <div><h3>"Could not look" becomes "nothing there"</h3><p>An unreadable folder, a settings file with a BOM, a malformed manifest and a push URL are each treated as absent. The credential sweep then says <code>verified</code>.</p></div>
+    <div><h3>Silence only ever grows</h3><p>Hook counters never reset after a passing run. Each bound decays into "quiet for the rest of the session", and a missing or crashed linter looks the same as a clean file.</p></div>
+    <div><h3>Safety is applied per call site</h3><p>Containment exists, but <code>detect</code>'s write skips it. Provenance checks protect files, but not settings patches. The skill describes gates the CLI cannot honour.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Findings ledger</h2>
+  <div class="filters">
+    <div class="fgroup" id="fsev"><span>Severity</span></div>
+    <div class="fgroup" id="farea"><span>Area</span></div>
+  </div>
+  <p class="muted" id="shown" style="font-size:.85rem"></p>
+  <div class="ledger" id="ledger"></div>
+</section>
+
+<section>
+  <h2>What already works and should be kept</h2>
+  <ul>
+    <li><strong>Two-pass apply:</strong> the allowlist and containment check cover the whole batch before any write.</li>
+    <li><strong>Layered removal gates:</strong> uninstall checks the allowlist, containment, a generator-producible path, the in-file stamp and the body, and re-derives at delete time.</li>
+    <li><strong>Shared evidence modules:</strong> a check and its generator read the same derivation, so they cannot drift apart.</li>
+    <li><strong>Redaction by omission:</strong> hook commands and script bodies never reach <code>detect.json</code>.</li>
+    <li><strong>Honest documentation:</strong> the README discloses costs, litter and limits, including that its own eval measures nothing.</li>
+    <li><strong>Tier 1 fixes hold:</strong> unborn HEAD, CRLF hashing and placeholder-then-literal were re-tested and pass.</li>
+  </ul>
+</section>
+
+<section>
+  <span class="eyebrow">Research</span>
+  <h2>What the evidence says about self-improvement</h2>
+  <p>Two research rounds. The second read the papers and source code in full and corrected the first.</p>
+  <p><strong>The complete record of every run comes first.</strong> Meta-Harness's guide says "log everything in a navigable format", and every reference implementation keeps an archive of candidates with parent links and scores. The loop then has five more parts: an evaluator the agent cannot touch, a diagnosis step, a proposer, a selection rule, and a ledger of past changes with their measured effect.</p>
+  <p><strong>Expect small gains.</strong> Against the authors' own minimal starting points, papers report 5 to 30 points. Independent re-runs on unseen tasks cut that to roughly 0 to 4, and nobody has measured a loop on one repository over months with a human reviewing.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Finding</th><th>Number</th><th>Evidence</th></tr></thead>
+    <tbody>
+      <tr><td>Model-written context files (AGENTS.md style)</td><td class="num">no detectable gain, ~20% more cost</td><td><span class="tag ev">measured</span> ETH Zurich study</td></tr>
+      <tr><td>Curated skills versus self-generated skills, against no skills</td><td class="num">+18 to +25 vs −8 to −12</td><td><span class="tag ev">measured</span> SkillsBench body; the self-generated ones were written from the task description, not from logs</td></tr>
+      <tr><td>Raw traces versus scores only, as input to the proposer</td><td class="num">median 50.0 vs 34.6</td><td><span class="tag ev">measured</span> Meta-Harness</td></tr>
+      <tr><td>Structured diagnosis over a kept raw log, versus raw only</td><td class="num">0.78 vs 0.60 pass rate</td><td><span class="tag ev">measured</span> RHO; two other 2026 papers agree, all small samples</td></tr>
+      <tr><td>Harness evolution on held-out tasks, independent re-run</td><td class="num">63.2 vs 63.2</td><td><span class="tag ev">independent</span> Allen AI and UW; also lost to plain retrying at equal budget</td></tr>
+      <tr><td>Candidates kept by one 2026 loop</td><td class="num">4 of 32</td><td><span class="tag ev">measured</span> RRSI; most proposals are rejected</td></tr>
+      <tr><td>Generated code-analysis rules that pass validation</td><td class="num">53.4%</td><td><span class="tag ev">measured</span> QLCoder, security rules; must fire before the fix and stay silent after</td></tr>
+      <tr><td>One retrieved memory item versus four</td><td class="num">49.7 vs 44.4</td><td><span class="tag ev">measured</span> ReasoningBank; less is more</td></tr>
+      <tr><td>Rewriting a whole context in one step</td><td class="num">18,282 → 122 tokens</td><td><span class="tag ev">measured</span> ACE; accuracy fell below baseline</td></tr>
+      <tr><td>Rule compliance within one session</td><td class="num">~5.6% lower odds per function</td><td><span class="tag ev">measured</span> file size and position made no difference</td></tr>
+      <tr><td>Agents trying to edit the evaluator, unprompted</td><td class="num">~50% of episodes</td><td><span class="tag ev">measured</span> zero only when evaluator and held-out data were both locked</td></tr>
+      <tr><td>"Do not cheat" instruction</td><td class="num">80% vs 80%</td><td><span class="tag ev">measured</span> METR; no effect</td></tr>
+      <tr><td>Cursor Bugbot learned rules, resolution rate</td><td class="num">52% → 78%</td><td><span class="tag ev">self-reported</span> promotes on signal, disables on negative signal</td></tr>
+      <tr><td>GitHub Copilot memory, merge rate</td><td class="num">83% → 90%</td><td><span class="tag ev">self-reported</span> checks citations, expires after 90 days</td></tr>
+      <tr><td>Poisoned learning persisting through later clean training</td><td class="num">30 of 30 runs</td><td><span class="tag ev">secondary source</span> check before relying on it</td></tr>
+      <tr><td>Single-run noise on SWE-bench Verified</td><td class="num">2.2 to 6.0 points</td><td><span class="tag ev">measured</span> small gains cannot be shown on one repository</td></tr>
+      <tr><td>Re-injecting rules on every prompt</td><td class="num">no study found</td><td><span class="tag ev">asserted</span> the README currently presents this as evidenced</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>How self-improvement fails</h3>
+  <ul>
+    <li><strong>Judge tampering:</strong> the Darwin Gödel Machine removed its own hallucination markers and fabricated a passing test log. Humans found it by reading the lineage.</li>
+    <li><strong>Bloat and collapse:</strong> a study of 2,303 context files found they grow by small additions and are almost never pruned.</li>
+    <li><strong>Writable configuration as an attack target:</strong> several CVEs involve agents' own settings, rules and MCP files, including two in Claude Code project settings.</li>
+    <li><strong>Guardrails routed around:</strong> only anecdotal reports exist of an agent weakening its own rules without injection.</li>
+  </ul>
+  <h3>Where the gap in existing tools is</h3>
+  <p>claude-reflect, claude-mem, ECC's continuous learning and Claude Code's own memory all turn learnings into prose. The largest write without approval and cannot undo. No surveyed tool combines an inventory-first install, a write manifest and clean uninstall with learning that ends in a named enforcer. kh-harness already has the first three. This claim is bounded by a search of GitHub, vendor docs and a few web searches.</p>
+</section>
+
+<section>
+  <span class="eyebrow">Proposal</span>
+  <h2>The evidence ratchet: how the loop runs, and who decides each step</h2>
+  <p>This is my proposed design, not something you have agreed. Each learning is one registry entry with one enforcer, a recorded reason, and its own manifest record so it can be removed alone.</p>
+  <div class="loop">
+    <div class="step"><span class="tag auto">automatic</span><h3>Record every run</h3><p>Hooks append every tool call, prompt, failure and enforcer firing to a local log. Each event carries the manifest hash, so the log knows exactly which harness produced it.</p></div>
+    <div class="step"><span class="tag auto">automatic</span><h3>Find recurrences</h3><p>Plain code, no model: the same tool and input failing the same way in two or more sessions under the same harness and model.</p></div>
+    <div class="step"><span class="tag human">you, at first</span><h3>Name the pattern</h3><p>You label the first batches of recurrences. Those labels become the failure taxonomy the loop uses afterwards.</p></div>
+    <div class="step"><span class="tag auto">automatic</span><h3>Draft one entry</h3><p>The model reads the raw log and drafts one rule with one enforcer: a lint rule, then a test, then a hook, and prose only as a last resort.</p></div>
+    <div class="step"><span class="tag auto">automatic</span><h3>Replay twice</h3><p>The script runs the enforcer. It must fire on the recorded mistake and stay silent after the fix, then stay silent across the whole repository. Expect about half to fail here.</p></div>
+    <div class="step"><span class="tag auto">automatic</span><h3>Silent trial</h3><p>The enforcer runs in live sessions and only logs what it would have done. It cannot block and adds nothing to the prompt.</p></div>
+    <div class="step"><span class="tag policy">your policy, or your approval</span><h3>Promote</h3><p>It starts blocking or warning. Approval is tied to the exact content, so a later byte change voids it.</p></div>
+    <div class="step"><span class="tag auto">automatic</span><h3>Ledger and measure</h3><p>Every proposed, accepted, rejected and retired change is recorded with its evidence and measured effect. Reports count firings and what followed, at the sample size seen.</p></div>
+    <div class="step"><span class="tag auto">automatic</span><h3>Demote or retire</h3><p>A learned enforcer that keeps misfiring drops back to silent. One whose cited code is gone is retired. Every change is logged and reversible.</p></div>
+  </div>
+  <h3>What the loop can never touch</h3>
+  <ul>
+    <li>The hooks, gate scripts, manifest, event log and promotion policy sit outside its write scope, and <code>detect</code> flags any byte change to them.</li>
+    <li>Rules you wrote and the kit's base enforcers are never demoted or retired by the loop.</li>
+    <li>Sessions that read untrusted content are marked, so text from a web page cannot become a "learning".</li>
+    <li>Rule text is escaped and stripped of invisible characters before it is shown for approval or injected.</li>
+  </ul>
+  <h3>What changes in the kit's doctrine</h3>
+  <p>Today the non-goals say the kit never writes a rule. Under this design the scripts still never author one: the model drafts, the script validates, and promotion follows your approval or your policy. The non-goal needs rewording to say that plainly.</p>
+</section>
+
+<section>
+  <h2>Order of work</h2>
+  <div class="tracks">
+    <div class="track"><span class="when">First</span><div><h3>Make every signal true</h3><ul>
+      <li>Give every reader three outcomes: absent, unreadable, ok. Unreadable blocks <code>verified</code>.</li>
+      <li>One credential pattern table shared by the sweep and the hook mask; stop skipping tracked files by folder name.</li>
+      <li>Reset hook suppression on a clean run, and give hooks a "did not verify" message distinct from success.</li>
+      <li>Replace the substring redaction that deletes diagnostics.</li>
+      <li>Provenance gates for settings patches; containment for <code>detect</code>'s write.</li>
+      <li>Truthful summaries: typed proposals and an honest "nothing to write" line.</li>
+    </ul></div></div>
+    <div class="track"><span class="when">Alongside</span><div><h3>The session log, so history starts accumulating now</h3><ul>
+      <li>Append-only files on your machine, written by hooks, outside tracked files and outside the loop's write scope.</li>
+      <li>Every event stamped with the manifest hash, Claude Code version and model.</li>
+      <li>Successes logged as well as failures; the agent's own "done" claims stored as claims, never as evidence.</li>
+      <li>A version-checked transcript reader for what hooks cannot see: interrupts, cancelled tools and most permission denials.</li>
+      <li>A recurrence report that is useful with no model and no loop.</li>
+      <li>Depends on the credential-mask fix above, because tool output contains secrets.</li>
+    </ul></div></div>
+    <div class="track"><span class="when">Second</span><div><h3>Foundations the loop needs anyway</h3><ul>
+      <li>Ship the changes research keeps rediscovering as detected defaults: a submission guard and loop and budget warnings, beside the existing verify-before-finishing gate.</li>
+      <li>An upgrade path, so a fixed hook reaches repositories that already installed it.</li>
+      <li><code>detect --check</code> with non-zero exits, for CI and teams.</li>
+      <li>Scoped <code>apply</code>, so the skill's phase gates are real, and an explicit CLI path in the skill.</li>
+      <li>A read-only health skill the model can invoke, which also makes the kit measurable.</li>
+      <li>An answers file, so declined proposals are not asked again.</li>
+    </ul></div></div>
+    <div class="track"><span class="when">Third</span><div><h3>The evidence ratchet</h3><ul>
+      <li>The change ledger, before any proposer.</li>
+      <li>Your labelled failure taxonomy from the recurrence report.</li>
+      <li>A <code>learn</code> command: draft, replay twice, silent trial.</li>
+      <li>Promotion policy, content-bound approval, per-learning manifest records and single-learning revert.</li>
+      <li>Demotion, retirement and a registry budget.</li>
+    </ul></div></div>
+    <div class="track"><span class="when">Later, opt-in</span><div><h3>Paired runs for large effects</h3><p>Run the same tasks with and without a change to catch a clear regression. Useful for big differences only; one repository cannot resolve small ones, and the official eval tool needs WSL2 on Windows for suites that use the shell.</p></div></div>
+  </div>
+</section>
+
+<section>
+  <h2>Decisions that are yours</h2>
+  <ul>
+    <li><strong>How much the log captures:</strong> the research report recommends structure only by default (tool, status, error line, sizes, hashes), because full tool input and output copies secrets outside Claude Code's 30-day clean-up. You asked for as much as possible, and full content is what improvers read in the papers. I would capture full content once you enable the log on a machine, scrubbed at write time, with a retention limit you set.</li>
+    <li><strong>Default autonomy:</strong> I would ship with promotion requiring approval, and the policy file as an opt-in. The alternative is a default policy that promotes automatically from day one.</li>
+    <li><strong>What counts as a repeat:</strong> I would start at two occurrences, which matches practitioner guidance but has no measured basis.</li>
+    <li><strong>Fixes before features:</strong> I recommend the order above. Starting the ratchet first would mean building it on hooks that currently go silent.</li>
+  </ul>
+</section>
+
+<footer>
+  Research reports: <code>reports/Self improving agents and harnesses.md</code> (round one) and <code>reports/Trace foundations for self improving harnesses.md</code> (round two, which corrects round one in a 15-row table). Notes are under <code>research_notes/</code>. Some papers were still read only in part; each report flags them. Whitespace claims rest on a bounded search.
+</footer>
+</div>
+
+<script>
+const F=[
+["C1","critical","Core","A failed directory walk reports a clean credential sweep","In a non-git folder, one unreadable directory discards the whole file list; P0.security then says verified with a token present. Ran.","Catch errors per directory, keep what was read, and report unreadable folders as findings."],
+["C2","high","Core","The sweep misses common credential shapes","A tracked env file with a database URL password, AWS secret access key, JWT, Slack webhook and more came back verified. Ran.","One pattern table shared with the hook mask."],
+["C3","high","Core","Tracked files under build/ or dist/ are never scanned","Any path with those folder names is skipped with no count. Ran.","Do not skip by folder name in git mode; count every deliberate skip."],
+["C5","high","Core","A forged manifest makes uninstall strip your own deny rules and hooks","Settings patches have no provenance gate. settings.json became {} and the exit code was 0. Ran.","Revert only hook entries and deny rules the kit's generators can produce."],
+["C6","high","Core","detect's write can leave the repository","With docs/harness as a junction, detect overwrote a file outside the repo. Ran.","Run the containment check before the write."],
+["H1","high","Hooks","The Stop gate turns itself off after three blocks","The block count never resets on a pass; later failures never reach the model. Ran.","Reset on a passing run; make the cap consecutive."],
+["H2","high","Hooks","A failure that returns after a pass is suppressed","Fail, pass, fail the same way: reported as already seen. Ran.","Clear the last signature on a clean run."],
+["H3","high","Hooks","Redaction drops diagnostics naming a directory in the command","With -p packages/app every typecheck line is removed. Ran.","Exempt command tokens that are real paths, or drop this layer."],
+["H4","high","Hooks","A one-word lint script loses its diagnostics","\"lint\": \"eslint\" leaves only the bare file path. Ran.","Match on token boundaries with a length floor."],
+["H5","high","Hooks","The lint sensor goes silent after three reports per file","A new fourth error exits 0 with nothing. Ran.","Never suppress; at the cap, say how many more issues exist."],
+["H6","high","Hooks","In a worktree the Stop gate checks the main checkout","The payload's working directory is ignored. Reasoned from docs; the ignoring was confirmed.","Prefer the payload directory's git root, or say what was covered."],
+["H7","high","Hooks","Missing linter, crash and timeout all look clean","A sensor that never worked is indistinguishable from success. Ran.","Emit a once-per-session 'could not check' message."],
+["S1","high","Skill and product","The skill never says where the CLIs live","Commands are relative to the kit, but the working directory is the target repo. Whether the model infers the path reliably is unverified.","State the path explicitly and test it."],
+["S2","high","Skill and product","Phase gates are not real","The first apply --yes installs executing hooks before the disclosure about them is read. Ran.","Add a scoped apply, or one disclosed gate."],
+["S3","high","Skill and product","The skill omits the branch and dirty-tree refusals","A user on main hits exit 3 with no guidance; an old report is treated as current.","Add a 'before any --yes' section; always re-run detect."],
+["D1","high","Skill and product","apply says every step is satisfied when it is not","Printed with 6 checks absent and 3 questions open. Ran.","Say what apply cannot write and what remains."],
+["D2","high","Skill and product","Proposal counts are wrong","Three checks carry proposals with no generator: '11 actions to close 10 gaps' closed 7. Ran.","Type each proposal: apply, skill or human."],
+["P1","high","Skill and product","No upgrade path for an installed harness","A simulated upgrade with all four hook assets changed produced 'no actions'. Ran.","Compare manifest hashes with current assets and offer updates."],
+["P2","high","Skill and product","No CI or team mode","detect exits 0 on a failing security check and dead rule pointers.","Add detect --check with non-zero exits."],
+["C4","medium","Core","A credential in a push URL is not seen","Only the fetch line of each remote is read. Ran.","Check every line per remote."],
+["C7","medium","Core","Unparseable settings.json leaves hooks unregistered, exit 0","A BOM from PowerShell 5.1 is enough. detect also reports the file as missing. Ran.","Strip the BOM; treat unparseable as its own state."],
+["C8","medium","Core","Unparseable package.json reported as missing a lint script","Same BOM cause. Ran.","Flag the manifest as unreadable and ask."],
+["C9","medium","Core","Bootstrap script built from mismatched evidence","A JS repo with a docs requirements.txt got pip install and no Node install. Ran.","Derive each install command from its own ecosystem's lockfile."],
+["C10","medium","Core","A malformed manifest crashes with exit 1","Outside the documented 0, 2, 3 contract. Ran.","Validate entry shapes and return corrupt."],
+["C11","medium","Core","Targeting a sub-directory: second apply refused over own writes","git status paths are relative to the repo root. Ran.","Strip the prefix from git rev-parse."],
+["C12","medium","Core","--verify results never shown and change no state","The summary is identical with and without the flag. Ran.","Render a section and set failing or verified."],
+["C13","medium","Core","A --verify timeout leaves the process tree running","Only the shell is killed. Ran.","Reuse the hooks' tree-killing runner."],
+["C14","medium","Core","Valid workspace patterns match nothing","./packages/* and packages/*/ give no workspace. Ran.","Normalise patterns; ask when one matches nothing."],
+["M1","medium","Hooks","Appending the file path breaks some lint scripts","next lint, turbo run lint and tsc --noEmit misbehave. Ran.","Append only for known file-taking linters."],
+["M2","medium","Hooks","Basename matching blames the wrong file","Errors in another a.ts were reported for the edited one. Ran.","Match the full relative path."],
+["M3","medium","Hooks","Stop exit 2 may be downgraded on 'no such file' output","From the docs; exact matching unverified.","Block via JSON decision on stdout."],
+["M4","medium","Hooks","npm init placeholder test earns a Stop gate","The gate then blocks with no content. Ran.","Detect the placeholder body and do not propose."],
+["M5","medium","Hooks","Credential mask gaps","ANSI colour codes bypass it; several key names and vendor formats are missed. Ran.","Strip ANSI first; widen keys; track PEM blocks."],
+["M6","medium","Hooks","SessionStart brief is unmasked and unstripped","HANDOFF.md is emitted byte for byte, including control characters. Ran.","Apply the shared strip and mask; add a delimiter."],
+["M7","medium","Hooks","Rule text can break out of its delimiter","A heading with a closing tag and fake system reminder is injected on every prompt. Ran.","Escape angle brackets; strip invisible characters."],
+["M8","medium","Hooks","One over-long rule starves the whole brief","A 1,500-character rule leaves nothing else injected. Ran.","Skip or truncate the oversize rule."],
+["M9","medium","Hooks","Killing the hook orphans the verification process","No signal handlers. Ran on Windows.","Kill the tree on termination."],
+["M10","medium","Hooks","Generated deny rules match at any depth","Edit(build/**) denies every build folder, on the evidence of one tracked file. Reasoned from docs.","Anchor rules to the root; require stronger evidence."],
+["M11","medium","Hooks","Marker package.json files disable the sensor","A nested {\"type\":\"module\"} manifest stops the lint lookup. Ran.","Keep walking up to the root."],
+["S4","medium","Skill and product","Write-before-gate and gate-before-write both appear","References contradict each other on order.","State one order once."],
+["S5","medium","Skill and product","The execution disclosure is only in --help","The dry run never says hooks run automatically.","Print it whenever a hook is proposed."],
+["S6","medium","Skill and product","No guidance for the generic profile","The model is never told to open the matching profile file.","Add the routing line."],
+["S7","medium","Skill and product","A full skill walk loads about 12k tokens","Much of it is maintainer provenance, not instruction.","Move provenance into tests."],
+["D3","medium","Skill and product","INTENT.md is stale on security noise","Says not built; the code has it, though only for test paths.","Update and re-date."],
+["D4","medium","Skill and product","INTENT.md cites files and tests that do not exist","docs/ARCHITECTURE.md is missing; three test references match nothing.","Test that the pointers resolve."],
+["D5","medium","Skill and product","Rules template promises an unbuilt feature","'Proposes the cheapest enforcer it can derive' is written into every target repo.","Remove it, or build it as part of the ratchet."],
+["T2","medium","Skill and product","Skill tests check text presence only","Nothing tests that the skill's commands run from a target repo.","One scripted end-to-end test."],
+["T3","medium","Skill and product","Key behaviours have no test","The no-actions sentence, proposal counts, and upgrades.","Add them with the fixes."],
+["CI1","medium","Skill and product","No timeout-minutes in CI","A hang holds a runner for six hours.","Bound every job."],
+["CI2","medium","Skill and product","Unpinned CLI install inside the test job","A CLI release can turn Linux legs red.","Move validation to its own job."],
+["E1","medium","Skill and product","Three eval graders cannot pass in either arm","They check kit-specific paths while the skill is unengaged.","Use detect --json as the oracle."],
+["P3","medium","Skill and product","Questions have nowhere to store the answer","The same questions recur on every run.","An answers file and a --profile flag."],
+["P4","medium","Skill and product","Stack coverage is thin","A Go repo with lint and test targets got no sensor; Python gets no sensor or gate.","More profiles; read Makefile targets."],
+["P5","medium","Skill and product","Nothing keeps the harness healthy over time","No handoff freshness, no re-validation of enforcers.","Staleness evidence in detect."],
+["P6","medium","Skill and product","Versioning has not moved","Still 0.1.0 with no changelog; report schema never bumped.","Real versions and a changelog."],
+["C15","low","Core","settings.json is rewritten in place","A kill mid-write truncates it. Reasoned.","Temp file plus rename."],
+["C16","low","Core","A deleted tracked file makes the sweep fail","Reported as could not be opened. Ran.","Drop deleted and skip-worktree entries, with a count."],
+["C17","low","Core","A file passed as the target is not rejected","apply exits 0 after a dry run note. Ran.","Require a directory."],
+["C18","low","Core","Smaller items","A FIFO symlink could hang the sweep; uncapped reads of CLAUDE.md. Reasoned.","Bound and guard."],
+["L1","low","Hooks","Stop gate does not set CI=1","Watch-mode test runners would run until killed. Reasoned.","Set it, as --verify does."],
+["L2","low","Hooks","One timeout disables the gate for the session","A cold first typecheck can trigger it. Reasoned.","Retry later and say so."],
+["L3","low","Hooks","The mask mangles rule prose","'Bearer token' in a rule becomes 'Bearer ***'. Ran.","Do not mask registry prose this way."],
+["L4","low","Hooks","Auto-fix detection can blame the wrong tool","Parallel hooks may rewrite the file. Reasoned.","Soften the message."],
+["L5","low","Hooks","A leading dash in a path is read as an option","Reasoned.","Prefix with ./"],
+["L6","low","Hooks","Marker updates are not atomic","Parallel sub-agents can lose updates. Reasoned.","Atomic write."],
+["L7","low","Hooks","A heading with U+2028 is dropped silently","Ran.","Count it in the notice."],
+["L8","low","Hooks","A poetry entry point is treated as a shell command","Reasoned.","Recognise the form."],
+["L9","low","Hooks","node must be on Claude Code's own PATH","fnm or nvm under a GUI client would fail all hooks. Reasoned.","Detect and advise."],
+["S8","low","Skill and product","Reference links use two conventions","The link test accepts the broken one.","Resolve links as real relative paths."],
+["S9","low","Skill and product","gates.md omits the intent and rules steps","","Update the list."],
+["D6","low","Skill and product","Proposal text names the wrong path","Says scripts/, files land in .claude/scripts/.","Fix the text."],
+["D7","low","Skill and product","Small documentation drifts","Exit code text; the kit uses little of its own harness.","Align."],
+["T4","low","Skill and product","Some checks can pass while broken","Plugin validation skips where claude is not on PATH. Disclosed in comments.","Accept or enforce in CI."],
+["CI3","low","Skill and product","CI hygiene","No permissions block, tag-pinned actions, duplicate runs, no macOS leg.","Tighten."],
+["CI4","low","Skill and product","Eval job runs branch code with a live token","Acceptable for a single-owner repository.","Revisit if contributors join."],
+["E2","low","Skill and product","Eval prompts contradict the product","They ask not to be asked to confirm.","Rewrite the prompts."]
+];
+const sevs=["all","critical","high","medium","low"], areas=["all","Core","Hooks","Skill and product"];
+let cs="all", ca="all";
+const led=document.getElementById("ledger"), shown=document.getElementById("shown");
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function draw(){
+  const rows=F.filter(f=>(cs==="all"||f[1]===cs)&&(ca==="all"||f[2]===ca));
+  led.innerHTML=rows.map(f=>`<div class="row"><div class="meta"><span class="tag ${f[1]}">${f[1]}</span><span class="id">${f[0]} · ${esc(f[2]==="Skill and product"?"Product":f[2])}</span></div><div class="body"><h3>${esc(f[3])}</h3>${f[4]?`<p>${esc(f[4])}</p>`:""}<p class="fix">Fix: ${esc(f[5])}</p></div></div>`).join("");
+  shown.textContent=`Showing ${rows.length} of ${F.length} findings.`;
+}
+function group(el,vals,get,set){
+  vals.forEach(v=>{const b=document.createElement("button");b.className="f";b.type="button";b.id="f-"+el.id+"-"+v.replace(/\s/g,"-");
+    b.textContent=v==="all"?"All":v[0].toUpperCase()+v.slice(1);b.setAttribute("aria-pressed",String(get()===v));
+    b.addEventListener("click",()=>{set(v);el.querySelectorAll("button").forEach(x=>x.setAttribute("aria-pressed",String(x===b)));draw()});
+    el.appendChild(b)});
+}
+group(document.getElementById("fsev"),sevs,()=>cs,v=>cs=v);
+group(document.getElementById("farea"),areas,()=>ca,v=>ca=v);
+draw();
+</script>
