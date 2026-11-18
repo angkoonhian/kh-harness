@@ -283,7 +283,7 @@ for (const [label, override] of malformedManifests) {
 test('a manifest with a BOM, and with dirsCreated absent or a list of paths, reads as ok', () => {
   for (const override of [{}, { dirsCreated: ['.claude', '.claude/scripts'] }]) {
     const d = repo();
-    write(d, MANIFEST_PATH, '﻿' + manifestWith({ files: [{ path: 'HANDOFF.md', sha256: sha256('x'), step: 16 }], ...override }));
+    write(d, MANIFEST_PATH, '\uFEFF' + manifestWith({ files: [{ path: 'HANDOFF.md', sha256: sha256('x'), step: 16 }], ...override }));
     assert.equal(readManifestResult(d).state, 'ok', JSON.stringify(override));
   }
 });

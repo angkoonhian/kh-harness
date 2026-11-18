@@ -4,7 +4,12 @@
 // settings files and its own manifest.
 import { readFileSync } from 'node:fs';
 
-export const UTF8_BOM = '﻿';
+export const UTF8_BOM = '\uFEFF';
+
+/** `text` without one leading UTF-8 BOM, if it has one. */
+export function stripBom(text) {
+  return text.startsWith(UTF8_BOM) ? text.slice(UTF8_BOM.length) : text;
+}
 
 /**
  * Reads a JSON file into one of three states, and "present but unusable" is
@@ -33,7 +38,7 @@ export function readJsonFile(path) {
     return { state: 'unreadable', reason: `could not be read (${err?.code ?? 'unknown error'})` };
   }
   try {
-    return { state: 'ok', value: JSON.parse(text.startsWith(UTF8_BOM) ? text.slice(1) : text), text };
+    return { state: 'ok', value: JSON.parse(stripBom(text)), text };
   } catch {
     return { state: 'unreadable', reason: 'is not valid JSON' };
   }

@@ -113,7 +113,7 @@ test('settings.json with a syntax error is reported as unreadable by detect, not
 
 test('a settings.json with a BOM is read by detect', () => {
   const d = repo();
-  write(d, '.claude/settings.json', '﻿' + JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  write(d, '.claude/settings.json', '\uFEFF' + JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
   const h = run(d);
   assert.equal(h.claudeDir.settings, 'ok');
   assert.deepEqual(h.claudeDir.denyRuleList, ['Edit(x)']);
