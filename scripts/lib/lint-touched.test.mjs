@@ -927,6 +927,7 @@ test('a private key printed across several lines of lint output is masked in ful
     'src/a.ts',
     '  1:1  error  hard-coded key found',
     ...[`-----BEGIN ${kind}-----`, ...body, `-----END ${kind}-----`].map(l => `  ${l}`),
+    '  9:3  error  diagnostic after the key',
   ].join(NL);
   const d = repo('node runlint.cjs');
   writeFileSync(join(d, 'runlint.cjs'), `process.stderr.write(${JSON.stringify(output + NL)}); process.exit(1);${NL}`);
@@ -934,6 +935,19 @@ test('a private key printed across several lines of lint output is masked in ful
   assert.equal(r.code, 2);
   for (const line of body) assert.equal(r.stderr.includes(line), false, `a key body line reached stderr: ${JSON.stringify(r.stderr)}`);
   assert.match(r.stderr, /hard-coded key found/, 'the diagnostic before the key survives');
+  assert.match(r.stderr, /9:3\s+error\s+diagnostic after the key/, `the diagnostic after the key stays in the block: ${JSON.stringify(r.stderr)}`);
+});
+
+test('a bare credential value from the lint command is dropped when the output prints it alone', () => {
+  const value = ['abcdEFGH', 'ijklMNOP', 'qrst1234'].join(''); // assembled: a bearer value in this file's own source
+  const header = ['Authorization', ` Bearer ${value}`].join(':'); // assembled: an authorization header in this file's own source
+  const d = repo(`node smoke.cjs --header "${header}"`);
+  writeFileSync(join(d, 'smoke.cjs'),
+    "console.error('src/a.ts: 1:1 error oops\\nsrc/a.ts: retrying with ' + process.argv[3].split(' ').pop()); process.exit(1);\n");
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /1:1 error oops/);
+  assert.equal(r.stderr.includes(value), false, `the bare value reached stderr: ${JSON.stringify(r.stderr)}`);
 });
 
 test('a private key whose header line is dropped by redaction still has its body masked', () => {

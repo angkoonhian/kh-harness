@@ -560,10 +560,11 @@ async function main() {
   // `eslint -c .eslintrc.cjs`) — a diagnostic naming those is the report,
   // not an echo of the command. See pathTokenExemptions in harness-redact.mjs.
   const exemptions = new Set([relToOwner, basename(relToOwner), ...pathTokenExemptions(lintScript, [relToOwner])]);
-  // The output is already masked, so it is compared with the commands as
-  // masked: an echo of a command that carries a credential matches the
-  // masked command, never the raw one.
-  const reported = dropCommandFragments(attributed, [lintScript, fullCommand].map(maskText), exemptions);
+  // Each command in both forms: the output is already masked, so an echo of
+  // a command that carries a credential matches only the masked form, while
+  // a credential value printed alone, outside any context the mask
+  // recognises, matches only a raw token.
+  const reported = dropCommandFragments(attributed, [lintScript, fullCommand].flatMap(c => [c, maskText(c)]), exemptions);
   if (reported.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
 
   const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
