@@ -34,6 +34,13 @@ const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
 const RULES_BRIEF_PATH = '.claude/scripts/rules-brief.mjs';
 
 /**
+ * Every script a generator registers as a hook. uninstall reverts a hook
+ * patch only when the entry runs one of these, so a hook script a generator
+ * registers must be listed here or its registration can never be removed.
+ */
+const GENERATOR_SCRIPT_PATHS = Object.freeze([LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH]);
+
+/**
  * Task 9b, finding 2: a settings-hook proposal's own `reason` used to be a
  * hardcoded "no <event> hook registered in .claude/settings.json" — true
  * only when the event is genuinely empty. When a user already has an
@@ -66,12 +73,16 @@ function hookRegistrationReason(event, check) {
  * `Edit`, specifically — not `Read` — because the risk being guarded is
  * modification, not the agent reading context it legitimately needs.
  */
+export function protectedDenyRules({ stack, files }) {
+  return protectedPathCandidates({ stack, files }).map(g => `Edit(${g})`);
+}
+
 function protectedPathProposal({ stack, files }) {
-  const surviving = protectedPathCandidates({ stack, files });
-  if (surviving.length === 0) return [];
+  const globs = protectedDenyRules({ stack, files });
+  if (globs.length === 0) return [];
   return [{
     kind: 'settings-deny', step: 11,
-    globs: surviving.map(g => `Edit(${g})`),
+    globs,
     reason: 'deny edits to protected paths found in this repository',
   }];
 }
@@ -719,4 +730,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // generator (a pyproject-only Python repo: `detect` advertised a proposal,
 // `apply` produced nothing) without any test failing, because nothing
 // checked the two against each other.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS };

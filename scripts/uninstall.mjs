@@ -80,7 +80,7 @@ if (plan.keep.length) {
 }
 
 if (plan.keepPatches.length) {
-  console.log('Will keep settings patches (modified):');
+  console.log('Will keep settings patches:');
   for (const p of plan.keepPatches) {
     console.log(`  ${p.container} (${p.why})`);
   }

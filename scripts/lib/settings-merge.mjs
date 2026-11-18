@@ -194,48 +194,64 @@ export function addDenyRules(settings, globs) {
 }
 
 /**
- * Remove the entry whose hash matches. Index-based removal would take out the
- * wrong hook the moment the user adds one of their own above ours, and nothing
- * would notice until something stopped running.
+ * The script a hook entry runs, for deciding whether a generator wrote it.
+ * Besides the exec form, the shell string `node <script>` is credited, the
+ * shape earlier installs registered; only that exact two-token string, so a
+ * shell string that runs our script and anything else besides is not ours.
  */
-export function revertPatch(settings, patch) {
+function scriptRunBy(entry) {
+  const exec = hookScriptOf(entry);
+  if (exec !== null) return exec;
+  const tokens = typeof entry?.command === 'string' ? entry.command.trim().split(/\s+/) : [];
+  return tokens.length === 2 && tokens[0] === 'node' ? normalizeHookPath(tokens[1]) : null;
+}
+
+/**
+ * Remove what `patch` records, but only when one of our generators could
+ * have written it. The manifest is a file in the repository and can be
+ * forged, and a matching hash proves only that settings.json still holds
+ * what the manifest claims, never that we put it there. So a hook entry is
+ * reverted only when every hook in it runs a script in
+ * `producibleHookScripts`, and a deny patch only when every rule is in
+ * `producibleDenyRules` and `entrySha256` is the hash of those rules.
+ *
+ * The hook entry is found by hash, never by index: index-based removal would
+ * take out the wrong hook the moment the user adds one of their own above
+ * ours, and nothing would notice until something stopped running.
+ *
+ * @returns {{ settings: object, kept: { patch: object, reason: string }[] }}
+ *   `kept` is empty when the patch was reverted, otherwise it holds the
+ *   patch and the reason it stays.
+ */
+export function revertPatch(settings, patch, { producibleHookScripts, producibleDenyRules }) {
   const next = clone(settings);
+  const keep = reason => ({ settings: next, kept: [{ patch, reason }] });
 
-  // Defensive: validate patch structure before accessing properties
-  if (!patch || typeof patch !== 'object') {
-    return { settings: next, reverted: false };
-  }
-
-  if (typeof patch.container !== 'string') {
-    return { settings: next, reverted: false };
+  if (!patch || typeof patch !== 'object' || typeof patch.container !== 'string') {
+    return keep('patch-malformed');
   }
 
   if (typeof patch.entrySha256 !== 'string' || !/^[0-9a-f]{64}$/.test(patch.entrySha256)) {
-    return { settings: next, reverted: false };
+    return keep('patch-malformed');
   }
 
-  // Handle /permissions/deny container
   if (patch.container === '/permissions/deny') {
-    if (!Array.isArray(patch.rules)) {
-      return { settings: next, reverted: false };
+    // addDenyRules records no patch when it adds nothing, so an empty list is never ours.
+    if (!Array.isArray(patch.rules) || patch.rules.length === 0
+      || patch.entrySha256 !== sha256(JSON.stringify([...patch.rules].sort()))) {
+      return keep('patch-malformed');
+    }
+    if (!patch.rules.every(rule => producibleDenyRules.has(rule))) {
+      return keep('not-generator-producible');
     }
 
     const denyList = next?.permissions?.deny;
-    if (!Array.isArray(denyList)) {
-      return { settings: next, reverted: false };
+    // Every rule we added must still be present: a missing one is a hand edit.
+    if (!Array.isArray(denyList) || !patch.rules.every(rule => denyList.includes(rule))) {
+      return keep('patch-modified');
     }
 
-    // patch.rules is authoritative for identity; entrySha256 is retained for schema consistency
-    // Check if all rules we added are still present
     const rulesToRemove = new Set(patch.rules);
-    for (const rule of patch.rules) {
-      if (!denyList.includes(rule)) {
-        // A rule we added is no longer present - partial hand-edit
-        return { settings: next, reverted: false };
-      }
-    }
-
-    // Remove exactly the rules we added
     const filtered = denyList.filter(rule => !rulesToRemove.has(rule));
     if (filtered.length === 0) {
       // Prune empty deny array and then permissions object if empty
@@ -247,21 +263,24 @@ export function revertPatch(settings, patch) {
       next.permissions.deny = filtered;
     }
 
-    return { settings: next, reverted: true };
+    return { settings: next, kept: [] };
   }
 
-  // Handle /hooks/<event> container (existing behavior)
   if (!patch.container.startsWith('/hooks/')) {
-    return { settings: next, reverted: false };
+    return keep('patch-malformed');
   }
 
   const event = patch.container.replace('/hooks/', '');
   const list = next?.hooks?.[event];
-  if (!Array.isArray(list)) return { settings: next, reverted: false };
+  if (!Array.isArray(list)) return keep('patch-modified');
   const idx = list.findIndex(m => sha256(canon(m)) === patch.entrySha256);
-  if (idx === -1) return { settings: next, reverted: false };
+  if (idx === -1) return keep('patch-modified');
+  const hooks = list[idx]?.hooks;
+  if (!Array.isArray(hooks) || hooks.length === 0 || !hooks.every(h => producibleHookScripts.has(scriptRunBy(h)))) {
+    return keep('not-generator-producible');
+  }
   list.splice(idx, 1);
   if (list.length === 0) delete next.hooks[event];
   if (next.hooks && Object.keys(next.hooks).length === 0) delete next.hooks;
-  return { settings: next, reverted: true };
+  return { settings: next, kept: [] };
 }

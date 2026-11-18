@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addHookEntry, hasEquivalentHook, hookPathTokens, hookScriptOf, normalizeMatcher, matcherCovers, revertPatch, addDenyRules } from './settings-merge.mjs';
+import { GENERATOR_SCRIPT_PATHS } from './propose.mjs';
+
+// What revertPatch may remove: every generator hook script, and the deny
+// rules these tests' patches add.
+const PRODUCIBLE = {
+  producibleHookScripts: new Set(GENERATOR_SCRIPT_PATHS),
+  producibleDenyRules: new Set(['Edit(migrations/**)', 'Edit(y)']),
+};
 
 const ENTRY = { type: 'command', command: 'node .claude/scripts/session-brief.mjs' };
 
@@ -138,8 +146,8 @@ test('a matcher changes the entry hash, so reverting without it does not find th
 test('revertPatch removes a matcher-bearing entry by hash, same as any other', () => {
   const entry = { type: 'command', command: 'node .claude/scripts/lint-touched.mjs' };
   const { settings: s1, patch } = addHookEntry({}, 'PostToolUse', entry, 'Write|Edit');
-  const { settings: s2, reverted } = revertPatch(s1, patch);
-  assert.equal(reverted, true);
+  const { settings: s2, kept } = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual(kept, []);
   assert.equal(s2.hooks, undefined);
 });
 
@@ -147,29 +155,32 @@ test('revertPatch removes by hash, not by index', () => {
   const { settings: s1, patch } = addHookEntry({}, 'SessionStart', ENTRY);
   // The user then adds their own hook ABOVE ours.
   s1.hooks.SessionStart.unshift({ hooks: [{ type: 'command', command: 'user-added' }] });
-  const { settings: s2, reverted } = revertPatch(s1, patch);
-  assert.equal(reverted, true);
+  const { settings: s2, kept } = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual(kept, []);
   assert.equal(s2.hooks.SessionStart.length, 1);
   assert.equal(s2.hooks.SessionStart[0].hooks[0].command, 'user-added', 'must remove OURS, not index 0');
 });
 
-test('revertPatch reports false when our entry was already changed', () => {
-  const { settings: s1, patch } = addHookEntry({}, 'SessionStart', ENTRY);
+test('revertPatch keeps a patch whose entry was already changed', () => {
+  // A copy: the returned settings hold the entry object itself, and the edit
+  // below must not reach ENTRY, which later tests revert.
+  const { settings: s1, patch } = addHookEntry({}, 'SessionStart', { ...ENTRY });
   s1.hooks.SessionStart[0].hooks[0].command = 'edited by user';
-  const { reverted } = revertPatch(s1, patch);
-  assert.equal(reverted, false, 'an edited entry is the user\'s now');
+  const { settings: s2, kept } = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual(kept, [{ patch, reason: 'patch-modified' }], 'an edited entry is the user\'s now');
+  assert.deepEqual(s2, s1, 'nothing is removed');
 });
 
 test('revertPatch prunes an emptied event but leaves other events', () => {
   const { settings: s1, patch } = addHookEntry({ hooks: { Stop: [{ hooks: [] }] } }, 'SessionStart', ENTRY);
-  const { settings: s2 } = revertPatch(s1, patch);
+  const { settings: s2 } = revertPatch(s1, patch, PRODUCIBLE);
   assert.equal(s2.hooks.SessionStart, undefined);
   assert.ok(s2.hooks.Stop);
 });
 
 // Whole-branch review, F16: this test's fixture was `{ entrySha256:
 // 'abc123' }`, and `'abc123'` also fails the NEXT guard (the 64-hex-digit
-// check), so it returned `reverted: false` whether or not the `container`
+// check), so the patch was refused whether or not the `container`
 // type guard existed. Measured: removing that guard left the whole suite at
 // 647/0 — the only production mutation of the nineteen planted that nobody
 // noticed. The hash is a valid 64-hex string now, so the `container` guard
@@ -184,55 +195,86 @@ test('revertPatch prunes an emptied event but leaves other events', () => {
 // that file states in its own first comment.
 const VALID_SHA = 'a'.repeat(64);
 
-test('revertPatch returns reverted:false when patch is missing container, without throwing', () => {
+const reasons = r => r.kept.map(k => k.reason);
+
+test('revertPatch keeps a patch missing its container, without throwing', () => {
   const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
-  const { reverted } = revertPatch(settings, { entrySha256: VALID_SHA });
-  assert.equal(reverted, false, 'the hash is valid, so only the missing container can refuse this');
+  const r = revertPatch(settings, { entrySha256: VALID_SHA }, PRODUCIBLE);
+  assert.deepEqual(reasons(r), ['patch-malformed'], 'the hash is valid, so only the missing container can refuse this');
 });
 
-test('F16: revertPatch returns reverted:false for a NON-STRING container, without throwing', () => {
+test('F16: revertPatch keeps a patch with a NON-STRING container, without throwing', () => {
   // The shape that would actually crash: a forged manifest whose container
   // is a number, with a hash that passes the next guard. Without the type
   // guard this reaches `.startsWith` on a number and throws.
   const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
   for (const container of [123, null, {}, ['/hooks/SessionStart'], true]) {
-    assert.doesNotThrow(() => revertPatch(settings, { container, entrySha256: VALID_SHA }),
+    assert.doesNotThrow(() => revertPatch(settings, { container, entrySha256: VALID_SHA }, PRODUCIBLE),
       `a forged container of type ${typeof container} must never throw — the CLI contract is exit 0/2/3`);
-    assert.equal(revertPatch(settings, { container, entrySha256: VALID_SHA }).reverted, false);
+    assert.deepEqual(reasons(revertPatch(settings, { container, entrySha256: VALID_SHA }, PRODUCIBLE)), ['patch-malformed']);
   }
 });
 
-test('revertPatch returns reverted:false when container does not start with /hooks/', () => {
+test('revertPatch keeps a patch whose container does not start with /hooks/', () => {
   const patch = { container: '/unknown/container', entrySha256: 'abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1' };
   const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
-  const { reverted } = revertPatch(settings, patch);
-  assert.equal(reverted, false);
+  assert.deepEqual(reasons(revertPatch(settings, patch, PRODUCIBLE)), ['patch-malformed']);
 });
 
-test('revertPatch returns reverted:false when entrySha256 is malformed', () => {
+test('revertPatch keeps a patch whose entrySha256 is malformed', () => {
   const patch = { container: '/hooks/SessionStart', entrySha256: 'not-a-valid-hex' };
   const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
-  const { reverted } = revertPatch(settings, patch);
-  assert.equal(reverted, false);
+  assert.deepEqual(reasons(revertPatch(settings, patch, PRODUCIBLE)), ['patch-malformed']);
 });
 
-test('revertPatch returns reverted:false when patch is null without throwing', () => {
+test('revertPatch keeps a null patch without throwing', () => {
   const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
-  const { reverted } = revertPatch(settings, null);
-  assert.equal(reverted, false);
+  assert.deepEqual(reasons(revertPatch(settings, null, PRODUCIBLE)), ['patch-malformed']);
 });
 
-test('revertPatch returns reverted:false when patch is undefined without throwing', () => {
+test('revertPatch keeps an undefined patch without throwing', () => {
   const settings = { hooks: { SessionStart: [{ hooks: [ENTRY] }] } };
-  const { reverted } = revertPatch(settings, undefined);
-  assert.equal(reverted, false);
+  assert.deepEqual(reasons(revertPatch(settings, undefined, PRODUCIBLE)), ['patch-malformed']);
+});
+
+// Provenance: a matching hash proves only that the settings still hold what
+// the manifest claims, so producibility is checked independently of it.
+
+test('revertPatch keeps a hook entry whose hash matches but whose script no generator registers', () => {
+  const theirs = { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/scripts/mine.mjs'] };
+  const { settings: s1, patch } = addHookEntry({}, 'SessionStart', theirs);
+  const { settings: s2, kept } = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual(kept, [{ patch, reason: 'not-generator-producible' }]);
+  assert.deepEqual(s2, s1);
+});
+
+test('revertPatch credits the legacy shell form `node <script>` only as that exact string', () => {
+  const legacy = addHookEntry({}, 'SessionStart', { type: 'command', command: 'node .claude/scripts/session-brief.mjs' });
+  assert.deepEqual(revertPatch(legacy.settings, legacy.patch, PRODUCIBLE).kept, []);
+  const more = addHookEntry({}, 'SessionStart', { type: 'command', command: 'node .claude/scripts/session-brief.mjs && ./mine.sh' });
+  assert.deepEqual(reasons(revertPatch(more.settings, more.patch, PRODUCIBLE)), ['not-generator-producible']);
+});
+
+test('revertPatch keeps a deny patch naming a rule no generator produces', () => {
+  const before = { permissions: { deny: ['Bash(rm:*)'] } };
+  const { patch } = addDenyRules({}, ['Bash(rm:*)']);
+  const { settings: s2, kept } = revertPatch(before, patch, PRODUCIBLE);
+  assert.deepEqual(kept, [{ patch, reason: 'not-generator-producible' }]);
+  assert.deepEqual(s2, before);
+});
+
+test('revertPatch keeps a deny patch whose entrySha256 is not the hash of its rules', () => {
+  const { settings: s1, patch } = addDenyRules({}, ['Edit(migrations/**)']);
+  const forged = { ...patch, entrySha256: VALID_SHA };
+  assert.deepEqual(reasons(revertPatch(s1, forged, PRODUCIBLE)), ['patch-malformed']);
+  assert.deepEqual(reasons(revertPatch(s1, { ...patch, rules: [] }, PRODUCIBLE)), ['patch-malformed']);
 });
 
 test('revertPatch with valid patch still reverts correctly', () => {
   const { settings: s1, patch } = addHookEntry({}, 'SessionStart', ENTRY);
   s1.hooks.SessionStart.unshift({ hooks: [{ type: 'command', command: 'user-added' }] });
-  const { settings: s2, reverted } = revertPatch(s1, patch);
-  assert.equal(reverted, true, 'valid patch must still revert');
+  const { settings: s2, kept } = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual(kept, [], 'valid patch must still revert');
   assert.equal(s2.hooks.SessionStart.length, 1);
   assert.equal(s2.hooks.SessionStart[0].hooks[0].command, 'user-added');
 });
@@ -265,20 +307,20 @@ test('revertPatch removes only the rules we added', () => {
   const before = { permissions: { deny: ['Bash(rm:*)'] } };
   const { settings: s1, patch } = addDenyRules(before, ['Edit(migrations/**)']);
   s1.permissions.deny.push('Read(./.env)');           // the user adds their own afterwards
-  const { settings: s2, reverted } = revertPatch(s1, patch);
-  assert.equal(reverted, true);
+  const { settings: s2, kept } = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual(kept, []);
   assert.deepEqual(s2.permissions.deny, ['Bash(rm:*)', 'Read(./.env)'], 'both of theirs survive');
 });
 
 test('revertPatch reports false when our rule was already removed by hand', () => {
   const { settings: s1, patch } = addDenyRules({}, ['Edit(migrations/**)']);
   s1.permissions.deny = [];
-  assert.equal(revertPatch(s1, patch).reverted, false);
+  assert.deepEqual(reasons(revertPatch(s1, patch, PRODUCIBLE)), ['patch-modified']);
 });
 
 test('reverting the last deny rule prunes the empty structure', () => {
   const { settings: s1, patch } = addDenyRules({}, ['Edit(migrations/**)']);
-  const { settings: s2 } = revertPatch(s1, patch);
+  const { settings: s2 } = revertPatch(s1, patch, PRODUCIBLE);
   assert.equal(s2.permissions?.deny, undefined);
 });
 
@@ -306,14 +348,14 @@ test('dedupes a glob that is both a duplicate within the call and already in set
 
 test('reverting the last deny rule prunes the permissions object itself when it holds nothing else', () => {
   const { settings: s1, patch } = addDenyRules({}, ['Edit(migrations/**)']);
-  const { settings: s2 } = revertPatch(s1, patch);
+  const { settings: s2 } = revertPatch(s1, patch, PRODUCIBLE);
   assert.equal(s2.permissions, undefined, 'permissions object must be pruned, not left as {}');
 });
 
 test('reverting the last deny rule leaves the user\'s other deny rules intact', () => {
   const before = { permissions: { deny: ['Edit(x)'], allow: ['Read(*)'], defaultMode: 'allow' } };
   const { settings: s1, patch } = addDenyRules(before, ['Edit(y)']);
-  const { settings: s2 } = revertPatch(s1, patch);
+  const { settings: s2 } = revertPatch(s1, patch, PRODUCIBLE);
   assert.ok(s2.permissions, 'permissions object must be preserved');
   assert.equal(s2.permissions.deny.length, 1);
   assert.deepEqual(s2.permissions.deny, ['Edit(x)']);
@@ -324,7 +366,7 @@ test('reverting the last deny rule leaves the user\'s other deny rules intact', 
 test('reverting the last deny rule prunes deny but keeps sibling keys', () => {
   const before = { permissions: { allow: ['Read(*)'], defaultMode: 'allow' } };
   const { settings: s1, patch } = addDenyRules(before, ['Edit(y)']);
-  const { settings: s2 } = revertPatch(s1, patch);
+  const { settings: s2 } = revertPatch(s1, patch, PRODUCIBLE);
   assert.ok(s2.permissions, 'permissions must survive because allow/defaultMode remain');
   assert.equal(s2.permissions.deny, undefined, 'the emptied deny array is pruned');
   assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow must survive');
