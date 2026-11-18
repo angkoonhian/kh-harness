@@ -185,9 +185,12 @@ test('canonicalJson: nested objects are sorted', () => {
 const HOOK = '.claude/scripts/session-log.mjs';
 const RULES = 'docs/harness/RULES.md';
 const LEARNED = 'docs/harness/LEARNED.md';
+const HANDOFF = 'HANDOFF.md';
 const MANIFEST = '.claude/kh-harness.manifest.json';
 
 const gate = (id, extra = {}) => ({ id, tool: 'Bash', field: 'command', match: { kind: 'literal', value: 'rm -rf' }, action: 'observe', message: 'no', ...extra });
+const committedGates = gates => JSON.stringify({ schema: 1, generatedBy: 'kh-harness land', gates }) + '\n';
+const localGates = gates => JSON.stringify({ schema: 1, gates });
 
 const writeAt = (root, rel, body) => {
   mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -195,11 +198,17 @@ const writeAt = (root, rel, body) => {
 };
 
 /** A repository as `apply` and one landed learning leave it: every file
- * below is recorded in the manifest, the scaffolded RULES.md and the learned
- * files included. */
-function installedRepo({ settingsPatches = [{ event: 'PreToolUse', entrySha256: 'e1' }] } = {}) {
+ * below is recorded in the manifest, the scaffolded documents and the
+ * learned files included. */
+function installedRepo({ settingsPatches = [{ event: 'PreToolUse', entrySha256: 'e1', appliedAt: '2026-11-01T00:00:00.000Z' }] } = {}) {
   const root = tempDir('hk-log-ident-');
-  const files = { [HOOK]: '// hook\nexport {};\n', [RULES]: '# Rules\n', [LEARNED]: '# Learned\n', [GATES_PATH]: JSON.stringify([gate('L1')]) + '\n' };
+  const files = {
+    [HOOK]: '// hook\nexport {};\n',
+    [RULES]: '# Rules\n',
+    [HANDOFF]: '# Handoff\n',
+    [LEARNED]: '# Learned\n',
+    [GATES_PATH]: committedGates([gate('L1')]),
+  };
   for (const [rel, body] of Object.entries(files)) writeAt(root, rel, body);
   const manifest = { schema: 1, kitVersion: '0.9.0', files: Object.keys(files).map(path => ({ path, sha256: 'recorded' })), settingsPatches };
   writeAt(root, MANIFEST, JSON.stringify(manifest, null, 2) + '\n');
@@ -232,7 +241,7 @@ test('deleting an installed hook changes base', () => {
 test('a CRLF checkout does not change base', () => {
   const root = installedRepo();
   const before = harnessIdentity(root);
-  for (const rel of [HOOK, RULES, LEARNED, GATES_PATH]) {
+  for (const rel of [HOOK, RULES, HANDOFF, LEARNED, GATES_PATH]) {
     writeFileSync(join(root, rel), readFileSync(join(root, rel), 'utf8').replace(/\n/g, '\r\n'));
   }
   assert.deepEqual(harnessIdentity(root), before);
@@ -248,25 +257,46 @@ test('a lone CR is not normalised away', () => {
 
 test('a change to the settings patches changes base', () => {
   const a = installedRepo();
-  const b = installedRepo({ settingsPatches: [{ event: 'PreToolUse', entrySha256: 'e2' }] });
+  const b = installedRepo({ settingsPatches: [{ event: 'PreToolUse', entrySha256: 'e2', appliedAt: '2026-11-01T00:00:00.000Z' }] });
   assert.notEqual(harnessIdentity(a).base, harnessIdentity(b).base);
   assert.equal(harnessIdentity(a).learned, harnessIdentity(b).learned);
 });
 
+test('re-running apply with nothing changed leaves base the same', () => {
+  const a = installedRepo();
+  const b = installedRepo({ settingsPatches: [{ event: 'PreToolUse', entrySha256: 'e1', appliedAt: '2026-11-19T12:34:56.789Z' }] });
+  assert.equal(harnessIdentity(a).base, harnessIdentity(b).base);
+});
+
+const writeLocalGates = (root, body) => {
+  mkdirSync(repoDataDir(root), { recursive: true });
+  writeFileSync(join(repoDataDir(root), LOCAL_GATES_FILE), body);
+};
+
 test('adding a local trial gate changes learned and not base', () => {
   const root = installedRepo();
   const before = harnessIdentity(root);
-  mkdirSync(repoDataDir(root), { recursive: true });
-  writeFileSync(join(repoDataDir(root), LOCAL_GATES_FILE), JSON.stringify([gate('L2')]));
+  writeLocalGates(root, localGates([gate('L2')]));
   const after = harnessIdentity(root);
   assert.notEqual(after.learned, before.learned);
   assert.equal(after.base, before.base);
 });
 
+test('suspending a committed gate locally changes learned', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root);
+  writeLocalGates(root, localGates([{ id: 'L1', suspended: true }]));
+  const suspended = harnessIdentity(root);
+  assert.notEqual(suspended.learned, before.learned);
+  assert.equal(suspended.base, before.base);
+  writeLocalGates(root, localGates([{ id: 'L1', suspended: true, reason: 'marked wrong twice' }]));
+  assert.equal(harnessIdentity(root).learned, suspended.learned, 'a suspension contributes only its id');
+});
+
 test('landing a gate in the tree changes learned and not base', () => {
   const root = installedRepo();
   const before = harnessIdentity(root);
-  writeAt(root, GATES_PATH, JSON.stringify([gate('L1'), gate('L2')]) + '\n');
+  writeAt(root, GATES_PATH, committedGates([gate('L1'), gate('L2')]));
   writeAt(root, LEARNED, '# Learned\n\n## L2 — second\n');
   const after = harnessIdentity(root);
   assert.notEqual(after.learned, before.learned);
@@ -280,20 +310,34 @@ test('editing docs/harness/RULES.md changes neither', () => {
   assert.deepEqual(harnessIdentity(root), before);
 });
 
+test('editing HANDOFF.md, though the manifest records it, does not change base', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root);
+  writeAt(root, HANDOFF, '# Handoff\n\nNext: finish the parser.\n');
+  assert.deepEqual(harnessIdentity(root), before);
+});
+
 test('a gate\'s action does not change learned; its content does', () => {
   const root = installedRepo();
   const before = harnessIdentity(root).learned;
-  writeAt(root, GATES_PATH, JSON.stringify([gate('L1', { action: 'block' })]));
+  writeAt(root, GATES_PATH, committedGates([gate('L1', { action: 'block' })]));
   assert.equal(harnessIdentity(root).learned, before);
-  writeAt(root, GATES_PATH, JSON.stringify([gate('L1', { message: 'changed' })]));
+  writeAt(root, GATES_PATH, committedGates([gate('L1', { message: 'changed' })]));
   assert.notEqual(harnessIdentity(root).learned, before);
+});
+
+test('the committed file\'s generatedBy does not change learned', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root).learned;
+  writeAt(root, GATES_PATH, JSON.stringify({ schema: 1, generatedBy: 'another writer', gates: [gate('L1')] }));
+  assert.equal(harnessIdentity(root).learned, before);
 });
 
 test('learned does not depend on the order the gates are written in', () => {
   const root = installedRepo();
-  writeAt(root, GATES_PATH, JSON.stringify([gate('L1'), gate('L2')]));
+  writeAt(root, GATES_PATH, committedGates([gate('L1'), gate('L2')]));
   const before = harnessIdentity(root).learned;
-  writeAt(root, GATES_PATH, JSON.stringify([gate('L2'), gate('L1')]));
+  writeAt(root, GATES_PATH, committedGates([gate('L2'), gate('L1')]));
   assert.equal(harnessIdentity(root).learned, before);
 });
 
@@ -302,7 +346,11 @@ test('a damaged gate file changes learned', () => {
   rmSync(join(root, GATES_PATH));
   const absent = harnessIdentity(root).learned;
   const seen = new Set([absent]);
-  for (const body of ['{ not json', '{"gates":[]}', '[1]', '[{"tool":"Bash"}]']) {
+  const damage = [
+    '{ not json', 'null', JSON.stringify([gate('L1')]), '{"schema":1}', '{"schema":2,"gates":[]}', '{"gates":[]}',
+    '{"schema":1,"gates":{}}', '{"schema":1,"gates":[1]}', '{"schema":1,"gates":[{"tool":"Bash"}]}',
+  ];
+  for (const body of damage) {
     writeAt(root, GATES_PATH, body);
     const damaged = harnessIdentity(root).learned;
     assert.notEqual(damaged, absent, body);
@@ -322,7 +370,7 @@ test('an unreadable or malformed manifest yields base unreadable', () => {
   const root = installedRepo();
   const bodies = [
     '{ not json', 'null', '[]', '{"schema":2,"files":[]}', '{"schema":1}',
-    '{"schema":1,"files":[{"sha256":"x"}]}', '{"schema":1,"files":[],"settingsPatches":{}}',
+    '{"schema":1,"files":[{"sha256":"x"}]}', '{"schema":1,"files":[],"settingsPatches":{}}', '{"schema":1,"files":[],"settingsPatches":[1]}',
     '{"schema":1,"files":[{"path":"../outside.txt"}]}', '{"schema":1,"files":[{"path":"/etc/hosts"}]}',
   ];
   for (const body of bodies) {
