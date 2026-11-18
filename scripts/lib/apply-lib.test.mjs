@@ -769,13 +769,13 @@ const sessionHookProposal = { kind: 'settings-hook', event: 'SessionStart', step
 test('a settings.json with a BOM is read, patched, and keeps its BOM', () => {
   const d = repo();
   mkdirSync(join(d, '.claude'), { recursive: true });
-  const original = '﻿' + JSON.stringify({ permissions: { deny: ['Edit(x)'] } }, null, 2) + '\n';
+  const original = '\uFEFF' + JSON.stringify({ permissions: { deny: ['Edit(x)'] } }, null, 2) + '\n';
   writeFileSync(join(d, '.claude/settings.json'), original, 'utf8');
   assert.equal(isCanonicalJson(original), true, 'a BOM the writer keeps is not a reformat');
   const r = applyProposals({ root: d, proposals: [sessionHookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
   assert.equal(r.patched.length, 1, JSON.stringify(r.skipped));
   const after = readFileSync(join(d, '.claude/settings.json'), 'utf8');
-  assert.equal(after.slice(0, 2), '﻿{', 'exactly one BOM, kept');
+  assert.equal(after.slice(0, 2), '\uFEFF{', 'exactly one BOM, kept');
   const s = JSON.parse(after.slice(1));
   assert.deepEqual(s.permissions.deny, ['Edit(x)']);
   assert.equal(s.hooks.SessionStart.length, 1);
