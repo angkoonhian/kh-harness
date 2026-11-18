@@ -762,10 +762,24 @@ test('a quoted credential with no closing quote, an escaped quote or a triple qu
   }
 });
 
-test('=> is an assignment the sweep reads', () => {
+test('=> between a quoted key and a quoted value is an assignment the sweep reads', () => {
+  for (const line of [["'password'", "'hunter2hunter2',"].join(' => '), ['"client_secret"', '"hunter2hunter2"'].join('=>')]) {
+    const d = repo();
+    write(d, 'config.php', `${line}\n`);
+    assert.deepEqual(run(d).map(e => [e.kind, e.valueKind]), [['credentials-in-doc', 'literal']], line);
+  }
+});
+
+test('a JavaScript arrow function named after a credential key is not reported or masked', () => {
+  const lines = [
+    glue(' => ', 'const digest = password', 'hash(password, salt);'),
+    glue(' => ', 'const size = (secret)', 'secret.length;'),
+    glue(' => ', 'keys.map(api_key', 'api_key.trim())'),
+  ];
   const d = repo();
-  write(d, 'config.php', `${["'password'", "'hunter2hunter2',"].join(' => ')}\n`);
-  assert.deepEqual(run(d).map(e => [e.kind, e.valueKind]), [['credentials-in-doc', 'literal']]);
+  write(d, 'src/auth.js', lines.join('\n') + '\n');
+  assert.deepEqual(run(d), []);
+  for (const line of lines) assert.equal(maskCredentials(line), line, line);
 });
 
 test('a value the sweep already reports as a token is not reported a second time as a credential line', () => {

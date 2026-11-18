@@ -165,6 +165,9 @@ test('every credential shape stays linear on long adversarial lines', () => {
     Array.from({ length: n }, (_, i) => 'Ab1_-'[i % 5]).join(''),
     ['password', ' '.repeat(n)].join(''),
     ['password', ' '.repeat(n), '=>'].join(''),
+    ["'password'", ' '.repeat(n), '=>'].join(''),
+    "'" + 'a'.repeat(n),
+    "'a".repeat(n / 2),
     ['password', '"' + 'a'.repeat(n)].join('='),
     ['password', '"' + '\\"'.repeat(n / 2)].join('='),
     ['password', '"""' + '""\\'.repeat(n / 3)].join('='),
@@ -332,9 +335,12 @@ test('a quote with no closing quote, an escaped quote and a triple quote are eac
   assert.equal(maskCredentials(eq('password', "'''tr0ub4dor&3secret'''")), eq('password', '***'));
 });
 
-test('=> is an assignment for keyed shapes, and == is not', () => {
+test('=> is an assignment only between a quoted key and a quoted value, and == is not one', () => {
   assert.equal(maskCredentials(["'password'", "'hunter2hunter2',"].join(' => ')), "'password' => ***,");
   assert.equal(maskCredentials(['"api_key"', '"hunter2hunter2"'].join('=>')), '"api_key"=>***');
+  assert.equal(maskCredentials(["'DB_PASS'", "'hunter2hunter2'"].join(' => ')), "'DB_PASS' => ***");
+  const unquotedValue = ["'password'", 'hunter2hunter2'].join(' => ');
+  assert.equal(maskCredentials(unquotedValue), unquotedValue, 'an unquoted value after => is code');
   const comparison = ['if (password', '= expected)'].join(' =');
   assert.equal(maskCredentials(comparison), comparison);
 });

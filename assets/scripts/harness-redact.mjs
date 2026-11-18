@@ -204,8 +204,12 @@ const PEM_FOOTER = /-----END [A-Z ]*PRIVATE KEY-----/;
 // Each alternative's repeated part has disjoint branches, so a match is
 // linear in the line's length.
 const KEYED_VALUE = String.raw`(?<value>"""(?:(?!""")[^\\\r\n]|\\.)*(?:""")?|'''(?:(?!''')[^\\\r\n]|\\.)*(?:''')?|"(?:[^"\\\r\n]|\\.)*"?|'(?:[^'\\\r\n]|\\.)*'?|[^\s"',;][^\s,;]*)`;
-// `=`, `:` or `=>`, never the first character of `==` or `===`.
-const ASSIGN = String.raw`\s*(?:=>|[:=](?![=>]))\s*`;
+// `=` or `:`, never the first character of `==`, `===` or `=>`.
+const ASSIGN = String.raw`\s*[:=](?![=>])\s*`;
+// A key followed by an assignment. `=>` assigns only between a quoted key and
+// a quoted value, the PHP and Ruby hash form `'password' => 'x'`; a bare
+// identifier before `=>` is a JavaScript arrow function's parameter.
+const keyedAssign = keys => String.raw`(?:["'][\w.-]*?(?:${keys})["']\s*=>\s*(?=["'])|(?:${keys})["']?${ASSIGN})`;
 
 // `maskPattern`, when present, is what the mask uses in place of `pattern`:
 // a broader match, never a narrower one.
@@ -253,10 +257,11 @@ export const CREDENTIAL_SHAPES = Object.freeze([
   // `scheme://user:secret@host`. The user name, which may be empty as in
   // `redis://:secret@host`, is kept; a URL with no password is not matched.
   shape('url-userinfo', 'keyed', /:\/\/[^/\s:@]*:(?<value>[^@\s/]+)(?=@)/g),
-  // `password=x`, `"password": "x"`, `DB_PASS: x`, `AWS_SECRET_ACCESS_KEY=x`.
-  // Bare `token:` and `secret:` are not keys: in prose they are words.
+  // `password=x`, `"password": "x"`, `DB_PASS: x`, `AWS_SECRET_ACCESS_KEY=x`,
+  // `'password' => 'x'`. Bare `token:` and `secret:` are not keys: in prose
+  // they are words.
   shape('credential-assignment', 'keyed', new RegExp(
-    String.raw`(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?(?:access[_-]?)?key|access[_-]?token|auth[_-]?token|private[_-]?key|_pass|_secret)["']?` + ASSIGN + KEYED_VALUE, 'gi')),
+    keyedAssign(String.raw`password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?(?:access[_-]?)?key|access[_-]?token|auth[_-]?token|private[_-]?key|_pass|_secret`) + KEYED_VALUE, 'gi')),
   // `TOKEN=x`, `GITHUB_TOKEN=x`, `--token=x`: a key ending in `token`, set
   // with `=` and no whitespace, as env files and flags write it. `token:`
   // begins a sentence as often as a setting, and `const token = f(a, b)` is
@@ -266,7 +271,7 @@ export const CREDENTIAL_SHAPES = Object.freeze([
     String.raw`(?<![A-Za-z0-9])token[=](?![=>])` + KEYED_VALUE, 'gi')),
   // `Authorization: token x`, `Authorization: Basic x`, `Authorization: x`.
   shape('authorization-header', 'keyed', new RegExp(
-    String.raw`(?<![A-Za-z0-9])authorization["']?` + ASSIGN + String.raw`["']?(?:(?:bearer|basic|token|digest)\s+)?` + KEYED_VALUE, 'gi')),
+    keyedAssign(String.raw`(?<![A-Za-z0-9])authorization`) + String.raw`["']?(?:(?:bearer|basic|token|digest)\s+)?` + KEYED_VALUE, 'gi')),
 ]);
 
 // CSI (`ESC [` or the one-byte C1 form), OSC terminated by BEL or ST, and
