@@ -41,9 +41,12 @@ export const KNOWN_LINE_TYPES = Object.freeze([
 
 const KNOWN = new Set(KNOWN_LINE_TYPES);
 
-// An interrupt is a `user` line whose content holds a text block that is
-// exactly one of these; the same words inside a tool result or a longer text
-// are output or quotation, not an interrupt.
+// An interrupt is a `user` line whose content is a list holding a text block
+// that is exactly one of these, or a string that is one of these once
+// trimmed. Only the list form was observed; the string form is accepted
+// defensively, because a missed interrupt in a session reported as checked
+// is an undercount nobody sees. The same words inside a tool result or a
+// longer text are output or quotation, not an interrupt.
 const INTERRUPT_MARKERS = new Set(['[Request interrupted by user]', '[Request interrupted by user for tool use]']);
 
 // Transcripts reach hundreds of megabytes, so the file is never held whole;
@@ -54,10 +57,18 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-const isInterrupt = line =>
-  line.type === 'user' &&
-  Array.isArray(line.message?.content) &&
-  line.message.content.some(block => block?.type === 'text' && INTERRUPT_MARKERS.has(block.text));
+/** The shape of a `user` line's content when it is neither a string nor a
+ * list, or null when it is one of those. */
+function unknownContentShape(content) {
+  if (typeof content === 'string' || Array.isArray(content)) return null;
+  if (content === undefined) return 'missing';
+  return content === null ? 'null' : typeof content;
+}
+
+const isInterrupt = content =>
+  typeof content === 'string'
+    ? INTERRUPT_MARKERS.has(content.trim())
+    : content.some(block => block?.type === 'text' && INTERRUPT_MARKERS.has(block.text));
 
 /** Calls `onLine(bytes, number)` for each line of the file, numbered from 1,
  * including an unterminated last line, and stops early when it returns
@@ -90,7 +101,8 @@ function forEachLine(path, onLine) {
  * that carries one, since a resumed session can span an upgrade, or null.
  * The session is `not-checked`, with no interrupts, when the file cannot be
  * read, when a line does not parse as an object with a string `type`, when
- * an interrupt has no timestamp, or when any line's type is not in
+ * a `user` line's content is neither a string nor a list, when an interrupt
+ * has no timestamp, or when any line's type is not in
  * KNOWN_LINE_TYPES; `unknownLineTypes` lists those types in order of first
  * appearance. Never throws.
  */
@@ -119,7 +131,14 @@ export function readTranscript(path) {
         unknown.add(line.type);
         return true;
       }
-      if (!isInterrupt(line)) return true;
+      if (line.type !== 'user') return true;
+      const content = line.message?.content;
+      const shape = unknownContentShape(content);
+      if (shape !== null) {
+        problem = `line ${number} is a user line whose content is ${shape}, not a string or a list`;
+        return false;
+      }
+      if (!isInterrupt(content)) return true;
       if (typeof line.timestamp !== 'string') {
         problem = `line ${number} is an interrupt without a timestamp`;
         return false;
