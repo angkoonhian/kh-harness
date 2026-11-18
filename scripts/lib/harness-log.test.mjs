@@ -4,23 +4,32 @@
 // writes the real `~/.claude/kh-harness`.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 import {
+  appendEvent,
   canonicalJson,
   dataRoot,
   GATES_PATH,
   harnessIdentity,
   isEnabled,
   LOCAL_GATES_FILE,
+  LOG_SCHEMA,
   readConfig,
+  readEvents,
   repoDataDir,
   repoKey,
+  scrubValue,
   setEnabled,
+  storeBlob,
 } from '../../assets/scripts/harness-log.mjs';
+
+const HARNESS_LOG_URL = new URL('../../assets/scripts/harness-log.mjs', import.meta.url).href;
 
 const made = [];
 const tempDir = prefix => {
@@ -382,4 +391,216 @@ test('an unreadable or malformed manifest yields base unreadable', () => {
   rmSync(join(root, MANIFEST));
   mkdirSync(join(root, MANIFEST));
   assert.equal(harnessIdentity(root).base, 'unreadable', 'a manifest path that cannot be read as a file');
+});
+
+// Built at runtime so the repository's own credential sweep never sees one.
+const githubToken = () => 'gh' + 'p_' + 'A1b2C3d4'.repeat(5);
+
+const sessionFile = (root, sessionId) => join(repoDataDir(root), 'sessions', `${sessionId}.jsonl`);
+const blobFile = (root, sha256) => join(repoDataDir(root), 'blobs', `${sha256}.gz`);
+const sha256Of = text => createHash('sha256').update(text, 'utf8').digest('hex');
+
+const writeConfig = (root, config) => {
+  mkdirSync(repoDataDir(root), { recursive: true });
+  writeFileSync(join(repoDataDir(root), 'config.json'), JSON.stringify(config));
+};
+
+/** Runs `count` child processes at once, each appending `perChild` events to
+ * one session, and resolves with every child's exit code and stderr. */
+function appendFromChildren(root, sessionId, count, perChild) {
+  const script = `
+    import { appendEvent } from ${JSON.stringify(HARNESS_LOG_URL)};
+    const [root, sessionId, child, perChild] = process.argv.slice(1);
+    for (let i = 0; i < Number(perChild); i++) {
+      const r = appendEvent(root, sessionId, { child: Number(child), i, pad: 'x'.repeat(2000 + Number(child) * 37 + i) });
+      if (!r.written) { console.error(r.reason); process.exit(1); }
+    }`;
+  const runs = Array.from({ length: count }, (_, child) => new Promise(resolve => {
+    const p = spawn(process.execPath, ['--input-type=module', '-e', script, root, sessionId, String(child), String(perChild)], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    p.stderr.on('data', chunk => { stderr += chunk; });
+    p.on('error', error => resolve({ code: null, stderr: String(error) }));
+    p.on('close', code => resolve({ code, stderr }));
+  }));
+  return Promise.all(runs);
+}
+
+test('fifty processes appending at once lose and interleave no line', async () => {
+  const root = tempDir('hk-log-concurrent-');
+  const results = await appendFromChildren(root, 'concurrent', 50, 20);
+  assert.deepEqual(results.filter(r => r.code !== 0), [], 'every child wrote every event');
+  const raw = readFileSync(sessionFile(root, 'concurrent'), 'utf8');
+  assert.ok(raw.endsWith('\n'));
+  assert.equal(raw.split('\n').length - 1, 1000, 'one line per event');
+  const { events, unparseable } = readEvents(root, 'concurrent');
+  assert.equal(unparseable, 0);
+  assert.equal(events.length, 1000);
+  const seen = new Set();
+  for (const e of events) {
+    assert.equal(e.pad, 'x'.repeat(2000 + e.child * 37 + e.i), 'the line arrived whole');
+    seen.add(`${e.child}:${e.i}`);
+  }
+  assert.equal(seen.size, 1000, 'no event is duplicated or missing');
+});
+
+test('each event carries schema, ts and pid, and the writer owns them', () => {
+  const root = tempDir('hk-log-envelope-');
+  const before = Date.now();
+  assert.deepEqual(appendEvent(root, 's1', { type: 'PreToolUse', schema: 99, pid: -1, ts: 'then' }), { written: true });
+  const { events } = readEvents(root, 's1');
+  assert.equal(events.length, 1);
+  const [e] = events;
+  assert.equal(LOG_SCHEMA, 1);
+  assert.equal(e.schema, LOG_SCHEMA);
+  assert.equal(e.pid, process.pid);
+  assert.ok(Date.parse(e.ts) >= before - 1000 && Date.parse(e.ts) <= Date.now() + 1000, e.ts);
+  assert.equal(e.type, 'PreToolUse');
+});
+
+test('scrubValue masks every string leaf of a deep copy and leaves the input alone', () => {
+  const token = githubToken();
+  const input = { a: [token, 1, null, true, { b: `key ${token}` }], c: 'plain' };
+  assert.deepEqual(scrubValue(input), { a: ['***', 1, null, true, { b: 'key ***' }], c: 'plain' });
+  assert.equal(input.a[0], token, 'the input is not modified');
+  assert.equal(scrubValue(token), '***');
+  assert.equal(scrubValue(7), 7);
+});
+
+test('an ANSI-coloured token is masked in the stored event', () => {
+  const root = tempDir('hk-log-ansi-');
+  const token = githubToken();
+  appendEvent(root, 's1', { output: `\u001b[31m${token}\u001b[0m done` });
+  const raw = readFileSync(sessionFile(root, 's1'), 'utf8');
+  assert.ok(!raw.includes(token.slice(4)), 'no part of the token is stored');
+  assert.ok(!raw.includes('\\u001b'), 'no escape sequence is stored');
+  assert.equal(readEvents(root, 's1').events[0].output, '*** done');
+});
+
+test('a credential is masked before the cap is applied, so it cannot straddle the boundary', () => {
+  const root = tempDir('hk-log-straddle-');
+  writeConfig(root, { inlineCapBytes: 100 });
+  const token = githubToken();
+  const straddling = 'a'.repeat(80) + ' ' + token + ' ' + 'b'.repeat(50);
+  const shrinks = 'c'.repeat(80) + ' ' + token;
+  assert.ok(Buffer.byteLength(shrinks) > 100 && Buffer.byteLength(scrubValue(shrinks)) <= 100);
+  appendEvent(root, 's1', { straddling, shrinks });
+  const [e] = readEvents(root, 's1').events;
+  assert.equal(e.shrinks, 'c'.repeat(80) + ' ***', 'the masked length, not the raw one, decides the cap');
+  assert.deepEqual(Object.keys(e.straddling).sort(), ['blob', 'bytes', 'truncated']);
+  const blob = gunzipSync(readFileSync(blobFile(root, e.straddling.blob))).toString('utf8');
+  assert.equal(blob, 'a'.repeat(80) + ' *** ' + 'b'.repeat(50));
+  for (const stored of [readFileSync(sessionFile(root, 's1'), 'utf8'), blob]) {
+    assert.ok(!stored.includes(token.slice(0, 12)) && !stored.includes(token.slice(-12)), 'neither half of the token is stored');
+  }
+});
+
+test('a 200 KB output becomes a blob reference and the blob holds the scrubbed text', () => {
+  const root = tempDir('hk-log-blob-');
+  const token = githubToken();
+  const output = 'line of output\n'.repeat(10000) + 'export GITHUB_TOKEN' + '=' + token + '\n' + 'é'.repeat(30000);
+  assert.ok(Buffer.byteLength(output) > 200 * 1024);
+  assert.deepEqual(appendEvent(root, 's1', { tool_response: { stdout: output, exitCode: 0 } }), { written: true });
+  const [e] = readEvents(root, 's1').events;
+  const scrubbed = scrubValue(output);
+  assert.ok(!scrubbed.includes(token));
+  assert.deepEqual(e.tool_response, { stdout: { blob: sha256Of(scrubbed), bytes: Buffer.byteLength(scrubbed), truncated: true }, exitCode: 0 });
+  assert.equal(gunzipSync(readFileSync(blobFile(root, e.tool_response.stdout.blob))).toString('utf8'), scrubbed);
+  assert.ok(statSync(sessionFile(root, 's1')).size < 1024, 'the content is not inlined');
+});
+
+test('the same blob is written once', () => {
+  const root = tempDir('hk-log-once-');
+  const text = 'z'.repeat(70000);
+  const first = storeBlob(root, text);
+  assert.deepEqual(first, { sha256: sha256Of(text), bytes: 70000 });
+  const old = new Date('2020-01-01T00:00:00Z');
+  utimesSync(blobFile(root, first.sha256), old, old);
+  assert.deepEqual(storeBlob(root, text), first);
+  appendEvent(root, 's1', { output: text });
+  appendEvent(root, 's2', { output: text });
+  assert.equal(statSync(blobFile(root, first.sha256)).mtimeMs, old.getTime(), 'the existing blob is not rewritten');
+  assert.deepEqual(readdirSync(join(repoDataDir(root), 'blobs')), [`${first.sha256}.gz`]);
+});
+
+test('storeBlob masks what it stores', () => {
+  const root = tempDir('hk-log-storemask-');
+  const { sha256 } = storeBlob(root, `value ${githubToken()}`);
+  assert.equal(gunzipSync(readFileSync(blobFile(root, sha256))).toString('utf8'), 'value ***');
+  assert.equal(sha256, sha256Of('value ***'));
+});
+
+test('a blob that cannot be stored leaves a null reference, never a dangling one', () => {
+  const root = tempDir('hk-log-noblob-');
+  mkdirSync(repoDataDir(root), { recursive: true });
+  writeFileSync(join(repoDataDir(root), 'blobs'), 'a file where the directory should be');
+  assert.equal(storeBlob(root, 'text'), null);
+  assert.deepEqual(appendEvent(root, 's1', { output: 'y'.repeat(70000) }), { written: true });
+  assert.deepEqual(readEvents(root, 's1').events[0].output, { blob: null, bytes: 70000, truncated: true });
+});
+
+test('an unwritable sessions directory returns written: false and does not throw', () => {
+  const root = tempDir('hk-log-unwritable-');
+  mkdirSync(repoDataDir(root), { recursive: true });
+  writeFileSync(join(repoDataDir(root), 'sessions'), 'a file where the directory should be');
+  const r = appendEvent(root, 's1', { type: 'Stop' });
+  assert.equal(r.written, false);
+  assert.match(r.reason, /^write failed: E[A-Z]+$/);
+});
+
+test('an unsafe session id or a non-object event writes nothing', () => {
+  const root = tempDir('hk-log-unsafe-');
+  for (const id of ['../escape', '', null, 'a/b', 'x'.repeat(201)]) {
+    assert.deepEqual(appendEvent(root, id, { type: 'Stop' }), { written: false, reason: 'unsafe session id' }, String(id));
+  }
+  for (const event of [null, 'text', [1, 2], 5]) {
+    assert.deepEqual(appendEvent(root, 's1', event), { written: false, reason: 'event is not an object' }, JSON.stringify(event));
+  }
+  assert.equal(existsSync(join(repoDataDir(root), 'sessions')), false);
+});
+
+test('an event that cannot be serialised returns written: false', () => {
+  const root = tempDir('hk-log-cycle-');
+  const cyclic = { type: 'Stop' };
+  cyclic.self = cyclic;
+  for (const event of [cyclic, { n: 1n }]) {
+    assert.deepEqual(appendEvent(root, 's1', event), { written: false, reason: 'event is not serialisable' });
+  }
+  assert.equal(existsSync(sessionFile(root, 's1')), false);
+});
+
+test('a damaged line is counted, not silently dropped', () => {
+  const root = tempDir('hk-log-damaged-');
+  appendEvent(root, 's1', { n: 1 });
+  writeFileSync(sessionFile(root, 's1'), '{"n":2, trunc\n42\n', { flag: 'a' });
+  appendEvent(root, 's1', { n: 3 });
+  const { events, unparseable } = readEvents(root, 's1');
+  assert.deepEqual(events.map(e => e.n), [1, 3]);
+  assert.equal(unparseable, 2);
+});
+
+test('a compressed session is read, before any events appended after it', () => {
+  const root = tempDir('hk-log-gz-');
+  appendEvent(root, 's1', { n: 1 });
+  appendEvent(root, 's1', { n: 2 });
+  const plain = sessionFile(root, 's1');
+  writeFileSync(`${plain}.gz`, gzipSync(readFileSync(plain)));
+  rmSync(plain);
+  assert.deepEqual(readEvents(root, 's1').events.map(e => e.n), [1, 2]);
+  appendEvent(root, 's1', { n: 3 });
+  assert.deepEqual(readEvents(root, 's1').events.map(e => e.n), [1, 2, 3]);
+});
+
+test('reading an absent, unsafe or undecompressable session never throws', () => {
+  const root = tempDir('hk-log-readfail-');
+  assert.deepEqual(readEvents(root, 'absent'), { events: [], unparseable: 0, unreadable: false });
+  assert.deepEqual(readEvents(root, '../escape'), { events: [], unparseable: 0, unreadable: false });
+  mkdirSync(join(repoDataDir(root), 'sessions'), { recursive: true });
+  writeFileSync(`${sessionFile(root, 's1')}.gz`, 'not gzip');
+  appendEvent(root, 's1', { n: 1 });
+  const read = readEvents(root, 's1');
+  assert.deepEqual(read.events.map(e => e.n), [1], 'what could be read is still returned');
+  assert.equal(read.unreadable, true);
+  assert.equal(read.unparseable, 0);
 });
