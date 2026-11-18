@@ -325,8 +325,10 @@ async function main() {
   // of the command that names a config file (`tsc -p tsconfig.build.json`)
   // or an existing path in the project (`tsc -p packages/app`) is exempt
   // from the fragment rule, or every diagnostic mentioning it would be
-  // dropped as an echo of the command.
-  const redacted = dropCommandFragments(maskedLines, [picked.command], pathTokenExemptions(picked.command, [], root));
+  // dropped as an echo of the command. The output is already masked, so it
+  // is compared with the command as masked: an echo of a command that
+  // carries a credential matches the masked command, never the raw one.
+  const redacted = dropCommandFragments(maskedLines, [maskText(picked.command)], pathTokenExemptions(picked.command, [], root));
 
   if (count >= MAX_REPORTS_SINCE_CLEAN) {
     notice(`kh-harness: the stop gate's ${MAX_REPORTS_SINCE_CLEAN}-block cap since the last passing "${picked.kind}" run has been reached — letting the turn end.`);

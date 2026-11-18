@@ -264,9 +264,10 @@ function mentionsFile(line, filePath, base) {
  * as a CONTINUATION of that block, exempt from mentionsFile but NEVER
  * from redaction — continuations are the first output this hook emits
  * that is not anchored to the edited path, which makes them the natural
- * home for the next leak, so the caller (main) MUST run the full return
- * value of this function through the same dropCommandFragments /
- * maskText chokepoint as any other line, never a parallel path.
+ * home for the next leak, so the caller (main) MUST pass this function only
+ * output `maskText` has already masked, and MUST run its full return value
+ * through the same dropCommandFragments chokepoint as any other line,
+ * never a parallel path.
  * The block closes at the first blank line or the first non-indented
  * line; a later line must mention the file again to open a new one.
  */
@@ -494,9 +495,9 @@ async function main() {
   // constant's comment for why a non-matching path is never appended at
   // all, rather than escaped. `scripts.lint`'s TEXT is NEVER printed,
   // logged, or included in any error message below — only its own
-  // captured output ever reaches stderr, filtered for attribution, then
-  // redacted in two layers (see dropCommandFragments, maskText)
-  // before writeReport is ever called.
+  // captured output ever reaches stderr, masked (see maskText), filtered
+  // for attribution, then stripped of command fragments (see
+  // dropCommandFragments) before writeReport is ever called.
   const fullCommand = SAFE_RELATIVE_PATH.test(relToOwner)
     ? appendTarget(lintScript, quoteArg(relToOwner))
     : lintScript;
@@ -548,17 +549,22 @@ async function main() {
   }
 
   const base = basename(filePath);
-  const combined = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  // Each stream is masked as a whole before attribution and command
+  // redaction, so a private key's body lines are masked with its header
+  // whichever lines are dropped later, and a key left open in one stream
+  // cannot swallow the other.
+  const combined = `${maskText(result.stdout ?? '')}\n${maskText(result.stderr ?? '')}`;
   const attributed = extractAttributedBlocks(combined.split(/\r?\n/), filePath, base);
   // The edited file, its basename, and every token of the lint script that
   // names a directory of that file or a config file (`eslint src/components`,
   // `eslint -c .eslintrc.cjs`) — a diagnostic naming those is the report,
   // not an echo of the command. See pathTokenExemptions in harness-redact.mjs.
   const exemptions = new Set([relToOwner, basename(relToOwner), ...pathTokenExemptions(lintScript, [relToOwner])]);
-  const survived = dropCommandFragments(attributed, [lintScript, fullCommand], exemptions);
-  if (survived.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
-  // Masked as one text, so a private key's body lines are masked with its header.
-  const reported = maskText(survived.join('\n')).split('\n');
+  // The output is already masked, so it is compared with the commands as
+  // masked: an echo of a command that carries a credential matches the
+  // masked command, never the raw one.
+  const reported = dropCommandFragments(attributed, [lintScript, fullCommand].map(maskText), exemptions);
+  if (reported.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
 
   const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
   if (decision.action === 'terse') return writeReport([decision.message]);
