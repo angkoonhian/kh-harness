@@ -194,14 +194,17 @@ export function addDenyRules(settings, globs) {
 }
 
 /**
- * The script a hook entry runs, for deciding whether a generator wrote it.
- * Besides the exec form, the shell string `node <script>` is credited, the
- * shape earlier installs registered; only that exact two-token string, so a
- * shell string that runs our script and anything else besides is not ours.
+ * The script a hook entry runs, for deciding whether a generator wrote it,
+ * or null when the entry is not exactly what a generator writes. The exec
+ * form counts only as `command: 'node'` with one argument, the script; the
+ * shell string counts only as the two tokens `node <script>`, the shape
+ * earlier installs registered. Anything else (another runtime, an extra
+ * argument, a shell string doing more) is the user's.
  */
 function scriptRunBy(entry) {
-  const exec = hookScriptOf(entry);
-  if (exec !== null) return exec;
+  if (Array.isArray(entry?.args)) {
+    return entry.command === 'node' && entry.args.length === 1 ? hookScriptOf(entry) : null;
+  }
   const tokens = typeof entry?.command === 'string' ? entry.command.trim().split(/\s+/) : [];
   return tokens.length === 2 && tokens[0] === 'node' ? normalizeHookPath(tokens[1]) : null;
 }

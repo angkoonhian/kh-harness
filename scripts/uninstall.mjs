@@ -57,6 +57,9 @@ const manifest = manifestResult.manifest;
 
 const plan = planUninstall({ root, manifest });
 
+// A forged or malformed record can lack a container; it is still listed.
+const patchLabel = p => p.container ?? '(no container)';
+
 // Print the plan
 if (plan.remove.length) {
   console.log('Will remove:');
@@ -68,7 +71,7 @@ if (plan.remove.length) {
 if (plan.revert.length) {
   console.log('Will revert settings patches:');
   for (const p of plan.revert) {
-    console.log(`  ${p.container}`);
+    console.log(`  ${patchLabel(p)}`);
   }
 }
 
@@ -82,14 +85,14 @@ if (plan.keep.length) {
 if (plan.keepPatches.length) {
   console.log('Will keep settings patches:');
   for (const p of plan.keepPatches) {
-    console.log(`  ${p.container} (${p.why})`);
+    console.log(`  ${patchLabel(p)} (${p.why})`);
   }
 }
 
 if (plan.gonePatches.length) {
   console.log('Settings file is absent — these recorded hook patches have nothing to revert:');
   for (const p of plan.gonePatches) {
-    console.log(`  ${p.container}`);
+    console.log(`  ${patchLabel(p)}`);
   }
 }
 
@@ -208,7 +211,7 @@ if (result.manifestDeleteFailed) {
 if (result.patchesNotReverted.length > 0) {
   console.log('Could not revert:');
   for (const p of result.patchesNotReverted) {
-    console.log(`  ${p.container} (${p.why})`);
+    console.log(`  ${patchLabel(p)} (${p.why})`);
   }
 }
 
@@ -220,7 +223,7 @@ if (plan.keep.length > 0 || result.patchesKept.length > 0) {
     console.log(`  ${k.path} (${k.why})`);
   }
   for (const p of result.patchesKept) {
-    console.log(`  ${p.container} (${p.why})`);
+    console.log(`  ${patchLabel(p)} (${p.why})`);
   }
 }
 

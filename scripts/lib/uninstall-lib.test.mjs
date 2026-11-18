@@ -1049,3 +1049,36 @@ test('a genuine patch is still reverted', () => {
   assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), theirs, 'byte-identical after apply then uninstall');
   assert.equal(existsSync(join(d, MANIFEST_PATH)), false);
 });
+
+test('a deny patch whose evidence was deleted after apply is kept as not generator-producible', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, 'package.json'), '{"name":"app"}\n');
+  writeFileSync(join(d, 'package-lock.json'), '{}\n');
+  writeFileSync(join(d, '.claude/settings.json'), '{}\n');
+  const { files } = listFiles(d);
+  const deny = GENERATORS['P2.protected']({ stack: detectStack(d, files), files }).map(p => ({ ...p, checkId: 'P2.protected' }));
+  const { manifest } = applyProposals({ root: d, proposals: deny, manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
+  const applied = readFileSync(join(d, '.claude/settings.json'), 'utf8');
+  rmSync(join(d, 'package-lock.json'));
+
+  const r = uninstallYes(d);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /Kept:\n {2}\/permissions\/deny \(not-generator-producible\)/);
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), applied, 'the rule is kept, never guessed at');
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), true);
+});
+
+test('a patch record with no container is listed as (no container)', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), '{}\n');
+  writeManifest(d, forgedManifest([{ entrySha256: 'a'.repeat(64) }]));
+
+  const r = uninstallYes(d);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stdout, /Will keep settings patches:\n {2}\(no container\) \(patch-malformed\)/);
+  assert.match(r.stdout, /Could not revert:\n {2}\(no container\) \(patch-malformed\)/);
+  assert.doesNotMatch(r.stdout, /undefined/);
+});
