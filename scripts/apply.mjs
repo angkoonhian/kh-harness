@@ -16,7 +16,7 @@ import { gitInfo, defaultBranches } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
 import { deriveCouldNotDerive, exposureSectionLines, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
-import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson } from './lib/apply-lib.mjs';
+import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -351,6 +351,18 @@ if (!flags.has('--yes')) {
   for (const r of refusals) process.stdout.write(`note: --yes would be refused — ${r}\n`);
   process.stdout.write('Dry run — nothing written. Re-run with --yes to apply.\n');
   process.exit(0);
+}
+
+// A settings patch that cannot land leaves the hook scripts it registers
+// installed and inert, so a batch that includes one writes nothing at all.
+const settingsProblem = proposals.some(p => p.kind !== 'file') ? unusableSettingsReason(root) : null;
+if (settingsProblem) {
+  process.stderr.write(
+    `kh-harness: ${SETTINGS_PATH} ${settingsProblem}, so the settings patches above cannot be applied — ` +
+    `nothing was written. Fix the file and re-run.\n`,
+  );
+  reportDrift();
+  process.exit(2);
 }
 
 // Coordinator finding (Minor): a settings-hook/deny write re-serialises

@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings } from './manifest.mjs';
+import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings, MANIFEST_PATH } from './manifest.mjs';
+import { APPLY, UNINSTALL, fixture } from './lifecycle-fixtures.mjs';
 
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-man-')); }
 function write(d, rel, content) {
@@ -255,4 +257,54 @@ test('writeManifest removes a stale temporary sibling left by an interrupted run
   write(d, '.claude/kh-harness.manifest.json.tmp-424242', '{ "schema": 1, "files": [');
   writeManifest(d, emptyManifest('0.1.0'));
   assert.deepEqual(readdirSync(join(d, '.claude')), ['kh-harness.manifest.json']);
+});
+
+// --- a manifest whose entries are not the shapes every reader assumes -----
+
+const malformedManifests = [
+  ['files:[null]', { files: [null] }],
+  ['files:[{path:5}]', { files: [{ path: 5, sha256: sha256('x') }] }],
+  ['a files entry with no sha256', { files: [{ path: 'HANDOFF.md' }] }],
+  ['dirsCreated:[5]', { dirsCreated: [5] }],
+  ['dirsCreated:"docs"', { dirsCreated: 'docs' }],
+  ['settingsPatches:{}', { settingsPatches: {} }],
+  ['settingsPatches:[null]', { settingsPatches: [null] }],
+  ['no settingsPatches', { settingsPatches: undefined }],
+];
+const manifestWith = override => JSON.stringify({ ...emptyManifest('0.1.0'), ...override });
+
+for (const [label, override] of malformedManifests) {
+  test(`a manifest with ${label} reads as corrupt`, () => {
+    const d = repo();
+    write(d, MANIFEST_PATH, manifestWith(override));
+    assert.deepEqual(readManifestResult(d), { state: 'corrupt', manifest: null });
+  });
+}
+
+test('a manifest with a BOM, and with dirsCreated absent or a list of paths, reads as ok', () => {
+  for (const override of [{}, { dirsCreated: ['.claude', '.claude/scripts'] }]) {
+    const d = repo();
+    write(d, MANIFEST_PATH, '﻿' + manifestWith({ files: [{ path: 'HANDOFF.md', sha256: sha256('x'), step: 16 }], ...override }));
+    assert.equal(readManifestResult(d).state, 'ok', JSON.stringify(override));
+  }
+});
+
+test('apply exits 3 and uninstall refuses on each', () => {
+  const d = fixture();
+  const cli = (script, ...a) => spawnSync(process.execPath, [script, d, ...a], { encoding: 'utf8' });
+  for (const [label, override] of malformedManifests) {
+    const text = manifestWith(override);
+    write(d, MANIFEST_PATH, text);
+
+    const a = cli(APPLY, '--yes');
+    assert.equal(a.status, 3, `${label}: apply\n${a.stdout}\n${a.stderr}`);
+    assert.match(a.stderr, /kh-harness\.manifest\.json exists but could not be read as a valid kh-harness manifest/, label);
+
+    const u = cli(UNINSTALL, '--yes');
+    assert.equal(u.status, 3, `${label}: uninstall\n${u.stdout}\n${u.stderr}`);
+    assert.match(u.stderr, /kh-harness\.manifest\.json exists but could not be read as a valid kh-harness manifest/, label);
+
+    assert.equal(readFileSync(join(d, MANIFEST_PATH), 'utf8'), text, `${label}: the manifest is left exactly as it was`);
+    assert.equal(existsSync(join(d, 'HANDOFF.md')), false, `${label}: nothing is written`);
+  }
 });

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { readIfPresent, existsAny } from './scan.mjs';
+import { readJsonFile } from './read-json.mjs';
 // THIS IMPORT DIRECTION IS DELIBERATE. DO NOT "FIX" IT BY COPYING THE
 // FUNCTION BACK INTO scripts/lib/.
 //
@@ -63,11 +64,22 @@ function lineCount(text) {
 // makes P2.langserver honestly `n/a`.
 const SETTINGS_FILES = ['.claude/settings.json', '.claude/settings.local.json'];
 
-/** Parse a settings file. Never throws: missing or malformed yields null. */
+/**
+ * A settings file through the shared JSON reader: `absent`, `unreadable`
+ * (with a reason) or `ok`. Valid JSON that is not a plain object is
+ * `unreadable` — Claude Code can no more use it than a syntax error.
+ */
+function readSettings(root, rel) {
+  const read = readJsonFile(join(root, rel));
+  if (read.state !== 'ok') return read;
+  const v = read.value;
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? read : { state: 'unreadable', reason: 'is not a JSON object' };
+}
+
+/** A settings file's object, or null when it is absent or unreadable. Never throws. */
 function parseSettings(root, rel) {
-  const text = readIfPresent(root, rel);
-  if (text == null) return null;
-  try { return JSON.parse(text); } catch { return null; }
+  const read = readSettings(root, rel);
+  return read.state === 'ok' ? read.value : null;
 }
 
 /**
@@ -413,10 +425,12 @@ export function detectHarness(root, files) {
       // off disk via parseSettings. Under a gitignored `.claude/`, that
       // made `settings: false` sit next to `denyRules: 2` populated from
       // the very file `settings` just denied existed — a machine-readable
-      // falsehood a later tool would trust. Both booleans now come from the
-      // SAME read as their siblings, so they cannot disagree with them.
-      settings: parseSettings(root, '.claude/settings.json') !== null,
-      localSettings: parseSettings(root, '.claude/settings.local.json') !== null,
+      // falsehood a later tool would trust. Both now come from the SAME read
+      // as their siblings, so they cannot disagree with them. Each is
+      // `absent`, `unreadable` or `ok`: a file that is there but cannot be
+      // used must never read as a file that is not there.
+      settings: readSettings(root, '.claude/settings.json').state,
+      localSettings: readSettings(root, '.claude/settings.local.json').state,
       // Whole-branch review, F8: both of these come from the SAME read of
       // BOTH settings files now — see `denyRulesInEffect`. They are the
       // length and the contents of one list.

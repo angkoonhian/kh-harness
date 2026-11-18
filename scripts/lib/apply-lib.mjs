@@ -15,6 +15,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { classify, emptyManifest, sha256 } from './manifest.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
+import { readJsonFile, UTF8_BOM } from './read-json.mjs';
 
 const SETTINGS_PATH = '.claude/settings.json';
 
@@ -254,25 +255,13 @@ export function isWellFormedHooks(hooks) {
  * the user's file rather than merge into it.
  */
 function readSettingsResult(root) {
-  const p = join(root, SETTINGS_PATH);
-  if (!existsSync(p)) return { ok: true, settings: {}, raw: null };
+  const read = readJsonFile(join(root, SETTINGS_PATH));
+  if (read.state === 'absent') return { ok: true, settings: {}, raw: null };
+  if (read.state === 'unreadable') return { ok: false, reason: read.reason };
 
-  let raw;
-  try {
-    raw = readFileSync(p, 'utf8');
-  } catch {
-    return { ok: false };
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false };
-  }
-
+  const parsed = read.value;
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { ok: false };
+    return { ok: false, reason: 'is not a JSON object' };
   }
 
   // `permissions` and `permissions.deny`, when present, must be shapes
@@ -284,18 +273,29 @@ function readSettingsResult(root) {
   // `.push(...)` or a `new Set(...)` deep inside the merge.
   const permissions = parsed.permissions;
   if (permissions !== undefined && (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions))) {
-    return { ok: false };
+    return { ok: false, reason: 'has a `permissions` that is not an object' };
   }
   const deny = permissions?.deny;
   if (deny !== undefined && !Array.isArray(deny)) {
-    return { ok: false };
+    return { ok: false, reason: 'has a `permissions.deny` that is not an array' };
   }
   // Same discipline for `hooks` — see isWellFormedHooks.
   if (!isWellFormedHooks(parsed.hooks)) {
-    return { ok: false };
+    return { ok: false, reason: 'has a `hooks` block that is not the shape Claude Code documents' };
   }
 
-  return { ok: true, settings: parsed, raw };
+  return { ok: true, settings: parsed, raw: read.text };
+}
+
+/**
+ * Why `.claude/settings.json` cannot take a patch, as a predicate phrase
+ * ("is not valid JSON"), or null when it can — an absent file can, since it
+ * is created. A run that would patch it must write nothing at all while this
+ * is non-null: the hook scripts a patch registers are inert without it.
+ */
+export function unusableSettingsReason(root) {
+  const result = readSettingsResult(root);
+  return result.ok ? null : result.reason;
 }
 
 /**
@@ -333,7 +333,7 @@ function matchingNewline(raw) {
  *
  * The comment on the correct copy said it "mirrors apply.mjs's own
  * `alreadyCanonical`". It did not mirror it; it corrected it. One predicate
- * now, next to the `matchingNewline` both callers already imported.
+ * now, built on the `serializeSettings` both writers call.
  *
  * `raw == null` means the file did not exist, so there was nothing to
  * reformat; an unreadable or unparseable file never reaches a settings write
@@ -343,10 +343,21 @@ function matchingNewline(raw) {
 export function isCanonicalJson(raw) {
   if (raw == null) return true;
   try {
-    return raw === JSON.stringify(JSON.parse(raw), null, detectIndent(raw)) + matchingNewline(raw);
+    return raw === serializeSettings(JSON.parse(raw.startsWith(UTF8_BOM) ? raw.slice(1) : raw), raw);
   } catch {
     return true;
   }
+}
+
+/**
+ * The text a settings write puts on disk: `value`, serialised in `raw`'s
+ * own leading BOM, indentation and trailing-newline form (`raw` null for a
+ * file being created). The one serialiser both writers of the file use, and
+ * the one `isCanonicalJson` compares against.
+ */
+export function serializeSettings(value, raw) {
+  const bom = raw?.startsWith(UTF8_BOM) ? UTF8_BOM : '';
+  return bom + JSON.stringify(value, null, detectIndent(raw)) + matchingNewline(raw);
 }
 
 /**
@@ -354,8 +365,8 @@ export function isCanonicalJson(raw) {
  * indented line — so a settings write keeps it (audit Tier 4, finding 22: a
  * four-space file came back re-indented throughout, the one change this
  * tool promised not to make). Two spaces for a compact file, and for a file
- * being created (`raw` null). Exported for its test and for
- * uninstall-lib.mjs, the other writer of the same file.
+ * being created (`raw` null). Exported for its test; writers go through
+ * `serializeSettings`.
  */
 export function detectIndent(raw) {
   if (raw == null) return '  ';
@@ -386,6 +397,13 @@ export function settingsReformattedNote(verb) {
     `does not preserve every byte of the original formatting).`;
 }
 
+/** What either settings preview says instead of a diff when the file cannot take a patch. */
+function unusableSettingsPreview(reason) {
+  return `--- a/${SETTINGS_PATH}\n+++ b/${SETTINGS_PATH}\n` +
+    `(${SETTINGS_PATH} could not be parsed as a JSON object: it ${reason}. --yes writes nothing at all — ` +
+    `not this patch, and not the files it would activate — until that is fixed)`;
+}
+
 /**
  * Preview of a settings-hook proposal: the added entry, and nothing else.
  *
@@ -404,10 +422,7 @@ export function settingsReformattedNote(verb) {
  */
 function renderSettingsHookDiff(root, proposal) {
   const result = readSettingsResult(root);
-  if (!result.ok) {
-    return `--- a/${SETTINGS_PATH}\n+++ b/${SETTINGS_PATH}\n` +
-      `(${SETTINGS_PATH} could not be parsed as a JSON object — no changes will be made; fix its JSON and re-run)`;
-  }
+  if (!result.ok) return unusableSettingsPreview(result.reason);
 
   const container = `hooks.${proposal.event}`;
   const siblings = Array.isArray(result.settings?.hooks?.[proposal.event])
@@ -443,10 +458,7 @@ function renderSettingsHookDiff(root, proposal) {
  */
 function renderSettingsDenyDiff(root, proposal) {
   const result = readSettingsResult(root);
-  if (!result.ok) {
-    return `--- a/${SETTINGS_PATH}\n+++ b/${SETTINGS_PATH}\n` +
-      `(${SETTINGS_PATH} could not be parsed as a JSON object — no changes will be made; fix its JSON and re-run)`;
-  }
+  if (!result.ok) return unusableSettingsPreview(result.reason);
 
   const existing = Array.isArray(result.settings?.permissions?.deny) ? result.settings.permissions.deny.length : 0;
   const { added } = addDenyRules(result.settings, proposal.globs);
@@ -660,7 +672,7 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
   // clean up even across later runs that only patch it further.
   if (result.raw === null) nextManifest.settingsCreated = true;
   recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
-  writeFileDeep(settingsPath, JSON.stringify(next, null, detectIndent(result.raw)) + matchingNewline(result.raw), SETTINGS_PATH);
+  writeFileDeep(settingsPath, serializeSettings(next, result.raw), SETTINGS_PATH);
 
   nextManifest.settingsPatches.push({
     event: proposal.event,
@@ -697,7 +709,7 @@ function applySettingsDenyProposal({ root, proposal, nextManifest, patched, skip
 
   if (result.raw === null) nextManifest.settingsCreated = true;
   recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
-  writeFileDeep(settingsPath, JSON.stringify(next, null, detectIndent(result.raw)) + matchingNewline(result.raw), SETTINGS_PATH);
+  writeFileDeep(settingsPath, serializeSettings(next, result.raw), SETTINGS_PATH);
 
   nextManifest.settingsPatches.push({
     event: 'permissions.deny',
@@ -798,4 +810,4 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
 // production caller should import these to re-derive its own allowlist
 // logic; `assertAllowed`/`isAllowedDirectory` are the two sanctioned
 // readers of them.
-export { SETTINGS_PATH, matchingNewline, ALLOWED_PREFIXES, ALLOWED_EXACT };
+export { SETTINGS_PATH, ALLOWED_PREFIXES, ALLOWED_EXACT };
