@@ -64,7 +64,7 @@ import {
   dropCommandFragments,
   MAX_REPORTS_SINCE_CLEAN,
   markerPath,
-  maskCredentials,
+  maskText,
   pathTokenExemptions,
   projectRoot,
   readJSONMarker,
@@ -314,15 +314,19 @@ async function main() {
     return 0;
   }
 
-  const rawLines = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.split(/\r?\n/).filter(l => l.trim());
-  // The shared redaction chokepoint — identical layering to
+  // Each stream is masked as a whole, so a private key's body lines are
+  // masked with its header, and a key left open in one stream cannot
+  // swallow the other.
+  const maskedLines = `${maskText(result.stdout ?? '')}\n${maskText(result.stderr ?? '')}`.split(/\r?\n/).filter(l => l.trim());
+  // The shared redaction chokepoint — the same two layers as
   // lint-touched.mjs's own stderr, because this output reaches stderr too
   // and the command's own body can carry a credential exactly as a
   // `scripts.lint` body has, twice, in this project's own history. A token
   // of the command that names a config file (`tsc -p tsconfig.build.json`)
-  // is exempt from the fragment rule, or every diagnostic mentioning the
-  // config would be dropped as an echo of the command.
-  const redacted = dropCommandFragments(rawLines, [picked.command], pathTokenExemptions(picked.command)).map(maskCredentials);
+  // or an existing path in the project (`tsc -p packages/app`) is exempt
+  // from the fragment rule, or every diagnostic mentioning it would be
+  // dropped as an echo of the command.
+  const redacted = dropCommandFragments(maskedLines, [picked.command], pathTokenExemptions(picked.command, [], root));
 
   if (count >= MAX_REPORTS_SINCE_CLEAN) {
     notice(`kh-harness: the stop gate's ${MAX_REPORTS_SINCE_CLEAN}-block cap since the last passing "${picked.kind}" run has been reached — letting the turn end.`);

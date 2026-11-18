@@ -10,7 +10,7 @@
 // entirely on indirection through its two callers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, basename, dirname } from 'node:path';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -74,6 +74,36 @@ test('dropCommandFragments never drops an exempted token even though it is part 
   assert.deepEqual(survived, lines);
 });
 
+// A one-word script is shorter than the fragment floor, so the whole-command
+// rule is the only one that sees it; as a substring match it dropped every
+// line that named the tool.
+test('"lint": "eslint" reports the full stylish diagnostic', () => {
+  const stylish = [
+    'src/a.ts',
+    "  1:7  error    'a' is assigned a value but never used  @typescript-eslint/no-unused-vars",
+    '  2:1  warning  Unexpected console statement            no-console',
+  ];
+  // The sensor's own call: the script, the script with the edited file
+  // appended, and the edited file exempt.
+  const survived = dropCommandFragments(stylish, ['eslint', 'eslint src/a.ts'], new Set(['src/a.ts', 'a.ts']));
+  assert.deepEqual(survived, stylish);
+});
+
+test('"test": "jest" keeps lines containing the word jest', () => {
+  const lines = [
+    'FAIL src/sum.test.js',
+    '    at Object.toBe (src/sum.test.js:3:17)',
+    '    at jestAdapter (node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)',
+    'Ran all test suites. Configuration read from jest.config.js',
+  ];
+  assert.deepEqual(dropCommandFragments(lines, ['jest']), lines);
+});
+
+test('a line that is exactly the echoed command is still dropped', () => {
+  const lines = ['jest', '  jest  ', 'FAIL src/sum.test.js'];
+  assert.deepEqual(dropCommandFragments(lines, ['jest']), ['FAIL src/sum.test.js']);
+});
+
 // --- pathTokenExemptions (audit Tier 1, finding 2) -------------------------
 //
 // Layer 1 dropped every diagnostic for `eslint src/components`, `ruff check
@@ -119,6 +149,21 @@ test('pathTokenExemptions: a URL token is never exempt, even when it ends like a
   const url = ['https://user', 'hunter2hunter2@host.invalid/x.json'].join(':');
   assert.equal(pathTokenExemptions(`curl ${url} src/components`, ['src/components/a.ts']).has(url), false);
   assert.equal(pathTokenExemptions('deploy user@host.invalid:config.json').size, 0);
+});
+
+test('pathTokenExemptions: a token naming an existing path under the root is exempt', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'hk-redact-root-'));
+  const root = join(parent, 'repo');
+  mkdirSync(join(root, 'packages', 'app'), { recursive: true });
+  mkdirSync(join(parent, 'outside-dir'));
+  try {
+    const keyFlag = ['--api-key', 'packages/app'].join('=');
+    const ex = pathTokenExemptions(`tsc -p packages/app packages/missing ../outside-dir ${keyFlag}`, [], root);
+    assert.deepEqual([...ex], ['packages/app'], 'a missing path, a path outside the root and a credential flag are not exempt');
+    assert.equal(pathTokenExemptions('tsc -p packages/app').size, 0, 'with no root, nothing is resolved');
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
 });
 
 test('dropCommandFragments with pathTokenExemptions keeps a diagnostic naming the linted directory and still drops a token fragment', () => {

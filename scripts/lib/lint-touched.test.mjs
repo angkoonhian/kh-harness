@@ -919,6 +919,23 @@ test('LAYER 2 ONLY: a credential-shaped value in a genuine diagnostic (not echoe
   assert.match(r.stderr, /\*\*\*/, 'the masked value leaves a visible placeholder, not a silently vanished word');
 });
 
+test('a private key printed across several lines of lint output is masked in full', () => {
+  // Assembled: a PEM header is a credential in this file's own source.
+  const kind = ['RSA', 'PRIVATE', 'KEY'].join(' ');
+  const body = ['MIIEowIBAAKCAQEAbodylineone0123456789abcdef', 'Q2hhbmdlZEJvZHlMaW5lVHdvMDEyMzQ1Njc4OWFiY2Rl'];
+  const output = [
+    'src/a.ts',
+    '  1:1  error  hard-coded key found',
+    ...[`-----BEGIN ${kind}-----`, ...body, `-----END ${kind}-----`].map(l => `  ${l}`),
+  ].join(NL);
+  const d = repo('node runlint.cjs');
+  writeFileSync(join(d, 'runlint.cjs'), `process.stderr.write(${JSON.stringify(output + NL)}); process.exit(1);${NL}`);
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(r.code, 2);
+  for (const line of body) assert.equal(r.stderr.includes(line), false, `a key body line reached stderr: ${JSON.stringify(r.stderr)}`);
+  assert.match(r.stderr, /hard-coded key found/, 'the diagnostic before the key survives');
+});
+
 // --- Layer 2's own pattern coverage, beyond the sk- prefix already proven -
 
 test('MASK: a GitHub PAT (ghp_...) in a genuine diagnostic is masked, not dropped', () => {
