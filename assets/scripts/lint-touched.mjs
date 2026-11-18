@@ -22,7 +22,7 @@ import {
   boundReport,
   dropCommandFragments,
   maskCredentials,
-  MAX_BLOCKS_PER_SESSION,
+  MAX_REPORTS_SINCE_CLEAN,
   markerPath,
   pathTokenExemptions,
   readJSONMarker,
@@ -342,10 +342,11 @@ function writeReport(lines) {
 }
 
 /**
- * Dedupes a standing lint error so its FULL diagnostic is dumped once per
- * session, not once per edit — without this, a file with one unfixed lint
- * error gets the identical notice re-surfaced on every single subsequent
- * edit to that file, which is how a sensor teaches people to ignore it.
+ * Dedupes a standing lint error so its FULL diagnostic is dumped once until
+ * the file lints clean, not once per edit — without this, a file with one
+ * unfixed lint error gets the identical notice re-surfaced on every single
+ * subsequent edit to that file, which is how a sensor teaches people to
+ * ignore it.
  * Keyed on `file + signature` (not merely the file) so a NEW, different
  * error on the same file still gets a full report: the SAME shared
  * signature/cap machinery verify-touched.mjs uses for the Stop gate,
@@ -369,19 +370,18 @@ function writeReport(lines) {
  * count instead of removing it, so EVERY repeat, however many, gets its
  * own terse line.
  *
- * The per-file cap (`MAX_BLOCKS_PER_SESSION`) still bounds something real:
- * the number of DISTINCT full-diagnostic dumps for one file in a session.
- * A GENUINELY NEW error once that cap is reached is still suppressed
- * (`action: 'suppress'`) — this case is unchanged from before and was not
- * part of what was reversed, because a brand-new, never-before-seen
- * problem is not the "did my fix work" moment this correction is about;
- * it is the belt-and-braces backstop against runaway distinct-error churn
- * the cap already existed for.
+ * The per-file cap (`MAX_REPORTS_SINCE_CLEAN`) bounds the number of
+ * DISTINCT full-diagnostic dumps for one file since it last linted clean.
+ * A genuinely new error past the cap is never dropped either: it gets a
+ * one-line count of the further distinct issues instead of its diagnostic,
+ * still exit 2, so a new problem never looks like a clean file. A clean
+ * run clears the file's history (see forgetFile), so the cap counts from
+ * there and an error that returns after it is reported in full again.
  *
  * Returns `{ action: 'report' }` (an ordinary full report should proceed —
  * including when there is no usable `session_id` to key dedupe state on
- * at all, which is simply the old always-report behaviour, never a
- * suppression), `{ action: 'terse', message }`, or `{ action: 'suppress' }`.
+ * at all, which is simply the old always-report behaviour) or
+ * `{ action: 'terse', message }`.
  * A marker write failure fails OPEN in the opposite direction from
  * verify-touched.mjs's: there, failing to record state must never cause
  * an unbounded BLOCK; here, it must never cause a real problem to go
@@ -392,26 +392,51 @@ function writeReport(lines) {
 function dedupeDecision(root, sessionId, filePath, signature) {
   if (sessionId === null) return { action: 'report' };
   const path = markerPath(root, sessionId, 'sensor');
-  const marker = readJSONMarker(path, { files: {} });
-  const files = marker?.files && typeof marker.files === 'object' && !Array.isArray(marker.files) ? marker.files : {};
-  const entry = files[filePath] && typeof files[filePath] === 'object' ? files[filePath] : null;
+  const files = readFileHistories(path);
+  const entry = Object.hasOwn(files, filePath) && files[filePath] && typeof files[filePath] === 'object' ? files[filePath] : null;
+  // `count` is every distinct issue since the file last linted clean,
+  // including those past the cap, so the further-issues line can count them.
   const count = Number.isFinite(Number(entry?.count)) && Number(entry?.count) >= 0 ? Number(entry.count) : 0;
   const lastSignature = typeof entry?.lastSignature === 'string' ? entry.lastSignature : null;
   const repeats = Number.isFinite(Number(entry?.repeats)) && Number(entry?.repeats) >= 0 ? Number(entry.repeats) : 0;
+  const record = state => writeJSONMarker(path, { files: { ...files, [filePath]: state } });
 
   if (lastSignature === signature) {
-    writeJSONMarker(path, { files: { ...files, [filePath]: { count, lastSignature, repeats: repeats + 1 } } });
-    const seen = repeats + 2; // +1 for the original full report, +1 for this occurrence
+    record({ count, lastSignature, repeats: repeats + 1 });
+    const seen = repeats + 2; // +1 for the original report, +1 for this occurrence
     return {
       action: 'terse',
-      message: `lint-touched: ${filePath} — unchanged since the last edit (the same issue has now been reported ${seen} times this session)`,
+      message: `lint-touched: ${filePath} — unchanged since the last edit (the same issue has now been reported ${seen} times since the file last linted clean)`,
     };
   }
 
-  if (count >= MAX_BLOCKS_PER_SESSION) return { action: 'suppress' };
-
-  writeJSONMarker(path, { files: { ...files, [filePath]: { count: count + 1, lastSignature: signature, repeats: 0 } } });
+  record({ count: count + 1, lastSignature: signature, repeats: 0 });
+  if (count >= MAX_REPORTS_SINCE_CLEAN) {
+    return {
+      action: 'terse',
+      message: `lint-touched: ${count + 1 - MAX_REPORTS_SINCE_CLEAN} further distinct issues in ${filePath}; run the lint script`,
+    };
+  }
   return { action: 'report' };
+}
+
+/** The sensor marker's per-file histories, or `{}` when there are none. */
+function readFileHistories(path) {
+  const marker = readJSONMarker(path, { files: {} });
+  return marker?.files && typeof marker.files === 'object' && !Array.isArray(marker.files) ? marker.files : {};
+}
+
+/** Clears `filePath`'s history after it lints clean. Best-effort: a write
+ * that fails leaves the old history, which can only make a later report
+ * terser, never hide it. */
+function forgetFile(root, sessionId, filePath) {
+  if (sessionId === null) return;
+  const path = markerPath(root, sessionId, 'sensor');
+  const files = readFileHistories(path);
+  if (!Object.hasOwn(files, filePath)) return;
+  const rest = { ...files };
+  delete rest[filePath];
+  writeJSONMarker(path, { files: rest });
 }
 
 async function main() {
@@ -516,7 +541,11 @@ async function main() {
     ]);
   }
 
-  if (result.status === 0) return 0; // clean — on overflow too: the linter's own exit code decides, with what was captured reported below
+  const sessionId = safeSessionId(payload.session_id);
+  if (result.status === 0) { // clean — on overflow too: the linter's own exit code decides, with what was captured reported below
+    forgetFile(root, sessionId, filePath);
+    return 0;
+  }
 
   const base = basename(filePath);
   const combined = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
@@ -530,9 +559,7 @@ async function main() {
   const reported = survived.map(maskCredentials);
   if (reported.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
 
-  const sessionId = safeSessionId(payload.session_id);
   const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
-  if (decision.action === 'suppress') return 0;
   if (decision.action === 'terse') return writeReport([decision.message]);
 
   return writeReport(reported);
