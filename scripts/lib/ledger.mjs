@@ -6,15 +6,17 @@
 // never committed, so no merge can break the chain. Only the kit's CLI
 // writes it.
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 
 export const LEDGER_KINDS = Object.freeze(['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong']);
 
-// A live writer holds the lock for milliseconds; a lock this old was left
-// by a writer that died holding it.
+// A lock records its writer's pid, and a lock whose writer is alive is
+// never broken. A lock without a readable owner is broken only once it is
+// this old: a writer holds the lock for milliseconds, and leaves it ownerless
+// only between creating it and writing its owner.
 export const LEDGER_LOCK_STALE_MS = 30_000;
 
 const LEDGER_FILE = 'ledger.jsonl';
@@ -112,64 +114,142 @@ function splitLines(buf) {
 
 const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-const sameFile = (a, b) => a.ino === b.ino && a.mtimeMs === b.mtimeMs;
+const isLockOwner = v => isPlainObject(v) && Number.isSafeInteger(v.pid) && v.pid > 0 && isNonEmptyString(v.token);
 
-/**
- * Removes the lock at `lockPath` when, at time `at`, it is older than
- * `LEDGER_LOCK_STALE_MS`, and says whether it did. The lock is first renamed
- * to a name of this process's own, which only one claimant can do; if what
- * was renamed is not the file found stale (a writer released the stale lock
- * and took a fresh one in between), it is linked back, unless another writer
- * already holds the lock again.
- */
-function breakStaleLock(lockPath, at) {
-  let found;
+/** Whether a process with this pid exists; EPERM means it does, owned by
+ * another user. */
+function defaultIsAlive(pid) {
   try {
-    found = statSync(lockPath);
-  } catch {
-    return false;
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== 'ESRCH';
   }
-  if (at - found.mtimeMs <= LEDGER_LOCK_STALE_MS) return false;
-  const claimed = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
-  try {
-    renameSync(lockPath, claimed);
-  } catch {
-    return false;
-  }
-  const taken = sameFile(statSync(claimed), found);
-  if (!taken) {
-    try {
-      linkSync(claimed, lockPath);
-    } catch {
-      // the lock is held again by another writer; the fresh one is lost
-    }
-  }
-  unlinkSync(claimed);
-  return taken;
 }
 
-/** Runs `fn` holding the ledger's lock file, so a read of the last line and
- * the append that chains to it are one step across processes. */
-function withLock(dir, now, fn) {
+/** The lock file's bytes and modification time, or null when it cannot be
+ * read. The stat follows the read, so a file replaced in between is judged
+ * by the newer, younger mtime. */
+function readLock(path) {
+  try {
+    const bytes = readFileSync(path);
+    return { bytes, mtimeMs: statSync(path).mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function lockOwner(bytes) {
+  try {
+    const owner = JSON.parse(utf8.decode(bytes));
+    return isLockOwner(owner) ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+function isBreakable(lock, at, isAlive) {
+  const owner = lockOwner(lock.bytes);
+  return owner !== null ? !isAlive(owner.pid) : at - lock.mtimeMs > LEDGER_LOCK_STALE_MS;
+}
+
+/** Creates `path` exclusively with this writer as its owner and returns the
+ * owner's token; contention throws the `wx` open's error. */
+function createLock(path) {
+  const token = randomUUID();
+  const fd = openSync(path, 'wx');
+  let written = false;
+  try {
+    writeFileSync(fd, JSON.stringify({ pid: process.pid, token }));
+    written = true;
+  } finally {
+    closeSync(fd);
+    if (!written) unlinkQuietly(path);
+  }
+  return token;
+}
+
+function unlinkQuietly(path) {
+  try {
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const holdsLock = (path, token) => {
+  const lock = readLock(path);
+  return lock !== null && lockOwner(lock.bytes)?.token === token;
+};
+
+/** Removes the lock only while it is still this writer's; never throws. */
+function releaseLock(path, token) {
+  if (holdsLock(path, token)) unlinkQuietly(path);
+}
+
+/** Removes `path` when it still holds the bytes judged breakable and is
+ * still breakable now, and says whether it did. */
+function removeIfUnchanged(path, judged, at, isAlive) {
+  const again = readLock(path);
+  if (again === null || !again.bytes.equals(judged.bytes) || !isBreakable(again, at, isAlive)) return false;
+  return unlinkQuietly(path);
+}
+
+/**
+ * Removes the ledger lock when it is breakable, and says whether it did.
+ * Breakers are serialised by a second lock beside it, so of two writers
+ * that judged one lock breakable only one removes it, and the other then
+ * finds different bytes. The second lock is broken by the same rule.
+ */
+function breakLock(lockPath, at, isAlive) {
+  const judged = readLock(lockPath);
+  if (judged === null || !isBreakable(judged, at, isAlive)) return false;
+  const mutexPath = `${lockPath}.break`;
+  let token;
+  try {
+    token = createLock(mutexPath);
+  } catch (error) {
+    if (!LOCK_CONTENDED.has(error?.code)) throw error;
+    const holder = readLock(mutexPath);
+    if (holder !== null && isBreakable(holder, at, isAlive)) removeIfUnchanged(mutexPath, holder, at, isAlive);
+    return false;
+  }
+  try {
+    return removeIfUnchanged(lockPath, judged, at, isAlive);
+  } finally {
+    releaseLock(mutexPath, token);
+  }
+}
+
+/**
+ * Runs `fn` holding the ledger's lock file, so a read of the last line and
+ * the append that chains to it are one step across processes. `fn` gets a
+ * check to call immediately before it writes, which throws when the lock is
+ * no longer this writer's.
+ */
+function withLock(dir, { now, isAlive }, fn) {
   const lockPath = join(dir, `${LEDGER_FILE}.lock`);
   const deadline = now() + LOCK_WAIT_MS;
-  let fd;
+  let token;
   for (;;) {
     try {
-      fd = openSync(lockPath, 'wx');
+      token = createLock(lockPath);
       break;
     } catch (error) {
       if (!LOCK_CONTENDED.has(error?.code)) throw error;
-      if (error.code === 'EEXIST' && breakStaleLock(lockPath, now())) continue;
-      if (now() >= deadline) throw new Error(`ledger is locked: ${lockPath} has been held for over ${LOCK_WAIT_MS} ms`);
+      if (error.code === 'EEXIST' && breakLock(lockPath, now(), isAlive)) continue;
+      if (now() >= deadline) throw new Error(`ledger is locked: ${lockPath} has been held for over ${LOCK_WAIT_MS} ms (last error ${error.code})`);
       pause(LOCK_RETRY_MS);
     }
   }
+  const assertHeld = () => {
+    if (!holdsLock(lockPath, token)) throw new Error(`ledger lock lost: ${lockPath} is no longer this writer's; nothing was written`);
+  };
   try {
-    return fn();
+    return fn(assertHeld);
   } finally {
-    closeSync(fd);
-    unlinkSync(lockPath);
+    releaseLock(lockPath, token);
   }
 }
 
@@ -178,16 +258,17 @@ function withLock(dir, now, fn) {
  * SHA-256 of the previous line's bytes, null for the first line). Throws,
  * writing nothing, when the entry is not the ledger's schema; the caller
  * supplies neither `ts` nor `prev`. `now` is the clock for `ts`, the lock
- * wait and the lock's age.
+ * wait and the age of an ownerless lock; `isAlive` says whether a lock's
+ * writer is still running.
  */
-export function appendLedger(root, entry, { now = Date.now } = {}) {
+export function appendLedger(root, entry, { now = Date.now, isAlive = defaultIsAlive } = {}) {
   const problem = entryProblem(entry, ENTRY_FIELDS);
   if (problem !== null) throw new Error(`ledger entry refused: ${problem}`);
   const { kind, learningId, contentSha256, evidence, base, learned, approvedBy, detail } = entry;
   const { signature, sessions, firstTs, lastTs, external } = evidence;
   const dir = repoDataDir(root);
   mkdirSync(dir, { recursive: true });
-  withLock(dir, now, () => {
+  withLock(dir, { now, isAlive }, assertHeld => {
     const buf = ledgerBytes(root) ?? Buffer.alloc(0);
     const lines = splitLines(buf);
     const prev = lines.length === 0 ? null : sha256Hex(lines.at(-1));
@@ -200,6 +281,7 @@ export function appendLedger(root, entry, { now = Date.now } = {}) {
     };
     // A torn last line stays a line of its own, which `verifyLedger` reports.
     const torn = buf.length > 0 && buf.at(-1) !== NEWLINE;
+    assertHeld();
     appendFileSync(ledgerPath(root), `${torn ? '\n' : ''}${canonicalJson(record)}\n`, 'utf8');
   });
 }
