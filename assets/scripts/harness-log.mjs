@@ -172,11 +172,11 @@ export function canonicalJson(value) {
 const MANIFEST_PATH = '.claude/kh-harness.manifest.json';
 const UNREADABLE = 'unreadable';
 
-// Spelled here rather than imported, because this file imports only Node
-// built-ins. RULES.md is the owner's once it holds a rule, though `apply`
-// records the scaffold it writes; LEARNED.md and GATES_PATH are the learned
-// set, which `learned` covers.
-const OUTSIDE_BASE = new Set([GATES_PATH, 'docs/harness/LEARNED.md', 'docs/harness/RULES.md']);
+// `base` identifies the harness machinery: the installed hook scripts and the
+// settings patches that register them. The manifest also records documents
+// the owner writes into (RULES.md, HANDOFF.md) and the learned files, which
+// `learned` covers; none of those is machinery.
+const BASE_PREFIX = '.claude/scripts/';
 
 const sha256Hex = data => createHash('sha256').update(data).digest('hex');
 
@@ -202,10 +202,12 @@ function readInstalledManifest(root) {
   if (!read.ok) return read.absent ? null : UNREADABLE;
   const m = read.value;
   if (m === null || typeof m !== 'object' || m.schema !== 1 || !Array.isArray(m.files)) return UNREADABLE;
-  if (m.settingsPatches !== undefined && !Array.isArray(m.settingsPatches)) return UNREADABLE;
-  if (!m.files.every(f => f !== null && typeof f === 'object' && isInside(root, f.path))) return UNREADABLE;
+  if (m.settingsPatches !== undefined && !(Array.isArray(m.settingsPatches) && m.settingsPatches.every(isPlainObject))) return UNREADABLE;
+  if (!m.files.every(f => isPlainObject(f) && isInside(root, f.path))) return UNREADABLE;
   return m;
 }
+
+const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 function fileDigest(path) {
   try {
@@ -218,30 +220,35 @@ function fileDigest(path) {
 function baseHash(root, manifest) {
   const files = manifest.files
     .map(f => f.path)
-    .filter(path => !OUTSIDE_BASE.has(path.replace(/\\/g, '/')))
+    .filter(path => path.replace(/\\/g, '/').startsWith(BASE_PREFIX))
     .sort()
     .map(path => [path, fileDigest(join(root, path))]);
-  return sha256Hex(canonicalJson({ files, settingsPatches: manifest.settingsPatches ?? [] }));
+  // `appliedAt` is when, not what: re-running `apply` must not move `base`.
+  const settingsPatches = (manifest.settingsPatches ?? []).map(({ appliedAt: _appliedAt, ...patch }) => patch);
+  return sha256Hex(canonicalJson({ files, settingsPatches }));
 }
 
-/** `id:sha256` for each gate in the file, nothing when the file is absent,
- * and the one entry `UNREADABLE` when it cannot be read as an array of
- * objects with string ids, so damage changes the hash. */
+/** `id:sha256` for each gate in the file (`id:suspended` for a suspension),
+ * nothing when the file is absent, and the one entry `UNREADABLE` when it is
+ * not `{ schema: 1, gates: [...] }` of objects with string ids, so damage
+ * changes the hash. */
 function gatePairs(path) {
   const read = readJson(path);
   if (!read.ok) return read.absent ? [] : [UNREADABLE];
-  const gates = read.value;
-  if (!Array.isArray(gates) || !gates.every(g => g !== null && typeof g === 'object' && !Array.isArray(g) && typeof g.id === 'string')) return [UNREADABLE];
-  return gates.map(({ action: _action, ...rest }) => `${rest.id}:${sha256Hex(canonicalJson(rest))}`);
+  const file = read.value;
+  if (!isPlainObject(file) || file.schema !== 1 || !Array.isArray(file.gates)) return [UNREADABLE];
+  if (!file.gates.every(g => isPlainObject(g) && typeof g.id === 'string')) return [UNREADABLE];
+  return file.gates.map(({ action: _action, ...gate }) =>
+    `${gate.id}:${gate.suspended === true ? 'suspended' : sha256Hex(canonicalJson(gate))}`);
 }
 
 /**
- * Which harness a session ran under. `base` covers what the kit installed:
- * the bytes on disk of each manifest-recorded file (so a hand edit shows),
- * LF-normalised so a CRLF checkout does not, plus the settings patches.
- * `learned` covers the gates in force, committed and local, each by the
- * hash of its content without its `action`. A file the kit does not own
- * changes neither.
+ * Which harness a session ran under. `base` covers the kit's machinery: the
+ * bytes on disk of each manifest-recorded hook script (so a hand edit
+ * shows), LF-normalised so a CRLF checkout does not, plus the settings
+ * patches. `learned` covers the gates in force, committed and local, each
+ * by the hash of its content without its `action`. A document, whoever
+ * wrote it, changes neither.
  */
 export function harnessIdentity(root) {
   const manifest = readInstalledManifest(root);
