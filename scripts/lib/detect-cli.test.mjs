@@ -2,9 +2,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { detectExposures, UNREADABLE_KIND } from './detect-exposure.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
@@ -82,6 +83,79 @@ test('detect exits 2 with one stderr line when docs/harness/detect.json cannot b
   assert.match(String(err.stderr), /detect\.json/);
   assert.doesNotMatch(String(err.stderr), /\n\s+at /, 'no stack trace');
   assert.equal(String(err.stdout ?? ''), '', 'no half-report on stdout');
+});
+
+test('detect refuses to write its report through a junction out of the repository', (t) => {
+  const d = bare();
+  const outside = mkdtempSync(join(tmpdir(), 'hk-cli-outside-'));
+  const victim = join(outside, 'detect.json');
+  const original = 'a file outside the repository that detect must not touch\n';
+  writeFileSync(victim, original);
+  // Shaped like a temporary detect would clear in its own directory.
+  writeFileSync(join(outside, 'detect.json.tmp-1'), original);
+  mkdirSync(join(d, 'docs'));
+  const link = join(d, 'docs', 'harness');
+  let linked = false;
+  t.after(() => {
+    // The link goes first, so the recursive removal below cannot reach through it.
+    if (linked) unlinkSync(link);
+    rmSync(d, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+  try {
+    symlinkSync(outside, link, 'junction');
+    linked = true;
+  } catch (e) {
+    t.skip(`this platform cannot create the link without elevation: ${e.message}`);
+    return;
+  }
+  const r = spawnSync(process.execPath, [CLI, d], { encoding: 'utf8' });
+  assert.equal(r.status, 2, `the write must be refused, not followed: ${r.stderr}`);
+  assert.match(r.stderr, /could not write/i);
+  assert.match(r.stderr, /escapes the repository/);
+  assert.equal(r.stdout, '', 'no report on stdout when none was saved');
+  assert.equal(readFileSync(victim, 'utf8'), original, 'the outside file\'s bytes are unchanged');
+  assert.deepEqual(readdirSync(outside).sort(), ['detect.json', 'detect.json.tmp-1'], 'nothing outside the repository was written or removed');
+});
+
+// The preload makes every write to a detect.json path land half its bytes and
+// then throw, the way a process killed mid-write leaves a file.
+test('a killed write never leaves a truncated detect.json', (t) => {
+  const d = bare();
+  const previous = '{ "previous": "report, whole" }\n';
+  write(d, 'docs/harness/detect.json', previous);
+  const preloadDir = mkdtempSync(join(tmpdir(), 'hk-cli-preload-'));
+  t.after(() => {
+    rmSync(d, { recursive: true, force: true });
+    rmSync(preloadDir, { recursive: true, force: true });
+  });
+  const preload = join(preloadDir, 'half-write.mjs');
+  writeFileSync(preload, [
+    "import fs from 'node:fs';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    'const real = fs.writeFileSync;',
+    'fs.writeFileSync = (p, data, ...rest) => {',
+    "  if (!String(p).includes('detect.json')) return real(p, data, ...rest);",
+    '  real(p, String(data).slice(0, Math.floor(String(data).length / 2)), ...rest);',
+    "  throw Object.assign(new Error('killed mid-write'), { code: 'EKILLED' });",
+    '};',
+    'syncBuiltinESMExports();',
+    '',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, CLI, d], { encoding: 'utf8' });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /EKILLED/, 'fixture sanity: the write really was interrupted');
+  assert.equal(readFileSync(join(d, 'docs', 'harness', 'detect.json'), 'utf8'), previous, 'the report on disk is the previous one, whole');
+  assert.deepEqual(readdirSync(join(d, 'docs', 'harness')), ['detect.json'], 'no partial temporary file is left behind');
+});
+
+test('a temporary report left by a hard kill is cleared by the next run', (t) => {
+  const d = bare();
+  t.after(() => rmSync(d, { recursive: true, force: true }));
+  write(d, 'docs/harness/detect.json.tmp-99999', '{ "sch');
+  cli(d);
+  assert.deepEqual(readdirSync(join(d, 'docs', 'harness')), ['detect.json']);
+  assert.equal(JSON.parse(readFileSync(join(d, 'docs', 'harness', 'detect.json'), 'utf8')).schema, 1);
 });
 
 // Tier 2 final review, Important 1, end to end: our sensor script registered
