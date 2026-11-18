@@ -69,6 +69,39 @@ test('a transcript of known line types yields its interrupts', () => {
   });
 });
 
+test('an interrupt carried as a plain string is counted', () => {
+  const asString = (text, ts) => ({ ...userText('', ts), message: { role: 'user', content: text } });
+  const path = transcript([
+    asString(' [Request interrupted by user]\n', '2026-11-19T10:00:00.000Z'),
+    asString('[Request interrupted by user for tool use]', '2026-11-19T10:01:00.000Z'),
+    asString('quoting [Request interrupted by user] is not an interrupt', '2026-11-19T10:02:00.000Z'),
+  ]);
+  const r = readTranscript(path);
+  assert.equal(r.status, 'ok');
+  assert.deepEqual(r.interrupts, [{ ts: '2026-11-19T10:00:00.000Z' }, { ts: '2026-11-19T10:01:00.000Z' }]);
+});
+
+test('a user line whose content is neither a string nor a list makes the session not-checked', () => {
+  const cases = [
+    [{ text: '[Request interrupted by user]' }, /object/],
+    [null, /null/],
+    [7, /number/],
+    [undefined, /missing/],
+  ];
+  for (const [content, shape] of cases) {
+    const odd = { ...userText('', '2026-11-19T10:01:00.000Z'), message: { role: 'user', content } };
+    const r = readTranscript(transcript([interrupt('2026-11-19T10:00:00.000Z'), odd]));
+    assert.equal(r.status, 'not-checked', String(content));
+    assert.match(r.reason, /line 2/);
+    assert.match(r.reason, shape);
+    assert.deepEqual(r.interrupts, []);
+  }
+  const noMessage = { type: 'user', version: '2.1.327', timestamp: '2026-11-19T10:01:00.000Z' };
+  const r = readTranscript(transcript([noMessage]));
+  assert.equal(r.status, 'not-checked');
+  assert.match(r.reason, /missing/);
+});
+
 test('a transcript whose lines carry no version reports the version as null', () => {
   const path = transcript([{ type: 'ai-title', aiTitle: 'placeholder', sessionId: 's-1' }]);
   assert.deepEqual(readTranscript(path), { status: 'ok', claudeCodeVersion: null, interrupts: [], unknownLineTypes: [] });
