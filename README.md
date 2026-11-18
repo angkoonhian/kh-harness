@@ -94,8 +94,8 @@ guesses). A proposal names who closes it: `apply` writes most of them; the
 `harness-init` skill drafts the recon, the instruction file, the architecture
 document and the intent document; adding a git remote is left to you. The
 summary counts the three apart, and `apply` says when nothing is left that it
-can write, with how many checks are still absent and how many questions are
-open. **Advice** is a third thing: a gap that is fully known but that this
+can write, with how many checks are still absent, how many are failing, and
+how many questions are open. **Advice** is a third thing: a gap that is fully known but that this
 tool will never write, because closing it means editing your package manifest
 — the file most likely to be hand-tuned, and the one this tool must not touch.
 

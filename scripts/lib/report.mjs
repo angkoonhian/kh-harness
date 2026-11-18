@@ -12,11 +12,15 @@ const UNWRITTEN_NOTE = {
 const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 /** What is left when nothing more can be written: a count of what was found,
- * never a claim that the repository is complete. Shared with `apply`, so the
- * two commands cannot word it differently. */
+ * and "nothing is outstanding" only when nothing is absent, nothing is
+ * failing and no question is open. The failing count is named whenever it is
+ * not zero, so the line never reads as a clean bill over a failing check.
+ * Shared with `apply`, so the two commands cannot word it differently. */
 export function stillOpen(checks, questions) {
   const absent = checks.filter(c => c.state === 'absent').length;
-  return `${plural(absent, 'check')} still absent, ${plural(questions.length, 'question')} open`;
+  const failing = checks.filter(c => c.state === 'failing').length;
+  if (absent === 0 && failing === 0 && questions.length === 0) return 'nothing is outstanding';
+  return `${plural(absent, 'check')} still absent, ${failing ? `${failing} failing, ` : ''}${plural(questions.length, 'question')} open`;
 }
 
 export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} }) {

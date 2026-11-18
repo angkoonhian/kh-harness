@@ -746,6 +746,22 @@ test('apply with nothing to write names how many checks are still absent and how
   assert.ok(out.includes(`kh-harness: no actions for ${d} — nothing apply can write; ${absent} check${s(absent)} still absent, ${questions} question${s(questions)} open.`), out);
 });
 
+test('apply with nothing to write and a failing check says so', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  // Assembled, never a committed literal: the repository sweeps itself.
+  writeFileSync(join(d, 'creds.ts'), `export const T = "${'ghp_' + '0123456789abcdefghij0123456789'}";\n`);
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'accept kh-harness, and a leaked token');
+  const detected = JSON.parse(run(DETECT, d, '--json'));
+  assert.equal(detected.checks.find(c => c.id === 'P0.security').state, 'failing', 'fixture sanity');
+  const failing = detected.checks.filter(c => c.state === 'failing').length;
+
+  const out = run(APPLY, d);
+  assert.match(out, /no actions for /, out);
+  assert.match(out, new RegExp(`still absent, ${failing} failing, \\d+ questions? open\\.`), out);
+});
+
 test('the action count equals the number of gaps those actions close', () => {
   const d = fixture();
   const detected = JSON.parse(run(DETECT, d, '--json'));

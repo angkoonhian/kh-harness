@@ -55,8 +55,9 @@ any phase reference — see the first-run rule in `SKILL.md`.
    individual file writes. `apply` may turn one gap into several writes
    ("actions"), and names the gaps those actions close; only the `apply`
    share can ever appear there. With no proposals at all, the line names how
-   many checks are still `absent` and how many questions are open — it never
-   says the repository is complete.
+   many checks are still `absent`, how many are `failing` (when any are) and
+   how many questions are open; it says "nothing is outstanding" only when
+   all three are zero.
 3. **Advice and "Could not derive"** — printed as two further sections,
    after the phase-by-phase check listing and the Exposures section:
    every check's `advice`, and the questions collected in
