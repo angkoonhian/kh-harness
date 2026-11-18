@@ -1,17 +1,21 @@
 // assets/scripts/harness-log.mjs
 //
 // The session log's library: where a repository's log lives on this
-// machine, whether it is enabled, how it is configured, and which harness a
-// session ran under.
+// machine, whether it is enabled, how it is configured, which harness a
+// session ran under, and how an event is written and read back.
 //
 // Installed beside the other hook scripts and called by a hook on every tool
 // use, so it imports only Node built-ins and sibling files, never spawns a
 // child process (the git common directory is found by reading files, not by
-// running git), and its read paths never throw.
-import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+// running git), its read paths never throw, and an event write reports an
+// I/O failure in its result instead of throwing.
+import { createHash, randomBytes } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
+
+import { maskText, safeSessionId } from './harness-redact.mjs';
 
 export const GATES_PATH = '.claude/kh-harness/gates.json';
 export const LOCAL_GATES_FILE = 'gates.local.json';
@@ -257,4 +261,161 @@ export function harnessIdentity(root) {
   const kitVersion = usable && typeof manifest.kitVersion === 'string' ? manifest.kitVersion : null;
   const pairs = [...gatePairs(join(root, GATES_PATH)), ...gatePairs(join(repoDataDir(root), LOCAL_GATES_FILE))].sort();
   return { base, learned: sha256Hex(canonicalJson(pairs)), kitVersion };
+}
+
+export const LOG_SCHEMA = 1;
+
+const SESSIONS_DIR = 'sessions';
+const BLOBS_DIR = 'blobs';
+
+/** A copy of a JSON value with `fn` applied to every leaf. */
+function mapLeaves(value, fn) {
+  if (Array.isArray(value)) return value.map(v => mapLeaves(v, fn));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, mapLeaves(v, fn)]));
+  }
+  return fn(value);
+}
+
+/** A deep copy of `value` with `maskText` applied to every string leaf;
+ * object keys are kept as they are. `value` must be acyclic. */
+export function scrubValue(value) {
+  return mapLeaves(value, leaf => (typeof leaf === 'string' ? maskText(leaf) : leaf));
+}
+
+/** Puts `data` at `path` unless something is already there. The bytes go to
+ * a temporary sibling first and are renamed into place, so a reader or a
+ * concurrent writer never finds a partial file at `path`. */
+function placeOnce(path, data) {
+  if (existsSync(path)) return;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(temp, data, { flag: 'wx', mode: 0o600 });
+    renameSync(temp, path);
+  } catch (error) {
+    if (!existsSync(path)) throw error;
+  } finally {
+    try {
+      rmSync(temp, { force: true });
+    } catch {
+      // a leftover temporary file is never read as a blob
+    }
+  }
+}
+
+/** Stores already-scrubbed `text`; null when it could not be stored. */
+function writeBlob(root, text) {
+  const data = Buffer.from(text, 'utf8');
+  const sha256 = sha256Hex(data);
+  try {
+    placeOnce(join(repoDataDir(root), BLOBS_DIR, `${sha256}.gz`), gzipSync(data));
+    return { sha256, bytes: data.length };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stores `maskText(text)` gzipped at `<repoDataDir>/blobs/<sha256>.gz`,
+ * keyed by the SHA-256 of the masked text's UTF-8 bytes, and returns that
+ * hash and the byte count. A blob already present is left untouched. Null
+ * when the blob could not be stored; never throws.
+ */
+export function storeBlob(root, text) {
+  return writeBlob(root, maskText(text));
+}
+
+/** A scrubbed string leaf, or the reference that replaces it when it is
+ * over the cap. `blob` is null when the content could not be stored, so a
+ * reference never names a blob that does not exist. */
+function inlineOrBlob(root, scrubbed, capBytes) {
+  const bytes = Buffer.byteLength(scrubbed, 'utf8');
+  if (bytes <= capBytes) return scrubbed;
+  return { blob: writeBlob(root, scrubbed)?.sha256 ?? null, bytes, truncated: true };
+}
+
+const sessionPath = (root, id) => join(repoDataDir(root), SESSIONS_DIR, `${id}.jsonl`);
+
+/**
+ * Appends one event to `<repoDataDir>/sessions/<sessionId>.jsonl` and
+ * returns `{ written: true }`, or `{ written: false, reason }` when nothing
+ * was written; never throws.
+ *
+ * The event is first reduced to JSON values, then every string leaf is
+ * masked, and only then is a leaf over `inlineCapBytes` moved to a blob, so
+ * a credential is never split by the cap before it can be recognised.
+ * `schema`, `ts` and `pid` are the writer's, replacing any the event carries.
+ *
+ * Hooks running at once append to the same file, so the whole line,
+ * newline included, goes out in one write to a file opened for appending.
+ */
+export function appendEvent(root, sessionId, event) {
+  const id = safeSessionId(sessionId);
+  if (id === null) return { written: false, reason: 'unsafe session id' };
+  if (!isPlainObject(event)) return { written: false, reason: 'event is not an object' };
+  let body;
+  try {
+    body = JSON.parse(JSON.stringify(event));
+  } catch {
+    return { written: false, reason: 'event is not serialisable' };
+  }
+  try {
+    const capBytes = readConfig(root).inlineCapBytes;
+    const capped = mapLeaves(body, leaf => (typeof leaf === 'string' ? inlineOrBlob(root, maskText(leaf), capBytes) : leaf));
+    const { schema: _schema, ts: _ts, pid: _pid, ...fields } = capped;
+    const line = JSON.stringify({ schema: LOG_SCHEMA, ts: new Date().toISOString(), pid: process.pid, ...fields }) + '\n';
+    const path = sessionPath(root, id);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    appendFileSync(path, line, { encoding: 'utf8', flag: 'a', mode: 0o600 });
+    return { written: true };
+  } catch (error) {
+    return { written: false, reason: `write failed: ${error?.code ?? 'unknown'}` };
+  }
+}
+
+function parsedObject(line) {
+  try {
+    const value = JSON.parse(line);
+    return isPlainObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every event recorded for a session: the compressed `.jsonl.gz`, which
+ * holds the earlier events, then the `.jsonl`. A line that is not a JSON
+ * object is counted in `unparseable`; a file present but unreadable or not
+ * gzip sets `unreadable`, and what the other file holds is still returned.
+ * An unsafe session id reads nothing. Never throws.
+ */
+export function readEvents(root, sessionId) {
+  const result = { events: [], unparseable: 0, unreadable: false };
+  const id = safeSessionId(sessionId);
+  if (id === null) return result;
+  let plain;
+  try {
+    plain = sessionPath(root, id);
+  } catch {
+    return { ...result, unreadable: true };
+  }
+  for (const [path, decode] of [[`${plain}.gz`, gunzipSync], [plain, buf => buf]]) {
+    let lines;
+    try {
+      lines = decode(readFileSync(path)).toString('utf8').split('\n');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') result.unreadable = true;
+      continue;
+    }
+    // The writer ends every line with a newline, so the empty string after
+    // the last one is not a line.
+    if (lines.at(-1) === '') lines.pop();
+    for (const line of lines) {
+      const event = parsedObject(line);
+      if (event === null) result.unparseable++;
+      else result.events.push(event);
+    }
+  }
+  return result;
 }
