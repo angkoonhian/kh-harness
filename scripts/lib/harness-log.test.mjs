@@ -25,6 +25,7 @@ import {
   repoDataDir,
   repoKey,
   scrubValue,
+  sessionFileName,
   setEnabled,
   storeBlob,
 } from '../../assets/scripts/harness-log.mjs';
@@ -396,7 +397,7 @@ test('an unreadable or malformed manifest yields base unreadable', () => {
 // Built at runtime so the repository's own credential sweep never sees one.
 const githubToken = () => 'gh' + 'p_' + 'A1b2C3d4'.repeat(5);
 
-const sessionFile = (root, sessionId) => join(repoDataDir(root), 'sessions', `${sessionId}.jsonl`);
+const sessionFile = (root, sessionId) => join(repoDataDir(root), 'sessions', sessionFileName(sessionId));
 const blobFile = (root, sha256) => join(repoDataDir(root), 'blobs', `${sha256}.gz`);
 const sha256Of = text => createHash('sha256').update(text, 'utf8').digest('hex');
 
@@ -466,6 +467,44 @@ test('scrubValue masks every string leaf of a deep copy and leaves the input alo
   assert.equal(input.a[0], token, 'the input is not modified');
   assert.equal(scrubValue(token), '***');
   assert.equal(scrubValue(7), 7);
+});
+
+test('a credential used as an object key is masked', () => {
+  const token = githubToken();
+  assert.deepEqual(scrubValue({ headers: { [token]: 'x', plain: 'y' } }), { headers: { '***': 'x', plain: 'y' } });
+  const root = tempDir('hk-log-key-');
+  appendEvent(root, 's1', { env: { [token]: 'v' } });
+  assert.ok(!readFileSync(sessionFile(root, 's1'), 'utf8').includes(token.slice(4)), 'no part of the key is stored');
+  assert.deepEqual(readEvents(root, 's1').events[0].env, { '***': 'v' });
+});
+
+test('keys that mask to the same string keep every value, the later ones suffixed', () => {
+  const a = githubToken();
+  const b = 'gh' + 'o_' + 'Z9y8X7w6'.repeat(5);
+  assert.deepEqual(
+    scrubValue({ [a]: 1, [b]: 2, '***#2': 3, [a + ' ']: 4 }),
+    { '***': 1, '***#2': 2, '***#2#2': 3, '*** ': 4 },
+  );
+  assert.deepEqual(scrubValue({ '***': 1, [a]: 2 }), { '***': 1, '***#2': 2 }, 'an unmasked key that is already *** is kept first');
+});
+
+test('a __proto__ key stays an ordinary property', () => {
+  const copy = scrubValue(JSON.parse('{"__proto__": {"polluted": true}}'));
+  assert.ok(Object.hasOwn(copy, '__proto__'));
+  assert.equal({}.polluted, undefined);
+  assert.equal(Object.getPrototypeOf(copy), Object.prototype);
+});
+
+test('a session id that is a Windows device name still gets a writable file', () => {
+  const root = tempDir('hk-log-device-');
+  for (const id of ['CON', 'NUL', 'COM1', 'aux', 'PRN', 'LPT1']) {
+    assert.equal(sessionFileName(id), `s-${id}.jsonl`);
+    assert.deepEqual(appendEvent(root, id, { id }), { written: true }, id);
+    assert.deepEqual(readEvents(root, id).events.map(e => e.id), [id], id);
+  }
+  assert.deepEqual(readdirSync(join(repoDataDir(root), 'sessions')).sort(),
+    ['s-COM1.jsonl', 's-CON.jsonl', 's-LPT1.jsonl', 's-NUL.jsonl', 's-PRN.jsonl', 's-aux.jsonl'].sort());
+  assert.equal(sessionFileName('../escape'), null);
 });
 
 test('an ANSI-coloured token is masked in the stored event', () => {

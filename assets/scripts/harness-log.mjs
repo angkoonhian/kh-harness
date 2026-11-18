@@ -268,19 +268,35 @@ export const LOG_SCHEMA = 1;
 const SESSIONS_DIR = 'sessions';
 const BLOBS_DIR = 'blobs';
 
-/** A copy of a JSON value with `fn` applied to every leaf. */
-function mapLeaves(value, fn) {
-  if (Array.isArray(value)) return value.map(v => mapLeaves(v, fn));
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, mapLeaves(v, fn)]));
-  }
-  return fn(value);
+/** `key` masked, made unique among `used` by a `#2`, `#3`… suffix when the
+ * mask makes it equal to a key already kept, so no value is lost. */
+function maskedKey(key, used) {
+  const masked = maskText(key);
+  let unique = masked;
+  for (let n = 2; used.has(unique); n++) unique = `${masked}#${n}`;
+  used.add(unique);
+  return unique;
 }
 
-/** A deep copy of `value` with `maskText` applied to every string leaf;
- * object keys are kept as they are. `value` must be acyclic. */
+/**
+ * A copy of a JSON value with every object key masked and every string leaf
+ * masked and then passed to `onString`. Built with `Object.fromEntries`, so
+ * a `__proto__` key stays an ordinary property.
+ */
+function scrubWith(value, onString) {
+  if (typeof value === 'string') return onString(maskText(value));
+  if (Array.isArray(value)) return value.map(v => scrubWith(v, onString));
+  if (value !== null && typeof value === 'object') {
+    const used = new Set();
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [maskedKey(k, used), scrubWith(v, onString)]));
+  }
+  return value;
+}
+
+/** A deep copy of `value` with `maskText` applied to every object key and
+ * every string leaf. `value` must be acyclic. */
 export function scrubValue(value) {
-  return mapLeaves(value, leaf => (typeof leaf === 'string' ? maskText(leaf) : leaf));
+  return scrubWith(value, s => s);
 }
 
 /** Puts `data` at `path` unless something is already there. The bytes go to
@@ -335,24 +351,35 @@ function inlineOrBlob(root, scrubbed, capBytes) {
   return { blob: writeBlob(root, scrubbed)?.sha256 ?? null, bytes, truncated: true };
 }
 
-const sessionPath = (root, id) => join(repoDataDir(root), SESSIONS_DIR, `${id}.jsonl`);
+/**
+ * The file a session's events are appended to, or null for an id
+ * `safeSessionId` refuses. The `s-` prefix keeps an id such as `CON` or
+ * `COM1` from naming a win32 device.
+ */
+export function sessionFileName(sessionId) {
+  const id = safeSessionId(sessionId);
+  return id === null ? null : `s-${id}.jsonl`;
+}
+
+const sessionPath = (root, name) => join(repoDataDir(root), SESSIONS_DIR, name);
 
 /**
- * Appends one event to `<repoDataDir>/sessions/<sessionId>.jsonl` and
+ * Appends one event to `<repoDataDir>/sessions/<sessionFileName>` and
  * returns `{ written: true }`, or `{ written: false, reason }` when nothing
  * was written; never throws.
  *
- * The event is first reduced to JSON values, then every string leaf is
- * masked, and only then is a leaf over `inlineCapBytes` moved to a blob, so
- * a credential is never split by the cap before it can be recognised.
- * `schema`, `ts` and `pid` are the writer's, replacing any the event carries.
+ * The event is first reduced to JSON values, then every key and string
+ * leaf is masked as `scrubValue` masks them, and only then is a leaf over
+ * `inlineCapBytes` moved to a blob, so a credential is never split by the
+ * cap before it can be recognised. `schema`, `ts` and `pid` are the
+ * writer's, replacing any the event carries.
  *
  * Hooks running at once append to the same file, so the whole line,
  * newline included, goes out in one write to a file opened for appending.
  */
 export function appendEvent(root, sessionId, event) {
-  const id = safeSessionId(sessionId);
-  if (id === null) return { written: false, reason: 'unsafe session id' };
+  const name = sessionFileName(sessionId);
+  if (name === null) return { written: false, reason: 'unsafe session id' };
   if (!isPlainObject(event)) return { written: false, reason: 'event is not an object' };
   let body;
   try {
@@ -362,10 +389,10 @@ export function appendEvent(root, sessionId, event) {
   }
   try {
     const capBytes = readConfig(root).inlineCapBytes;
-    const capped = mapLeaves(body, leaf => (typeof leaf === 'string' ? inlineOrBlob(root, maskText(leaf), capBytes) : leaf));
+    const capped = scrubWith(body, s => inlineOrBlob(root, s, capBytes));
     const { schema: _schema, ts: _ts, pid: _pid, ...fields } = capped;
     const line = JSON.stringify({ schema: LOG_SCHEMA, ts: new Date().toISOString(), pid: process.pid, ...fields }) + '\n';
-    const path = sessionPath(root, id);
+    const path = sessionPath(root, name);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     appendFileSync(path, line, { encoding: 'utf8', flag: 'a', mode: 0o600 });
     return { written: true };
@@ -392,11 +419,11 @@ function parsedObject(line) {
  */
 export function readEvents(root, sessionId) {
   const result = { events: [], unparseable: 0, unreadable: false };
-  const id = safeSessionId(sessionId);
-  if (id === null) return result;
+  const name = sessionFileName(sessionId);
+  if (name === null) return result;
   let plain;
   try {
-    plain = sessionPath(root, id);
+    plain = sessionPath(root, name);
   } catch {
     return { ...result, unreadable: true };
   }
