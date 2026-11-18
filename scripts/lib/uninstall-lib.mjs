@@ -25,6 +25,10 @@ const SETTINGS = '.claude/settings.json';
  * are derived from the repository as it stands now, the same evidence the
  * generator reads; a rule whose evidence has since gone is kept, never
  * guessed at.
+ *
+ * No candidate glob may ever match a file the kit itself generates: those
+ * files are deleted before `runUninstall` rebuilds this set, so a rule
+ * resting on one would stop being producible and be kept.
  */
 function producibleSettings(root) {
   const { files } = listFiles(root);

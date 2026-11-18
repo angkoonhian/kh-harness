@@ -255,6 +255,27 @@ test('revertPatch credits the legacy shell form `node <script>` only as that exa
   assert.deepEqual(reasons(revertPatch(more.settings, more.patch, PRODUCIBLE)), ['not-generator-producible']);
 });
 
+const OUR_SCRIPT = '${CLAUDE_PROJECT_DIR}/.claude/scripts/session-brief.mjs';
+
+test('an exec-form hook exactly as the generator writes it is reverted', () => {
+  const ours = addHookEntry({}, 'SessionStart', { type: 'command', command: 'node', args: [OUR_SCRIPT] });
+  assert.deepEqual(revertPatch(ours.settings, ours.patch, PRODUCIBLE).kept, []);
+});
+
+test('an exec-form hook with an extra argument is kept', () => {
+  const extra = addHookEntry({}, 'SessionStart', { type: 'command', command: 'node', args: [OUR_SCRIPT, '--flag'] });
+  const { settings, kept } = revertPatch(extra.settings, extra.patch, PRODUCIBLE);
+  assert.deepEqual(kept, [{ patch: extra.patch, reason: 'not-generator-producible' }]);
+  assert.deepEqual(settings, extra.settings);
+});
+
+test('an exec-form hook run by another command is kept', () => {
+  const bun = addHookEntry({}, 'SessionStart', { type: 'command', command: 'bun', args: [OUR_SCRIPT] });
+  const { settings, kept } = revertPatch(bun.settings, bun.patch, PRODUCIBLE);
+  assert.deepEqual(kept, [{ patch: bun.patch, reason: 'not-generator-producible' }]);
+  assert.deepEqual(settings, bun.settings);
+});
+
 test('revertPatch keeps a deny patch naming a rule no generator produces', () => {
   const before = { permissions: { deny: ['Bash(rm:*)'] } };
   const { patch } = addDenyRules({}, ['Bash(rm:*)']);
