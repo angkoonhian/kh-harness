@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, readdirSync } from 'node:fs';
 import { join, dirname, basename, resolve, relative } from 'node:path';
+import { readJsonFile } from './read-json.mjs';
 
 const MANIFEST_PATH = '.claude/kh-harness.manifest.json';
 
@@ -28,28 +29,31 @@ export function emptyManifest(kitVersion) {
  * what to `uninstall` is gone, permanently, with no notice to the user
  * (coordinator finding, Major). `readManifest`, below, still collapses
  * both to `null` for `detect.mjs` (which correctly fails safe either way
- * — it never writes anything) and `uninstall.mjs` (which already refuses
- * on either); `apply.mjs` uses this directly so it can refuse ONLY on the
- * corrupt case, exactly like it already refuses on a dirty tree or a
- * default branch, rather than silently starting over.
+ * — it never writes anything); `apply.mjs` and `uninstall.mjs` use this
+ * directly so each can say which of the two it refused on.
  */
 export function readManifestResult(root) {
-  const p = join(root, MANIFEST_PATH);
-  if (!existsSync(p)) return { state: 'missing', manifest: null };
-  let raw;
-  try {
-    raw = readFileSync(p, 'utf8');
-  } catch {
-    return { state: 'corrupt', manifest: null };
-  }
-  try {
-    const m = JSON.parse(raw);
-    if (m?.schema !== 1 || !Array.isArray(m.files)) return { state: 'corrupt', manifest: null };
-    m.settingsPatches ??= [];
-    return { state: 'ok', manifest: m };
-  } catch {
-    return { state: 'corrupt', manifest: null };
-  }
+  const read = readJsonFile(join(root, MANIFEST_PATH));
+  if (read.state === 'absent') return { state: 'missing', manifest: null };
+  if (read.state === 'unreadable' || !isWellFormedManifest(read.value)) return { state: 'corrupt', manifest: null };
+  return { state: 'ok', manifest: read.value };
+}
+
+const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Every shape a reader of the manifest dereferences without checking —
+ * `f.path`, `f.sha256`, `p.event`, `dirsCreated` iterated as paths — is
+ * checked here, once, so a hand-edited or forged manifest is refused as
+ * `corrupt` instead of crashing `apply` or `uninstall` part-way through.
+ */
+function isWellFormedManifest(m) {
+  return isPlainObject(m) && m.schema === 1 &&
+    Array.isArray(m.files) &&
+    m.files.every(f => isPlainObject(f) && typeof f.path === 'string' && typeof f.sha256 === 'string') &&
+    Array.isArray(m.settingsPatches) &&
+    m.settingsPatches.every(isPlainObject) &&
+    (m.dirsCreated === undefined || (Array.isArray(m.dirsCreated) && m.dirsCreated.every(d => typeof d === 'string')));
 }
 
 export function readManifest(root) {

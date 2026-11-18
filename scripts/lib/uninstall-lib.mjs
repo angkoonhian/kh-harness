@@ -8,7 +8,8 @@
 // enough.
 import * as fs from 'node:fs';
 import { join } from 'node:path';
-import { assertAllowed, assertContained, matchingNewline, detectIndent, isAllowedDirectory, isCanonicalJson, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, assertContained, isAllowedDirectory, isCanonicalJson, serializeSettings, settingsReformattedNote } from './apply-lib.mjs';
+import { readJsonFile } from './read-json.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
@@ -431,22 +432,12 @@ function guardRemoval(root, relPath) {
  * syntax error and a deleted file must not be indistinguishable to a user.
  */
 function validateSettings(settingsPath) {
-  if (!fs.existsSync(settingsPath)) return { valid: false, object: null, reason: 'settings-missing', raw: null };
-
-  let raw;
-  try {
-    raw = fs.readFileSync(settingsPath, 'utf8');
-  } catch {
-    return { valid: false, object: null, reason: 'settings-unreadable', raw: null };
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    const isPlain = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
-    if (isPlain) return { valid: true, object: parsed, reason: null, raw };
-    return { valid: false, object: null, reason: 'settings-unreadable', raw };
-  } catch {
-    return { valid: false, object: null, reason: 'settings-unreadable', raw };
-  }
+  const read = readJsonFile(settingsPath);
+  if (read.state === 'absent') return { valid: false, object: null, reason: 'settings-missing', raw: null };
+  if (read.state === 'unreadable') return { valid: false, object: null, reason: 'settings-unreadable', raw: null };
+  const isPlain = typeof read.value === 'object' && read.value !== null && !Array.isArray(read.value);
+  if (isPlain) return { valid: true, object: read.value, reason: null, raw: read.text };
+  return { valid: false, object: null, reason: 'settings-unreadable', raw: read.text };
 }
 
 /** Read-only. Decides what may be removed; removes nothing. */
@@ -613,7 +604,7 @@ export function runUninstall({ root, manifest, plan }) {
       // business touching at all.
       if (settingsChanged) {
         // Task 9b, finding 5: match the ORIGINAL file's trailing-newline
-        // state (apply-lib.mjs's `matchingNewline`, shared so the two
+        // state (apply-lib.mjs's `serializeSettings`, shared so the two
         // writers of this file cannot disagree) rather than always
         // appending one — the single most common line of noise left in
         // `git status` after an otherwise content-identical round trip.
@@ -629,7 +620,7 @@ export function runUninstall({ root, manifest, plan }) {
         // never got `matchingNewline`). `isCanonicalJson` (apply-lib.mjs) is
         // the one predicate both callers read now.
         if (!isCanonicalJson(validated.raw)) settingsReformatted = true;
-        const newContent = JSON.stringify(settings, null, detectIndent(validated.raw)) + matchingNewline(validated.raw);
+        const newContent = serializeSettings(settings, validated.raw);
         try {
           fs.writeFileSync(join(root, SETTINGS), newContent, 'utf8');
         } catch {
@@ -674,17 +665,14 @@ export function runUninstall({ root, manifest, plan }) {
   let settingsRemoved = false;
   if (manifest?.settingsCreated) {
     const settingsPath = join(root, SETTINGS);
-    if (fs.existsSync(settingsPath)) {
+    const current = validateSettings(settingsPath);
+    if (current.valid && Object.keys(current.object).length === 0) {
       try {
-        const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        const isEmptyObject = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
-        if (isEmptyObject) {
-          fs.rmSync(settingsPath);
-          settingsRemoved = true;
-          removed.push(SETTINGS);
-        }
+        fs.rmSync(settingsPath);
+        settingsRemoved = true;
+        removed.push(SETTINGS);
       } catch {
-        // Unreadable/unparseable — never touch it.
+        // Left in place; the manifest keeps `settingsCreated` for a later run.
       }
     }
   }

@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
-import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, isWellFormedHooks, detectIndent, ALLOWED_PREFIXES, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, isWellFormedHooks, detectIndent, ALLOWED_PREFIXES, settingsReformattedNote, unusableSettingsReason } from './apply-lib.mjs';
+import { APPLY, fixture, git } from './lifecycle-fixtures.mjs';
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 
@@ -758,4 +760,69 @@ test('docs/INTENT.md is on the write allowlist, like docs/ARCHITECTURE.md', () =
   // And nothing else under docs/ is admitted by that addition.
   assert.throws(() => assertAllowed('docs/INTENT.txt'), /not allowed/i);
   assert.throws(() => assertAllowed('docs/intent/INTENT.md'), /not allowed/i);
+});
+
+// --- a present but unparseable settings.json is its own state -------------
+
+const sessionHookProposal = { kind: 'settings-hook', event: 'SessionStart', step: 16, entry: { type: 'command', command: 'node x.mjs' }, checkId: 'P4.sessionbrief', reason: 'r' };
+
+test('a settings.json with a BOM is read, patched, and keeps its BOM', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const original = '﻿' + JSON.stringify({ permissions: { deny: ['Edit(x)'] } }, null, 2) + '\n';
+  writeFileSync(join(d, '.claude/settings.json'), original, 'utf8');
+  assert.equal(isCanonicalJson(original), true, 'a BOM the writer keeps is not a reformat');
+  const r = applyProposals({ root: d, proposals: [sessionHookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(r.patched.length, 1, JSON.stringify(r.skipped));
+  const after = readFileSync(join(d, '.claude/settings.json'), 'utf8');
+  assert.equal(after.slice(0, 2), '﻿{', 'exactly one BOM, kept');
+  const s = JSON.parse(after.slice(1));
+  assert.deepEqual(s.permissions.deny, ['Edit(x)']);
+  assert.equal(s.hooks.SessionStart.length, 1);
+});
+
+test('unusableSettingsReason names why a settings.json cannot be patched, and is null when it can', () => {
+  const at = text => {
+    const d = repo();
+    if (text !== null) {
+      mkdirSync(join(d, '.claude'), { recursive: true });
+      writeFileSync(join(d, '.claude/settings.json'), text);
+    }
+    return unusableSettingsReason(d);
+  };
+  assert.equal(at(null), null, 'absent is patchable: it is created');
+  assert.equal(at('{}'), null);
+  assert.equal(at('{ ,'), 'is not valid JSON');
+  assert.equal(at('[]'), 'is not a JSON object');
+  assert.equal(at('{"permissions":"x"}'), 'has a `permissions` that is not an object');
+  assert.equal(at('{"permissions":{"deny":3}}'), 'has a `permissions.deny` that is not an array');
+  assert.equal(at('{"hooks":{"Stop":{}}}'), 'has a `hooks` block that is not the shape Claude Code documents');
+});
+
+test('the dry-run preview of a patch to an unparseable settings.json says --yes writes nothing at all', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), '{ ,');
+  const diff = renderDiff(d, sessionHookProposal);
+  assert.match(diff, /could not be parsed as a JSON object: it is not valid JSON/);
+  assert.match(diff, /--yes writes nothing at all/);
+});
+
+test('apply --yes with unreadable settings writes no hook script and exits 2', () => {
+  const d = fixture();
+  const broken = '{ "permissions": { "deny": ["Edit(secrets/**)"] }, }';
+  writeFileSync(join(d, '.claude/settings.json'), broken);
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', 'break settings');
+
+  const dry = spawnSync(process.execPath, [APPLY, d], { encoding: 'utf8' });
+  assert.equal(dry.status, 0, `a dry run writes nothing, so it has nothing to fail: ${dry.stderr}`);
+  assert.match(dry.stdout, /--yes writes nothing at all/);
+
+  const r = spawnSync(process.execPath, [APPLY, d, '--yes'], { encoding: 'utf8' });
+  assert.equal(r.status, 2, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, /\.claude\/settings\.json is not valid JSON/);
+  assert.equal(existsSync(join(d, '.claude/scripts')), false, 'no hook script may be installed that cannot be registered');
+  assert.equal(existsSync(join(d, 'HANDOFF.md')), false, 'nothing else is written either');
+  assert.equal(existsSync(join(d, '.claude/kh-harness.manifest.json')), false);
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), broken);
 });
