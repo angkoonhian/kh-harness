@@ -549,6 +549,9 @@ export function runUninstall({ root, manifest, plan }) {
   let settingsReadFailed = false, settingsMissing = false;
   let settingsWriteFailed = false, manifestWriteFailed = false;
   const patchesNotReverted = [];
+  // Declined for lack of provenance: a deliberate keep, like a file this run
+  // will not delete, and not a failure.
+  const patchesKept = [];
   const changedSincePlan = [];
   // Task 9b, finding 5: apply.mjs already discloses a settings.json reformat
   // (see its own `alreadyCanonical`); uninstall rewrites the same file via
@@ -614,7 +617,9 @@ export function runUninstall({ root, manifest, plan }) {
           settingsChanged = true;
           revertedInMemory.push(p);
         } else {
-          for (const k of r.kept) patchesNotReverted.push({ ...k.patch, why: k.reason });
+          for (const k of r.kept) {
+            (k.reason === 'not-generator-producible' ? patchesKept : patchesNotReverted).push({ ...k.patch, why: k.reason });
+          }
         }
       }
 
@@ -718,7 +723,7 @@ export function runUninstall({ root, manifest, plan }) {
   // some other patch later hit a write failure. Overwriting that with a
   // run-level flag made the durable record disagree with the truth the
   // caller is handed — and the record is the half that survives the process.
-  const keptPatches = patchesNotReverted.map(p => ({ ...p }));
+  const keptPatches = [...patchesNotReverted, ...patchesKept].map(p => ({ ...p }));
 
   // 4. Persist the manifest once, from actual outcomes
   // Guard both write and delete so the outcome is always returned
@@ -795,6 +800,7 @@ export function runUninstall({ root, manifest, plan }) {
     manifestDeleteFailed,
     changedSincePlan,
     patchesNotReverted,
+    patchesKept,
     removedDirs,
   };
 }

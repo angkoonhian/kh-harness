@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { classify, emptyManifest, sha256, writeManifest, MANIFEST_PATH } from './manifest.mjs';
 import { applyProposals, SETTINGS_PATH } from './apply-lib.mjs';
 import { planUninstall, runUninstall, markdownRemainder } from './uninstall-lib.mjs';
@@ -961,7 +963,8 @@ test('a forged patch naming the user\'s own deny rules reverts nothing and is re
 
   const result = runUninstall({ root: d, manifest, plan });
   assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), theirs, 'their deny rules are untouched');
-  assert.deepEqual(result.patchesNotReverted.map(p => p.why), ['not-generator-producible']);
+  assert.deepEqual(result.patchesKept.map(p => p.why), ['not-generator-producible']);
+  assert.deepEqual(result.patchesNotReverted, [], 'a deliberate keep is not a failed revert');
   assert.equal(existsSync(join(d, MANIFEST_PATH)), true, 'the record of what remains is kept');
   const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
   assert.deepEqual(after.settingsPatches.map(p => p.why), ['not-generator-producible']);
@@ -983,8 +986,43 @@ test('a forged patch whose hash matches a user\'s hook is kept because the scrip
 
   const result = runUninstall({ root: d, manifest, plan });
   assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), theirs, 'their hook is still registered');
-  assert.deepEqual(result.patchesNotReverted.map(p => p.why), ['not-generator-producible']);
+  assert.deepEqual(result.patchesKept.map(p => p.why), ['not-generator-producible']);
+  assert.deepEqual(result.patchesNotReverted, []);
   assert.equal(existsSync(join(d, MANIFEST_PATH)), true);
+});
+
+const UNINSTALL_CLI = new URL('../uninstall.mjs', import.meta.url);
+const uninstallYes = d => spawnSync(process.execPath, [fileURLToPath(UNINSTALL_CLI), d, '--yes'], { encoding: 'utf8' });
+
+test('a kept settings patch is listed under Kept and uninstall exits 0', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const theirs = JSON.stringify({ permissions: { deny: ['Bash(rm:*)'] } }, null, 2) + '\n';
+  writeFileSync(join(d, '.claude/settings.json'), theirs);
+  const { patch } = addDenyRules({}, ['Bash(rm:*)']);
+  writeManifest(d, forgedManifest([{ ...patch, step: 11, checkId: 'P2.protected' }]));
+
+  const r = uninstallYes(d);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /Kept:\n {2}\/permissions\/deny \(not-generator-producible\)/);
+  assert.doesNotMatch(r.stdout, /Could not revert:/);
+  assert.doesNotMatch(r.stdout, /nothing was left behind/);
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), theirs);
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), true, 'the record of what remains is kept');
+});
+
+test('a revert that fails to write still exits 2', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), '{}');
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
+  makeUnwritable(join(d, '.claude/settings.json'));
+
+  const r = uninstallYes(d);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stdout, /Could not revert:\n {2}\/hooks\/SessionStart \(settings-write-failed\)/);
+  assert.doesNotMatch(r.stdout, /Kept:/);
 });
 
 test('a genuine patch is still reverted', () => {
