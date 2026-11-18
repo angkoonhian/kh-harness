@@ -978,7 +978,7 @@ test('LAYER 1 does not redact a long file basename that is legitimately part of 
  * of the COMMAND, so a message embedded there could be stripped before
  * the signature is ever computed over it, collapsing two different
  * messages into the same output and making the dedupe assertions below
- * pass for the wrong reason. */
+ * pass for the wrong reason. An empty message lints clean. */
 function dedupeRepo() {
   const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
   mkdirSync(join(d, 'src'), { recursive: true });
@@ -988,6 +988,7 @@ function dedupeRepo() {
     join(d, 'runlint.cjs'),
     "const fs = require('fs'); const target = process.argv[2]; " +
     "const msg = fs.readFileSync('message.txt', 'utf8').trim(); " +
+    "if (!msg) process.exit(0); " +
     "console.error(target + ':1 ' + msg); process.exit(1);\n",
   );
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
@@ -1098,7 +1099,7 @@ test('DEDUPE: a DIFFERENT session for the same file is unaffected by a prior ses
   assert.doesNotMatch(r.stderr, /unchanged since the last edit/i, 'a fresh session\'s first report is the full diagnostic, not a borrowed terse line');
 });
 
-test('DEDUPE: a THIRD distinct error on the same file hits the per-file cap and is not reported', () => {
+test('a fourth distinct lint diagnostic on one file is reported with a count, never dropped', () => {
   const d = dedupeRepo();
   const s = 'dedupe-session-cap';
   setMessage(d, 'cap-problem-A');
@@ -1110,10 +1111,43 @@ test('DEDUPE: a THIRD distinct error on the same file hits the per-file cap and 
   // Sanity: three DISTINCT errors on the same file each actually report,
   // reaching the cap, before asserting anything about what happens next.
   assert.deepEqual([r1.code, r2.code, r3.code], [2, 2, 2], 'three distinct errors on one file must each report, reaching the cap');
+  assert.match(r3.stderr, /cap-problem-C/);
 
   setMessage(d, 'cap-problem-D');
   const r4 = run(d, editPayload('src/a.ts', s));
-  assert.equal(r4.code, 0, 'a fourth distinct error on the SAME file must not report once that file\'s cap is reached');
+  assert.equal(r4.code, 2, 'a fourth distinct error must still reach Claude');
+  assert.match(r4.stderr, /1 further distinct issues in src\/a\.ts; run the lint script/);
+  assert.doesNotMatch(r4.stderr, /cap-problem-D/, 'past the cap the report is the one-line count, not the diagnostic');
+
+  setMessage(d, 'cap-problem-E');
+  const r5 = run(d, editPayload('src/a.ts', s));
+  assert.equal(r5.code, 2);
+  assert.match(r5.stderr, /2 further distinct issues in src\/a\.ts; run the lint script/, 'the count advances with each new distinct issue');
+});
+
+test('a clean lint run clears that file\'s history', () => {
+  const d = dedupeRepo();
+  const s = 'dedupe-session-clean';
+  setMessage(d, 'recurring-problem');
+  assert.equal(run(d, editPayload('src/a.ts', s)).code, 2, 'sanity: the first report is in full');
+  setMessage(d, '');
+  assert.equal(run(d, editPayload('src/a.ts', s)).code, 0, 'sanity: the fixture lints clean');
+  setMessage(d, 'recurring-problem');
+  const recurred = run(d, editPayload('src/a.ts', s));
+  assert.equal(recurred.code, 2);
+  assert.match(recurred.stderr, /recurring-problem/, 'an error that returns after a clean run is reported in full again');
+  assert.doesNotMatch(recurred.stderr, /unchanged since the last edit/i, 'it is not a repeat: the file was clean in between');
+
+  for (const message of ['clean-cap-B', 'clean-cap-C']) {
+    setMessage(d, message);
+    assert.equal(run(d, editPayload('src/a.ts', s)).code, 2);
+  }
+  setMessage(d, '');
+  run(d, editPayload('src/a.ts', s));
+  setMessage(d, 'clean-cap-D');
+  const afterCap = run(d, editPayload('src/a.ts', s));
+  assert.equal(afterCap.code, 2);
+  assert.match(afterCap.stderr, /clean-cap-D/, 'the distinct-issue cap counts from the last clean run, not from the start of the session');
 });
 
 test('DEDUPE: with no session_id, every edit is reported — the dedupe simply does not engage', () => {

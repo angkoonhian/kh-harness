@@ -26,7 +26,7 @@ import {
   CREDENTIAL_SHAPES,
   dropCommandFragments,
   pathTokenExemptions,
-  MAX_BLOCKS_PER_SESSION,
+  MAX_REPORTS_SINCE_CLEAN,
   MAX_REPORT_BYTES,
   MAX_REPORT_LINES,
   markerDir,
@@ -604,10 +604,10 @@ test('signatureOf normalizes away an elapsed-time figure', () => {
   assert.equal(a, b, 'an elapsed-time figure must not make an otherwise-identical failure look different');
 });
 
-// --- MAX_BLOCKS_PER_SESSION -------------------------------------------
+// --- MAX_REPORTS_SINCE_CLEAN ------------------------------------------
 
-test('MAX_BLOCKS_PER_SESSION is the documented value of 3', () => {
-  assert.equal(MAX_BLOCKS_PER_SESSION, 3);
+test('MAX_REPORTS_SINCE_CLEAN is the documented value of 3', () => {
+  assert.equal(MAX_REPORTS_SINCE_CLEAN, 3);
 });
 
 // --- redactLines was removed (finding 8) -----------------------------

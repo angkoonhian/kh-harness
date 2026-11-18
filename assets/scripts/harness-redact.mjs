@@ -23,7 +23,7 @@
 //      10,000-character cap so it actually ARRIVES (see F3 below).
 //   3. SESSION-MARKER STATE — `safeSessionId`, `markerPath`,
 //      `readJSONMarker`/`writeJSONMarker`, `signatureOf`,
-//      `MAX_BLOCKS_PER_SESSION`: the per-session bookkeeping both process
+//      `MAX_REPORTS_SINCE_CLEAN`: the per-session bookkeeping both process
 //      hooks bound themselves with.
 //   4. THE PROJECT ROOT — `projectRoot`, the one answer all three hooks
 //      use (whole-branch review, F4: there were two).
@@ -618,7 +618,7 @@ export function parseRules(text) {
 //
 // Both lint-touched.mjs (dedupe a standing lint error per file) and
 // verify-touched.mjs (dedupe a standing verification failure, bound how
-// many times either ever blocks/reports per session) need the identical
+// many times either blocks/reports since its last clean run) need the identical
 // building blocks: a sanitized session_id, a safe-to-write location under
 // the OS temp directory, and a read/write pair that never throws. One copy
 // here instead of two, for the same reason the redaction layers are one
@@ -820,7 +820,7 @@ export function readJSONMarker(path, fallback) {
  * Writes a marker file and reports whether it actually landed on disk.
  * Never throws — but, critically, never PRETENDS success either. The
  * marker is the sole thing bounding how many times a caller may block or
- * report per session; a caller that swallows a write failure and proceeds
+ * report since its last clean run; a caller that swallows a write failure and proceeds
  * as if the state was recorded loses the bound it exists to provide, which
  * is strictly worse than under-blocking once. Every caller MUST check the
  * return value and fail open (skip the block/report) when it is `false`.
@@ -981,9 +981,13 @@ export function signatureOf(lines) {
   return createHash('sha256').update(normalizeForSignature(lines.join('\n')), 'utf8').digest('hex');
 }
 
-/** A self-imposed defence-in-depth bound, independent of (and stricter
- * than) the platform's own documented 8-consecutive-block Stop-hook cap
+/** How many distinct failures a hook reports in full since its last clean
+ * run: the Stop gate's blocks, or the lint sensor's diagnostics for one
+ * file. A clean run resets the count, so the bound limits churn on one
+ * unfixed problem and never silences a session. A self-imposed
+ * defence-in-depth bound, independent of (and stricter than) the platform's
+ * own documented 8-consecutive-block Stop-hook cap
  * (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, see verify-touched.mjs's header
  * comment) — shared so both hooks' own bounds move together if this value
  * is ever revisited. */
-export const MAX_BLOCKS_PER_SESSION = 3;
+export const MAX_REPORTS_SINCE_CLEAN = 3;

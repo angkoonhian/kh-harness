@@ -97,13 +97,15 @@ function repo(scripts = {}) {
  * now hit that exact confound four times). Reading the text from a file
  * the identical script opens at runtime means the command string never
  * varies, so redaction can never be what makes two fixtures look alike.
+ * An empty problem passes.
  */
 function failingRepo() {
   const d = mkdtempSync(join(tmpdir(), 'hk-stop-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { typecheck: 'node verify.cjs' } }));
   writeFileSync(
     join(d, 'verify.cjs'),
-    "console.error('typecheck: ' + require('fs').readFileSync('problem.txt', 'utf8').trim()); process.exit(1);\n",
+    "const p = require('fs').readFileSync('problem.txt', 'utf8').trim(); if (!p) process.exit(0); " +
+    "console.error('typecheck: ' + p); process.exit(1);\n",
   );
   return d;
 }
@@ -598,7 +600,7 @@ test('a different failure in the same session still blocks', () => {
   assert.match(r2.stderr, /problem-B/, 'sanity: the SECOND failure\'s own distinguishing text survives too — this is a real block, not a fluke');
 });
 
-test('CAP: a fourth distinct failure in the same session does not block — the 3-block cap is reached', () => {
+test('four consecutive failures with no pass block three times and then say the cap was reached', () => {
   const s = sid();
   // Same shape as the test above: one repository, one `typecheck` command,
   // byte-identical across every call — only problem.txt varies.
@@ -620,9 +622,37 @@ test('CAP: a fourth distinct failure in the same session does not block — the 
 
   setProblem(d, 'problem-D');
   const r4 = run(d, payload({ session_id: s }));
-  assert.equal(r4.code, 0, 'a fourth distinct failure must not block once the session has already blocked 3 times');
+  assert.equal(r4.code, 0, 'a fourth distinct failure must not block after 3 blocks with no pass between them');
   assert.match(JSON.parse(r4.stdout).systemMessage, /cap/i, 'the cap is announced where the user can see it');
   assert.equal(r4.stderr.trim(), '');
+});
+
+test('five distinct failures with a pass between each all block', () => {
+  const s = sid();
+  const d = failingRepo();
+  for (const problem of ['problem-A', 'problem-B', 'problem-C', 'problem-D', 'problem-E']) {
+    setProblem(d, problem);
+    const failed = run(d, payload({ session_id: s }));
+    assert.equal(failed.code, 2, `${problem} must block: the cap counts blocks since the last pass`);
+    assert.match(failed.stderr, new RegExp(problem));
+    setProblem(d, '');
+    const passed = run(d, payload({ session_id: s }));
+    assert.equal(passed.code, 0, 'sanity: the fixture passes');
+    assert.equal(passed.stdout.trim(), '', 'a pass says nothing');
+  }
+});
+
+test('fail, pass, the same failure again blocks again', () => {
+  const s = sid();
+  const d = failingRepo();
+  setProblem(d, 'problem-A');
+  assert.equal(run(d, payload({ session_id: s })).code, 2, 'sanity: the first failure blocks');
+  setProblem(d, '');
+  assert.equal(run(d, payload({ session_id: s })).code, 0, 'sanity: the fixture passes');
+  setProblem(d, 'problem-A');
+  const recurred = run(d, payload({ session_id: s }));
+  assert.equal(recurred.code, 2, 'a failure that returns after a pass is a new failure, not one already reported');
+  assert.match(recurred.stderr, /problem-A/);
 });
 
 // --- Finding 1: never block with an empty report body ---------------------

@@ -28,10 +28,14 @@
 //     reporting the identical failure twice does not block a second time,
 //     but a genuinely DIFFERENT failure later in the same session still
 //     gets its own block.
-//   - An absolute cap of 3 blocks per session (MAX_BLOCKS_PER_SESSION, in
-//     harness-redact.mjs) is the belt-and-braces backstop — if the
-//     signature normalization ever misses something volatile, the cap
-//     still bounds the damage instead of letting unbounded blocking return.
+//   - A cap of 3 blocks with no passing run between them
+//     (MAX_REPORTS_SINCE_CLEAN, in harness-redact.mjs) is the
+//     belt-and-braces backstop — if the signature normalization ever misses
+//     something volatile, the cap still bounds the damage instead of letting
+//     unbounded blocking return.
+//   - A passing run resets the block count and forgets the last failure, so
+//     neither bound silences the gate for the rest of a session: a failure
+//     that returns after a pass blocks again.
 //   - A verification run that exceeds the timeout bound is its OWN kind of
 //     failure: it blocks once (so Claude is actually told), is then
 //     recorded for the session so later turns skip running it again rather
@@ -58,7 +62,7 @@ import { delimiter, join } from 'node:path';
 import {
   boundReport,
   dropCommandFragments,
-  MAX_BLOCKS_PER_SESSION,
+  MAX_REPORTS_SINCE_CLEAN,
   markerPath,
   maskCredentials,
   pathTokenExemptions,
@@ -251,7 +255,8 @@ async function main() {
   // fingerprint and every turn runs.
   const fingerprint = treeFingerprint(root);
   if (fingerprint !== null && fingerprint === verifiedFingerprint) return 0;
-  // Keeps the rest of the marker (count, lastSignature) as it is.
+  // Keeps the rest of the marker (count, lastSignature) as it is unless
+  // `extra` overrides it.
   const remember = extra => writeJSONMarker(path, { count, lastSignature, timedOut: false, verifiedFingerprint: null, ...extra });
 
   const binDir = join(root, 'node_modules', '.bin');
@@ -272,7 +277,7 @@ async function main() {
   if (!result) return 0;
 
   if (result.timedOut) {
-    if (count >= MAX_BLOCKS_PER_SESSION) return 0;
+    if (count >= MAX_REPORTS_SINCE_CLEAN) return 0;
     // A fixed signature per `kind` — every timeout looks the same from
     // the outside (there is no output to differentiate it by), so this
     // deliberately collides with itself rather than with a real failure's
@@ -299,9 +304,13 @@ async function main() {
   if (result.error || result.signal) return 0;
 
   if (result.status === 0) {
-    // Verification passed — nothing to say; remember the tree it passed
-    // on, so an unchanged tree is not verified again this session.
-    if (fingerprint !== null) remember({ verifiedFingerprint: fingerprint });
+    // Verification passed — nothing to say. The block count and the last
+    // failure reset, so the cap bounds blocks since this pass and a failure
+    // that returns later is reported again. The tree it passed on is
+    // remembered, so an unchanged tree is not verified again this session.
+    if (count !== 0 || lastSignature !== null || fingerprint !== null) {
+      remember({ count: 0, lastSignature: null, verifiedFingerprint: fingerprint });
+    }
     return 0;
   }
 
@@ -315,14 +324,14 @@ async function main() {
   // config would be dropped as an echo of the command.
   const redacted = dropCommandFragments(rawLines, [picked.command], pathTokenExemptions(picked.command)).map(maskCredentials);
 
-  if (count >= MAX_BLOCKS_PER_SESSION) {
-    notice(`kh-harness: the stop gate's ${MAX_BLOCKS_PER_SESSION}-block cap for this session has been reached — letting the turn end.`);
+  if (count >= MAX_REPORTS_SINCE_CLEAN) {
+    notice(`kh-harness: the stop gate's ${MAX_REPORTS_SINCE_CLEAN}-block cap since the last passing "${picked.kind}" run has been reached — letting the turn end.`);
     return 0;
   }
 
   const signature = signatureOf(redacted);
   if (lastSignature === signature) {
-    notice(`kh-harness: this is the same "${picked.kind}" failure already reported this session — letting the turn end.`);
+    notice(`kh-harness: this is the same "${picked.kind}" failure already reported since the last passing run — letting the turn end.`);
     return 0;
   }
 
