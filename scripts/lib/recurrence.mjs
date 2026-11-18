@@ -15,7 +15,7 @@ export const SUCCESS_EVENT = 'PostToolUse';
 
 const HARNESS_EVENT = 'harness';
 const EXTERNAL_EVENT = 'external_content';
-const UNKNOWN = 'unknown';
+const UNREADABLE_BASE = 'unreadable';
 const MAX_EXAMPLE_REFS = 3;
 
 const ANSI = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g;
@@ -103,16 +103,31 @@ function sessionIds(dir) {
   return [...ids].sort();
 }
 
-const harnessField = v => (isString(v) && v.length > 0 ? v : UNKNOWN);
+/**
+ * The `{ base, model }` a `harness` event attributes later failures to, or
+ * null when it does not identify one. `harnessIdentity` reports `'none'`
+ * for a repository with no kit harness, a known state that groups like any
+ * hash, and `'unreadable'` when the manifest could not be read, which
+ * identifies nothing.
+ */
+function identityOf(event) {
+  const { base, model } = event;
+  if (!isString(base) || base.length === 0 || base === UNREADABLE_BASE) return null;
+  if (!isString(model) || model.length === 0) return null;
+  return { base, model };
+}
 
 /**
  * The failures that recur in at least `minSessions` distinct sessions of
- * one group, a group being the sessions' `base` and `model` as the most
- * recent `harness` event before each failure gives them (`unknown` before
- * any). Returns `{ recurrences, sessionsRead, sessionsUnreadable,
- * linesUnparseable }`: every session listed is read and counted in
- * `sessionsRead`, and one with a file that could not be read is also
- * counted in `sessionsUnreadable` while what it did yield is still used.
+ * one group, a group being the `base` and `model` of the most recent
+ * `harness` event before each failure. A failure with no such event, or
+ * whose latest one does not identify a harness and model, is never
+ * evidence of recurrence: it is left out of every group and counted in
+ * `failuresUnattributed`. Returns `{ recurrences, sessionsRead,
+ * sessionsUnreadable, linesUnparseable, failuresUnattributed }`: every
+ * session listed is read and counted in `sessionsRead`, and one with a file
+ * that could not be read is also counted in `sessionsUnreadable` while what
+ * it did yield is still used.
  *
  * Recurrences come most sessions first, then most occurrences, then by
  * signature. An example reference names the first occurrence in each of the
@@ -126,21 +141,25 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
   const groups = new Map();
   let sessionsUnreadable = 0;
   let linesUnparseable = 0;
+  let failuresUnattributed = 0;
   for (const sessionId of ids) {
     const { events, unparseable, unreadable } = readEvents(root, sessionId);
     if (unreadable) sessionsUnreadable++;
     linesUnparseable += unparseable;
     const external = events.some(e => e.type === EXTERNAL_EVENT);
-    let base = UNKNOWN;
-    let model = UNKNOWN;
+    let identity = null;
     events.forEach((event, index) => {
       if (event.type === HARNESS_EVENT) {
-        base = harnessField(event.base);
-        model = harnessField(event.model);
+        identity = identityOf(event);
         return;
       }
       const signature = failureSignature(event, root);
       if (signature === null) return;
+      if (identity === null) {
+        failuresUnattributed++;
+        return;
+      }
+      const { base, model } = identity;
       const key = JSON.stringify([base, model, signature]);
       let entry = groups.get(key);
       if (entry === undefined) {
@@ -163,6 +182,6 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
       sessions: [...sessions.keys()],
       exampleEventRefs: [...sessions].slice(0, MAX_EXAMPLE_REFS).map(([sessionId, line]) => ({ sessionId, line })),
     }))
-    .sort((a, b) => b.sessions.length - a.sessions.length || b.count - a.count || a.signature.localeCompare(b.signature));
-  return { recurrences, sessionsRead: ids.length, sessionsUnreadable, linesUnparseable };
+    .sort((a, b) => b.sessions.length - a.sessions.length || b.count - a.count || (a.signature < b.signature ? -1 : a.signature > b.signature ? 1 : 0));
+  return { recurrences, sessionsRead: ids.length, sessionsUnreadable, linesUnparseable, failuresUnattributed };
 }
