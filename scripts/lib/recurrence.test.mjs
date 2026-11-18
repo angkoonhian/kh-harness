@@ -55,6 +55,7 @@ test('the same failure in two sessions under one harness recurs', () => {
   assert.equal(result.sessionsRead, 2);
   assert.equal(result.sessionsUnreadable, 0);
   assert.equal(result.linesUnparseable, 0);
+  assert.equal(result.failuresUnattributed, 0);
   assert.equal(result.recurrences.length, 1);
   const [r] = result.recurrences;
   assert.equal(r.signature, failureSignature(failure('one'), root));
@@ -111,16 +112,48 @@ test('a learned-set change does not split a recurrence', () => {
   assert.equal(findRecurrences(root).recurrences.length, 1);
 });
 
-test('a session with no harness event is grouped as unknown, never with a known harness', () => {
+test('two sessions whose harness could not be read do not recur together', () => {
   const root = tempDir('hk-rec-repo-');
-  log(root, 'one', HARNESS, failure('one'));
-  log(root, 'two', failure('two'));
-  log(root, 'three', failure('three'));
-  const { recurrences } = findRecurrences(root);
+  log(root, 'one', { ...HARNESS, base: 'unreadable' }, failure('one'));
+  log(root, 'two', { ...HARNESS, base: 'unreadable' }, failure('two'));
+  log(root, 'three', { ...HARNESS, base: 7 }, failure('three'));
+  log(root, 'four', { type: 'harness', learned: 'learned-one', model: 'model-one' }, failure('four'));
+  const result = findRecurrences(root);
+  assert.deepEqual(result.recurrences, []);
+  assert.equal(result.failuresUnattributed, 4);
+});
+
+test('two sessions with no recorded model do not recur together', () => {
+  const root = tempDir('hk-rec-repo-');
+  log(root, 'one', { type: 'harness', base: 'base-one', learned: 'learned-one' }, failure('one'));
+  log(root, 'two', { ...HARNESS, model: '' }, failure('two'));
+  log(root, 'three', { ...HARNESS, model: 3 }, failure('three'));
+  const result = findRecurrences(root);
+  assert.deepEqual(result.recurrences, []);
+  assert.equal(result.failuresUnattributed, 3);
+});
+
+test('two sessions with no kit harness installed and the same model do recur', () => {
+  const root = tempDir('hk-rec-repo-');
+  log(root, 'one', { ...HARNESS, base: 'none' }, failure('one'));
+  log(root, 'two', { ...HARNESS, base: 'none' }, failure('two'));
+  log(root, 'three', HARNESS, failure('three'));
+  const { recurrences, failuresUnattributed } = findRecurrences(root);
   assert.equal(recurrences.length, 1);
-  assert.equal(recurrences[0].base, 'unknown');
-  assert.equal(recurrences[0].model, 'unknown');
-  assert.deepEqual(recurrences[0].sessions, ['three', 'two']);
+  assert.equal(recurrences[0].base, 'none');
+  assert.deepEqual(recurrences[0].sessions, ['one', 'two']);
+  assert.equal(failuresUnattributed, 0);
+});
+
+test('unattributed failures are counted', () => {
+  const root = tempDir('hk-rec-repo-');
+  log(root, 'one', failure('one'), HARNESS, failure('one'), { ...HARNESS, base: 'unreadable' }, failure('one'), failure('one'));
+  log(root, 'two', failure('two'), HARNESS, failure('two'), { type: SUCCESS_EVENT, tool_name: 'Read', inputHash: 'x' });
+  const result = findRecurrences(root);
+  assert.equal(result.failuresUnattributed, 4);
+  assert.equal(result.recurrences.length, 1);
+  assert.equal(result.recurrences[0].count, 2);
+  assert.deepEqual(result.recurrences[0].exampleEventRefs, [{ sessionId: 'one', line: 3 }, { sessionId: 'two', line: 3 }]);
 });
 
 test('a recurrence with any external session is marked external', () => {
@@ -130,6 +163,23 @@ test('a recurrence with any external session is marked external', () => {
   const { recurrences } = findRecurrences(root);
   assert.equal(recurrences.length, 1);
   assert.equal(recurrences[0].external, true);
+});
+
+test('an external_content event before the failure marks the recurrence external', () => {
+  const root = tempDir('hk-rec-repo-');
+  log(root, 'one', HARNESS, failure('one'));
+  log(root, 'two', { type: 'external_content' }, HARNESS, failure('two'));
+  const { recurrences } = findRecurrences(root);
+  assert.equal(recurrences.length, 1);
+  assert.equal(recurrences[0].external, true);
+});
+
+test('a recurrence with no external session is not marked external', () => {
+  const root = tempDir('hk-rec-repo-');
+  log(root, 'one', HARNESS, failure('one'));
+  log(root, 'two', HARNESS, failure('two'));
+  log(root, 'three', HARNESS, { type: 'external_content' });
+  assert.equal(findRecurrences(root).recurrences[0].external, false);
 });
 
 test('line numbers in the error do not split a signature', () => {
@@ -200,8 +250,27 @@ test('unparseable lines and unreadable files are counted, and what parsed is use
   assert.deepEqual(result.recurrences[0].sessions, ['one', 'two']);
 });
 
+test('one unreadable session is counted among the sessions read', () => {
+  const root = tempDir('hk-rec-repo-');
+  log(root, 'one', HARNESS, failure('one'));
+  log(root, 'two', HARNESS, failure('two'));
+  log(root, 'three', HARNESS, failure('three'));
+  writeFileSync(join(sessionsDir(root), `${sessionFileName('three')}.gz`), 'not gzip');
+  const result = findRecurrences(root);
+  assert.equal(result.sessionsRead, 3);
+  assert.equal(result.sessionsUnreadable, 1);
+  assert.equal(result.linesUnparseable, 0);
+  assert.deepEqual(result.recurrences[0].sessions, ['one', 'three', 'two']);
+});
+
 test('a repository with no log has read nothing', () => {
-  assert.deepEqual(findRecurrences(tempDir('hk-rec-repo-')), { recurrences: [], sessionsRead: 0, sessionsUnreadable: 0, linesUnparseable: 0 });
+  assert.deepEqual(findRecurrences(tempDir('hk-rec-repo-')), {
+    recurrences: [],
+    sessionsRead: 0,
+    sessionsUnreadable: 0,
+    linesUnparseable: 0,
+    failuresUnattributed: 0,
+  });
 });
 
 const ROOT = process.platform === 'win32' ? 'C:\\work\\repo' : '/work/repo';
