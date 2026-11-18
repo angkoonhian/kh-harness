@@ -6,13 +6,13 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
-import { appendLedger, LEDGER_KINDS, readLedger, verifyLedger } from './ledger.mjs';
+import { appendLedger, LEDGER_KINDS, LEDGER_LOCK_STALE_MS, readLedger, verifyLedger } from './ledger.mjs';
 
 const made = [];
 const tempDir = prefix => {
@@ -143,6 +143,48 @@ test('the rest of an entry is checked against its schema', () => {
   assert.throws(() => appendLedger(root, entry({ approvedBy: 'policy:' })), /approvedBy/);
   assert.throws(() => appendLedger(root, entry({ detail: 42 })), /detail/);
   assert.deepEqual(readLedger(root), []);
+});
+
+test('a lock older than the stale threshold is broken and the append succeeds', () => {
+  const root = tempDir('hk-ledger-repo-');
+  appendLedger(root, entry());
+  const lock = `${ledgerPath(root)}.lock`;
+  writeFileSync(lock, '');
+  const mtimeMs = statSync(lock).mtimeMs;
+  appendLedger(root, entry({ kind: 'replayed' }), { now: () => mtimeMs + LEDGER_LOCK_STALE_MS + 1000 });
+  assert.equal(LEDGER_LOCK_STALE_MS, 30_000);
+  assert.ok(!existsSync(lock));
+  assert.deepEqual(readLedger(root).map(e => e.kind), ['proposed', 'replayed']);
+  assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
+});
+
+test('a fresh lock held by another writer is waited for, not broken', async () => {
+  const root = tempDir('hk-ledger-repo-');
+  appendLedger(root, entry());
+  const lock = `${ledgerPath(root)}.lock`;
+  writeFileSync(lock, 'held');
+  // The holder releases after 400 ms, and exits 1 if its lock was taken from
+  // it in the meantime.
+  const holder = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { readFileSync, unlinkSync } from 'node:fs';
+    setTimeout(() => {
+      let held = false;
+      try { held = readFileSync(${JSON.stringify(lock)}, 'utf8') === 'held'; } catch {}
+      if (held) unlinkSync(${JSON.stringify(lock)});
+      process.exit(held ? 0 : 1);
+    }, 400);
+  `], { stdio: 'ignore' });
+  const exited = new Promise((resolve, reject) => {
+    holder.on('error', reject);
+    holder.on('close', resolve);
+  });
+  const start = Date.now();
+  // One second short of stale by the clock the append is given.
+  appendLedger(root, entry({ kind: 'replayed' }), { now: () => Date.now() + LEDGER_LOCK_STALE_MS - 1000 });
+  assert.ok(Date.now() - start >= 300, 'the append returned before the holder released');
+  assert.equal(await exited, 0);
+  assert.deepEqual(readLedger(root).map(e => e.kind), ['proposed', 'replayed']);
+  assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
 });
 
 test('twenty processes appending at once produce one intact chain', async () => {
