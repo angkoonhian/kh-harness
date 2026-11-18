@@ -51,21 +51,33 @@ function readTrimmed(path) {
   }
 }
 
+/** The nearest `.git` entry at or above `start`, with its stat, or null. */
+function nearestDotGit(start) {
+  for (let dir = resolve(start); ; dir = dirname(dir)) {
+    const dotGit = join(dir, '.git');
+    try {
+      return { dotGit, st: statSync(dotGit) };
+    } catch {
+      // nothing here: look one level up
+    }
+    if (dirname(dir) === dir) return null;
+  }
+}
+
 /**
- * The repository's git common directory, or null when `root` holds no
- * readable `.git`. A `.git` directory is its own common directory; a `.git`
- * file (a linked worktree or a submodule) names its git directory on a
- * `gitdir:` line, and that directory's `commondir` file, when present, names
- * the common one. Both may be relative to the directory holding them.
+ * The git common directory of the repository holding `root`, or null when
+ * no `.git` entry exists at or above it, or the nearest one cannot be
+ * followed. The search walks upward because a hook's project directory may
+ * be a sub-directory of the repository. A `.git` directory is its own common
+ * directory; a `.git` file (a linked worktree or a submodule) names its git
+ * directory on a `gitdir:` line, and that directory's `commondir` file, when
+ * present, names the common one. Both may be relative to the directory
+ * holding them.
  */
 function gitCommonDir(root) {
-  const dotGit = join(resolve(root), '.git');
-  let st;
-  try {
-    st = statSync(dotGit);
-  } catch {
-    return null;
-  }
+  const found = nearestDotGit(root);
+  if (found === null) return null;
+  const { dotGit, st } = found;
   if (st.isDirectory()) return dotGit;
   if (!st.isFile()) return null;
   const m = /^gitdir:\s*(.+)$/m.exec(readTrimmed(dotGit) ?? '');
