@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildGaps, STATES } from './gap-model.mjs';
+import { buildGaps, countProposals, STATES } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, GENERATORS } from './propose.mjs';
 import { hasEquivalentHook } from './settings-merge.mjs';
 import { UNREADABLE_KIND, splitExposures } from './detect-exposure.mjs';
 
@@ -1465,6 +1465,7 @@ test('the guard keeps a proposal when the rogue check\'s state genuinely is "abs
   const cs = buildRogueGaps([{
     id: 'ROGUE.absent', step: ROGUE_STEP, phase: 9,
     lookedFor: ['a rogue check that behaves correctly'],
+    viaWithoutGenerator: 'human',
     check: () => ({ state: 'absent', evidence: ['rogue'], proposal: 'this must survive' }),
   }]);
   const c = byId(cs, 'ROGUE.absent');
@@ -1499,11 +1500,73 @@ test('a question from a DECIDABLE check is not routed — the axis is what carri
   const cs = buildRogueGaps([{
     id: 'ROGUE.chatty', step: ROGUE_STEP, phase: 9,
     lookedFor: ['a rogue check that asks without admitting uncertainty'],
+    viaWithoutGenerator: 'human',
     check: () => ({ state: 'absent', evidence: ['rogue'], proposal: 'kept', question: 'this must not be routed' }),
   }]);
   const c = byId(cs, 'ROGUE.chatty');
   assert.equal(c.proposal, 'kept');
   assert.equal(c.question, null);
+});
+
+// --- Who closes a proposal: `via` -------------------------------------------
+//
+// A proposal is `apply` exactly when propose.mjs registers a generator for the
+// check's id; every other proposal is closed by the skill or by a human, and
+// apply has no way to write it.
+
+const VIAS = ['apply', 'skill', 'human'];
+
+test('a check with a proposal and no registered generator is never via apply', () => {
+  const lockfiled = { ...fullStack, packages: [{ ...fullStack.packages[0], scripts: ['lint', 'test'] }] };
+  const runs = [
+    gaps(bareStack, bareHarness),
+    gaps(lockfiled, bareHarness, [], undefined, ['package.json', 'package-lock.json']),
+    gaps({ ...lockfiled, isWorkspace: true, packages: [...lockfiled.packages, { name: 'api', dir: 'packages/api', manifestPath: 'packages/api/package.json', scripts: [] }] },
+      bareHarness, [], undefined, ['package.json', 'package-lock.json', 'packages/api/package.json']),
+  ];
+  const proposing = new Map();
+  for (const cs of runs) {
+    for (const c of cs) {
+      if (!c.proposal) {
+        assert.equal(c.via, null, `${c.id}: a check with no proposal has no via`);
+        continue;
+      }
+      assert.ok(VIAS.includes(c.via), `${c.id}: via ${JSON.stringify(c.via)}`);
+      assert.equal(c.via === 'apply', c.id in GENERATORS, `${c.id}: via is apply exactly when a generator is registered (got ${c.via})`);
+      proposing.set(c.id, c.via);
+    }
+  }
+  // The iteration reached both sides of the split, and the three known cases
+  // without a generator.
+  assert.ok([...proposing.values()].includes('apply'), JSON.stringify([...proposing]));
+  assert.equal(proposing.get('P0.recon'), 'skill');
+  assert.equal(proposing.get('P1.instructions'), 'skill');
+  assert.equal(proposing.get('P4.remote'), 'human');
+});
+
+test('a generator registered for a check id makes its proposal via apply, whatever the check says otherwise', () => {
+  const cs = buildRogueGaps([{
+    id: 'P4.handoff', step: ROGUE_STEP, phase: 9,
+    lookedFor: ['a check id that has a generator'],
+    viaWithoutGenerator: 'human',
+    check: () => ({ state: 'absent', evidence: [], proposal: 'written by apply' }),
+  }]);
+  assert.equal(byId(cs, 'P4.handoff').via, 'apply');
+});
+
+test('a proposal with no generator and no viaWithoutGenerator is refused, not guessed', () => {
+  assert.throws(() => buildRogueGaps([{
+    id: 'ROGUE.unowned', step: ROGUE_STEP, phase: 9,
+    lookedFor: ['a check that does not say who closes it'],
+    check: () => ({ state: 'absent', evidence: [], proposal: 'nobody writes this' }),
+  }]), /ROGUE\.unowned/);
+});
+
+test('countProposals counts each proposal under the one who closes it', () => {
+  const c = (id, via) => ({ id, proposal: via ? 'x' : null, via });
+  assert.deepEqual(countProposals([c('a', 'apply'), c('b', 'apply'), c('c', 'skill'), c('d', 'human'), c('e', null)]),
+    { apply: 2, skill: 1, human: 1 });
+  assert.throws(() => countProposals([{ id: 'f', proposal: 'x' }]), /f/);
 });
 
 // --- TWO-PATH AGREEMENT (coordinator ruling) ---

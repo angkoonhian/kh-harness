@@ -40,8 +40,8 @@ test('a repository that gitignores .claude/ still recognises its own hook as dec
   //
   // Whole-branch review, F2: this used to read `run(APPLY, d)`, which
   // structurally CANNOT exhibit the symptom — `propose.mjs` never
-  // re-proposes a file already in the manifest, so `apply` says "already
-  // satisfies" whatever `detect` reports. Run verbatim against the
+  // re-proposes a file already in the manifest, so `apply` says "no
+  // actions" whatever `detect` reports. Run verbatim against the
   // repository that actually had the defect, this assertion passed. The
   // symptom lives in DETECT's output, so that is what it reads now, and
   // both commands are asserted so a future divergence between them is a
@@ -50,7 +50,7 @@ test('a repository that gitignores .claude/ still recognises its own hook as dec
   const stillProposing = second.checks.filter(c => c.proposal && c.id in GENERATORS).map(c => c.id);
   assert.deepEqual(stillProposing, [],
     `detect must stop proposing anything apply can write: ${JSON.stringify(stillProposing)}`);
-  assert.match(run(APPLY, d), /no proposals|already satisfies/i);
+  assert.match(run(APPLY, d), /no actions/);
 });
 
 // Whole-branch review, F2 — the missing fixture, and the reason the defect
@@ -112,7 +112,7 @@ test('F2: a WORKSPACE that gitignores .claude/ — detect and apply agree about 
   const stillProposing = after.checks.filter(c => c.proposal && c.id in GENERATORS).map(c => c.id);
   assert.deepEqual(stillProposing, [],
     `detect must stop proposing anything apply can write: ${JSON.stringify(stillProposing)}`);
-  assert.match(run(APPLY, d), /no actions|already satisfies/i);
+  assert.match(run(APPLY, d), /no actions/);
 });
 
 // Whole-branch review, F2, second half: `under(files, '.claude/rules/')`
@@ -221,12 +221,12 @@ test('a user who replaces our hook with their own is told it is absent again, no
 test('apply names its own count "actions" and discloses the capability-gap count detect would report, rather than reusing "proposals" for both (Task 9b finding 7)', () => {
   const d = fixture();
   const detected = JSON.parse(run(DETECT, d, '--json'));
-  const gapCount = detected.checks.filter(c => c.proposal).length;
+  const gapCount = detected.checks.filter(c => c.via === 'apply').length;
 
   const out = run(APPLY, d);
   assert.doesNotMatch(out, /\d+ proposals? for/, 'apply must not reuse the word "proposals" for its own, larger count');
   assert.match(out, /\d+ actions? to close/, 'apply must name its own count differently');
-  assert.match(out, new RegExp(`${gapCount} capability gap`), 'the gap count named here must be the SAME number detect itself reports');
+  assert.match(out, new RegExp(`${gapCount} capability gap`), 'on a first run, the gaps apply closes are the ones detect says apply can write');
 });
 
 // --- Whole-branch review, F9 ----------------------------------------------

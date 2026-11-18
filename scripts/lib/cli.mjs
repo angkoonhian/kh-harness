@@ -113,8 +113,9 @@ Reports, per capability, one of: verified / declared / absent / failing / n/a,
 with the evidence it actually read. Writes exactly one file into the target
 repository, \`docs/harness/detect.json\`, and changes nothing else.
 
-An \`absent\` capability carries either a \`→\` proposal (\`apply\` can write this)
-or a question (detection could not decide, so it asks instead of guessing).
+An \`absent\` capability carries either a \`→\` proposal (the step that closes it;
+one \`apply\` cannot write says who does) or a question (detection could not
+decide, so it asks instead of guessing).
 "Advice" is a third thing: a gap that is fully known but that this tool will
 never write — it would mean editing your package manifest.
 
