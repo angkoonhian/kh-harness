@@ -269,7 +269,6 @@ const malformedManifests = [
   ['dirsCreated:"docs"', { dirsCreated: 'docs' }],
   ['settingsPatches:{}', { settingsPatches: {} }],
   ['settingsPatches:[null]', { settingsPatches: [null] }],
-  ['no settingsPatches', { settingsPatches: undefined }],
 ];
 const manifestWith = override => JSON.stringify({ ...emptyManifest('0.1.0'), ...override });
 
@@ -287,6 +286,14 @@ test('a manifest with a BOM, and with dirsCreated absent or a list of paths, rea
     write(d, MANIFEST_PATH, '﻿' + manifestWith({ files: [{ path: 'HANDOFF.md', sha256: sha256('x'), step: 16 }], ...override }));
     assert.equal(readManifestResult(d).state, 'ok', JSON.stringify(override));
   }
+});
+
+test('a manifest without a settingsPatches key reads as ok with an empty list', () => {
+  const d = repo();
+  write(d, MANIFEST_PATH, manifestWith({ settingsPatches: undefined }));
+  const r = readManifestResult(d);
+  assert.equal(r.state, 'ok');
+  assert.deepEqual(r.manifest.settingsPatches, []);
 });
 
 test('apply exits 3 and uninstall refuses on each', () => {
