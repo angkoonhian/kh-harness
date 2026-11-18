@@ -13,11 +13,15 @@ import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs
 
 const POLICY_FILE = 'policy.json';
 
-const isNonNegativeInteger = v => Number.isSafeInteger(v) && v >= 0;
+const isCount = v => Number.isSafeInteger(v) && v >= 0;
+
+// A threshold of zero would promote a gate that never fired, for which
+// "none marked wrong" proves nothing.
+const isThreshold = v => Number.isSafeInteger(v) && v >= 1;
 
 const FIELDS = {
-  minTrialFirings: { valid: isNonNegativeInteger, expected: 'a non-negative integer' },
-  minTrialSessions: { valid: isNonNegativeInteger, expected: 'a non-negative integer' },
+  minTrialFirings: { valid: isThreshold, expected: 'an integer of at least 1' },
+  minTrialSessions: { valid: isThreshold, expected: 'an integer of at least 1' },
   maxAction: { valid: v => v === 'warn' || v === 'block', expected: "'warn' or 'block'" },
 };
 
@@ -86,14 +90,17 @@ export function writePolicy(root, policy) {
 
 /**
  * Whether `policy` authorises promoting a learning with this trial record.
- * A null policy (no policy file) authorises nothing. Both thresholds are
- * inclusive. A learning with any firing marked wrong, or whose evidence
- * includes a session flagged for outside content, is never promoted by
- * policy. How far it may be promoted is `policy.maxAction`, the caller's
- * concern.
+ * It fails closed: anything other than a valid policy (null when there is no
+ * policy file) authorises nothing, and so does a trial record whose counts
+ * are not non-negative integers or whose `external` is not exactly `false`.
+ * Both thresholds are inclusive. A learning with any firing marked wrong, or
+ * whose evidence includes a session flagged for outside content, is never
+ * promoted by policy. How far it may be promoted is `policy.maxAction`, the
+ * caller's concern.
  */
-export function policyAllows(policy, { firings, sessions, wrong, external }) {
-  if (policy === null) return false;
-  if (wrong > 0 || external) return false;
+export function policyAllows(policy, { firings, sessions, wrong, external } = {}) {
+  if (invalidReason(policy) !== null) return false;
+  if (![firings, sessions, wrong].every(isCount)) return false;
+  if (wrong !== 0 || external !== false) return false;
   return firings >= policy.minTrialFirings && sessions >= policy.minTrialSessions;
 }

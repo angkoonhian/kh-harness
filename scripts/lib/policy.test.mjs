@@ -45,6 +45,41 @@ test('one wrong mark blocks promotion', () => {
   assert.equal(policyAllows(POLICY, { ...MET, firings: 100, sessions: 100, wrong: 1 }), false);
 });
 
+test('a missing wrong count or external flag blocks promotion', () => {
+  const { wrong: _w, ...noWrong } = MET;
+  const { external: _e, ...noExternal } = MET;
+  assert.equal(policyAllows(POLICY, noWrong), false);
+  assert.equal(policyAllows(POLICY, noExternal), false);
+  assert.equal(policyAllows(POLICY, { firings: 5, sessions: 2 }), false);
+  assert.equal(policyAllows(POLICY), false);
+});
+
+test('malformed trial counts block promotion', () => {
+  for (const bad of [undefined, null, NaN, -1, 1.5, '5', Infinity]) {
+    assert.equal(policyAllows(POLICY, { ...MET, firings: bad }), false, `firings ${String(bad)}`);
+    assert.equal(policyAllows(POLICY, { ...MET, sessions: bad }), false, `sessions ${String(bad)}`);
+    assert.equal(policyAllows(POLICY, { ...MET, wrong: bad }), false, `wrong ${String(bad)}`);
+  }
+  for (const bad of [undefined, null, 0, '', 'false']) {
+    assert.equal(policyAllows(POLICY, { ...MET, external: bad }), false, `external ${String(bad)}`);
+  }
+});
+
+test('anything but a valid policy allows nothing', () => {
+  const invalid = [
+    undefined,
+    null,
+    [],
+    { ...POLICY, minTrialFirings: 0 },
+    { ...POLICY, maxAction: 'observe' },
+    { minTrialFirings: 5, maxAction: 'warn' },
+    { ...POLICY, allowExternal: true },
+  ];
+  for (const policy of invalid) {
+    assert.equal(policyAllows(policy, { ...MET, firings: 100, sessions: 100 }), false, JSON.stringify(policy));
+  }
+});
+
 test('external evidence blocks promotion', () => {
   assert.equal(policyAllows(POLICY, { ...MET, firings: 100, sessions: 100, external: true }), false);
 });
@@ -66,7 +101,7 @@ test('a written policy reads back with the hash writePolicy returned', () => {
 test('rewriting a policy replaces it', () => {
   const root = tempDir('hk-policy-repo-');
   writePolicy(root, POLICY);
-  const next = { minTrialFirings: 0, minTrialSessions: 0, maxAction: 'block' };
+  const next = { minTrialFirings: 1, minTrialSessions: 1, maxAction: 'block' };
   const sha256 = writePolicy(root, next);
   assert.deepEqual(readPolicy(root), { state: 'ok', policy: next, sha256 });
 });
@@ -85,6 +120,8 @@ test('a malformed policy file is unreadable with a reason', () => {
     ['[]', /object/],
     ['null', /object/],
     [JSON.stringify({ ...POLICY, minTrialFirings: -1 }), /minTrialFirings/],
+    [JSON.stringify({ ...POLICY, minTrialFirings: 0 }), /minTrialFirings must be an integer of at least 1/],
+    [JSON.stringify({ ...POLICY, minTrialSessions: 0 }), /minTrialSessions must be an integer of at least 1/],
     [JSON.stringify({ ...POLICY, minTrialFirings: 1.5 }), /minTrialFirings/],
     [JSON.stringify({ ...POLICY, minTrialSessions: '2' }), /minTrialSessions/],
     [JSON.stringify({ ...POLICY, maxAction: 'observe' }), /maxAction/],
@@ -100,8 +137,17 @@ test('a malformed policy file is unreadable with a reason', () => {
   }
 });
 
+test('a policy.json that is a directory reads as unreadable', () => {
+  const root = tempDir('hk-policy-repo-');
+  mkdirSync(join(repoDataDir(root), 'policy.json'), { recursive: true });
+  const read = readPolicy(root);
+  assert.equal(read.state, 'unreadable');
+  assert.match(read.reason, /cannot be read/);
+});
+
 test('writePolicy refuses a policy readPolicy would reject', () => {
   const root = tempDir('hk-policy-repo-');
   assert.throws(() => writePolicy(root, { ...POLICY, maxAction: 'observe' }), /maxAction/);
+  assert.throws(() => writePolicy(root, { ...POLICY, minTrialSessions: 0 }), /minTrialSessions/);
   assert.deepEqual(readPolicy(root), { state: 'absent' });
 });
