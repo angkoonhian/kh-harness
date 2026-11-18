@@ -15,7 +15,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { classify, emptyManifest, sha256 } from './manifest.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
-import { readJsonFile, UTF8_BOM } from './read-json.mjs';
+import { readJsonFile, stripBom, UTF8_BOM } from './read-json.mjs';
 
 const SETTINGS_PATH = '.claude/settings.json';
 
@@ -343,7 +343,7 @@ function matchingNewline(raw) {
 export function isCanonicalJson(raw) {
   if (raw == null) return true;
   try {
-    return raw === serializeSettings(JSON.parse(raw.startsWith(UTF8_BOM) ? raw.slice(1) : raw), raw);
+    return raw === serializeSettings(JSON.parse(stripBom(raw)), raw);
   } catch {
     return true;
   }

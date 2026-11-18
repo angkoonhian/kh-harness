@@ -366,8 +366,8 @@ if (settingsProblem) {
 }
 
 // Coordinator finding (Minor): a settings-hook/deny write re-serialises
-// the WHOLE file (JSON.stringify at the file's own indentation — see
-// detectIndent) — if the user's own settings.json was not already in
+// the WHOLE file (`serializeSettings`: the file's own BOM, indentation and
+// trailing newline are kept) — if the user's own settings.json was not already in
 // exactly that form (compact, a different key order, ...), applying a
 // patch reformats everything else in the file too, not just what is
 // listed above. Captured BEFORE applyProposals runs, since that call may rewrite
@@ -381,9 +381,9 @@ if (settingsProblem) {
 // compared against `JSON.stringify(...) + '\n'` unconditionally, so a
 // settings.json already in exactly this tool's own form but with no trailing
 // newline was misclassified and this note was printed over a diff with
-// nothing reformatted in it. `isCanonicalJson` (apply-lib.mjs, beside the
-// `matchingNewline` that was the whole difference) is the one predicate both
-// callers read now.
+// nothing reformatted in it. `isCanonicalJson` (apply-lib.mjs, which compares
+// against the same `serializeSettings` both writers call) is the one predicate
+// both callers read now.
 function readRawIfPresent(path) {
   if (!existsSync(path)) return null;
   try { return readFileSync(path, 'utf8'); } catch { return null; }

@@ -19,7 +19,7 @@ test('a file under a path whose parent is a plain file is absent, not unreadable
 
 test('a settings.json with a BOM is read', () => {
   const d = dir();
-  const text = '﻿{"permissions":{"deny":["Edit(x)"]}}\n';
+  const text = '\uFEFF{"permissions":{"deny":["Edit(x)"]}}\n';
   writeFileSync(join(d, 'settings.json'), text, 'utf8');
   const r = readJsonFile(join(d, 'settings.json'));
   assert.equal(r.state, 'ok');
@@ -29,7 +29,7 @@ test('a settings.json with a BOM is read', () => {
 
 test('only one leading BOM is stripped', () => {
   const d = dir();
-  writeFileSync(join(d, 'settings.json'), '﻿﻿{}', 'utf8');
+  writeFileSync(join(d, 'settings.json'), '\uFEFF\uFEFF{}', 'utf8');
   assert.equal(readJsonFile(join(d, 'settings.json')).state, 'unreadable');
 });
 
