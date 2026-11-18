@@ -53,6 +53,22 @@ test('two worktrees of one repository map to one key', () => {
   assert.equal(repoDataDir(wt), repoDataDir(main));
 });
 
+test('a sub-directory of a repository maps to the repository\'s key', () => {
+  const repo = gitRepo();
+  const sub = join(repo, 'packages', 'api');
+  mkdirSync(sub, { recursive: true });
+  assert.equal(repoKey(sub), repoKey(repo));
+});
+
+test('a sub-directory of a worktree maps to the same key as the main checkout', () => {
+  const main = gitRepo();
+  const wt = join(tempDir('hk-log-wt-'), 'wt');
+  git(main, 'worktree', 'add', '-q', wt);
+  const sub = join(wt, 'src', 'deep');
+  mkdirSync(sub, { recursive: true });
+  assert.equal(repoKey(sub), repoKey(main));
+});
+
 test('different repositories map to different keys', () => {
   assert.notEqual(repoKey(gitRepo()), repoKey(gitRepo()));
 });
