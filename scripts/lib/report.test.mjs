@@ -225,6 +225,18 @@ test('with no proposals the summary names how many checks are still absent and h
   assert.match(s, /^No proposals — 1 check still absent, 1 question open\.$/m);
 });
 
+test('with no proposals and a failing check the summary says how many are failing', () => {
+  const failing = { id: 'P0.security', step: 3, phase: 0, state: 'failing', lookedFor: [], evidence: [], proposal: null, via: null };
+  const s = renderSummary(buildReport({ ...base, stack: { ...stack, packages: [] }, checks: [failing] }));
+  assert.match(s, /^No proposals — 0 checks still absent, 1 failing, 0 questions open\.$/m);
+});
+
+test('a repository with nothing absent, nothing failing and no question gets the plain sentence', () => {
+  const verified = { id: 'P0.inventory', step: 2, phase: 0, state: 'verified', lookedFor: [], evidence: [], proposal: null, via: null };
+  const s = renderSummary(buildReport({ ...base, stack: { ...stack, packages: [] }, checks: [verified] }));
+  assert.match(s, /^No proposals — nothing is outstanding\.$/m);
+});
+
 test('the proposal count says how many apply can write and how many it cannot', () => {
   const s = renderSummary(buildReport({ ...base, checks: [
     absentCheck('P1.bootstrap', { proposal: 'create scripts/bootstrap.sh', via: 'apply' }),
