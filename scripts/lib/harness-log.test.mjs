@@ -5,14 +5,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   canonicalJson,
   dataRoot,
   GATES_PATH,
+  harnessIdentity,
   isEnabled,
   LOCAL_GATES_FILE,
   readConfig,
@@ -179,4 +180,158 @@ test('canonicalJson: nested objects are sorted', () => {
     canonicalJson({ z: { y: [{ b: 'x', a: null }], x: true }, a: 'q' }),
     '{"a":"q","z":{"x":true,"y":[{"a":null,"b":"x"}]}}',
   );
+});
+
+const HOOK = '.claude/scripts/session-log.mjs';
+const RULES = 'docs/harness/RULES.md';
+const LEARNED = 'docs/harness/LEARNED.md';
+const MANIFEST = '.claude/kh-harness.manifest.json';
+
+const gate = (id, extra = {}) => ({ id, tool: 'Bash', field: 'command', match: { kind: 'literal', value: 'rm -rf' }, action: 'observe', message: 'no', ...extra });
+
+const writeAt = (root, rel, body) => {
+  mkdirSync(dirname(join(root, rel)), { recursive: true });
+  writeFileSync(join(root, rel), body);
+};
+
+/** A repository as `apply` and one landed learning leave it: every file
+ * below is recorded in the manifest, the scaffolded RULES.md and the learned
+ * files included. */
+function installedRepo({ settingsPatches = [{ event: 'PreToolUse', entrySha256: 'e1' }] } = {}) {
+  const root = tempDir('hk-log-ident-');
+  const files = { [HOOK]: '// hook\nexport {};\n', [RULES]: '# Rules\n', [LEARNED]: '# Learned\n', [GATES_PATH]: JSON.stringify([gate('L1')]) + '\n' };
+  for (const [rel, body] of Object.entries(files)) writeAt(root, rel, body);
+  const manifest = { schema: 1, kitVersion: '0.9.0', files: Object.keys(files).map(path => ({ path, sha256: 'recorded' })), settingsPatches };
+  writeAt(root, MANIFEST, JSON.stringify(manifest, null, 2) + '\n');
+  return root;
+}
+
+test('harnessIdentity: base and learned are SHA-256 hex and kitVersion comes from the manifest', () => {
+  const id = harnessIdentity(installedRepo());
+  assert.match(id.base, /^[0-9a-f]{64}$/);
+  assert.match(id.learned, /^[0-9a-f]{64}$/);
+  assert.equal(id.kitVersion, '0.9.0');
+});
+
+test('editing an installed hook changes base', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root);
+  writeAt(root, HOOK, '// hook, edited by hand\nexport {};\n');
+  const after = harnessIdentity(root);
+  assert.notEqual(after.base, before.base);
+  assert.equal(after.learned, before.learned);
+});
+
+test('deleting an installed hook changes base', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root).base;
+  rmSync(join(root, HOOK));
+  assert.notEqual(harnessIdentity(root).base, before);
+});
+
+test('a CRLF checkout does not change base', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root);
+  for (const rel of [HOOK, RULES, LEARNED, GATES_PATH]) {
+    writeFileSync(join(root, rel), readFileSync(join(root, rel), 'utf8').replace(/\n/g, '\r\n'));
+  }
+  assert.deepEqual(harnessIdentity(root), before);
+});
+
+test('a lone CR is not normalised away', () => {
+  const root = installedRepo();
+  writeAt(root, HOOK, 'a\nb\n');
+  const before = harnessIdentity(root).base;
+  writeAt(root, HOOK, 'a\rb\n');
+  assert.notEqual(harnessIdentity(root).base, before);
+});
+
+test('a change to the settings patches changes base', () => {
+  const a = installedRepo();
+  const b = installedRepo({ settingsPatches: [{ event: 'PreToolUse', entrySha256: 'e2' }] });
+  assert.notEqual(harnessIdentity(a).base, harnessIdentity(b).base);
+  assert.equal(harnessIdentity(a).learned, harnessIdentity(b).learned);
+});
+
+test('adding a local trial gate changes learned and not base', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root);
+  mkdirSync(repoDataDir(root), { recursive: true });
+  writeFileSync(join(repoDataDir(root), LOCAL_GATES_FILE), JSON.stringify([gate('L2')]));
+  const after = harnessIdentity(root);
+  assert.notEqual(after.learned, before.learned);
+  assert.equal(after.base, before.base);
+});
+
+test('landing a gate in the tree changes learned and not base', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root);
+  writeAt(root, GATES_PATH, JSON.stringify([gate('L1'), gate('L2')]) + '\n');
+  writeAt(root, LEARNED, '# Learned\n\n## L2 — second\n');
+  const after = harnessIdentity(root);
+  assert.notEqual(after.learned, before.learned);
+  assert.equal(after.base, before.base);
+});
+
+test('editing docs/harness/RULES.md changes neither', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root);
+  writeAt(root, RULES, '# Rules\n\n## R1 — the owner\'s rule\n');
+  assert.deepEqual(harnessIdentity(root), before);
+});
+
+test('a gate\'s action does not change learned; its content does', () => {
+  const root = installedRepo();
+  const before = harnessIdentity(root).learned;
+  writeAt(root, GATES_PATH, JSON.stringify([gate('L1', { action: 'block' })]));
+  assert.equal(harnessIdentity(root).learned, before);
+  writeAt(root, GATES_PATH, JSON.stringify([gate('L1', { message: 'changed' })]));
+  assert.notEqual(harnessIdentity(root).learned, before);
+});
+
+test('learned does not depend on the order the gates are written in', () => {
+  const root = installedRepo();
+  writeAt(root, GATES_PATH, JSON.stringify([gate('L1'), gate('L2')]));
+  const before = harnessIdentity(root).learned;
+  writeAt(root, GATES_PATH, JSON.stringify([gate('L2'), gate('L1')]));
+  assert.equal(harnessIdentity(root).learned, before);
+});
+
+test('a damaged gate file changes learned', () => {
+  const root = installedRepo();
+  rmSync(join(root, GATES_PATH));
+  const absent = harnessIdentity(root).learned;
+  const seen = new Set([absent]);
+  for (const body of ['{ not json', '{"gates":[]}', '[1]', '[{"tool":"Bash"}]']) {
+    writeAt(root, GATES_PATH, body);
+    const damaged = harnessIdentity(root).learned;
+    assert.notEqual(damaged, absent, body);
+    seen.add(damaged);
+  }
+  assert.equal(seen.size, 2, 'every kind of damage contributes the one literal "unreadable"');
+});
+
+test('no manifest yields base none', () => {
+  const id = harnessIdentity(tempDir('hk-log-ident-bare-'));
+  assert.equal(id.base, 'none');
+  assert.equal(id.kitVersion, null);
+  assert.match(id.learned, /^[0-9a-f]{64}$/);
+});
+
+test('an unreadable or malformed manifest yields base unreadable', () => {
+  const root = installedRepo();
+  const bodies = [
+    '{ not json', 'null', '[]', '{"schema":2,"files":[]}', '{"schema":1}',
+    '{"schema":1,"files":[{"sha256":"x"}]}', '{"schema":1,"files":[],"settingsPatches":{}}',
+    '{"schema":1,"files":[{"path":"../outside.txt"}]}', '{"schema":1,"files":[{"path":"/etc/hosts"}]}',
+  ];
+  for (const body of bodies) {
+    writeAt(root, MANIFEST, body);
+    const id = harnessIdentity(root);
+    assert.equal(id.base, 'unreadable', body);
+    assert.equal(id.kitVersion, null, body);
+  }
+  rmSync(join(root, MANIFEST));
+  mkdirSync(join(root, MANIFEST));
+  assert.equal(harnessIdentity(root).base, 'unreadable', 'a manifest path that cannot be read as a file');
 });
