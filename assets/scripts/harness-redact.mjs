@@ -79,7 +79,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /**
  * Whitespace-delimited tokens of length >= 8 drawn from `command`, in
@@ -124,20 +124,28 @@ const CARRIES_USERINFO = /:\/\/|@/;
  * Exempt: (a) a token that is a DIRECTORY prefix of one of `paths` (whole
  * segments — `src/comp` is not a prefix of `src/components/x`), with a
  * leading `./` or trailing `/` tolerated, or the path itself; (b) a token
- * shaped like a config file (`CONFIG_SHAPED`). Never exempt: a token whose
- * flag name is credential-shaped (`CREDENTIAL_FLAG`). Only tokens `commandTokens`
- * would produce are returned, so the result composes with it directly.
+ * shaped like a config file (`CONFIG_SHAPED`); (c) when `root` is given, a
+ * token that resolves against `root` to a path that exists inside it
+ * (`tsc -p packages/app`). Never exempt: a token whose flag name is
+ * credential-shaped (`CREDENTIAL_FLAG`). Only tokens `commandTokens` would
+ * produce are returned, so the result composes with it directly.
  */
-export function pathTokenExemptions(command, paths = []) {
+export function pathTokenExemptions(command, paths = [], root = null) {
   const normalized = paths.map(p => p.replace(/^\.\//, '').replace(/\/+$/, ''));
   const isDirPrefixOrSelf = token => {
     const t = token.replace(/^\.\//, '').replace(/\/+$/, '');
     return t.length > 0 && normalized.some(p => p === t || p.startsWith(t + '/'));
   };
+  const existsUnderRoot = token => {
+    if (root === null) return false;
+    const abs = resolve(root, token);
+    const rel = relative(root, abs);
+    return rel !== '' && rel.split(sep)[0] !== '..' && !isAbsolute(rel) && existsSync(abs);
+  };
   const exempt = new Set();
   for (const token of commandTokens(command)) {
     if (CREDENTIAL_FLAG.test(token) || CARRIES_USERINFO.test(token)) continue;
-    if (isDirPrefixOrSelf(token) || CONFIG_SHAPED.test(token)) exempt.add(token);
+    if (isDirPrefixOrSelf(token) || CONFIG_SHAPED.test(token) || existsUnderRoot(token)) exempt.add(token);
   }
   return exempt;
 }
@@ -145,13 +153,17 @@ export function pathTokenExemptions(command, paths = []) {
 /**
  * Layer 1. `commands` is every raw command string the calling hook itself
  * built (e.g. `[lintScript, fullCommand]`, or a single verify command) —
- * each is checked both as a whole-string match (the "shell echoes the
- * entire line" case) and tokenized for the fragment case.
+ * each is checked both as a whole line (the "shell echoes the entire
+ * command" case) and tokenized for the fragment case. The whole-command
+ * rule compares the full line, never a substring: a one-word script such
+ * as `eslint` or `jest` is below the token floor, and as a substring it
+ * matched every diagnostic that names the tool.
  */
 export function dropCommandFragments(lines, commands, exemptions = new Set()) {
+  const echoes = new Set(commands.map(c => c.trim()));
   const tokens = [...new Set(commands.flatMap(c => commandTokens(c, exemptions)))];
   return lines.filter(l => {
-    if (commands.some(c => l.includes(c))) return false;
+    if (echoes.has(l.trim())) return false;
     return !tokens.some(t => l.includes(t));
   });
 }
