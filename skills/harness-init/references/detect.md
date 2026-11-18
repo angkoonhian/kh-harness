@@ -37,17 +37,26 @@ any phase reference — see the first-run rule in `SKILL.md`.
      never claims more than what it read; if evidence is thin, the state
      reflects that rather than rounding up.
    - `proposal` — present only on a check that is `absent` AND decidable
-     (see below): something `apply` can write once the user confirms it.
+     (see below): the step that closes the gap.
+   - `via` — who closes that proposal, `null` when there is none: `apply`
+     when `propose.mjs` registers a generator for the check's id (something
+     `apply` writes once the user confirms it); `skill` when this skill
+     drafts it (`P0.recon`, `P1.instructions`, `P1.architecture`,
+     `P3.intent`); `human` when only the user can (`P4.remote`).
    - `question` — present only on a check that is `absent` AND NOT
      decidable: something detection could not derive and will not guess at.
    - `advice` — independent of the proposal/question split: a gap that is
      fully known but that this tool deliberately never writes itself (for
      example, a missing `lint` script — adding one means editing a
      package's own manifest, which is outside what `apply` will touch).
-2. **Proposals** — the number `renderSummary` prints is `countProposals`:
-   how many CHECKS carry a `proposal`. This is a count of capability gaps,
-   not of individual file writes. `apply` may turn one gap into several
-   writes, so do not expect this number to match anything `apply` reports.
+2. **Proposals** — the numbers `renderSummary` prints are `countProposals`:
+   how many CHECKS carry a `proposal`, split by `via` into
+   `{ apply, skill, human }`. These are counts of capability gaps, not of
+   individual file writes. `apply` may turn one gap into several writes
+   ("actions"), and names the gaps those actions close; only the `apply`
+   share can ever appear there. With no proposals at all, the line names how
+   many checks are still `absent` and how many questions are open — it never
+   says the repository is complete.
 3. **Advice and "Could not derive"** — printed as two further sections,
    after the phase-by-phase check listing and the Exposures section:
    every check's `advice`, and the questions collected in

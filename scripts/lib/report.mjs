@@ -4,6 +4,20 @@ import { countProposals } from './gap-model.mjs';
 
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
 const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 3: 'Intent', 4: 'Continuity' };
+const UNWRITTEN_NOTE = {
+  skill: ' (the skill drafts this; apply does not write it)',
+  human: ' (a human does this; apply does not write it)',
+};
+
+const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+/** What is left when nothing more can be written: a count of what was found,
+ * never a claim that the repository is complete. Shared with `apply`, so the
+ * two commands cannot word it differently. */
+export function stillOpen(checks, questions) {
+  const absent = checks.filter(c => c.state === 'absent').length;
+  return `${plural(absent, 'check')} still absent, ${plural(questions.length, 'question')} open`;
+}
 
 export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} }) {
   const out = [];
@@ -138,7 +152,7 @@ export function renderSummary(report) {
     for (const c of report.checks.filter(x => x.phase === phase)) {
       lines.push(`  ${MARK[c.state]} ${c.id.padEnd(18)} ${c.state}`);
       for (const e of c.evidence) lines.push(`        ${e}`);
-      if (c.proposal) lines.push(`      → ${c.proposal}`);
+      if (c.proposal) lines.push(`      → ${c.proposal}${UNWRITTEN_NOTE[c.via] ?? ''}`);
     }
     lines.push('');
   }
@@ -151,13 +165,16 @@ export function renderSummary(report) {
 
   lines.push(...exposureSectionLines(report.exposures, report.nested ?? []));
 
-  const n = countProposals(report.checks);
-  lines.push(n === 0 ? 'No proposals — this repository already satisfies every applicable step.' : `${n} proposal${n === 1 ? '' : 's'}. Nothing has been written except docs/harness/detect.json.`);
+  const { apply, skill, human } = countProposals(report.checks);
+  const n = apply + skill + human;
+  lines.push(n === 0
+    ? `No proposals — ${stillOpen(report.checks, report.couldNotDerive)}.`
+    : `${plural(n, 'proposal')}: ${apply} apply can write, ${skill} for the skill to draft, ${human} for a human. Nothing has been written except docs/harness/detect.json.`);
 
-  // Distinct from proposals, deliberately: a proposal is "the tool will do
-  // this"; advice is "you should do this, but kh-harness will not" (e.g.
-  // P2.scripts — see gap-model.mjs's own comment on why package.json is
-  // never written). Folding these into the `→` proposal lines above would
+  // Distinct from proposals, deliberately: a proposal is "this closes the
+  // gap", with who closes it (`via`); advice is "you should do this, but
+  // kh-harness will not" (e.g. P2.scripts — see gap-model.mjs's own comment
+  // on why package.json is never written). Folding these into the `→` proposal lines above would
   // blur a line a reader must be able to trust without re-deriving it.
   const advice = report.checks.flatMap(c => c.advice ?? []);
   if (advice.length) {

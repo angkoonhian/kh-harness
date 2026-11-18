@@ -11,10 +11,10 @@ import { detectStack } from './lib/detect-stack.mjs';
 import { detectHarness } from './lib/detect-harness.mjs';
 import { detectExposures } from './lib/detect-exposure.mjs';
 import { selectProfile } from './lib/profiles/index.mjs';
-import { buildGaps, countProposals } from './lib/gap-model.mjs';
+import { buildGaps } from './lib/gap-model.mjs';
 import { gitInfo, defaultBranches } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
-import { deriveCouldNotDerive, exposureSectionLines, DETECT_REPORT_PATH } from './lib/report.mjs';
+import { deriveCouldNotDerive, exposureSectionLines, stillOpen, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
@@ -236,6 +236,7 @@ const checks = buildGaps({ stack, harness, exposures, profile, git, files, root,
 // copy of the formatting, and the questions are counted by the SAME
 // function (`deriveCouldNotDerive`) so neither can drift from what `detect`
 // would say.
+const questions = deriveCouldNotDerive({ stack, checks, nested, profile });
 function reportWhatDetectionFound() {
   const out = [];
   const exposureLines = exposureSectionLines(exposures, nested);
@@ -250,7 +251,6 @@ function reportWhatDetectionFound() {
   }
   // Printed inline (audit Tier 4, finding 20): this used to point at
   // `detect` for sentences this run already held.
-  const questions = deriveCouldNotDerive({ stack, checks, nested, profile });
   if (questions.length) {
     const s = questions.length === 1 ? '' : 's';
     out.push(`kh-harness: ${questions.length} question${s} this run could not answer:`);
@@ -293,29 +293,19 @@ function reportDrift() {
 }
 
 if (proposals.length === 0) {
-  if (drift.length === 0) {
-    process.stdout.write('kh-harness: no actions — this repository already satisfies every applicable step.\n');
-  } else {
-    process.stdout.write(`kh-harness: no actions for ${root}.\n`);
-    reportDrift();
-  }
+  process.stdout.write(`kh-harness: no actions for ${root} — nothing apply can write; ${stillOpen(checks, questions)}.\n`);
+  reportDrift();
   process.exit(0);
 }
 
-// Task 9b, finding 7: `proposals.length` (every file write and settings
-// patch this run would make) and `detect`'s own "N proposals" (every
-// CAPABILITY GAP with an actionable next step) count two different things
-// for the same repository — one gap like P2.sensor expands into three
-// writes here. Both used to be printed as "N proposals", inviting a reader
-// to diff numbers that were never comparable. `countProposals` (gap-
-// model.mjs) is the exact function `detect`'s own report reads, so the
-// gap count named here can never drift from what `detect` would say; this
-// run's own, larger number is named "actions" instead of reusing the word
-// detect already owns.
-const gapCount = countProposals(checks);
+// An action is one file write or settings patch, and one gap can need
+// several, so the two counts are named apart. The gaps counted are the
+// checks these actions belong to — not every gap `detect` proposes for,
+// some of which only the skill or a human can close.
+const gapCount = new Set(proposals.map(p => p.checkId)).size;
 process.stdout.write(
   `kh-harness: ${proposals.length} action${proposals.length === 1 ? '' : 's'} to close ` +
-  `${gapCount} capability gap${gapCount === 1 ? '' : 's'} (as detect reports them) for ${root}\n\n`,
+  `${gapCount} capability gap${gapCount === 1 ? '' : 's'} for ${root}\n\n`,
 );
 // renderDiff is read-only, but it is not infallible by construction — it is
 // a backstop, not the primary defence (readSettingsResult's shape checks

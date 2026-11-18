@@ -7,7 +7,7 @@ import { selectProfile } from './profiles/index.mjs';
 const stack = { languages: ['typescript'], packageManager: 'pnpm', isWorkspace: true,
   packages: Array.from({ length: 7 }, (_, i) => ({ name: `p${i}`, dir: `packages/p${i}`, manifestPath: `packages/p${i}/package.json`, scripts: [] })), ci: [] };
 const checks = [
-  { id: 'P1.bootstrap', step: 5, phase: 1, state: 'absent', lookedFor: [], evidence: [], proposal: 'create scripts/bootstrap.sh' },
+  { id: 'P1.bootstrap', step: 5, phase: 1, state: 'absent', lookedFor: [], evidence: [], proposal: 'create scripts/bootstrap.sh', via: 'apply' },
   { id: 'P1.instructions', step: 6, phase: 1, state: 'declared', lookedFor: [], evidence: ['CLAUDE.md (28 lines)'], proposal: null },
   { id: 'P2.sensor', step: 9, phase: 2, state: 'n/a', lookedFor: [], evidence: [], proposal: null },
 ];
@@ -210,6 +210,38 @@ test('renderSummary omits the collapsed-count line entirely when there is nothin
 });
 
 test('renderSummary names phase 3 Intent', () => {
-  const r = buildReport({ ...base, checks: [{ id: 'P3.rules', step: 27, phase: 3, state: 'absent', lookedFor: [], evidence: [], proposal: 'scaffold it' }] });
+  const r = buildReport({ ...base, checks: [{ id: 'P3.rules', step: 27, phase: 3, state: 'absent', lookedFor: [], evidence: [], proposal: 'scaffold it', via: 'apply' }] });
   assert.match(renderSummary(r), /Phase 3 — Intent/);
+});
+
+// --- The summary line says what is true -------------------------------------
+
+const absentCheck = (id, extra) => ({ id, step: 4, phase: 0, state: 'absent', lookedFor: [], evidence: [], proposal: null, via: null, ...extra });
+
+test('with no proposals the summary names how many checks are still absent and how many questions are open', () => {
+  const asking = absentCheck('P2.sensor', { decidable: false, question: 'what lints a file?' });
+  const s = renderSummary(buildReport({ ...base, stack: { ...stack, packages: [] }, checks: [asking] }));
+  assert.doesNotMatch(s, /already satisfies/);
+  assert.match(s, /^No proposals — 1 check still absent, 1 question open\.$/m);
+});
+
+test('the proposal count says how many apply can write and how many it cannot', () => {
+  const s = renderSummary(buildReport({ ...base, checks: [
+    absentCheck('P1.bootstrap', { proposal: 'create scripts/bootstrap.sh', via: 'apply' }),
+    absentCheck('P0.recon', { proposal: 'run the recon prompt', via: 'skill' }),
+    absentCheck('P1.instructions', { proposal: 'run the instruction-file prompt', via: 'skill' }),
+    absentCheck('P4.remote', { proposal: 'add a git remote', via: 'human' }),
+  ] }));
+  assert.match(s, /^4 proposals: 1 apply can write, 2 for the skill to draft, 1 for a human\. Nothing has been written except docs\/harness\/detect\.json\.$/m);
+});
+
+test('a proposal apply cannot write says so on its own line', () => {
+  const s = renderSummary(buildReport({ ...base, checks: [
+    absentCheck('P1.bootstrap', { proposal: 'create scripts/bootstrap.sh', via: 'apply' }),
+    absentCheck('P0.recon', { proposal: 'run the recon prompt', via: 'skill' }),
+    absentCheck('P4.remote', { proposal: 'add a git remote', via: 'human' }),
+  ] }));
+  assert.match(s, /→ create scripts\/bootstrap\.sh$/m);
+  assert.match(s, /→ run the recon prompt \(the skill drafts this; apply does not write it\)$/m);
+  assert.match(s, /→ add a git remote \(a human does this; apply does not write it\)$/m);
 });

@@ -88,9 +88,14 @@ target repository, `docs/harness/detect.json`, and changes nothing else. Commit
 that file or ignore it as you prefer: `apply`'s dirty-tree gate treats it as the
 kit's own write, so a re-generated report never blocks the next `apply`.
 
-An `absent` capability carries either a `→` **proposal** (`apply` can write
-this) or a **question** (detection could not decide, so it asks rather than
-guesses). **Advice** is a third thing: a gap that is fully known but that this
+An `absent` capability carries either a `→` **proposal** (the step that closes
+it) or a **question** (detection could not decide, so it asks rather than
+guesses). A proposal names who closes it: `apply` writes most of them; the
+`harness-init` skill drafts the recon, the instruction file, the architecture
+document and the intent document; adding a git remote is left to you. The
+summary counts the three apart, and `apply` says when nothing is left that it
+can write, with how many checks are still absent and how many questions are
+open. **Advice** is a third thing: a gap that is fully known but that this
 tool will never write, because closing it means editing your package manifest
 — the file most likely to be hand-tuned, and the one this tool must not touch.
 

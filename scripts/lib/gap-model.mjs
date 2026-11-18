@@ -17,30 +17,41 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // one source of truth, so the check and the generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, SENSOR_MATCHER } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, SENSOR_MATCHER, GENERATORS } from './propose.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
 /**
- * Task 9b, finding 7: on one unchanged repository, `detect` reported
- * "7 proposals" and `apply` reported "10 proposals" for the very same run —
- * both internally consistent (detect counts CAPABILITY GAPS with an
- * actionable next step; apply counts the individual file WRITES and
- * settings PATCHES needed to close them — one gap like P2.sensor can
- * expand into three of those), but sharing the word "proposals" invites a
- * reader to diff two numbers that were never meant to be comparable.
+ * Counts CAPABILITY GAPS with a proposal, per `via` (see `buildGaps`): only
+ * the `apply` share is something `apply` can write. This is not `apply`'s
+ * "actions" count, which is file writes and settings patches — one gap like
+ * P2.sensor needs three.
  *
- * This is the one place that counts capability gaps, so report.mjs's
- * renderSummary and apply.mjs both read the SAME count from it rather than
- * two independent `.filter(...)` calls that could silently drift apart —
- * and apply.mjs names its own, larger number differently ("actions"), so
- * neither count is wrong and the relationship between them is explicit
- * instead of implied by a shared noun.
+ * A proposal without a known `via` throws: a count that guessed would print
+ * a share nothing stands behind.
  */
 export function countProposals(checks) {
-  return checks.filter(c => c.proposal).length;
+  const counts = { apply: 0, skill: 0, human: 0 };
+  for (const c of checks) {
+    if (!c.proposal) continue;
+    if (!Object.hasOwn(counts, c.via)) throw new TypeError(`countProposals: ${c.id} carries a proposal with via ${JSON.stringify(c.via)}`);
+    counts[c.via] += 1;
+  }
+  return counts;
+}
+
+/** Who closes a decidable proposal: `apply` exactly when a generator is
+ * registered for the check's id, so adding a generator moves a proposal to
+ * `apply` with no edit to its check. Otherwise the check's own
+ * `viaWithoutGenerator` names whether the skill drafts it or a human does it;
+ * a check that proposes without one throws, rather than be counted as
+ * something `apply` will write. */
+function proposalVia(def) {
+  if (Object.hasOwn(GENERATORS, def.id)) return 'apply';
+  if (def.viaWithoutGenerator === 'skill' || def.viaWithoutGenerator === 'human') return def.viaWithoutGenerator;
+  throw new TypeError(`buildGaps: ${def.id} proposes, but no generator is registered for it and it names no viaWithoutGenerator ('skill' or 'human')`);
 }
 
 const MAX_INSTRUCTION_LINES = 150;
@@ -399,6 +410,7 @@ const CHECKS = [
   {
     id: 'P0.recon', step: 4, phase: 0,
     lookedFor: ['docs/harness/recon.md'],
+    viaWithoutGenerator: 'skill',
     check: ({ harness }) => harness.reconPresent
       ? { state: 'declared', evidence: ['docs/harness/recon.md'] }
       : { state: 'absent', proposal: 'run the recon prompt to write docs/harness/recon.md' },
@@ -475,6 +487,7 @@ const CHECKS = [
   {
     id: 'P1.instructions', step: 6, phase: 1,
     lookedFor: ['CLAUDE.md', 'AGENTS.md'],
+    viaWithoutGenerator: 'skill',
     check: ({ harness }) => {
       const { path, lines } = harness.instructions;
       if (!path) return { state: 'absent', proposal: 'run the instruction-file prompt to derive CLAUDE.md from recon' };
@@ -486,6 +499,7 @@ const CHECKS = [
   {
     id: 'P1.architecture', step: 7, phase: 1,
     lookedFor: ['docs/ARCHITECTURE.md', 'documentation the instruction file points at'],
+    viaWithoutGenerator: 'skill',
     // Three sources, in order of how directly they answer the question:
     //   1. a canonical path — decided;
     //   2. a path the repository's own instruction file points at — decided;
@@ -640,6 +654,7 @@ const CHECKS = [
     id: 'P3.intent', step: 26, phase: 3,
     // See the docPointers branch below.
     lookedFor: [INTENT_PATH, 'documentation the instruction file points at', 'any documentation-shaped file'],
+    viaWithoutGenerator: 'skill',
     // Mirrors P1.architecture's three-way split, for the same decidability
     // reason: the canonical path is decided; "docs exist somewhere, but
     // not there" is NOT — a repository whose statement of purpose lives in
@@ -968,6 +983,8 @@ const CHECKS = [
   {
     id: 'P4.remote', step: 15, phase: 4,
     lookedFor: ['at least one git remote'],
+    // Adding a remote needs a URL and an account only the owner has.
+    viaWithoutGenerator: 'human',
     check: ({ harness }) => harness.remotes.length
       ? { state: 'declared', evidence: harness.remotes.map(r => r.name) }
       : { state: 'absent', proposal: 'add a git remote so the harness is backed up off this machine' },
@@ -1044,12 +1061,12 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
         if (install) {
           return { id: def.id, step: def.step, phase: def.phase, state: 'absent',
             lookedFor: def.lookedFor, evidence: [], decidable: true, question: null,
-            proposal: 'create scripts/bootstrap.sh from template', advice: [] };
+            proposal: 'create scripts/bootstrap.sh from template', via: proposalVia(def), advice: [] };
         }
       }
       return { id: def.id, step: def.step, phase: def.phase, state: 'n/a',
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
-        decidable: true, question: null, proposal: null, advice: [] };
+        decidable: true, question: null, proposal: null, via: null, advice: [] };
     }
     const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest });
     // The second axis, enforced in the same place and for the same reason.
@@ -1060,6 +1077,8 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
     // question instead. A check declares which it is, but the dropping happens
     // here, never in the check — same as the proposal guard below.
     const decidable = r.decidable !== false;
+    // The invariant, enforced centrally: only a decidable `absent` may propose.
+    const proposal = (r.state === 'absent' && decidable) ? (r.proposal ?? null) : null;
     return {
       id: def.id, step: def.step, phase: def.phase,
       state: r.state, lookedFor: def.lookedFor, evidence: r.evidence ?? [],
@@ -1072,8 +1091,8 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
       // tool will not write it"). Defaults to `[]`, like `evidence`, so every
       // check's returned shape is uniform whether or not it ever sets this.
       advice: r.advice ?? [],
-      // The invariant, enforced centrally: only a decidable `absent` may propose.
-      proposal: (r.state === 'absent' && decidable) ? (r.proposal ?? null) : null,
+      proposal,
+      via: proposal ? proposalVia(def) : null,
     };
   });
 }

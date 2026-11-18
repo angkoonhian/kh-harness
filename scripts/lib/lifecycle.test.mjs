@@ -729,6 +729,36 @@ test('apply after a CRLF conversion of the kit\'s own files reports no "kept (mo
   assert.match(out, /no actions/, 'nothing is left to do: every file is still recognised as ours');
 });
 
+// --- What apply's summary lines claim ----------------------------------------
+
+test('apply with nothing to write names how many checks are still absent and how many questions are open', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'accept kh-harness settings patch');
+  const detected = JSON.parse(run(DETECT, d, '--json'));
+  const absent = detected.checks.filter(c => c.state === 'absent').length;
+  const questions = detected.couldNotDerive.length;
+  assert.ok(absent > 0, 'fixture sanity: checks apply has no generator for are still absent');
+
+  const out = run(APPLY, d);
+  assert.doesNotMatch(out, /already satisfies/, out);
+  const s = n => (n === 1 ? '' : 's');
+  assert.ok(out.includes(`kh-harness: no actions for ${d} — nothing apply can write; ${absent} check${s(absent)} still absent, ${questions} question${s(questions)} open.`), out);
+});
+
+test('the action count equals the number of gaps those actions close', () => {
+  const d = fixture();
+  const detected = JSON.parse(run(DETECT, d, '--json'));
+  const out = run(APPLY, d);
+  const [, actions, gaps] = out.match(/(\d+) actions? to close (\d+) capability gaps?/) ?? [];
+  const labels = [...out.matchAll(/^--- .*  \[([^\]]+)\]$/gm)].map(m => m[1]);
+  assert.equal(Number(actions), labels.length, out);
+  assert.equal(Number(gaps), new Set(labels).size, out);
+  // Fixture sanity: detect also proposes what apply cannot write, which is
+  // the count this line used to report.
+  assert.ok(detected.checks.filter(c => c.proposal).length > new Set(labels).size);
+});
+
 test('a complete apply-then-uninstall cycle leaves git status clean when settings.json existed before apply (Task 9b finding 5)', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-cleangit-'));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
