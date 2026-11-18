@@ -177,6 +177,17 @@ test('a private key printed across several lines of test output is masked in ful
   assert.match(r.stderr, /expected: undefined/, 'the line after the key survives');
 });
 
+test('a line echoing a verify command that carries a credential is still dropped', () => {
+  const token = ['sk-live', 'ECHOLEAK0002REAL'].join('-'); // assembled: a provider-token shape in this file's own source
+  const command = `node echo.cjs ${token}`;
+  const d = repo({ typecheck: command });
+  writeFileSync(join(d, 'echo.cjs'), `console.error(${JSON.stringify(command + '\n' + 'typecheck: oops')}); process.exit(1);\n`);
+  const r = run(d, payload());
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /typecheck: oops/);
+  assert.doesNotMatch(r.stderr, /node echo\.cjs/, `the echoed command line must be dropped, not reported masked: ${JSON.stringify(r.stderr)}`);
+});
+
 // --- Audit Tier 3, finding 12: overflow discarded the run; exit-0 notices
 // --- went to stderr, which Claude Code never shows ---------------------------
 
