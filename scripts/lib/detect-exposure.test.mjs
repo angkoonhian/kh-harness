@@ -724,7 +724,48 @@ test('the sweep and the mask recognise the same shapes', () => {
 
     const masked = maskCredentials(line);
     assert.equal(masked.includes(secret), false, `${id}: the mask left the secret in ${masked}`);
+    // The mask is a superset of the sweep: whatever any sweep pattern finds
+    // on the line, the mask removes.
+    for (const s of CREDENTIAL_SHAPES) {
+      for (const m of line.matchAll(s.pattern)) {
+        const found = s.kind === 'token' ? m[0] : m.groups.value;
+        assert.equal(masked.includes(found), false, `${id}: ${s.id} found ${found}, which the mask left in ${masked}`);
+      }
+    }
   }
+});
+
+test('a PEM private key is found whatever else its header line carries', () => {
+  const header = glue(' ', '-----BEGIN RSA', 'PRIVATE KEY-----');
+  const block = suffix => `${header}${suffix}\nMIIEowIBAAKCAQEAx1q2w3e4\n${glue(' ', '-----END RSA', 'PRIVATE KEY-----')}\n`;
+  for (const [rel, content] of [
+    ['page.html', `<pre>${block('</pre>')}`],
+    ['keys.yml', `key: ${block(' # example key')}`],
+    ['notes.md', block(' <your-key-follows> redacted')],
+  ]) {
+    const d = repo();
+    write(d, rel, content);
+    assert.deepEqual(run(d).map(e => [e.kind, e.line]), [['token-in-repo-file', 1]], rel);
+  }
+});
+
+test('a quoted credential with no closing quote, an escaped quote or a triple quote is found', () => {
+  for (const line of [
+    assign('password', '"hunter2 secret value'),
+    [glue('', '"pass', 'word"'), String.raw`"abc\"defghijklmnop"`].join(': '),
+    assign('password', '"""tr0ub4dor&3secret"""'),
+  ]) {
+    const d = repo();
+    write(d, '.env', line + '\n');
+    const found = run(d);
+    assert.deepEqual(found.map(e => [e.kind, e.valueKind]), [['credentials-in-doc', 'literal']], line);
+  }
+});
+
+test('=> is an assignment the sweep reads', () => {
+  const d = repo();
+  write(d, 'config.php', `${["'password'", "'hunter2hunter2',"].join(' => ')}\n`);
+  assert.deepEqual(run(d).map(e => [e.kind, e.valueKind]), [['credentials-in-doc', 'literal']]);
 });
 
 test('a value the sweep already reports as a token is not reported a second time as a credential line', () => {

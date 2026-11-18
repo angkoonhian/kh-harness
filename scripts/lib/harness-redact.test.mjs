@@ -140,10 +140,14 @@ test('CREDENTIAL_SHAPES is frozen and every entry carries the documented fields'
   const ids = new Set();
   for (const shape of CREDENTIAL_SHAPES) {
     assert.ok(Object.isFrozen(shape), shape.id);
-    assert.deepEqual(Object.keys(shape).sort(), ['id', 'kind', 'pattern', 'severity'], shape.id);
+    const keys = Object.keys(shape).sort();
+    assert.ok(['id,kind,pattern,severity', 'id,kind,maskPattern,pattern,severity'].includes(keys.join()), `${shape.id}: ${keys}`);
     assert.ok(['token', 'keyed'].includes(shape.kind), shape.id);
     assert.equal(shape.severity, 'high', shape.id);
-    assert.ok(shape.pattern instanceof RegExp && shape.pattern.global, `${shape.id}: a global pattern, so every match is seen`);
+    for (const re of [shape.pattern, shape.maskPattern ?? shape.pattern]) {
+      assert.ok(re instanceof RegExp && re.global, `${shape.id}: a global pattern, so every match is seen`);
+    }
+    if (shape.kind === 'keyed' && shape.maskPattern) assert.match(shape.maskPattern.source, /\(\?<value>/, shape.id);
     assert.equal(ids.has(shape.id), false, `duplicate id ${shape.id}`);
     ids.add(shape.id);
   }
@@ -160,14 +164,23 @@ test('every credential shape stays linear on long adversarial lines', () => {
     'Bearer' + ' '.repeat(n),
     Array.from({ length: n }, (_, i) => 'Ab1_-'[i % 5]).join(''),
     ['password', ' '.repeat(n)].join(''),
+    ['password', ' '.repeat(n), '=>'].join(''),
+    ['password', '"' + 'a'.repeat(n)].join('='),
+    ['password', '"' + '\\"'.repeat(n / 2)].join('='),
+    ['password', '"""' + '""\\'.repeat(n / 3)].join('='),
+    ['password', "'''" + "''x".repeat(n / 3)].join('='),
+    'Basic' + ' '.repeat(n),
+    'sk-' + '-'.repeat(n),
     '://u:' + 'x'.repeat(n),
     'eyJ'.repeat(n / 3),
   ];
   for (const shape of CREDENTIAL_SHAPES) {
-    const started = performance.now();
-    for (const text of inputs) for (const _ of text.matchAll(shape.pattern)) { /* drain */ }
-    const ms = performance.now() - started;
-    assert.ok(ms < 2000, `${shape.id} took ${Math.round(ms)} ms over ${inputs.length} inputs of ${n} characters`);
+    for (const re of new Set([shape.pattern, shape.maskPattern ?? shape.pattern])) {
+      const started = performance.now();
+      for (const text of inputs) for (const _ of text.matchAll(re)) { /* drain */ }
+      const ms = performance.now() - started;
+      assert.ok(ms < 2000, `${shape.id} (${re === shape.pattern ? 'pattern' : 'maskPattern'}) took ${Math.round(ms)} ms over ${inputs.length} inputs of ${n} characters`);
+    }
   }
 });
 
@@ -308,6 +321,39 @@ test('a quoted value containing spaces is masked to its closing quote', () => {
   const colon = (k, v) => [k, v].join(': ');
   assert.equal(maskCredentials(colon('password', '"correct horse battery staple" # note')), 'password: *** # note');
   assert.equal(maskCredentials(colon('"password"', "'correct horse battery staple',")), '"password": ***,');
+});
+
+test('a quote with no closing quote, an escaped quote and a triple quote are each masked whole', () => {
+  const eq = (k, v) => [k, v].join('=');
+  assert.equal(maskCredentials(eq('password', '"hunter2 secret value')), eq('password', '***'), 'an unclosed quote runs to the end of the line');
+  assert.equal(maskCredentials(['"password"', String.raw`"abc\"defghijklmnop"`].join(': ')), '"password": ***');
+  assert.equal(maskCredentials(eq('password', "'abc\\'defghijklmnop', next")), eq('password', '***, next'));
+  assert.equal(maskCredentials(eq('password', '"""tr0ub4dor&3secret""" # py')), eq('password', '*** # py'));
+  assert.equal(maskCredentials(eq('password', "'''tr0ub4dor&3secret'''")), eq('password', '***'));
+});
+
+test('=> is an assignment for keyed shapes, and == is not', () => {
+  assert.equal(maskCredentials(["'password'", "'hunter2hunter2',"].join(' => ')), "'password' => ***,");
+  assert.equal(maskCredentials(['"api_key"', '"hunter2hunter2"'].join('=>')), '"api_key"=>***');
+  const comparison = ['if (password', '= expected)'].join(' =');
+  assert.equal(maskCredentials(comparison), comparison);
+});
+
+test('the mask is broader than the sweep: short Bearer, Basic, ghp_, glpat- and sk-<word>- values are masked', () => {
+  const cases = [
+    ['Bearer', 'abcd1234'].join(' '),
+    ['Basic', 'dXNlcjpw'].join(' '),
+    ['ghp', 'Ab1Cd2Ef3G'].join('_'),
+    ['glpat', 'Ab1Cd2Ef3G'].join('-'),
+    ['sk-live', 'Ab1Cd2Ef3G'].join('-'),
+  ];
+  for (const line of cases) {
+    const secret = line.split(/[ _]|-(?=Ab1)/).at(-1);
+    assert.equal(maskCredentials(`got ${line} back`).includes(secret), false, line);
+  }
+  for (const line of ['Bearer tokens', 'Basic auth', 'const ghp_client = make()', 'see sk-learn docs']) {
+    assert.equal(maskCredentials(line), line, `${line}: below every mask floor`);
+  }
 });
 
 // --- runBounded / killTree (shared process runner, audit Tier 3) -----------

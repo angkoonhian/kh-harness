@@ -178,6 +178,16 @@ export function dropCommandFragments(lines, commands, exemptions = new Set()) {
  * colour code's final `m` is a letter, so ANSI sequences are stripped before
  * any line is matched (see `maskCredentials`).
  *
+ * The mask is a superset of the sweep. A shape's optional `maskPattern`
+ * replaces `pattern` for the mask only, with a lower floor or a looser body:
+ * a mask that hides too much costs a diagnostic, one that hides too little
+ * leaks a secret into the model's context. The sweep uses `pattern` alone,
+ * because a finding it reports must be worth reading.
+ *
+ * `severity` is the severity of the sweep's finding for a token shape. A
+ * keyed shape's finding is a credential line, whose severity the sweep sets
+ * from the value and the path.
+ *
  * Every pattern is global and is shared, so use it only through `matchAll`
  * and `replace`, which do not depend on `lastIndex`. Length floors sit far
  * below each vendor's real token length and above the ordinary identifiers
@@ -186,24 +196,32 @@ export function dropCommandFragments(lines, commands, exemptions = new Set()) {
 const PEM_HEADER = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 const PEM_FOOTER = /-----END [A-Z ]*PRIVATE KEY-----/;
 
-// A keyed value: a quoted string up to its closing quote (spaces included),
-// or an unquoted run that stops at whitespace, `,` or `;`. Quotes inside an
-// unquoted run are kept so `config.get('x')` stays one value for the sweep's
-// reference check.
-const KEYED_VALUE = String.raw`(?<value>"[^"\n]*"|'[^'\n]*'|[^\s"',;][^\s,;]*)`;
-// `=` or `:`, never the first character of `==`, `===` or `=>`.
-const ASSIGN = String.raw`\s*[:=](?![=>])\s*`;
+// A keyed value: a quoted string through its closing quote, spaces and
+// backslash escapes included, or to the end of the line when the quote never
+// closes; a Python triple quote counts as one quote. Otherwise an unquoted
+// run that stops at whitespace, `,` or `;`. Quotes inside an unquoted run are
+// kept so `config.get('x')` stays one value for the sweep's reference check.
+// Each alternative's repeated part has disjoint branches, so a match is
+// linear in the line's length.
+const KEYED_VALUE = String.raw`(?<value>"""(?:(?!""")[^\\\r\n]|\\.)*(?:""")?|'''(?:(?!''')[^\\\r\n]|\\.)*(?:''')?|"(?:[^"\\\r\n]|\\.)*"?|'(?:[^'\\\r\n]|\\.)*'?|[^\s"',;][^\s,;]*)`;
+// `=`, `:` or `=>`, never the first character of `==` or `===`.
+const ASSIGN = String.raw`\s*(?:=>|[:=](?![=>]))\s*`;
 
-const shape = (id, kind, pattern) => Object.freeze({ id, kind, pattern, severity: 'high' });
+// `maskPattern`, when present, is what the mask uses in place of `pattern`:
+// a broader match, never a narrower one.
+const shape = (id, kind, pattern, maskPattern) => Object.freeze(
+  maskPattern ? { id, kind, pattern, maskPattern, severity: 'high' } : { id, kind, pattern, severity: 'high' });
 
 export const CREDENTIAL_SHAPES = Object.freeze([
-  // The hyphenated body only after a known prefix: `sk-learn-compatible-…`
-  // and `/sk-hynix-…` are prose.
-  shape('sk-key', 'token', /(?<![A-Za-z0-9])sk-(?:[A-Za-z0-9]{20,}|(?:proj|ant|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,})/g),
+  // The sweep admits a hyphenated body only after a known prefix:
+  // `sk-learn-compatible-…` and `/sk-hynix-…` are prose. The mask stars any
+  // `sk-` run from ten characters.
+  shape('sk-key', 'token', /(?<![A-Za-z0-9])sk-(?:[A-Za-z0-9]{20,}|(?:proj|ant|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,})/g,
+    /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{10,}/g),
   shape('stripe', 'token', /(?<![A-Za-z0-9])(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g),
-  shape('gitlab-pat', 'token', /(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{16,}/g),
+  shape('gitlab-pat', 'token', /(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{16,}/g, /(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{10,}/g),
   shape('gitlab-runner', 'token', /(?<![A-Za-z0-9])glrt-[A-Za-z0-9_-]{16,}/g),
-  shape('github', 'token', /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{16,}/g),
+  shape('github', 'token', /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{16,}/g, /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{10,}/g),
   shape('github-fine-grained', 'token', /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{22,}/g),
   shape('npm', 'token', /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}/g),
   // AKIA: a long-term access key id; ASIA: a temporary (STS) one.
@@ -220,13 +238,18 @@ export const CREDENTIAL_SHAPES = Object.freeze([
   shape('pypi', 'token', /(?<![A-Za-z0-9])pypi-[A-Za-z0-9_-]{50,}/g),
   // Three base64url segments, the first always `eyJ` (`{"`).
   shape('jwt', 'token', /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g),
-  // The token after the scheme word; the word itself is kept. The lookahead
-  // runs first so the lookbehind is tried only where a token starts, not at
-  // every position of a long whitespace run.
-  shape('bearer', 'token', /(?=[A-Za-z0-9._~+/-]{20})(?<=(?<![A-Za-z0-9])Bearer\s+)[A-Za-z0-9._~+/-]{20,}=*/gi),
-  // From the header to the end of its line. A key's body lines carry no
-  // marker of their own; `maskText` masks them by tracking the block.
-  shape('pem-private-key', 'token', new RegExp(PEM_HEADER.source + '.*', 'g')),
+  // The token after the scheme word; the word itself is kept. The sweep reads
+  // a Bearer token from 20 characters; the mask stars a Bearer or a
+  // standalone Basic value from 8. The lookahead runs first so the lookbehind
+  // is tried only where a token starts, not at every position of a long
+  // whitespace run.
+  shape('bearer', 'token', /(?=[A-Za-z0-9._~+/-]{20})(?<=(?<![A-Za-z0-9])Bearer\s+)[A-Za-z0-9._~+/-]{20,}=*/gi,
+    /(?=[A-Za-z0-9._~+/-]{8})(?<=(?<![A-Za-z0-9])(?:Bearer|Basic)\s+)[A-Za-z0-9._~+/-]{8,}=*/gi),
+  // The sweep reads the header alone, so nothing else on its line can make it
+  // a placeholder. The mask stars from the header to the end of the line; a
+  // key's body lines carry no marker of their own, and `maskText` masks them
+  // by tracking the block.
+  shape('pem-private-key', 'token', new RegExp(PEM_HEADER.source, 'g'), new RegExp(PEM_HEADER.source + '.*', 'g')),
   // `scheme://user:secret@host`. The user name, which may be empty as in
   // `redis://:secret@host`, is kept; a URL with no password is not matched.
   shape('url-userinfo', 'keyed', /:\/\/[^/\s:@]*:(?<value>[^@\s/]+)(?=@)/g),
@@ -257,10 +280,10 @@ export function stripAnsi(text) {
 /** Masks one line that `stripAnsi` has already cleaned. */
 function maskLine(line) {
   let masked = line;
-  for (const { kind, pattern } of CREDENTIAL_SHAPES) {
+  for (const { kind, pattern, maskPattern = pattern } of CREDENTIAL_SHAPES) {
     masked = kind === 'token'
-      ? masked.replace(pattern, '***')
-      : masked.replace(pattern, (...args) => {
+      ? masked.replace(maskPattern, '***')
+      : masked.replace(maskPattern, (...args) => {
         const match = args[0];
         const { value } = args.at(-1);
         return match.slice(0, match.length - value.length) + '***';
