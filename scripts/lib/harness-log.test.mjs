@@ -488,6 +488,60 @@ test('keys that mask to the same string keep every value, the later ones suffixe
   assert.deepEqual(scrubValue({ '***': 1, [a]: 2 }), { '***': 1, '***#2': 2 }, 'an unmasked key that is already *** is kept first');
 });
 
+// Credential names and values assembled at runtime, for the same reason as
+// `githubToken`; each value is distinct so a raw-file search is meaningful.
+const PASSWORD = 'pass' + 'word';
+const CREDENTIAL_KEYS = [PASSWORD, 'DB_' + 'PASS', 'api' + '_key', 'client' + '_secret', 'GITHUB_' + 'TOKEN'];
+const secretValue = n => 'Qz' + '7v' + `-s3cr3t-${n}`;
+
+const rawSession = (root, sessionId) => readFileSync(sessionFile(root, sessionId), 'utf8');
+
+test('a credential identified by its key is masked', () => {
+  const root = tempDir('hk-log-keyed-');
+  CREDENTIAL_KEYS.forEach((key, n) => {
+    const value = secretValue(n);
+    assert.deepEqual(scrubValue({ [key]: value, note: 'kept' }), { [key]: '***', note: 'kept' }, key);
+    assert.deepEqual(appendEvent(root, 's1', { tool_input: { [key]: value } }), { written: true });
+    assert.ok(!rawSession(root, 's1').includes(value), key);
+  });
+  const header = 'Bearer ' + secretValue('h');
+  assert.deepEqual(scrubValue({ ['author' + 'ization']: header }), { ['author' + 'ization']: '***' });
+  appendEvent(root, 's1', { headers: { ['Author' + 'ization']: header } });
+  assert.ok(!rawSession(root, 's1').includes(secretValue('h')));
+  assert.deepEqual(readEvents(root, 's1').events.map(e => Object.values(e.tool_input ?? e.headers)[0]), Array(6).fill('***'));
+});
+
+test('a number or boolean under a credential-named key is masked', () => {
+  const root = tempDir('hk-log-keyed-num-');
+  assert.deepEqual(scrubValue({ [PASSWORD]: 12345678, count: 12345678, flag: true }), { [PASSWORD]: '***', count: 12345678, flag: true });
+  assert.deepEqual(scrubValue({ ['api' + '_key']: false }), { ['api' + '_key']: '***' });
+  appendEvent(root, 's1', { [PASSWORD]: 87654321 });
+  assert.ok(!rawSession(root, 's1').includes('87654321'));
+});
+
+test('a value after a credential flag in an argument list is masked', () => {
+  const root = tempDir('hk-log-argv-');
+  const args = ['mysql', '--' + PASSWORD, secretValue('a'), '--token', secretValue('b'), '-H', 'Author' + 'ization:', 'Basic ' + secretValue('c'), '--name', 'kept'];
+  assert.deepEqual(scrubValue(args), ['mysql', '--' + PASSWORD, '***', '--token', '***', '-H', 'Author' + 'ization:', '***', '--name', 'kept']);
+  appendEvent(root, 's1', { tool_input: { args } });
+  const raw = rawSession(root, 's1');
+  for (const n of ['a', 'b', 'c']) assert.ok(!raw.includes(secretValue(n)), n);
+  assert.deepEqual(scrubValue(['git', 'commit', '-m', 'fix']), ['git', 'commit', '-m', 'fix']);
+});
+
+test('a secret three levels deep under a credential-named key is masked', () => {
+  const root = tempDir('hk-log-deep-');
+  const event = { tool_input: { config: { db: { [PASSWORD]: secretValue('d') } } }, list: [{ env: { ['DB_' + 'PASS']: secretValue('e') } }] };
+  assert.deepEqual(scrubValue(event), { tool_input: { config: { db: { [PASSWORD]: '***' } } }, list: [{ env: { ['DB_' + 'PASS']: '***' } }] });
+  appendEvent(root, 's1', event);
+  const raw = rawSession(root, 's1');
+  assert.ok(!raw.includes(secretValue('d')) && !raw.includes(secretValue('e')));
+});
+
+test('a value merely mentioning a credential word is kept', () => {
+  assert.deepEqual(scrubValue({ description: `reset the ${PASSWORD}`, path: '/tmp/x' }), { description: `reset the ${PASSWORD}`, path: '/tmp/x' });
+});
+
 test('a __proto__ key stays an ordinary property', () => {
   const copy = scrubValue(JSON.parse('{"__proto__": {"polluted": true}}'));
   assert.ok(Object.hasOwn(copy, '__proto__'));
