@@ -198,12 +198,13 @@ const PEM_FOOTER = /-----END [A-Z ]*PRIVATE KEY-----/;
 
 // A keyed value: a quoted string through its closing quote, spaces and
 // backslash escapes included, or to the end of the line when the quote never
-// closes; a Python triple quote counts as one quote. Otherwise an unquoted
+// closes; a Python triple quote counts as one quote, and inside single quotes
+// a doubled `''` is an escape (SQL, YAML). Otherwise an unquoted
 // run that stops at whitespace, `,` or `;`. Quotes inside an unquoted run are
 // kept so `config.get('x')` stays one value for the sweep's reference check.
 // Each alternative's repeated part has disjoint branches, so a match is
 // linear in the line's length.
-const KEYED_VALUE = String.raw`(?<value>"""(?:(?!""")[^\\\r\n]|\\.)*(?:""")?|'''(?:(?!''')[^\\\r\n]|\\.)*(?:''')?|"(?:[^"\\\r\n]|\\.)*"?|'(?:[^'\\\r\n]|\\.)*'?|[^\s"',;][^\s,;]*)`;
+const KEYED_VALUE = String.raw`(?<value>"""(?:(?!""")[^\\\r\n]|\\.)*(?:""")?|'''(?:(?!''')[^\\\r\n]|\\.)*(?:''')?|"(?:[^"\\\r\n]|\\.)*"?|'(?:[^'\\\r\n]|\\.|'')*'?|[^\s"',;][^\s,;]*)`;
 // `=` or `:`, never the first character of `==`, `===` or `=>`.
 const ASSIGN = String.raw`\s*[:=](?![=>])\s*`;
 // A key followed by an assignment. `=>` assigns only between a quoted key and

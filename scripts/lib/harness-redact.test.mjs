@@ -172,6 +172,8 @@ test('every credential shape stays linear on long adversarial lines', () => {
     ['password', '"' + '\\"'.repeat(n / 2)].join('='),
     ['password', '"""' + '""\\'.repeat(n / 3)].join('='),
     ['password', "'''" + "''x".repeat(n / 3)].join('='),
+    ['password', "'" + "''".repeat(n / 2)].join('='),
+    ['password', "'" + "a''".repeat(n / 3)].join('='),
     'Basic' + ' '.repeat(n),
     'sk-' + '-'.repeat(n),
     '://u:' + 'x'.repeat(n),
@@ -333,6 +335,7 @@ test('a quote with no closing quote, an escaped quote and a triple quote are eac
   assert.equal(maskCredentials(eq('password', "'abc\\'defghijklmnop', next")), eq('password', '***, next'));
   assert.equal(maskCredentials(eq('password', '"""tr0ub4dor&3secret""" # py')), eq('password', '*** # py'));
   assert.equal(maskCredentials(eq('password', "'''tr0ub4dor&3secret'''")), eq('password', '***'));
+  assert.equal(maskCredentials(eq('password', "'it''s a secret value' # sql")), eq('password', '*** # sql'), 'a doubled single quote is an escape');
 });
 
 test('=> is an assignment only between a quoted key and a quoted value, and == is not one', () => {

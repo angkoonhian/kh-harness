@@ -762,6 +762,25 @@ test('a quoted credential with no closing quote, an escaped quote or a triple qu
   }
 });
 
+test('a credential key at the end of a string literal that is then concatenated is not a credential', () => {
+  const pw = glue('', 'pass', 'word');
+  const lines = [
+    `console.log("${pw}: " + userPassword);`,
+    `const url = base + '?${glue('_', 'api', 'key')}=' + apiKeyValue;`,
+    `logger.info('${glue('_', 'client', 'secret')}=' + clientSecretVar)`,
+    `throw new Error("Invalid ${pw}: " + reason);`,
+    `const msg = "${pw}: " + pw + "!";`,
+    `cfg.set("${pw}=", "");`,
+  ];
+  const d = repo();
+  write(d, 'src/log.js', lines.join('\n') + '\n');
+  assert.deepEqual(run(d), []);
+
+  const real = repo();
+  write(real, '.env', assign('password', '"hunter2 secret value') + '\n');
+  assert.deepEqual(run(real).map(e => [e.kind, e.valueKind]), [['credentials-in-doc', 'literal']], 'a real unterminated value is still reported');
+});
+
 test('=> between a quoted key and a quoted value is an assignment the sweep reads', () => {
   for (const line of [["'password'", "'hunter2hunter2',"].join(' => '), ['"client_secret"', '"hunter2hunter2"'].join('=>')]) {
     const d = repo();

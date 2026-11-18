@@ -47,6 +47,13 @@ const KEYED_SHAPES = CREDENTIAL_SHAPES.filter(s => s.kind === 'keyed');
 // are not findings.
 const MIN_KEYED_VALUE = 8;
 
+// A quoted value whose content starts with a concatenation, a call close or a
+// separator, or is empty or whitespace, is source code: the quote that seems
+// to open it is the closing quote of a string literal ending in the key, as
+// in `"password: " + input`. The mask still stars it; the sweep does not
+// report it.
+const CONCATENATED_QUOTE = /^(?:"""|'''|"|')\s*(?:[+.,);}\]]|(?:"""|'''|"|')?$)/;
+
 // Tested on the VALUE only: a keyed shape's `value`, or a Bearer token's
 // body. Tested on key and value together, a key containing `example` would
 // hide a real value.
@@ -376,7 +383,8 @@ function tokenFinding(text, tokens) {
 /**
  * The credential-line verdict for one file, as `{ valueKind, line }`, or
  * null. Every keyed match is examined; a value that is short, a placeholder,
- * or overlaps one of `tokens` is skipped — a token after `api_key:` or
+ * a concatenated quote (`CONCATENATED_QUOTE`), or overlaps one of `tokens`
+ * is skipped — a token after `api_key:` or
  * `Bearer` is one secret, already reported as the token. The file is
  * `literal` if ANY surviving value is a literal (reported at the earliest
  * such line), else `reference` if any survives at all. One finding per file;
@@ -389,7 +397,7 @@ function credentialFinding(text, tokens) {
     for (const m of text.matchAll(shape.pattern)) {
       const { value } = m.groups;
       const start = m.index + m[0].length - value.length;
-      if (value.length < MIN_KEYED_VALUE || isPlaceholder(value)) continue;
+      if (value.length < MIN_KEYED_VALUE || isPlaceholder(value) || CONCATENATED_QUOTE.test(value)) continue;
       if (tokens.some(t => t.start < start + value.length && start < t.end)) continue;
       if (classifyCredentialValue(value) === 'literal') {
         if (literal === null || m.index < literal) literal = m.index;
