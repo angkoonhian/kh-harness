@@ -268,33 +268,69 @@ export const LOG_SCHEMA = 1;
 const SESSIONS_DIR = 'sessions';
 const BLOBS_DIR = 'blobs';
 
-/** `key` masked, made unique among `used` by a `#2`, `#3`… suffix when the
- * mask makes it equal to a key already kept, so no value is lost. */
-function maskedKey(key, used) {
-  const masked = maskText(key);
+/** `masked` made unique among `used` by a `#2`, `#3`… suffix when it equals
+ * a key already kept, so no value is lost. */
+function uniqueKey(masked, used) {
   let unique = masked;
   for (let n = 2; used.has(unique); n++) unique = `${masked}#${n}`;
   used.add(unique);
   return unique;
 }
 
+const changedByMask = probe => maskText(probe) !== probe;
+
+// The keyed credential shapes recognise a secret by what precedes it, which
+// a key or the previous argument holds apart from the value. Each probe
+// rejoins them as the shapes expect: an assignment for a key, which every
+// keyed shape accepts; an argument list (`Bearer x`) or a flag
+// (`--password=x`) for an array element. Both halves are masked first, so
+// any change the mask then makes comes from the join and hides the value.
+// The halves are joined raw, never JSON-encoded: an escaped `\n` is not
+// whitespace to the shapes, so a keyed value already masked inside the text
+// would run on past it and every such value would read as hidden.
+const hiddenByKey = (key, text) => changedByMask(`${key}=${text}`);
+const hiddenByPrevious = (previous, text) => changedByMask(`${previous} ${text}`) || changedByMask(`${previous}=${text}`);
+
+const isScalar = v => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+
 /**
  * A copy of a JSON value with every object key masked and every string leaf
- * masked and then passed to `onString`. Built with `Object.fromEntries`, so
- * a `__proto__` key stays an ordinary property.
+ * masked and then passed to `onString`. A scalar under a key, or a string
+ * after a string in an array, that the keyed shapes hide in context becomes
+ * `'***'` whole. Built with `Object.fromEntries`, so a `__proto__` key stays
+ * an ordinary property.
  */
 function scrubWith(value, onString) {
   if (typeof value === 'string') return onString(maskText(value));
-  if (Array.isArray(value)) return value.map(v => scrubWith(v, onString));
+  if (Array.isArray(value)) {
+    let previous = null;
+    return value.map(v => {
+      if (typeof v !== 'string') {
+        previous = null;
+        return scrubWith(v, onString);
+      }
+      const masked = maskText(v);
+      previous = previous !== null && hiddenByPrevious(previous, masked) ? '***' : masked;
+      return onString(previous);
+    });
+  }
   if (value !== null && typeof value === 'object') {
     const used = new Set();
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [maskedKey(k, used), scrubWith(v, onString)]));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => {
+      const key = maskText(k);
+      const unique = uniqueKey(key, used);
+      if (!isScalar(v)) return [unique, scrubWith(v, onString)];
+      const text = maskText(String(v));
+      if (hiddenByKey(key, text)) return [unique, onString('***')];
+      return [unique, typeof v === 'string' ? onString(text) : v];
+    }));
   }
   return value;
 }
 
-/** A deep copy of `value` with `maskText` applied to every object key and
- * every string leaf. `value` must be acyclic. */
+/** A deep copy of the JSON value `value` with `maskText` applied to every
+ * object key and every string leaf, and the keyed shapes applied across
+ * each key and its value and each pair of adjacent array strings. */
 export function scrubValue(value) {
   return scrubWith(value, s => s);
 }
