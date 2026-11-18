@@ -30,6 +30,8 @@ import {
   storeBlob,
 } from '../../assets/scripts/harness-log.mjs';
 
+import { CREDENTIAL_SHAPES } from '../../assets/scripts/harness-redact.mjs';
+
 const HARNESS_LOG_URL = new URL('../../assets/scripts/harness-log.mjs', import.meta.url).href;
 
 const made = [];
@@ -536,6 +538,60 @@ test('a secret three levels deep under a credential-named key is masked', () => 
   appendEvent(root, 's1', event);
   const raw = rawSession(root, 's1');
   assert.ok(!raw.includes(secretValue('d')) && !raw.includes(secretValue('e')));
+});
+
+test('a credential-named key hides its value whatever the value starts with', () => {
+  const root = tempDir('hk-log-keyed-start-');
+  const starts = ['=', '>', ',', ';', '\n', '=>', ' ', githubToken() + ' '];
+  starts.forEach((start, n) => {
+    for (const key of [PASSWORD, 'GITHUB_' + 'TOKEN']) {
+      const value = start + secretValue(`${key}-${n}`);
+      assert.deepEqual(scrubValue({ [key]: value }), { [key]: '***' }, JSON.stringify(value));
+      appendEvent(root, 's1', { tool_input: { [key]: value } });
+      assert.ok(!rawSession(root, 's1').includes(secretValue(`${key}-${n}`)), JSON.stringify(value));
+    }
+    const args = ['--' + PASSWORD, start + secretValue(`argv-${n}`)];
+    assert.deepEqual(scrubValue(args), ['--' + PASSWORD, '***'], JSON.stringify(args));
+    appendEvent(root, 's1', { args });
+    assert.ok(!rawSession(root, 's1').includes(secretValue(`argv-${n}`)), JSON.stringify(args));
+  });
+});
+
+// A keyed shape whose key is part of the value itself, so the value's own
+// mask covers it and no key or flag can name it.
+const VALUE_ONLY_KEYED = new Set(['url-userinfo']);
+// For every other keyed shape, keys it must recognise by the key alone.
+const KEYED_REPRESENTATIVES = {
+  'credential-assignment': [PASSWORD, 'DB_' + 'PASS', 'api' + '_key', 'client' + '_secret', 'pwd'],
+  'token-assignment': ['GITHUB_' + 'TOKEN', '--token'],
+  'authorization-header': ['author' + 'ization', 'Author' + 'ization'],
+};
+
+test('every keyed credential shape is recognised from a key or flag alone', () => {
+  const keyed = CREDENTIAL_SHAPES.filter(s => s.kind === 'keyed').map(s => s.id).sort();
+  assert.deepEqual(keyed, [...VALUE_ONLY_KEYED, ...Object.keys(KEYED_REPRESENTATIVES)].sort(),
+    'a new keyed shape must be given representative keys here, or ruled value-only');
+  for (const [id, keys] of Object.entries(KEYED_REPRESENTATIVES)) {
+    for (const key of keys) {
+      assert.deepEqual(scrubValue({ [key]: 'v' }), { [key]: '***' }, `${id}: ${key}`);
+      assert.deepEqual(scrubValue([key, 'v']), [key, '***'], `${id}: ${key} as a flag`);
+    }
+  }
+});
+
+test('a Bearer scheme after an Authorization flag hides the token after it too', () => {
+  const root = tempDir('hk-log-argv-bearer-');
+  const args = ['curl', '-H', 'Author' + 'ization:', 'Bearer', secretValue('t'), 'https://example.test'];
+  assert.deepEqual(scrubValue(args), ['curl', '-H', 'Author' + 'ization:', '***', '***', 'https://example.test']);
+  appendEvent(root, 's1', { args });
+  assert.ok(!rawSession(root, 's1').includes(secretValue('t')));
+});
+
+test('a number or boolean after a credential flag is masked', () => {
+  const root = tempDir('hk-log-argv-num-');
+  assert.deepEqual(scrubValue(['--' + PASSWORD, 12345678, '--count', 5, '--token', true]), ['--' + PASSWORD, '***', '--count', 5, '--token', '***']);
+  appendEvent(root, 's1', { args: ['--' + PASSWORD, 87654321] });
+  assert.ok(!rawSession(root, 's1').includes('87654321'));
 });
 
 test('a value merely mentioning a credential word is kept', () => {

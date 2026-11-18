@@ -277,60 +277,72 @@ function uniqueKey(masked, used) {
   return unique;
 }
 
-const changedByMask = probe => maskText(probe) !== probe;
-
 // The keyed credential shapes recognise a secret by what precedes it, which
-// a key or the previous argument holds apart from the value. Each probe
-// rejoins them as the shapes expect: an assignment for a key, which every
-// keyed shape accepts; an argument list (`Bearer x`) or a flag
-// (`--password=x`) for an array element. Both halves are masked first, so
-// any change the mask then makes comes from the join and hides the value.
-// The halves are joined raw, never JSON-encoded: an escaped `\n` is not
-// whitespace to the shapes, so a keyed value already masked inside the text
-// would run on past it and every such value would read as hidden.
-const hiddenByKey = (key, text) => changedByMask(`${key}=${text}`);
-const hiddenByPrevious = (previous, text) => changedByMask(`${previous} ${text}`) || changedByMask(`${previous}=${text}`);
+// a key or the previous argument holds apart from the value. Whether that
+// context names a credential is decided from the context alone: a fixed
+// sentinel stands in for the value, so a value's own first characters (`=`,
+// `,`, a newline) cannot steer the answer. The sentinel is plain
+// alphanumerics, long enough for the bearer shape's 20-character floor, and
+// it is hidden when the mask removes it. A key is probed as an assignment,
+// which every keyed shape accepts. An array element is probed after the
+// words before it as an argument list (`Authorization: x`, `Bearer x`), and
+// after the one element before it as a flag (`--password=x`); only the one
+// element, since `=` joined to a hidden value would extend that value.
+const SENTINEL = 'khSentinelValue0123456789abcdef';
+const hidesSentinel = probe => !maskText(probe).includes(SENTINEL);
+const namesCredential = key => hidesSentinel(`${key}=${SENTINEL}`);
+const flagsCredential = (words, last) => hidesSentinel(`${words} ${SENTINEL}`) || hidesSentinel(`${last}=${SENTINEL}`);
 
 const isScalar = v => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
 
+/** An array's copy. A scalar after a credential flag is `'***'`, and the
+ * words before it plus that element, each masked on its own, stay the
+ * context for the next element, so `Authorization: Bearer <token>` hides
+ * the token too. */
+function scrubArray(values, onString) {
+  let words = null;
+  let last = null;
+  return values.map(v => {
+    if (!isScalar(v)) {
+      words = last = null;
+      return scrubWith(v, onString);
+    }
+    const text = maskText(String(v));
+    if (words !== null && flagsCredential(words, last)) {
+      words = `${words} ${text}`;
+      last = text;
+      return onString('***');
+    }
+    words = last = typeof v === 'string' ? text : null;
+    return typeof v === 'string' ? onString(text) : v;
+  });
+}
+
 /**
  * A copy of a JSON value with every object key masked and every string leaf
- * masked and then passed to `onString`. A scalar under a key, or a string
- * after a string in an array, that the keyed shapes hide in context becomes
- * `'***'` whole. Built with `Object.fromEntries`, so a `__proto__` key stays
- * an ordinary property.
+ * masked and then passed to `onString`. A scalar under a credential-named
+ * key, or after a credential flag in an array, becomes `'***'` whole. Built
+ * with `Object.fromEntries`, so a `__proto__` key stays an ordinary property.
  */
 function scrubWith(value, onString) {
   if (typeof value === 'string') return onString(maskText(value));
-  if (Array.isArray(value)) {
-    let previous = null;
-    return value.map(v => {
-      if (typeof v !== 'string') {
-        previous = null;
-        return scrubWith(v, onString);
-      }
-      const masked = maskText(v);
-      previous = previous !== null && hiddenByPrevious(previous, masked) ? '***' : masked;
-      return onString(previous);
-    });
-  }
+  if (Array.isArray(value)) return scrubArray(value, onString);
   if (value !== null && typeof value === 'object') {
     const used = new Set();
     return Object.fromEntries(Object.entries(value).map(([k, v]) => {
       const key = maskText(k);
       const unique = uniqueKey(key, used);
       if (!isScalar(v)) return [unique, scrubWith(v, onString)];
-      const text = maskText(String(v));
-      if (hiddenByKey(key, text)) return [unique, onString('***')];
-      return [unique, typeof v === 'string' ? onString(text) : v];
+      if (namesCredential(key)) return [unique, onString('***')];
+      return [unique, typeof v === 'string' ? onString(maskText(v)) : v];
     }));
   }
   return value;
 }
 
 /** A deep copy of the JSON value `value` with `maskText` applied to every
- * object key and every string leaf, and the keyed shapes applied across
- * each key and its value and each pair of adjacent array strings. */
+ * object key and every string leaf, and every scalar under a
+ * credential-named key or after a credential flag replaced by `'***'`. */
 export function scrubValue(value) {
   return scrubWith(value, s => s);
 }
