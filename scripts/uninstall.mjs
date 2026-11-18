@@ -2,7 +2,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readManifest } from './lib/manifest.mjs';
+import { readManifestResult, MANIFEST_PATH } from './lib/manifest.mjs';
 import { planUninstall, runUninstall } from './lib/uninstall-lib.mjs';
 import { settingsReformattedNote } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, UNINSTALL_USAGE } from './lib/cli.mjs';
@@ -41,11 +41,19 @@ if (!existsSync(root)) {
   process.exit(2);
 }
 
-const manifest = readManifest(root);
-if (!manifest) {
+const manifestResult = readManifestResult(root);
+if (manifestResult.state === 'missing') {
   console.error(`nothing to uninstall: no manifest found`);
   process.exit(3);
 }
+if (manifestResult.state === 'corrupt') {
+  console.error(
+    `refusing to uninstall: ${join(root, MANIFEST_PATH)} exists but could not be read as a valid kh-harness manifest, ` +
+    `so what this tool installed cannot be told apart from your own files. Restore it from git history and re-run.`,
+  );
+  process.exit(3);
+}
+const manifest = manifestResult.manifest;
 
 const plan = planUninstall({ root, manifest });
 

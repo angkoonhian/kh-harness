@@ -57,7 +57,7 @@ test('enumerates .claude contents', () => {
   write(d, '.claude/scripts/hook.mjs', '//');
   write(d, '.claude/rules/api.md', '#');
   const h = run(d);
-  assert.equal(h.claudeDir.settings, true);
+  assert.equal(h.claudeDir.settings, 'ok');
   assert.equal(h.claudeDir.agents.length, 2);
   assert.equal(h.claudeDir.rules.length, 1);
 });
@@ -79,7 +79,7 @@ test('detects other editors', () => {
 
 // --- Task 9b, finding 6: claudeDir.settings must agree with its siblings -
 
-test('claudeDir.settings and localSettings are true even when the file list cannot see them (e.g. gitignored .claude/), matching the siblings that already read the real file', () => {
+test('claudeDir.settings and localSettings are ok even when the file list cannot see them (e.g. gitignored .claude/), matching the siblings that already read the real file', () => {
   const d = repo();
   write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
   write(d, '.claude/settings.local.json', JSON.stringify({ hooks: {} }));
@@ -89,16 +89,34 @@ test('claudeDir.settings and localSettings are true even when the file list cann
   // which are read straight off disk regardless of what `files` says.
   const filesAsIfGitignored = ['README.md'];
   const h = detectHarness(d, filesAsIfGitignored);
-  assert.equal(h.claudeDir.settings, true, 'settings must be read the SAME way denyRules was, not from the (gitignored) file list');
-  assert.equal(h.claudeDir.localSettings, true);
+  assert.equal(h.claudeDir.settings, 'ok', 'settings must be read the SAME way denyRules was, not from the (gitignored) file list');
+  assert.equal(h.claudeDir.localSettings, 'ok');
   assert.equal(h.claudeDir.denyRules, 1, 'fixture sanity: the sibling field this one must agree with really is non-zero');
 });
 
-test('claudeDir.settings is false when no settings file exists at all', () => {
+test('claudeDir.settings is absent when no settings file exists at all', () => {
   const d = repo();
   write(d, 'README.md', '# x');
-  assert.equal(run(d).claudeDir.settings, false);
-  assert.equal(run(d).claudeDir.localSettings, false);
+  assert.equal(run(d).claudeDir.settings, 'absent');
+  assert.equal(run(d).claudeDir.localSettings, 'absent');
+});
+
+test('settings.json with a syntax error is reported as unreadable by detect, not as missing', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', '{ "permissions": { "deny": ["Edit(x)"], }, }');
+  write(d, '.claude/settings.local.json', '[]');
+  const h = run(d);
+  assert.equal(h.claudeDir.settings, 'unreadable');
+  assert.equal(h.claudeDir.localSettings, 'unreadable', 'valid JSON that is not an object is no more usable than a syntax error');
+  assert.equal(h.claudeDir.denyRules, 0, 'nothing is credited from a file that could not be read');
+});
+
+test('a settings.json with a BOM is read by detect', () => {
+  const d = repo();
+  write(d, '.claude/settings.json', '﻿' + JSON.stringify({ permissions: { deny: ['Edit(x)'] } }));
+  const h = run(d);
+  assert.equal(h.claudeDir.settings, 'ok');
+  assert.deepEqual(h.claudeDir.denyRuleList, ['Edit(x)']);
 });
 
 test('denyRules is 0 when there is no settings file', () => {
@@ -491,8 +509,8 @@ test('F8: a deny rule that lives only in settings.local.json is seen, exactly as
     hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node nope.mjs' }] }] },
   }));
   const h = detectHarness(d, listFiles(d).files);
-  assert.equal(h.claudeDir.settings, false, 'fixture sanity: there is no settings.json at all');
-  assert.equal(h.claudeDir.localSettings, true);
+  assert.equal(h.claudeDir.settings, 'absent', 'fixture sanity: there is no settings.json at all');
+  assert.equal(h.claudeDir.localSettings, 'ok');
   // The asymmetry F8 measured: hookEvents saw the local file, the deny pair
   // did not, so P2.protected reported `absent` with EMPTY evidence and apply
   // wrote the identical rule a second time into the other file.
