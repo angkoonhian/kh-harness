@@ -229,7 +229,7 @@ export function listFiles(root) {
       files = files.filter(f => !nested.some(n => f.startsWith(`${n.path}/`)));
     }
 
-    return { files, source: 'git', nested };
+    return { files, source: 'git', nested, unreadableDirs: [] };
   }
 
   // Fallback: a directory walk that PRUNES at the directory. Audit Tier 2,
@@ -239,30 +239,38 @@ export function listFiles(root) {
   // Regular files only, never through a symlink or a Windows junction (the
   // recursive readdir DID descend into a junction — measured by the test
   // that now pins this), POSIX-relative paths.
-  // A walk that fails returns an empty list rather than throwing.
-  return { files: walkFiles(root) ?? [], source: 'walk', nested };
+  return { ...walkFiles(root), source: 'walk', nested };
 }
 
-/** The fallback file list for `root`, or null when the walk failed.
- * Exported so its test can time the walk itself, apart from the git probes
- * `listFiles` makes first. */
-export function walkFiles(root) {
-  const files = [];
+/**
+ * The fallback file list for `root`, as `{ files, unreadableDirs }`.
+ * A directory that cannot be listed is recorded in `unreadableDirs` (POSIX-
+ * relative; the root itself is `'.'`) and the walk continues past it, so
+ * every file it did read is kept and the sweep can report what it never
+ * examined (audit 2026-11-18, C1). Exported so its test can time the walk
+ * itself, apart from the git probes `listFiles` makes first; `readdir` is a
+ * parameter so a test can make one directory fail on any platform.
+ */
+export function walkFiles(root, readdir = readdirSync) {
+  const result = { files: [], unreadableDirs: [] };
+  walk(root, '', readdir, result);
+  return result;
+}
+
+function walk(root, rel, readdir, result) {
+  let entries;
   try {
-    walk(root, '', files);
+    entries = readdir(rel ? join(root, rel) : root, { withFileTypes: true });
   } catch {
-    return null;
+    result.unreadableDirs.push(rel || '.');
+    return;
   }
-  return files;
-}
-
-function walk(root, rel, out) {
-  for (const entry of readdirSync(rel ? join(root, rel) : root, { withFileTypes: true })) {
+  for (const entry of entries) {
     const entryRel = rel ? `${rel}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      if (!EXCLUDE_DIRS.has(entry.name)) walk(root, entryRel, out);
+      if (!EXCLUDE_DIRS.has(entry.name)) walk(root, entryRel, readdir, result);
     } else if (entry.isFile()) {
-      out.push(entryRel);
+      result.files.push(entryRel);
     }
   }
 }

@@ -868,7 +868,7 @@ test('F1: a file the sweep could not read makes P0.security failing, never verif
   const exposures = [{ kind: UNREADABLE_KIND, location: 'src/café.ts', severity: 'high', reason: 'could not be stat()ed (ENOENT)' }];
   const c = byId(gaps(bareStack, bareHarness, exposures), 'P0.security');
   assert.equal(c.state, 'failing', 'an unexamined file must never be reported as a clean sweep');
-  assert.ok(c.evidence.some(e => /1 file named by the file scan could not be read/.test(e) && /INCOMPLETE/.test(e)),
+  assert.ok(c.evidence.some(e => /^1 path could not be read/.test(e) && /INCOMPLETE/.test(e)),
     'the incompleteness must be stated, not implied');
   assert.equal(c.evidence.some(e => /credential finding/.test(e)), false,
     'an unreadable file is not a credential finding and must not be counted as one');

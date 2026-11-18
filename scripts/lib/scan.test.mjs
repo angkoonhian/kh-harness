@@ -72,11 +72,48 @@ test('the fallback walk never enters an excluded directory', () => {
   const t1 = performance.now();
   const walked = walkFiles(d);
   const walkMs = performance.now() - t1;
-  assert.deepEqual(walked.sort(), ['package.json', 'src/a.ts']);
+  assert.deepEqual(walked.files.sort(), ['package.json', 'src/a.ts']);
+  assert.deepEqual(walked.unreadableDirs, []);
   const { files, source } = listFiles(d);
   assert.equal(source, 'walk', 'fixture sanity: this must be the non-git path');
   assert.deepEqual(files.sort(), ['package.json', 'src/a.ts']);
   assert.ok(walkMs < enumerateMs / 3, `the walk must prune node_modules at the directory, not enumerate it: walk ${walkMs.toFixed(0)} ms vs enumerate ${enumerateMs.toFixed(0)} ms`);
+});
+
+// --- Audit 2026-11-18, C1: one unreadable directory emptied the whole walk ----
+//
+// The walk caught at the top, so a single `readdirSync` failure anywhere
+// discarded every file already read and `listFiles` returned `[]` — over
+// which `P0.security` said `verified` with a token present.
+test('walkFiles keeps the files it read when one directory throws', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-walk-'));
+  writeFileSync(join(d, 'package.json'), '{}');
+  mkdirSync(join(d, 'locked'));
+  writeFileSync(join(d, 'locked', 'hidden.ts'), '');
+  mkdirSync(join(d, 'src'));
+  writeFileSync(join(d, 'src', 'a.ts'), '');
+  const readdir = (path, options) => {
+    if (path === join(d, 'locked')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    return readdirSync(path, options);
+  };
+  const { files, unreadableDirs } = walkFiles(d, readdir);
+  assert.deepEqual(files.sort(), ['package.json', 'src/a.ts']);
+  assert.deepEqual(unreadableDirs, ['locked']);
+});
+
+test('walkFiles names the root when the root itself cannot be listed', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-walk-'));
+  const readdir = () => { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }); };
+  assert.deepEqual(walkFiles(d, readdir), { files: [], unreadableDirs: ['.'] });
+});
+
+test('listFiles reports no unreadable directories on either path when everything was read', () => {
+  assert.deepEqual(listFiles(fixture()).unreadableDirs, []);
+  const d = mkdtempSync(join(tmpdir(), 'hk-walk-'));
+  writeFileSync(join(d, 'package.json'), '{}');
+  const { source, unreadableDirs } = listFiles(d);
+  assert.equal(source, 'walk', 'fixture sanity: this must be the non-git path');
+  assert.deepEqual(unreadableDirs, []);
 });
 
 test('the fallback walk does not follow a symlinked directory', (t) => {

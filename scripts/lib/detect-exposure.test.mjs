@@ -1,11 +1,12 @@
 // scripts/lib/detect-exposure.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
-import { listFiles } from './scan.mjs';
+import { listFiles, walkFiles } from './scan.mjs';
+import { exposureSectionLines } from './report.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { buildGaps } from './gap-model.mjs';
@@ -619,6 +620,45 @@ test('a dangling symlink in the scan list is skipped silently — it holds no by
     return;
   }
   assert.deepEqual(detectExposures(d, ['README.md', 'link.ts'], { remotes: [] }), [], 'audit Tier 4, finding 27: this used to be a permanent high finding');
+});
+
+// --- Audit 2026-11-18, C1: a directory the walk could not list ---------------
+//
+// The fallback walk used to return `[]` when any directory threw, and the
+// sweep then examined nothing and said so in the clean-sweep sentence. A
+// directory the walk could not list is now a finding of the same sweep.
+const eacces = () => Object.assign(new Error('permission denied'), { code: 'EACCES' });
+
+test('a walk that could read nothing makes P0.security failing, not verified', () => {
+  const d = repo();
+  write(d, 'src/config.ts', `export const t = '${SECRET}';\n`);
+  const { files, unreadableDirs } = walkFiles(d, () => { throw eacces(); });
+  const harness = detectHarness(d, files);
+  const exposures = detectExposures(d, files, harness, unreadableDirs);
+  assert.deepEqual(exposures.map(e => [e.kind, e.location]), [[UNREADABLE_KIND, '.']]);
+  const stack = detectStack(d, files);
+  const checks = buildGaps({
+    stack, harness, exposures, profile: selectProfile(stack),
+    git: { isRepo: false }, files, root: d,
+  });
+  const security = checks.find(c => c.id === 'P0.security');
+  assert.equal(security.state, 'failing', `nothing was read, so nothing may be verified: ${JSON.stringify(security.evidence)}`);
+  assert.ok(security.evidence.some(e => /INCOMPLETE/.test(e)), 'the incompleteness must be stated, not implied');
+});
+
+test('an unreadable directory is listed under Not examined with its path', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  write(d, 'locked/secret.ts', '');
+  const { files, unreadableDirs } = walkFiles(d, (path, options) => {
+    if (path === join(d, 'locked')) throw eacces();
+    return readdirSync(path, options);
+  });
+  const exposures = detectExposures(d, files, { remotes: [] }, unreadableDirs);
+  const lines = exposureSectionLines(exposures);
+  const heading = lines.findIndex(l => l.startsWith('Not examined (1)'));
+  assert.ok(heading >= 0, `expected a Not examined section, got ${JSON.stringify(lines)}`);
+  assert.match(lines[heading + 1], /^ {2}! locked — .*director/);
 });
 
 // --- Coordinator ruling (post-review, concern 5): kh-harness passes its own

@@ -80,7 +80,9 @@ check, at the same version.*
 
 `detect.json`'s `exposures` array can hold a finding of kind
 `file-unreadable` — a file the credential sweep could not READ (a
-permission error, a file removed mid-scan, and similar). This is distinct
+permission error, a file removed mid-scan, and similar), or a directory the
+non-git fallback walk could not list, in which case nothing beneath it was
+examined. This is distinct
 from the skips the sweep makes ON PURPOSE (binaries, build output,
 anything over 512 KB) — those are never reported this way, because skipping
 them is the design, not a failure. A `file-unreadable` finding means that

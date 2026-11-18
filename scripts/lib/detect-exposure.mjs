@@ -136,7 +136,8 @@ export function classifyCredentialValue(value) {
 
 /**
  * Not a credential finding: a file the scan list NAMED that this sweep could
- * not read, so it was never examined at all.
+ * not read, or a directory the fallback walk could not list, so it was never
+ * examined at all.
  *
  * Whole-branch review, F1. The defect was not git's path quoting — that was
  * only how the unreadable path got here. The defect was that `scannable`'s
@@ -223,7 +224,7 @@ export function fixtureExposureNote(count) {
 export function unexaminedExposureNote(count) {
   const s = count === 1 ? '' : 's';
   const they = count === 1 ? 'it was' : 'they were';
-  return `${count} file${s} named by the file scan could not be read, so ${they} NEVER examined for credentials — this sweep is INCOMPLETE; listed under "Not examined", and in detect.json as kind "${UNREADABLE_KIND}"`;
+  return `${count} path${s} could not be read (a file the scan named, or a directory it could not list), so ${they} NEVER examined for credentials — this sweep is INCOMPLETE; listed under "Not examined", and in detect.json as kind "${UNREADABLE_KIND}"`;
 }
 
 /**
@@ -515,12 +516,22 @@ function scanPath(root, rel, out, announceMissing) {
   out.push(...scanFile(buf, rel, LOCAL_SETTINGS_FILES.has(rel)));
 }
 
-export function detectExposures(root, files, harness) {
+/**
+ * `unreadableDirs` is `listFiles`' record of the directories its fallback
+ * walk could not list (scan.mjs). Nothing beneath one is in `files`, so each
+ * becomes an `UNREADABLE_KIND` finding: the sweep cannot claim a tree it
+ * never saw (audit 2026-11-18, C1).
+ */
+export function detectExposures(root, files, harness, unreadableDirs = []) {
   const out = [];
   const seen = new Set(files);
 
   for (const r of harness?.remotes ?? []) {
     if (r.hasCredential) out.push({ kind: 'token-in-remote-url', location: `git remote "${r.name}"`, severity: 'high' });
+  }
+
+  for (const dir of unreadableDirs) {
+    out.push({ kind: UNREADABLE_KIND, location: dir, severity: 'high', reason: 'a directory the file scan could not list, so nothing beneath it was examined' });
   }
 
   for (const rel of files) scanPath(root, rel, out, true);

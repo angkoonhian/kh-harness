@@ -203,11 +203,11 @@ if (flags.has('--yes') && refusals.length) {
 // report that omits it makes a partial scan look complete" — which is at
 // least as true of a run that is about to WRITE into the incompletely
 // scanned repository.
-const { files, nested } = listFiles(root);
+const { files, nested, unreadableDirs } = listFiles(root);
 const stack = detectStack(root, files);
 const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
-const exposures = detectExposures(root, files, harness);
+const exposures = detectExposures(root, files, harness, unreadableDirs);
 const profile = selectProfile(stack);
 if (manifestResult.state === 'corrupt') {
   process.stderr.write(

@@ -42,7 +42,7 @@ if (!existsSync(root)) {
 // listFiles also reports nested repositories (submodules, nested/bare repos)
 // it deliberately did not descend into. That disclosure must reach the
 // report — a report that omits it makes a partial scan look complete.
-const { files, nested } = listFiles(root);
+const { files, nested, unreadableDirs } = listFiles(root);
 const git = gitInfo(root);
 // A git that could not answer is not a non-repository; say so, on stderr so
 // `--json` stdout stays parseable. The report records `vcs: null` either way.
@@ -50,7 +50,7 @@ if (git.error) process.stderr.write(`kh-harness: ${git.error} — the report tre
 const stack = detectStack(root, files);
 const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
-const exposures = detectExposures(root, files, harness);
+const exposures = detectExposures(root, files, harness, unreadableDirs);
 const profile = selectProfile(stack);
 // Read-only here — detect never writes the manifest. Passed through so
 // gap-model.mjs can confirm OUR OWN hook is present via the install record
