@@ -6,7 +6,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -145,31 +145,109 @@ test('the rest of an entry is checked against its schema', () => {
   assert.deepEqual(readLedger(root), []);
 });
 
-test('a lock older than the stale threshold is broken and the append succeeds', () => {
+const lockOf = root => `${ledgerPath(root)}.lock`;
+const ownerLock = (pid, token) => JSON.stringify({ pid, token });
+const DEAD_PID = 2 ** 30;
+// A clock that moves a second each time it is read, so the five-second lock
+// wait ends after a few readings instead of five real seconds.
+const steppingClock = start => {
+  let t = start;
+  return () => (t += 1000);
+};
+// True while the lock is the one this process's append created, which is
+// only inside the append's locked section.
+const ownLockHeld = root => {
+  try {
+    const owner = JSON.parse(readFileSync(lockOf(root), 'utf8'));
+    return owner.pid === process.pid && owner.token !== 'another-writer';
+  } catch {
+    return false;
+  }
+};
+
+test('a lock whose writer is dead is broken and the append succeeds', () => {
   const root = tempDir('hk-ledger-repo-');
   appendLedger(root, entry());
-  const lock = `${ledgerPath(root)}.lock`;
-  writeFileSync(lock, '');
-  const mtimeMs = statSync(lock).mtimeMs;
-  appendLedger(root, entry({ kind: 'replayed' }), { now: () => mtimeMs + LEDGER_LOCK_STALE_MS + 1000 });
-  assert.equal(LEDGER_LOCK_STALE_MS, 30_000);
-  assert.ok(!existsSync(lock));
+  writeFileSync(lockOf(root), ownerLock(DEAD_PID, 'crashed-writer'));
+  const probed = [];
+  appendLedger(root, entry({ kind: 'replayed' }), { isAlive: pid => (probed.push(pid), pid !== DEAD_PID) });
+  assert.ok(probed.includes(DEAD_PID));
+  assert.ok(!existsSync(lockOf(root)));
+  assert.ok(!existsSync(`${lockOf(root)}.break`));
   assert.deepEqual(readLedger(root).map(e => e.kind), ['proposed', 'replayed']);
   assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
+});
+
+test('a lock whose writer is alive is never broken, however old', () => {
+  const root = tempDir('hk-ledger-repo-');
+  appendLedger(root, entry());
+  const held = ownerLock(4242, 'slow-writer');
+  writeFileSync(lockOf(root), held);
+  const dayAgo = new Date(Date.now() - 86_400_000);
+  utimesSync(lockOf(root), dayAgo, dayAgo);
+  assert.throws(
+    () => appendLedger(root, entry({ kind: 'replayed' }), { now: steppingClock(Date.now()), isAlive: () => true }),
+    /ledger is locked: .* \(last error EEXIST\)$/,
+  );
+  assert.equal(readFileSync(lockOf(root), 'utf8'), held);
+  assert.deepEqual(readLedger(root).map(e => e.kind), ['proposed']);
+});
+
+test('an unreadable lock is broken only after the stale threshold', () => {
+  assert.equal(LEDGER_LOCK_STALE_MS, 30_000);
+  const root = tempDir('hk-ledger-repo-');
+  appendLedger(root, entry());
+  writeFileSync(lockOf(root), '{"pid":');
+  const { mtimeMs } = statSync(lockOf(root));
+  assert.throws(
+    () => appendLedger(root, entry({ kind: 'replayed' }), { now: steppingClock(mtimeMs + LEDGER_LOCK_STALE_MS - 10_000) }),
+    /ledger is locked/,
+  );
+  assert.equal(readFileSync(lockOf(root), 'utf8'), '{"pid":');
+  appendLedger(root, entry({ kind: 'replayed' }), { now: () => mtimeMs + LEDGER_LOCK_STALE_MS + 1000 });
+  assert.ok(!existsSync(lockOf(root)));
+  assert.deepEqual(readLedger(root).map(e => e.kind), ['proposed', 'replayed']);
+  assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
+});
+
+test('releasing does not delete a lock that another writer now holds', () => {
+  const root = tempDir('hk-ledger-repo-');
+  appendLedger(root, entry());
+  const foreign = ownerLock(process.pid, 'another-writer');
+  // The append reads its clock inside the locked section; that reading
+  // stands in for another writer taking the lock over.
+  const now = () => {
+    if (ownLockHeld(root)) writeFileSync(lockOf(root), foreign);
+    return Date.now();
+  };
+  assert.throws(() => appendLedger(root, entry({ kind: 'replayed' }), { now }), /ledger lock lost/);
+  assert.equal(readFileSync(lockOf(root), 'utf8'), foreign);
+});
+
+test('a writer whose lock was taken away writes nothing and says the lock was lost', () => {
+  const root = tempDir('hk-ledger-repo-');
+  appendLedger(root, entry());
+  const before = readFileSync(ledgerPath(root));
+  const now = () => {
+    if (ownLockHeld(root)) rmSync(lockOf(root));
+    return Date.now();
+  };
+  assert.throws(() => appendLedger(root, entry({ kind: 'replayed' }), { now }), /^Error: ledger lock lost/);
+  assert.deepEqual(readFileSync(ledgerPath(root)), before);
+  assert.ok(!existsSync(lockOf(root)));
 });
 
 test('a fresh lock held by another writer is waited for, not broken', async () => {
   const root = tempDir('hk-ledger-repo-');
   appendLedger(root, entry());
-  const lock = `${ledgerPath(root)}.lock`;
-  writeFileSync(lock, 'held');
+  const lock = lockOf(root);
   // The holder releases after 400 ms, and exits 1 if its lock was taken from
   // it in the meantime.
   const holder = spawn(process.execPath, ['--input-type=module', '-e', `
     import { readFileSync, unlinkSync } from 'node:fs';
     setTimeout(() => {
       let held = false;
-      try { held = readFileSync(${JSON.stringify(lock)}, 'utf8') === 'held'; } catch {}
+      try { held = JSON.parse(readFileSync(${JSON.stringify(lock)}, 'utf8')).token === 'holder'; } catch {}
       if (held) unlinkSync(${JSON.stringify(lock)});
       process.exit(held ? 0 : 1);
     }, 400);
@@ -178,10 +256,12 @@ test('a fresh lock held by another writer is waited for, not broken', async () =
     holder.on('error', reject);
     holder.on('close', resolve);
   });
+  writeFileSync(lock, ownerLock(holder.pid, 'holder'));
   const start = Date.now();
-  // One second short of stale by the clock the append is given.
-  appendLedger(root, entry({ kind: 'replayed' }), { now: () => Date.now() + LEDGER_LOCK_STALE_MS - 1000 });
-  assert.ok(Date.now() - start >= 300, 'the append returned before the holder released');
+  // A clock that never advances: the wait cannot time out however slowly the
+  // holder starts, and the lock is judged by its live writer alone.
+  appendLedger(root, entry({ kind: 'replayed' }), { now: () => 0 });
+  assert.ok(Date.now() - start >= 200, 'the append returned before the holder released');
   assert.equal(await exited, 0);
   assert.deepEqual(readLedger(root).map(e => e.kind), ['proposed', 'replayed']);
   assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
