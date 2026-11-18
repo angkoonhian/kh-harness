@@ -36,6 +36,7 @@ export function readManifestResult(root) {
   const read = readJsonFile(join(root, MANIFEST_PATH));
   if (read.state === 'absent') return { state: 'missing', manifest: null };
   if (read.state === 'unreadable' || !isWellFormedManifest(read.value)) return { state: 'corrupt', manifest: null };
+  read.value.settingsPatches ??= [];
   return { state: 'ok', manifest: read.value };
 }
 
@@ -51,8 +52,7 @@ function isWellFormedManifest(m) {
   return isPlainObject(m) && m.schema === 1 &&
     Array.isArray(m.files) &&
     m.files.every(f => isPlainObject(f) && typeof f.path === 'string' && typeof f.sha256 === 'string') &&
-    Array.isArray(m.settingsPatches) &&
-    m.settingsPatches.every(isPlainObject) &&
+    (m.settingsPatches === undefined || (Array.isArray(m.settingsPatches) && m.settingsPatches.every(isPlainObject))) &&
     (m.dirsCreated === undefined || (Array.isArray(m.dirsCreated) && m.dirsCreated.every(d => typeof d === 'string')));
 }
 
