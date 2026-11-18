@@ -1306,7 +1306,7 @@ test('SECURITY: no generated file contains a package.json script BODY (real dete
   const bootstrap = written.find(p => p.path === 'scripts/bootstrap.sh');
   assert.ok(bootstrap, 'the bootstrap generator must have fired');
   // `auth-token` is checked only here: `harness-redact.mjs` legitimately
-  // contains that word, in its own `CREDENTIAL_RULES` masking pattern.
+  // names credential keys such as it, in its own `CREDENTIAL_SHAPES` table.
   assert.equal(bootstrap.contents.includes('auth-token'), false);
   assert.match(bootstrap.contents, /npm ci/);
   assert.match(bootstrap.contents, /npm run build/);

@@ -499,11 +499,14 @@ test('ORPHAN CANARY: a timeout kills the whole process tree, not just the shell'
 
 test('CREDENTIAL MATRIX: a token in the verify command leaks in none of four failure modes', () => {
   const TOKEN = ['sk-live', 'VERIFYLEAK00001'].join('-'); // assembled: a provider-token shape in this file's own source
+  // Assembled: `--token=` followed by an interpolation is a credential line
+  // in this file's own source.
+  const FLAG = ['--token', TOKEN].join('=');
   const variants = {
-    'syntax error (unbalanced quote)': `node -e "console.log('x` + `  --token=${TOKEN}`,
-    'nonexistent binary': `definitely-not-a-real-binary-xyz --token=${TOKEN}`,
-    'typecheck fails naming a problem': `node -e "console.error('typecheck: oops'); process.exit(1)" --token=${TOKEN}`,
-    'timeout': `node -e "console.error('typecheck: slow'); setTimeout(()=>{},9999)" --token=${TOKEN}`,
+    'syntax error (unbalanced quote)': `node -e "console.log('x` + `  ${FLAG}`,
+    'nonexistent binary': `definitely-not-a-real-binary-xyz ${FLAG}`,
+    'typecheck fails naming a problem': `node -e "console.error('typecheck: oops'); process.exit(1)" ${FLAG}`,
+    'timeout': `node -e "console.error('typecheck: slow'); setTimeout(()=>{},9999)" ${FLAG}`,
   };
   for (const [label, script] of Object.entries(variants)) {
     const d = repo({ typecheck: script });
@@ -514,12 +517,13 @@ test('CREDENTIAL MATRIX: a token in the verify command leaks in none of four fai
 });
 
 test('MASK: a credential-shaped value in a genuine diagnostic is masked, not dropped', () => {
+  const leaked = ['sk-proj', 'DIAGNOSTICLEAK000001'].join('-'); // assembled: a provider-token shape in this file's own source
   const d = repo({
-    typecheck: 'node -e "console.error([\'typecheck\',\'leaked\',\'sk-live-DIAGLEAK0001\'].join(String.fromCharCode(32))); process.exit(1)"',
+    typecheck: `node -e "console.error(['typecheck','leaked','${leaked}'].join(String.fromCharCode(32))); process.exit(1)"`,
   });
   const r = run(d, payload());
   assert.equal(r.code, 2);
-  assert.doesNotMatch(r.stderr, /sk-live-DIAGLEAK0001/, 'the credential value itself must not reach stderr');
+  assert.equal(r.stderr.includes(leaked), false, 'the credential value itself must not reach stderr');
   assert.match(r.stderr, /\*\*\*/, 'masked, not silently vanished');
   assert.match(r.stderr, /leaked/, 'the surrounding diagnostic text survives');
 });

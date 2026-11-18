@@ -14,8 +14,10 @@
 // named for the first one it shared, stderr redaction, and the full list is:
 //
 //   1. REDACTION — `dropCommandFragments` (layer 1, a denylist of command
-//      fragments) and `maskCredentials` (layer 2, a credential-shape
-//      allowlist). The only part the name covers.
+//      fragments) and `maskCredentials`/`maskText` (layer 2, masking by
+//      `CREDENTIAL_SHAPES`, the credential table the sweep in
+//      `scripts/lib/detect-exposure.mjs` reads too). The only part the name
+//      covers.
 //   2. OUTPUT BOUNDS — `MAX_REPORT_LINES`, `MAX_REPORT_BYTES` and
 //      `boundReport`, which keep a hook's output inside Claude Code's
 //      10,000-character cap so it actually ARRIVES (see F3 below).
@@ -62,7 +64,7 @@
 //   (`eslint src/components`, `tsc -p tsconfig.build.json`), which every
 //   diagnostic names and which are not secrets.
 //
-//   Layer 2 (maskCredentials): a credential-SHAPE allowlist, independent of
+//   Layer 2 (maskCredentials, maskText): the credential-SHAPE table, independent of
 //   layer 1 — catches a credential-shaped value arriving from ANYWHERE in
 //   the output, including content the hook never built itself (e.g. a
 //   linted file's own source, or a verification command's own diagnostic
@@ -103,7 +105,7 @@ export function commandTokens(command, exemptions = new Set()) {
 // `pathTokenExemptions`.
 const CONFIG_SHAPED = /(?:\.(?:json|ya?ml|toml|[cm]?[jt]s|cfg|ini|conf)|(?:^|[/=])\.[\w-]+rc(?:\.\w+)?)$/i;
 // A flag whose NAME is credential-shaped is never exempt, whatever its value
-// looks like: `--token=secrets.json` is still a token.
+// looks like: `--token` set to `secrets.json` is still a token.
 const CREDENTIAL_FLAG = /^--?(?:[\w-]*(?:token|key|secret|password|passwd|pwd|auth)[\w-]*)=/i;
 // Nor is anything that can carry userinfo: a URL or an `scp`-style
 // `user@host:path`, whatever it ends in (final review: `…@host/x.json`
@@ -155,59 +157,149 @@ export function dropCommandFragments(lines, commands, exemptions = new Set()) {
 }
 
 /**
- * Layer 2. Credential-shaped values, independent of where they came from.
- * Ruff and biome print source snippets, so a secret in a linted file reaches
- * this mask whether or not the command mentioned it; the list therefore
- * tracks the shapes the sweep (scripts/lib/detect-exposure.mjs) knows, plus
- * what only ever appears in OUTPUT: a JWT, a URL's userinfo, a Basic header,
- * a `key: value` line in any of its spellings, and a PEM block (audit Tier
- * 3, finding 24). Order matters only where rules overlap: the key-value rule
- * runs last so a vendor token after `api_key:` is already starred by then.
- * Masking keeps the line and the key; only the value is replaced.
+ * Layer 2, and the credential sweep's pattern list: the one table of
+ * credential shapes. The installed hooks mask with it, and
+ * `scripts/lib/detect-exposure.mjs` builds its token and keyed lists from it
+ * and keeps none of its own, so a shape one recognises the other recognises
+ * too. It lives here because an installed hook may import only this module.
+ *
+ * `kind: 'token'` — the whole match is the secret, identified by its own
+ * shape (a vendor prefix, a JWT's `eyJ`, a PEM header). The mask replaces the
+ * match; the sweep reports it as a token.
+ *
+ * `kind: 'keyed'` — the secret is identified by what precedes it: a key, an
+ * `Authorization` scheme, a URL's `user:` part. The named group `value` is
+ * always the END of the match, so everything before it is the key, which the
+ * mask keeps. The mask replaces any value; the sweep judges the value
+ * (placeholder, code reference, length) before it reports one.
+ *
+ * Boundaries are `(?<![A-Za-z0-9])`, not `\b`: `\b` counts `_` as part of a
+ * word, so it would miss a token written straight after an underscore. A
+ * colour code's final `m` is a letter, so ANSI sequences are stripped before
+ * any line is matched (see `maskCredentials`).
+ *
+ * Every pattern is global and is shared, so use it only through `matchAll`
+ * and `replace`, which do not depend on `lastIndex`. Length floors sit far
+ * below each vendor's real token length and above the ordinary identifiers
+ * that share a prefix (`npm_config_cache`, `hf_transfer`, `ghp_client`).
  */
-export const CREDENTIAL_RULES = [
-  // Floors sit a little BELOW the sweep's (detect-exposure.mjs): a mask that
-  // stars a shorter string than the sweep would flag is the safe direction,
-  // while a blanket {6,} masked ordinary identifiers such as npm_config_cache,
-  // hf_transfer and ghp_client out of real diagnostics (Tier 3 review,
-  // Minor 4). Ten characters of body is where the identifiers stop and the
-  // tokens begin.
-  [/\bsk-[A-Za-z0-9_-]{10,}/g, '***'],
-  [/\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g, '***'],
-  [/\bglpat-[A-Za-z0-9_-]{10,}/g, '***'],
-  [/\bglrt-[A-Za-z0-9_-]{10,}/g, '***'],
-  [/\bgh[opsur]_[A-Za-z0-9]{10,}/g, '***'],
-  [/\bgithub_pat_[A-Za-z0-9_]{10,}/g, '***'],
-  [/\bnpm_[A-Za-z0-9]{36}\b/g, '***'],
-  [/\bAKIA[A-Za-z0-9]{12,}/g, '***'],
-  [/\bAIza[0-9A-Za-z_-]{35}\b/g, '***'],
-  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, '***'],
-  [/\bxapp-[A-Za-z0-9-]{10,}/g, '***'],
-  [/\bhf_[A-Za-z0-9]{12,}/g, '***'],
-  [/\bdckr_pat_[A-Za-z0-9_-]{10,}/g, '***'],
-  [/\bpypi-[A-Za-z0-9_-]{10,}/g, '***'],
-  // A JWT: three base64url segments, the first always `eyJ` (`{"`).
-  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '***'],
-  // Userinfo in a URL: `scheme://user:secret@host` — the user name (which
-  // may be empty, as in `redis://:secret@host`) is kept, the secret is not.
-  // A URL with no password is left alone.
-  [/(:\/\/[^/\s:@]*:)[^@\s/]+@/g, '$1***@'],
-  [/\bBearer\s+\S+/gi, 'Bearer ***'],
-  [/\bBasic\s+[A-Za-z0-9+/=]{12,}/g, 'Basic ***'],
-  // A PEM block, on one line or across several (lines are masked one at a
-  // time by the hooks, so the single-line form is what usually arrives).
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '***'],
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----.*/g, '***'],
-  [/(--(?:token|auth-token|api-key)=)\S+/gi, '$1***'],
-  // `password=x`, `password: x`, `"password": "x"`, `api_key: x` … — the
-  // same key list the sweep uses, in any quoting, `=` or `:`.
-  [/((?:["']?)(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|auth[_-]?token)(?:["']?)\s*[:=]\s*)["']?[^\s"',;]+["']?/gi, '$1***'],
-];
+const PEM_HEADER = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+const PEM_FOOTER = /-----END [A-Z ]*PRIVATE KEY-----/;
 
-export function maskCredentials(line) {
+// A keyed value: a quoted string up to its closing quote (spaces included),
+// or an unquoted run that stops at whitespace, `,` or `;`. Quotes inside an
+// unquoted run are kept so `config.get('x')` stays one value for the sweep's
+// reference check.
+const KEYED_VALUE = String.raw`(?<value>"[^"\n]*"|'[^'\n]*'|[^\s"',;][^\s,;]*)`;
+// `=` or `:`, never the first character of `==`, `===` or `=>`.
+const ASSIGN = String.raw`\s*[:=](?![=>])\s*`;
+
+const shape = (id, kind, pattern) => Object.freeze({ id, kind, pattern, severity: 'high' });
+
+export const CREDENTIAL_SHAPES = Object.freeze([
+  // The hyphenated body only after a known prefix: `sk-learn-compatible-…`
+  // and `/sk-hynix-…` are prose.
+  shape('sk-key', 'token', /(?<![A-Za-z0-9])sk-(?:[A-Za-z0-9]{20,}|(?:proj|ant|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,})/g),
+  shape('stripe', 'token', /(?<![A-Za-z0-9])(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g),
+  shape('gitlab-pat', 'token', /(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{16,}/g),
+  shape('gitlab-runner', 'token', /(?<![A-Za-z0-9])glrt-[A-Za-z0-9_-]{16,}/g),
+  shape('github', 'token', /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{16,}/g),
+  shape('github-fine-grained', 'token', /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{22,}/g),
+  shape('npm', 'token', /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}/g),
+  // AKIA: a long-term access key id; ASIA: a temporary (STS) one.
+  shape('aws-access-key', 'token', /(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}/g),
+  shape('google', 'token', /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}/g),
+  shape('slack', 'token', /(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}/g),
+  shape('slack-app', 'token', /(?<![A-Za-z0-9])xapp-[A-Za-z0-9-]{10,}/g),
+  shape('slack-webhook', 'token', /(?<![A-Za-z0-9])hooks\.slack\.com\/services\/T[A-Z0-9]{6,}\/B[A-Z0-9]{6,}\/[A-Za-z0-9]{20,}/g),
+  shape('sendgrid', 'token', /(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g),
+  shape('hugging-face', 'token', /(?<![A-Za-z0-9])hf_[A-Za-z0-9]{20,}/g),
+  shape('docker', 'token', /(?<![A-Za-z0-9])dckr_pat_[A-Za-z0-9_-]{10,}/g),
+  // A real PyPI token is a macaroon of well over a hundred characters; a
+  // shorter floor matches package names such as `pypi-publish-action`.
+  shape('pypi', 'token', /(?<![A-Za-z0-9])pypi-[A-Za-z0-9_-]{50,}/g),
+  // Three base64url segments, the first always `eyJ` (`{"`).
+  shape('jwt', 'token', /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g),
+  // The token after the scheme word; the word itself is kept. The lookahead
+  // runs first so the lookbehind is tried only where a token starts, not at
+  // every position of a long whitespace run.
+  shape('bearer', 'token', /(?=[A-Za-z0-9._~+/-]{20})(?<=(?<![A-Za-z0-9])Bearer\s+)[A-Za-z0-9._~+/-]{20,}=*/gi),
+  // From the header to the end of its line. A key's body lines carry no
+  // marker of their own; `maskText` masks them by tracking the block.
+  shape('pem-private-key', 'token', new RegExp(PEM_HEADER.source + '.*', 'g')),
+  // `scheme://user:secret@host`. The user name, which may be empty as in
+  // `redis://:secret@host`, is kept; a URL with no password is not matched.
+  shape('url-userinfo', 'keyed', /:\/\/[^/\s:@]*:(?<value>[^@\s/]+)(?=@)/g),
+  // `password=x`, `"password": "x"`, `DB_PASS: x`, `AWS_SECRET_ACCESS_KEY=x`.
+  // Bare `token:` and `secret:` are not keys: in prose they are words.
+  shape('credential-assignment', 'keyed', new RegExp(
+    String.raw`(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?(?:access[_-]?)?key|access[_-]?token|auth[_-]?token|private[_-]?key|_pass|_secret)["']?` + ASSIGN + KEYED_VALUE, 'gi')),
+  // `TOKEN=x`, `GITHUB_TOKEN=x`, `--token=x`: a key ending in `token`, set
+  // with `=` and no whitespace, as env files and flags write it. `token:`
+  // begins a sentence as often as a setting, and `const token = f(a, b)` is
+  // code. `[=]` rather than `=` so this line is not itself an assignment
+  // the sweep reports.
+  shape('token-assignment', 'keyed', new RegExp(
+    String.raw`(?<![A-Za-z0-9])token[=](?![=>])` + KEYED_VALUE, 'gi')),
+  // `Authorization: token x`, `Authorization: Basic x`, `Authorization: x`.
+  shape('authorization-header', 'keyed', new RegExp(
+    String.raw`(?<![A-Za-z0-9])authorization["']?` + ASSIGN + String.raw`["']?(?:(?:bearer|basic|token|digest)\s+)?` + KEYED_VALUE, 'gi')),
+]);
+
+// CSI (`ESC [` or the one-byte C1 form), OSC terminated by BEL or ST, and
+// every other escape: `ESC`, any intermediate bytes, one final byte.
+const ANSI_SEQUENCE = /\u001b\[[0-?]*[ -/]*[@-~]|\u009b[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[ -/]*[0-~]/g;
+
+export function stripAnsi(text) {
+  return text.replace(ANSI_SEQUENCE, '');
+}
+
+/** Masks one line that `stripAnsi` has already cleaned. */
+function maskLine(line) {
   let masked = line;
-  for (const [re, replacement] of CREDENTIAL_RULES) masked = masked.replace(re, replacement);
+  for (const { kind, pattern } of CREDENTIAL_SHAPES) {
+    masked = kind === 'token'
+      ? masked.replace(pattern, '***')
+      : masked.replace(pattern, (...args) => {
+        const match = args[0];
+        const { value } = args.at(-1);
+        return match.slice(0, match.length - value.length) + '***';
+      });
+  }
   return masked;
+}
+
+/**
+ * Masks one line of output: the line and every key survive, only values are
+ * replaced. ANSI sequences are removed first, so a coloured secret is masked
+ * and the result carries no colour. A PEM key's body lines are masked only
+ * by `maskText`, which sees the lines around them.
+ */
+export function maskCredentials(line) {
+  return maskLine(stripAnsi(line));
+}
+
+/**
+ * Masks multi-line text: every line as `maskCredentials` would, and every
+ * line from a PEM private-key header through its footer replaced by `***`.
+ * Line endings, `\n` or `\r\n`, are kept, and so is the line count. A header
+ * with no footer masks to the end of the text.
+ */
+export function maskText(text) {
+  const parts = stripAnsi(text).split(/(\r?\n)/);
+  let inKey = false;
+  for (let i = 0; i < parts.length; i += 2) {
+    const line = parts[i];
+    if (inKey) {
+      inKey = !PEM_FOOTER.test(line);
+      parts[i] = '***';
+      continue;
+    }
+    parts[i] = maskLine(line);
+    const header = PEM_HEADER.exec(line);
+    inKey = header !== null && !PEM_FOOTER.test(line.slice(header.index));
+  }
+  return parts.join('');
 }
 
 // --- Bounding what reaches stderr -----------------------------------------

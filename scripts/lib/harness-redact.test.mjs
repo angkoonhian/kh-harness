@@ -23,7 +23,7 @@ sandboxMarkerDir();
 import {
   boundReport,
   commandTokens,
-  CREDENTIAL_RULES,
+  CREDENTIAL_SHAPES,
   dropCommandFragments,
   pathTokenExemptions,
   MAX_BLOCKS_PER_SESSION,
@@ -32,11 +32,13 @@ import {
   markerDir,
   markerPath,
   maskCredentials,
+  maskText,
   readJSONMarker,
   rootTag,
   runBounded,
   safeSessionId,
   signatureOf,
+  stripAnsi,
   writeJSONMarker,
 } from '../../assets/scripts/harness-redact.mjs';
 
@@ -99,51 +101,92 @@ test('pathTokenExemptions: config-file-shaped tokens are exempt, attached to a f
   assert.deepEqual([...ex].sort(), ['--config=eslint.config.js', '.eslintrc.cjs', 'ruff.toml', 'tsconfig.build.json']);
 });
 
+// Assembled: a credential flag with a value is a credential-table match in
+// this file's own source.
+const TOKEN_FLAG = ['--token', 'abcdefghijkl'].join('=');
+
 test('pathTokenExemptions: a credential-shaped token is never exempt', () => {
-  // Assembled: a credential flag with a value is a DB_CRED match in this
-  // file's own source (the DOGFOOD test caught it at severity low).
   const keyFlag = ['--api-key', 'secretvalue.json'].join('=');
-  const ex = pathTokenExemptions(`cli --token=abcdefghijkl ${keyFlag} src/components`, ['src/components/a.ts']);
-  assert.equal(ex.has('--token=abcdefghijkl'), false);
+  const ex = pathTokenExemptions(`cli ${TOKEN_FLAG} ${keyFlag} src/components`, ['src/components/a.ts']);
+  assert.equal(ex.has(TOKEN_FLAG), false);
   assert.equal(ex.has(keyFlag), false, 'a credential flag is never exempt, whatever its value ends in');
   assert.deepEqual([...ex], ['src/components']);
 });
 
 test('pathTokenExemptions: a URL token is never exempt, even when it ends like a config file', () => {
   // Final review, re-graded Important: a credential URL in a lint or verify
-  // command, echoed in a diagnostic, must keep dropping at layer 1 — layer 2
-  // has no URL-userinfo rule yet (Tier 3).
-  const url = ['https://user:hunter2hunter2@host.invalid/x', 'json'].join('.');
+  // command, echoed in a diagnostic, must keep dropping at layer 1.
+  const url = ['https://user', 'hunter2hunter2@host.invalid/x.json'].join(':');
   assert.equal(pathTokenExemptions(`curl ${url} src/components`, ['src/components/a.ts']).has(url), false);
   assert.equal(pathTokenExemptions('deploy user@host.invalid:config.json').size, 0);
 });
 
 test('dropCommandFragments with pathTokenExemptions keeps a diagnostic naming the linted directory and still drops a token fragment', () => {
-  const command = 'eslint src/components --token=abcdefghijkl';
-  const lines = ['src/components/Button.tsx:1:1 error no-unused-vars', 'auth: --token=abcdefghijkl rejected'];
+  const command = `eslint src/components ${TOKEN_FLAG}`;
+  const lines = ['src/components/Button.tsx:1:1 error no-unused-vars', `auth: ${TOKEN_FLAG} rejected`];
   const survived = dropCommandFragments(lines, [command], pathTokenExemptions(command, ['src/components/Button.tsx']));
   assert.deepEqual(survived, ['src/components/Button.tsx:1:1 error no-unused-vars']);
 });
 
-// --- maskCredentials / CREDENTIAL_RULES (layer 2) --------------------------
+// --- maskCredentials / CREDENTIAL_SHAPES (layer 2) -------------------------
+//
+// Every shape is also checked against the sweep, sample by sample, in
+// detect-exposure.test.mjs ("the sweep and the mask recognise the same
+// shapes"). Every credential-shaped sample here is assembled at runtime, so
+// the sweep never finds one in this file's own source.
 
-test('CREDENTIAL_RULES covers every documented vendor shape', () => {
-  // Each sample's SENSITIVE portion (the part after any fixed vendor
-  // prefix) must disappear — "Bearer" itself is not a secret, so only the
-  // token after it is checked for that one case.
-  // 'AKIA' + 16 and 'xoxb-' + 10 are the two samples long enough to trip
-  // detect-exposure's own TOKEN_PATTERNS, so they are assembled rather than
-  // written — see this file's header.
-  const fullyMasked = ['sk-liveAAAAAAAAAA', 'glpat-AAAAAAAAAA', 'ghp_AAAAAAAAAAAA', 'github_pat_AAAAAAAAAAAA',
-    'AKIA' + 'ABCDEFGHIJKLMNOP', 'xoxb-' + 'A'.repeat(10)];
-  for (const s of fullyMasked) {
-    assert.doesNotMatch(maskCredentials(s), new RegExp(s), `expected ${s} to be masked`);
+test('CREDENTIAL_SHAPES is frozen and every entry carries the documented fields', () => {
+  assert.ok(Object.isFrozen(CREDENTIAL_SHAPES));
+  const ids = new Set();
+  for (const shape of CREDENTIAL_SHAPES) {
+    assert.ok(Object.isFrozen(shape), shape.id);
+    assert.deepEqual(Object.keys(shape).sort(), ['id', 'kind', 'pattern', 'severity'], shape.id);
+    assert.ok(['token', 'keyed'].includes(shape.kind), shape.id);
+    assert.equal(shape.severity, 'high', shape.id);
+    assert.ok(shape.pattern instanceof RegExp && shape.pattern.global, `${shape.id}: a global pattern, so every match is seen`);
+    assert.equal(ids.has(shape.id), false, `duplicate id ${shape.id}`);
+    ids.add(shape.id);
   }
-  assert.equal(maskCredentials('Bearer sometoken'), 'Bearer ***', 'the Bearer scheme word survives; only the token is masked');
+});
+
+// The sweep runs every shape over files up to 512 KB and the hooks over
+// whole lines of tool output, so a pattern that backtracks quadratically is
+// a hang. At 256 KB a quadratic shape takes tens of seconds; a linear one,
+// milliseconds.
+test('every credential shape stays linear on long adversarial lines', () => {
+  const n = 256 * 1024;
+  const inputs = [
+    ' '.repeat(n),
+    'Bearer' + ' '.repeat(n),
+    Array.from({ length: n }, (_, i) => 'Ab1_-'[i % 5]).join(''),
+    ['password', ' '.repeat(n)].join(''),
+    '://u:' + 'x'.repeat(n),
+    'eyJ'.repeat(n / 3),
+  ];
+  for (const shape of CREDENTIAL_SHAPES) {
+    const started = performance.now();
+    for (const text of inputs) for (const _ of text.matchAll(shape.pattern)) { /* drain */ }
+    const ms = performance.now() - started;
+    assert.ok(ms < 2000, `${shape.id} took ${Math.round(ms)} ms over ${inputs.length} inputs of ${n} characters`);
+  }
+});
+
+test('maskCredentials masks the vendor shapes at realistic lengths', () => {
+  const tokens = [
+    ['sk', 'A'.repeat(48)].join('-'),
+    ['glpat', 'A'.repeat(20)].join('-'),
+    ['ghp', 'A'.repeat(36)].join('_'),
+    ['github_pat', 'A'.repeat(82)].join('_'),
+    ['AKIA', 'ABCDEFGHIJKLMNOP'].join(''),
+    ['xoxb', 'A'.repeat(10)].join('-'),
+  ];
+  for (const s of tokens) assert.equal(maskCredentials(`got ${s} back`), 'got *** back', s);
+  const bearer = ['Bearer', 'A'.repeat(24)].join(' ');
+  assert.equal(maskCredentials(bearer), 'Bearer ***', 'the Bearer scheme word survives; only the token is masked');
 });
 
 // Inputs assembled with join('='): a flag named like a credential key, an
-// `=` and a long value is a DB_CRED match in this file's own source.
+// `=` and a long value is a keyed-shape match in this file's own source.
 test('maskCredentials masks the --token, --auth-token and --api-key flags by key shape', () => {
   const flag = (name, value) => [name, value].join('=');
   assert.equal(maskCredentials(flag('--token', 'secretvalue')), '--token=***');
@@ -152,13 +195,13 @@ test('maskCredentials masks the --token, --auth-token and --api-key flags by key
 });
 
 // The title names the two keys in prose rather than joining them with a
-// slash: that joined form is itself a DB_CRED match (a credential key,
+// slash: that joined form is itself a keyed-shape match (a credential key,
 // then `=`, then nine non-space characters), and it made this FILE a
 // `credentials-in-doc` finding when kh-harness was run on its own repo.
 // A comment is tracked text like any other — see this file's header.
 test('maskCredentials masks a password or api_key assignment by key shape', () => {
   // Assembled: written out, the closing quote and comma push the value
-  // past DB_CRED's eight-non-space-character threshold, so the LITERAL
+  // past the sweep's eight-character floor, so the LITERAL
   // would make this file a finding — see this file's header.
   const assign = (key, value) => [key, value].join('=');
   assert.equal(maskCredentials(assign('password', 'hunter2')), assign('password', '***'));
@@ -166,10 +209,11 @@ test('maskCredentials masks a password or api_key assignment by key shape', () =
 });
 
 test('maskCredentials never drops the line — only the value', () => {
-  const masked = maskCredentials('found token sk-live-ABCDEFGHIJ in config');
+  const key = ['sk-proj', 'ABCDEFGHIJ'.repeat(3)].join('-');
+  const masked = maskCredentials(`found token ${key} in config`);
   assert.match(masked, /found token/);
   assert.match(masked, /in config/);
-  assert.doesNotMatch(masked, /sk-live-ABCDEFGHIJ/);
+  assert.equal(masked.includes(key), false, masked);
 });
 
 // --- Audit Tier 3, finding 24: the mask knew six vendor shapes --------------
@@ -189,7 +233,7 @@ test('maskCredentials masks today\'s shapes: npm, GitHub, Stripe-style, Google, 
     ['Slack app', ['xapp', 'H'.repeat(20)].join('-'), 'H'.repeat(20)],
     ['Hugging Face', ['hf', 'I'.repeat(20)].join('_'), 'I'.repeat(20)],
     ['Docker', ['dckr_pat', 'J'.repeat(20)].join('_'), 'J'.repeat(20)],
-    ['PyPI', ['pypi', 'K'.repeat(20)].join('-'), 'K'.repeat(20)],
+    ['PyPI', ['pypi', 'K'.repeat(60)].join('-'), 'K'.repeat(60)],
   ];
   for (const [name, token, secret] of cases) {
     const masked = maskCredentials(`found ${token} in config`);
@@ -219,12 +263,51 @@ test('maskCredentials masks key: value forms in any quoting, with the same key l
   assert.equal(maskCredentials('the password is set elsewhere'), 'the password is set elsewhere', 'a key without a value is prose');
 });
 
-test('maskCredentials masks a PEM block on one line, by its header alone, and across lines', () => {
-  const header = ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ');
-  const footer = ['-----END RSA', 'PRIVATE KEY-----'].join(' ');
-  assert.equal(maskCredentials(`${header} MIIEowIBAAKCAQEA ${footer}`), '***');
-  assert.equal(maskCredentials(`key: ${header}`), 'key: ***', 'a header alone — what a line-at-a-time mask sees — is enough');
-  assert.equal(maskCredentials(`${header}\nMIIEowIBAAKCAQEA\n${footer}\ntrailing`), '***\ntrailing');
+const PEM_HEADER = ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ');
+const PEM_FOOTER = ['-----END RSA', 'PRIVATE KEY-----'].join(' ');
+
+test('maskCredentials masks a PEM block on one line, and from a header alone to the end of its line', () => {
+  assert.equal(maskCredentials(`${PEM_HEADER} MIIEowIBAAKCAQEA ${PEM_FOOTER}`), '***');
+  assert.equal(maskCredentials(`key: ${PEM_HEADER}`), 'key: ***', 'a header alone — what a line-at-a-time mask sees — is enough');
+});
+
+test('every body line of a PEM private key is masked by maskText', () => {
+  const body = ['MIIEowIBAAKCAQEAx1', 'q2w3e4r5t6y7u8i9o0', 'ZmFrZWtleWJvZHkK'];
+  const text = ['before', PEM_HEADER, ...body, PEM_FOOTER, 'after'].join('\n');
+  const masked = maskText(text);
+  for (const line of body) assert.equal(masked.includes(line), false, `${line} survived: ${masked}`);
+  assert.equal(masked, ['before', '***', '***', '***', '***', '***', 'after'].join('\n'), 'line count is kept and the text after the footer is not masked');
+});
+
+test('maskText keeps CRLF line endings and masks every line it is given', () => {
+  const assignment = ['password', 'hunter2hunter2'].join('=');
+  const crlf = maskText(['ok', assignment, ''].join('\r\n'));
+  assert.equal(crlf, ['ok', ['password', '***'].join('='), ''].join('\r\n'));
+  assert.equal(maskText(`${PEM_HEADER}\r\nMIIEowIBAAKCAQEA\r\n${PEM_FOOTER}\r\nnext`), '***\r\n***\r\n***\r\nnext');
+});
+
+test('a credential wrapped in an SGR colour sequence is masked', () => {
+  const token = ['ghp', 'A'.repeat(36)].join('_');
+  const assignment = ['password', 'hunter2hunter2'].join('=');
+  assert.equal(maskCredentials(`\u001b[31m${token}\u001b[0m`), '***');
+  assert.equal(maskCredentials(`\u001b[1m${assignment}\u001b[22m`), ['password', '***'].join('='));
+  // The key itself coloured apart from its value: what a linter's source
+  // snippet looks like.
+  assert.equal(maskCredentials(`\u001b[36mpassword\u001b[39m=hunter2hunter2`), ['password', '***'].join('='));
+});
+
+test('stripAnsi removes CSI, OSC and two-byte escape sequences and leaves plain text alone', () => {
+  assert.equal(stripAnsi('\u001b[1;31merror\u001b[0m: x'), 'error: x');
+  assert.equal(stripAnsi('\u001b]8;;https://h.invalid\u0007link\u001b]8;;\u0007'), 'link');
+  assert.equal(stripAnsi('a\u001b7b\u001b8c\u001b(Bd'), 'abcd');
+  assert.equal(stripAnsi('\u009b2Kline'), 'line');
+  assert.equal(stripAnsi('plain text: 1 [2] 3'), 'plain text: 1 [2] 3');
+});
+
+test('a quoted value containing spaces is masked to its closing quote', () => {
+  const colon = (k, v) => [k, v].join(': ');
+  assert.equal(maskCredentials(colon('password', '"correct horse battery staple" # note')), 'password: *** # note');
+  assert.equal(maskCredentials(colon('"password"', "'correct horse battery staple',")), '"password": ***,');
 });
 
 // --- runBounded / killTree (shared process runner, audit Tier 3) -----------

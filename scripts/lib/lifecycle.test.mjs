@@ -455,7 +455,7 @@ test('FINDING 5: a settings-hook is never registered when its shared dependency 
   // already in the manifest from the earlier runs, so propose.mjs's own
   // dedupe never re-proposes them) — only the settings-hook proposal
   // remains, and this time its dependency check passes.
-  writeFileSync(join(d, '.claude/scripts/harness-redact.mjs'), 'export const CREDENTIAL_RULES = [];\n');
+  writeFileSync(join(d, '.claude/scripts/harness-redact.mjs'), 'export const CREDENTIAL_SHAPES = [];\n');
   run(APPLY, d, '--yes');
   assert.equal(settings(d).hooks.Stop.length, 1,
     'once the dependency genuinely exists on disk again, activation proceeds — this is a real-state gate, not a one-way trap');

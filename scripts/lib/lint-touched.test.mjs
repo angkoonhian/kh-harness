@@ -292,7 +292,7 @@ test('NEVER-ECHO: a token survives in no output even when the lint run times out
   // the third. The token lives in the command's own (non-flag-shaped, via
   // `--`) arguments so node's own CLI parser does not reject it outright.
   const token = ['sk-live', 'TIMEOUTLEAK0000001'].join('-');
-  const d = repo(`node -e "setTimeout(() => { console.error('src/a.ts late'); process.exit(1); }, 4000)" -- --token=${token}`);
+  const d = repo(`node -e "setTimeout(() => { console.error('src/a.ts late'); process.exit(1); }, 4000)" -- ${['--token', token].join('=')}`);
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } }, { HK_LINT_TIMEOUT_MS: '200' });
   assert.equal(r.code, 0);
   assert.doesNotMatch(r.stdout, new RegExp(token));
@@ -711,11 +711,14 @@ test('STDIN: a caller that never closes stdin still gets exit 0 within the bound
 // was run and what the suite guards are the same thing.
 test('CREDENTIAL MATRIX: a token in scripts.lint leaks in none of four failure modes', () => {
   const TOKEN = 'sk-live-REALLEAK0001';
+  // Assembled: `--token=` followed by an interpolation is a credential line
+  // in this file's own source.
+  const FLAG = ['--token', TOKEN].join('=');
   const variants = {
-    'syntax error (unbalanced quote)': `node -e "console.log('x` + `  --token=${TOKEN}`,
-    'nonexistent binary': `definitely-not-a-real-binary-xyz --token=${TOKEN}`,
-    'linter fails naming the file': `node -e "console.error('src/a.ts:1 oops'); process.exit(1)" --token=${TOKEN}`,
-    'timeout': `node -e "console.error('src/a.ts:1 slow'); setTimeout(()=>{},9999)" --token=${TOKEN}`,
+    'syntax error (unbalanced quote)': `node -e "console.log('x` + `  ${FLAG}`,
+    'nonexistent binary': `definitely-not-a-real-binary-xyz ${FLAG}`,
+    'linter fails naming the file': `node -e "console.error('src/a.ts:1 oops'); process.exit(1)" ${FLAG}`,
+    'timeout': `node -e "console.error('src/a.ts:1 slow'); setTimeout(()=>{},9999)" ${FLAG}`,
   };
   for (const [label, lint] of Object.entries(variants)) {
     const d = mkdtempSync(join(tmpdir(), 'hk-leak-'));
@@ -790,7 +793,7 @@ test('BLOCK: a continuation line carrying a credential-shaped value is redacted,
   const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
   mkdirSync(join(d, 'src'), { recursive: true });
   writeFileSync(join(d, 'src', 'a.ts'), 'export const a = 1;' + NL);
-  const leaked = ['sk-live', 'CONTINUATIONLEAK0001'].join('-');
+  const leaked = ['sk-proj', 'CONTINUATIONLEAK0001'].join('-');
   writeFileSync(join(d, 'runlint.cjs'), stylishLintScript('src/a.ts', `found token ${leaked} in config`));
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node runlint.cjs' } }));
 
@@ -905,7 +908,7 @@ test('LAYER 2 ONLY: a credential-shaped value in a genuine diagnostic (not echoe
   // layer 2's credential-shape masking can catch it from here — exactly
   // the "arriving from anywhere, including the linted file's own content"
   // case ruling 2's layer 2 exists for.
-  const leaked = ['sk-live', 'DIAGNOSTICLEAK0001'].join('-');
+  const leaked = ['sk-proj', 'DIAGNOSTICLEAK000001'].join('-');
   const d = repo(
     `node -e "console.error(['src/a.ts:1','hardcoded','secret','${leaked}','found'].join(String.fromCharCode(32))); process.exit(1)"`,
   );
@@ -931,7 +934,7 @@ test('MASK: a GitHub PAT (ghp_...) in a genuine diagnostic is masked, not droppe
 });
 
 test('MASK: a generic --auth-token or password assignment is masked by key shape, not by vendor prefix', () => {
-  // `password=` plus a long value is a DB_CRED match, so it is assembled.
+  // `password=` plus a long value is a credential-assignment match, so it is assembled.
   const ASSIGNMENT = ['password', 'hunter2plaintext'].join('=');
   const d = repo(
     `node -e "console.error(['src/a.ts:1','config','dump:','${ASSIGNMENT}'].join(String.fromCharCode(32))); process.exit(1)"`,
@@ -940,7 +943,7 @@ test('MASK: a generic --auth-token or password assignment is masked by key shape
   assert.equal(r.code, 2);
   assert.doesNotMatch(r.stderr, /hunter2plaintext/, 'the value after password= must be masked even with no known vendor prefix');
   // Assembled for the same reason the fixture above is: written out, this
-  // regex literal is itself a DB_CRED match.
+  // regex literal is itself a credential-assignment match.
   assert.match(r.stderr, new RegExp(['password', String.raw`\*\*\*`].join('=')));
 });
 

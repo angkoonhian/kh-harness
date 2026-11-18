@@ -1,6 +1,7 @@
 // scripts/lib/detect-exposure.mjs
 import { openSync, fstatSync, readSync, closeSync, lstatSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { CREDENTIAL_SHAPES } from '../../assets/scripts/harness-redact.mjs';
 
 const MAX_BYTES = 512 * 1024;
 
@@ -34,47 +35,21 @@ const ALWAYS_PROBE = [
   '.netrc',
 ];
 
-// Provider-token shapes. Every pattern is global (every match in a file is
-// examined, see `tokenFinding`) and anchored at a word boundary: the old
-// `/sk-[A-Za-z0-9]{20,}/` matched inside `desk-…`. Audit Tier 1, finding 1
-// (docs/2026-11-02-audit-findings.md): the previous list predated today's
-// shapes — an OpenAI `sk-proj-…` key failed the old `sk-` rule at its first
-// hyphen, and `npm_`, `github_pat_` and `AIza` were not listed at all — so a
-// tree holding all three reported `verified`.
-const TOKEN_PATTERNS = [
-  /\bglpat-[A-Za-z0-9_-]{16,}/g,
-  /\bgh[pousr]_[A-Za-z0-9]{16,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{22,}/g,
-  // The hyphenated body is admitted only after a known vendor prefix: a
-  // bare `sk-[A-Za-z0-9_-]{20,}` read `/sk-hynix-memory-chips-report-2024`
-  // and `sk-learn-compatible-estimator-api` as high findings (final
-  // review, Important 1). The legacy alphanumeric-only form stays.
-  /\bsk-(?:[A-Za-z0-9]{20,}|(?:proj|ant|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,})/g,
-  /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g,
-  /\bAKIA[0-9A-Z]{16}/g,
-  /\bnpm_[A-Za-z0-9]{36}/g,
-  /\bAIza[0-9A-Za-z_-]{35}/g,
-  /\bBearer\s+[A-Za-z0-9._-]{20,}/gi,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}/g,
-];
+// The sweep's shapes are the hook mask's: `CREDENTIAL_SHAPES` is the one
+// table, kept in the installed asset because a hook may import nothing
+// else. A token shape's match is reported as a token; a keyed shape's
+// `value` group is judged below before it is reported as a credential line.
+const TOKEN_SHAPES = CREDENTIAL_SHAPES.filter(s => s.kind === 'token');
+const KEYED_SHAPES = CREDENTIAL_SHAPES.filter(s => s.kind === 'keyed');
 
-const PEM_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/g;
+// The mask stars any value; the sweep reports one only from eight characters
+// (quotes included), so `password: null` and `DB_PASS=x` in documentation
+// are not findings.
+const MIN_KEYED_VALUE = 8;
 
-// A credential-shaped KEY followed by a value of eight or more non-space
-// characters. Global: every match in a file is examined (a placeholder on
-// line 1 used to hide a literal on line 2). The optional closing quote lets
-// a JSON key (`"password": "…"`) match. The key list is deliberately
-// compound-only beyond the three password spellings: bare `token:` and
-// `secret:` were probed against this repository and matched 48 and 8 lines
-// of ordinary prose, which would bury the check in noise. `auth[_-]?token`
-// also covers `.npmrc`'s `_authToken`.
-const DB_CRED = /(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*(\S{8,})/gi;
-
-// Tested on the VALUE only — of a credential line, or of a token match with
-// its `Bearer ` scheme removed. It used to be tested on key+value for
-// credential lines, so a key that happened to contain `example` hid a real
-// value; and it was never applied to tokens, so `Bearer YOUR_TOKEN_HERE` was
-// a permanent high finding.
+// Tested on the VALUE only: a keyed shape's `value`, or a Bearer token's
+// body. Tested on key and value together, a key containing `example` would
+// hide a real value.
 const PLACEHOLDER = /(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted|^(password|secret|todo)$)/i;
 
 // What makes a TOKEN a placeholder is a filler that dominates its body —
@@ -86,7 +61,8 @@ const PLACEHOLDER = /(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted
 // its body is free text in the documentation that carries it. A run of one
 // repeated letter is NOT treated as filler: real documentation fills with
 // `x`, `*` or `#`, and over-reporting a repeated letter is the safe direction.
-const TOKEN_PLACEHOLDER = /your[-_]|example|placeholder|changeme|redacted|<|[_-][x*#]{8,}$/i;
+// The filler may follow `/`, as in Slack's documented webhook URL.
+const TOKEN_PLACEHOLDER = /your[-_]|example|placeholder|changeme|redacted|<|[_/-][x*#]{8,}$/i;
 
 // Task 9b, finding 1: a credential-shaped key (`password:`, `pwd=`, ...)
 // whose VALUE is a code reference — a property access, a function call, or a
@@ -125,8 +101,8 @@ const ENV_REFERENCE = /^["'`]?(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{\{[^}]*\}\}|\$\{[A
  * `'reference'` (code reading a secret from elsewhere — collapsed to a count
  * by report.mjs/gap-model.mjs, never suppressed or dropped here). This
  * function only tags; it never decides what is shown or counted as a
- * failure — see detectExposures below, which runs it over every DB_CRED
- * match and records the result on the finding, and splitExposures /
+ * failure — see detectExposures below, which runs it over every keyed
+ * value and records the result on the finding, and splitExposures /
  * isProminentExposure, which downstream callers use to decide presentation.
  */
 export function classifyCredentialValue(value) {
@@ -371,41 +347,60 @@ function lineOf(text, index) {
 }
 
 /**
- * The first token-shaped match in `text` that is not a placeholder, as
- * `{ line }`, or null. Every pattern's every match is considered: a file
- * whose only Bearer value is `YOUR_TOKEN_HERE` is clean, a file whose
+ * Every token-shaped match in `text` that is not a placeholder, as
+ * `{ start, end, severity }`. Every match of every shape is considered: a
+ * file whose only Bearer value is `YOUR_TOKEN_HERE` is clean, a file whose
  * second `sk-` match is real is a finding.
  */
-function tokenFinding(text) {
-  let first = null;
-  for (const re of [...TOKEN_PATTERNS, PEM_PATTERN]) {
-    for (const m of text.matchAll(re)) {
-      const isBearer = /^Bearer\s/i.test(m[0]);
-      const body = isBearer ? m[0].replace(/^Bearer\s+/i, '') : m[0];
-      if (isBearer ? isPlaceholder(body) : TOKEN_PLACEHOLDER.test(body)) continue;
-      if (first === null || m.index < first) first = m.index;
-      break; // earliest surviving match of THIS pattern found; the next pattern may be earlier still
+function realTokens(text) {
+  const found = [];
+  for (const shape of TOKEN_SHAPES) {
+    // A Bearer body is free text in the documentation that carries it, so it
+    // gets the fuller rule; every other token has a vendor shape to fill.
+    const placeholder = shape.id === 'bearer' ? PLACEHOLDER : TOKEN_PLACEHOLDER;
+    for (const m of text.matchAll(shape.pattern)) {
+      if (placeholder.test(m[0])) continue;
+      found.push({ start: m.index, end: m.index + m[0].length, severity: shape.severity });
     }
   }
-  return first === null ? null : { line: lineOf(text, first) };
+  return found;
+}
+
+/** The earliest of `tokens` as `{ line, severity }`, or null. */
+function tokenFinding(text, tokens) {
+  if (tokens.length === 0) return null;
+  const first = tokens.reduce((a, b) => (b.start < a.start ? b : a));
+  return { line: lineOf(text, first.start), severity: first.severity };
 }
 
 /**
  * The credential-line verdict for one file, as `{ valueKind, line }`, or
- * null. Every `DB_CRED` match is examined and placeholders are skipped; the
- * file is `literal` if ANY surviving value is a literal (reported at that
- * line), else `reference` if any survives at all. One finding per file,
- * as before — the line number is what tells the user which one.
+ * null. Every keyed match is examined; a value that is short, a placeholder,
+ * or overlaps one of `tokens` is skipped — a token after `api_key:` or
+ * `Bearer` is one secret, already reported as the token. The file is
+ * `literal` if ANY surviving value is a literal (reported at the earliest
+ * such line), else `reference` if any survives at all. One finding per file;
+ * the line number is what tells the user which one.
  */
-function credentialFinding(text) {
+function credentialFinding(text, tokens) {
+  let literal = null;
   let reference = null;
-  for (const m of text.matchAll(DB_CRED)) {
-    const value = m[1];
-    if (isPlaceholder(value)) continue;
-    if (classifyCredentialValue(value) === 'literal') return { valueKind: 'literal', line: lineOf(text, m.index) };
-    reference ??= { valueKind: 'reference', line: lineOf(text, m.index) };
+  for (const shape of KEYED_SHAPES) {
+    for (const m of text.matchAll(shape.pattern)) {
+      const { value } = m.groups;
+      const start = m.index + m[0].length - value.length;
+      if (value.length < MIN_KEYED_VALUE || isPlaceholder(value)) continue;
+      if (tokens.some(t => t.start < start + value.length && start < t.end)) continue;
+      if (classifyCredentialValue(value) === 'literal') {
+        if (literal === null || m.index < literal) literal = m.index;
+      } else if (reference === null || m.index < reference) {
+        reference = m.index;
+      }
+    }
   }
-  return reference;
+  if (literal !== null) return { valueKind: 'literal', line: lineOf(text, literal) };
+  if (reference !== null) return { valueKind: 'reference', line: lineOf(text, reference) };
+  return null;
 }
 
 /**
@@ -465,13 +460,14 @@ function scanFile(buf, rel, isLocalSettings) {
   const text = decodeText(buf);
   if (!text) return findings;
 
-  const token = tokenFinding(text);
+  const tokens = realTokens(text);
+  const token = tokenFinding(text, tokens);
   if (token) {
     const kind = isLocalSettings ? 'token-in-local-settings' : 'token-in-repo-file';
-    findings.push({ kind, location: rel, severity: 'high', line: token.line });
+    findings.push({ kind, location: rel, severity: token.severity, line: token.line });
   }
 
-  const credential = credentialFinding(text);
+  const credential = credentialFinding(text, tokens);
   if (credential) {
     const finding = {
       kind: 'credentials-in-doc', location: rel, severity: 'medium',

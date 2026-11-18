@@ -13,6 +13,7 @@ import { buildGaps } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { fileURLToPath } from 'node:url';
 import { detectExposures, classifyCredentialValue, splitExposures, isProminentExposure, collapsedExposureNote, pathRole, fixtureExposureNote, UNREADABLE_KIND } from './detect-exposure.mjs';
+import { CREDENTIAL_SHAPES, maskCredentials } from '../../assets/scripts/harness-redact.mjs';
 
 const SECRET = 'glpat-' + 'A'.repeat(20);
 
@@ -28,21 +29,28 @@ const SECRET = 'glpat-' + 'A'.repeat(20);
 // direction, and the detector must keep seeing these patterns wherever they
 // genuinely appear. These fixtures exist to exercise the detector at
 // RUNTIME, so they do not need to exist on disk. Each is split so that no
-// single source literal matches a TOKEN_PATTERN, the PEM header or DB_CRED,
-// while the assembled value is byte-identical to what the test needs.
+// single source literal matches a shape in CREDENTIAL_SHAPES, while the
+// assembled value is byte-identical to what the test needs.
 
-/** The PEM header `PEM_PATTERN` looks for, split at the space so neither
+/** The PEM header the `pem-private-key` shape looks for, split at the space so neither
  * half matches `-----BEGIN [A-Z ]*PRIVATE KEY-----` on its own. */
 const PEM_KEY = ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ')
   + '\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n';
 
-/** A `DB_CRED` line: the key and its value are separate literals, so neither
- * matches `(password|passwd|pwd)\s*[:=]\s*(\S{8,})` alone. */
+/** A `password:` credential line: the key and its value are separate
+ * literals, so neither matches a keyed shape alone. */
 const credLine = value => ['password', value].join(': ') + '\n';
 
-/** An `Authorization:` header value. "Bearer" is not itself a secret, so the
- * split is between the scheme and the token. */
+/** `KEY=value`, key and value as separate literals: `TOKEN=` followed by a
+ * template's own text is itself a keyed-shape match. */
+const assign = (key, value) => [key, value].join('=');
+
+/** A Bearer token. "Bearer" is not itself a secret, so the split is between
+ * the scheme and the token. */
 const bearer = token => ['Bearer', token].join(' ');
+
+/** An `Authorization:` header, its name split so the literal is not one. */
+const authorization = value => [['Author', 'ization'].join(''), value].join(': ');
 
 function write(d, rel, content) {
   const p = join(d, rel);
@@ -64,7 +72,7 @@ test('clean repo reports nothing', () => {
 
 test('finds a provider token in a tracked file', () => {
   const d = repo();
-  write(d, '.env.example', `TOKEN=${SECRET}\n`);
+  write(d, '.env.example', `${assign('TOKEN', SECRET)}\n`);
   const found = run(d);
   assert.equal(found.length, 1);
   assert.equal(found[0].kind, 'token-in-repo-file');
@@ -74,7 +82,7 @@ test('finds a provider token in a tracked file', () => {
 test('NEVER returns the secret value', () => {
   const d = repo();
   const PROJECT_KEY = ['sk-proj', 'H'.repeat(40)].join('-');
-  write(d, '.env.example', `TOKEN=${SECRET}\nOPENAI=${PROJECT_KEY}\n`);
+  write(d, '.env.example', `${assign('TOKEN', SECRET)}\nOPENAI=${PROJECT_KEY}\n`);
   write(d, '.claude/settings.local.json', JSON.stringify({ x: `Bearer ${SECRET}` }));
   write(d, 'docs/db.md', credLine('hunter2hunter2'));
   const serialised = JSON.stringify(run(d));
@@ -96,7 +104,7 @@ test('flags a credential in a remote url', () => {
 
 test('flags bearer tokens in local settings', () => {
   const d = repo();
-  write(d, '.claude/settings.local.json', JSON.stringify({ cmd: `curl -H "Authorization: ${bearer('abcdef1234567890abcdef')}"` }));
+  write(d, '.claude/settings.local.json', JSON.stringify({ cmd: `curl -H "${authorization(bearer('abcdef1234567890abcdef'))}"` }));
   const kinds = run(d).map(e => e.kind);
   assert.ok(kinds.includes('token-in-local-settings'));
 });
@@ -219,7 +227,7 @@ test('reports both token and password in gitignored .env', () => {
     execSync('git config user.name "Test"', { cwd: d, stdio: 'ignore' });
   } catch {}
   write(d, '.gitignore', '.env\n');
-  write(d, '.env', `TOKEN=sk_test_${'F'.repeat(15)}\n${['DB_PASSWORD', 'secretpass123456'].join('=')}\n`);
+  write(d, '.env', `${assign('TOKEN', 'sk_test_' + 'F'.repeat(15))}\n${assign('DB_PASSWORD', 'secretpass123456')}\n`);
   write(d, 'README.md', '# test');
   execSync('git add .gitignore README.md', { cwd: d, stdio: 'ignore' });
   execSync('git commit -m "init"', { cwd: d, stdio: 'ignore' });
@@ -239,7 +247,7 @@ test('reports both token and password in gitignored .env', () => {
 test('finds tracked .env.local with token (round 3 regression)', () => {
   const d = repo();
   execSync('git init', { cwd: d, stdio: 'ignore' });
-  write(d, '.env.local', `API_TOKEN=sk_live_${'G'.repeat(15)}\n`);
+  write(d, '.env.local', `${assign('API_TOKEN', 'sk_live_' + 'G'.repeat(15))}\n`);
   write(d, 'README.md', '# test');
   execSync('git add .env.local README.md', { cwd: d, stdio: 'ignore' });
   execSync('git -c user.email=test@example.com -c user.name=Test commit -m "init"', { cwd: d, stdio: 'ignore' });
@@ -274,7 +282,7 @@ test('no path reported twice across routes', () => {
     execSync('git config user.name "Test"', { cwd: d, stdio: 'ignore' });
   } catch {}
   write(d, '.gitignore', '.env\n');
-  write(d, '.env', `TOKEN=sk_test_${'J'.repeat(15)}\n`);
+  write(d, '.env', `${assign('TOKEN', 'sk_test_' + 'J'.repeat(15))}\n`);
   write(d, 'README.md', '# test');
   execSync('git add .gitignore README.md', { cwd: d, stdio: 'ignore' });
   execSync('git commit -m "init"', { cwd: d, stdio: 'ignore' });
@@ -295,7 +303,7 @@ test('finds token in extensionless credentials file', () => {
 // was previously classified as binary by the NUL sniff and silently skipped.
 test('finds token in UTF-16LE file with BOM (round 4 fix)', () => {
   const d = repo();
-  const body = Buffer.from(`TOKEN=${SECRET}\n`, 'utf16le');
+  const body = Buffer.from(`${assign('TOKEN', SECRET)}\n`, 'utf16le');
   const buf = Buffer.concat([Buffer.from([0xff, 0xfe]), body]);
   write(d, '.env.ps1out', buf);
   const found = run(d);
@@ -305,7 +313,7 @@ test('finds token in UTF-16LE file with BOM (round 4 fix)', () => {
 
 test('finds token in UTF-16BE file with BOM (round 4 fix)', () => {
   const d = repo();
-  const leBody = Buffer.from(`TOKEN=${SECRET}\n`, 'utf16le');
+  const leBody = Buffer.from(`${assign('TOKEN', SECRET)}\n`, 'utf16le');
   const beBody = Buffer.from(leBody); // copy before mutating in place
   beBody.swap16();
   const buf = Buffer.concat([Buffer.from([0xfe, 0xff]), beBody]);
@@ -451,7 +459,7 @@ test('a real key whose random body happens to contain xxx is still found; an all
   assert.equal(run(real).length, 1, 'final review, Important 2: a filler substring must not hide a real key');
 
   const filler = repo();
-  write(filler, 'docs/setup.md', `export GITHUB_TOKEN=${['ghp', 'x'.repeat(24)].join('_')}\nAWS_ACCESS_KEY_ID=${['AKIA', 'IOSFODNN7EXAMPLE'].join('')}\n`);
+  write(filler, 'docs/setup.md', `export ${assign('GITHUB_TOKEN', ['ghp', 'x'.repeat(24)].join('_'))}\nAWS_ACCESS_KEY_ID=${['AKIA', 'IOSFODNN7EXAMPLE'].join('')}\n`);
   assert.deepEqual(run(filler), [], 'an all-x body and the documented AWS example key are placeholders');
 });
 
@@ -513,7 +521,7 @@ test('a bare "token:" or "secret:" key is not credential-shaped (prose would dro
 
 test('findings carry the line number of the first qualifying match, never the value', () => {
   const d = repo();
-  write(d, 'config.env', `# settings\n\nTOKEN=${SECRET}\n` + credLine('your-password-here') + credLine('hunter2hunter2'));
+  write(d, 'config.env', `# settings\n\n${assign('TOKEN', SECRET)}\n` + credLine('your-password-here') + credLine('hunter2hunter2'));
   const found = run(d);
   const token = found.find(e => e.kind === 'token-in-repo-file');
   const cred = found.find(e => e.kind === 'credentials-in-doc');
@@ -571,7 +579,7 @@ test('the same literal password outside a test path stays medium with no pathRol
 
 test('a provider token under tests/ stays high — a live key is live wherever it sits', () => {
   const d = repo();
-  write(d, 'tests/fixtures/env.txt', `TOKEN=${SECRET}\n`);
+  write(d, 'tests/fixtures/env.txt', `${assign('TOKEN', SECRET)}\n`);
   const found = run(d);
   assert.equal(found[0].kind, 'token-in-repo-file');
   assert.equal(found[0].severity, 'high');
@@ -661,6 +669,82 @@ test('an unreadable directory is listed under Not examined with its path', () =>
   assert.match(lines[heading + 1], /^ {2}! locked — .*director/);
 });
 
+// --- One credential table: the sweep and the hook mask -----------------------
+//
+// Both read `CREDENTIAL_SHAPES`. At least one sample per shape, and one per
+// key spelling a keyed shape must recognise; every sample is assembled at
+// runtime, per this file's header. `secret` is the part the mask must remove.
+
+const glue = (sep, ...parts) => parts.join(sep);
+const CREDENTIAL_SAMPLES = [
+  { shape: 'sk-key', secret: glue('-', 'sk-proj', 'Ab1Cd2'.repeat(8)) },
+  { shape: 'stripe', secret: glue('_', 'sk_live', 'Ab1Cd2'.repeat(4)) },
+  { shape: 'gitlab-pat', secret: glue('-', 'glpat', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn') },
+  { shape: 'gitlab-runner', secret: glue('-', 'glrt', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn') },
+  { shape: 'github', secret: glue('_', 'ghp', 'Ab1Cd2'.repeat(6)) },
+  { shape: 'github-fine-grained', secret: glue('_', 'github_pat', 'Ab1Cd2'.repeat(14)) },
+  { shape: 'npm', secret: glue('_', 'npm', 'Ab1Cd2'.repeat(6)) },
+  { shape: 'aws-access-key', secret: glue('', 'ASIA', 'Q7ZK2M4N6P8R0T3V') },
+  { shape: 'google', secret: glue('', 'AIza', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx') },
+  { shape: 'slack', secret: glue('-', 'xoxb', '1234567890', 'Ab1Cd2Ef3Gh4') },
+  { shape: 'slack-app', secret: glue('-', 'xapp', '1', 'Ab1Cd2Ef3Gh4Ij5Kl6') },
+  { shape: 'slack-webhook', line: s => `notify: https://${s}`, secret: glue('/', 'hooks.slack.com', 'services', 'T0123ABCD', 'B0456EFGH', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8') },
+  { shape: 'sendgrid', secret: glue('.', 'SG', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7O', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3Ab4Cd5') },
+  { shape: 'hugging-face', secret: glue('_', 'hf', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1') },
+  { shape: 'docker', secret: glue('_', 'dckr_pat', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Q') },
+  { shape: 'pypi', secret: glue('-', 'pypi', 'AgEIcHlwaS5vcmc' + 'Ab1Cd2Ef3Gh4'.repeat(5)) },
+  { shape: 'jwt', secret: glue('.', 'eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8') },
+  { shape: 'bearer', line: s => `curl -H "X-Upstream: ${glue(' ', 'Bearer', s)}"`, secret: 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8' },
+  { shape: 'pem-private-key', line: s => `key: ${glue(' ', '-----BEGIN RSA', 'PRIVATE KEY-----')} ${s}`, secret: 'MIIEowIBAAKCAQEAx1q2w3e4' },
+  { shape: 'url-userinfo', line: s => glue('', 'DATABASE_URL=postgres://app:', s, '@db.internal:5432/app'), secret: 'S3cretPassw0rdQ' },
+  { shape: 'credential-assignment', line: s => assign('AWS_SECRET_ACCESS_KEY', s), secret: 'Zq8sLm3Vn1Rt5Yx7Wc9Pb2Kd4Hf6Jg0Ae1Su3Io5' },
+  { shape: 'credential-assignment', line: s => assign('DB_PASS', s), secret: 'Tr0ub4dor3xyz' },
+  { shape: 'credential-assignment', line: s => assign('JWT_SECRET', s), secret: 'Kp9mWq2zLx7vBn4c' },
+  { shape: 'credential-assignment', line: s => JSON.stringify({ [glue('_', 'private', 'key')]: s }), secret: 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC' },
+  { shape: 'credential-assignment', line: s => glue(': ', 'password', `"${s}"`), secret: 'correct horse battery staple' },
+  { shape: 'token-assignment', line: s => assign('TOKEN', s), secret: 'Lw4rT9kQ2mXz8bNc' },
+  { shape: 'authorization-header', line: s => authorization(glue(' ', 'token', s)), secret: 'Qz7Lm2Kp9Wx4Rt6Yb1Nc' },
+];
+
+test('the sweep and the mask recognise the same shapes', () => {
+  const sampled = new Set(CREDENTIAL_SAMPLES.map(s => s.shape));
+  for (const shape of CREDENTIAL_SHAPES) assert.ok(sampled.has(shape.id), `no sample exercises shape ${shape.id}`);
+  for (const { shape: id, line: lineOf = s => `value ${s} here`, secret } of CREDENTIAL_SAMPLES) {
+    const shape = CREDENTIAL_SHAPES.find(s => s.id === id);
+    assert.ok(shape, `the sample names an unknown shape ${id}`);
+    const line = lineOf(secret);
+    assert.ok([...line.matchAll(shape.pattern)].length > 0, `${id}: the sample must match its own shape: ${line}`);
+
+    const d = repo();
+    write(d, 'config.txt', line + '\n');
+    const found = run(d);
+    const expected = shape.kind === 'token' ? 'token-in-repo-file' : 'credentials-in-doc';
+    assert.ok(found.some(e => e.kind === expected && e.line === 1 && (shape.kind === 'token' || e.valueKind === 'literal')),
+      `${id}: the sweep must report ${expected} for ${line}: ${JSON.stringify(found)}`);
+
+    const masked = maskCredentials(line);
+    assert.equal(masked.includes(secret), false, `${id}: the mask left the secret in ${masked}`);
+  }
+});
+
+test('a value the sweep already reports as a token is not reported a second time as a credential line', () => {
+  const d = repo();
+  write(d, 'settings.env', `${assign('GITHUB_TOKEN', glue('_', 'ghp', 'Ab1Cd2'.repeat(6)))}\n${authorization(bearer('Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8'))}\n`);
+  assert.deepEqual(run(d).map(e => [e.kind, e.line]), [['token-in-repo-file', 1]]);
+});
+
+test('the documented Slack webhook placeholder is not a finding', () => {
+  const d = repo();
+  write(d, 'docs/slack.md', `https://${glue('/', 'hooks.slack.com', 'services', 'T00000000', 'B00000000', 'X'.repeat(24))}\n`);
+  assert.deepEqual(run(d), []);
+});
+
+test('a short value after a newly recognised key is not a finding; the sweep keeps its eight-character floor', () => {
+  const d = repo();
+  write(d, 'docs/env.md', [assign('DB_PASS', 'x'), assign('TOKEN', 'abc'), glue('', 'redis://:', 'pw', '@cache')].join('\n') + '\n');
+  assert.deepEqual(run(d), []);
+});
+
 // --- Coordinator ruling (post-review, concern 5): kh-harness passes its own
 // --- credential check, and a regression is visible rather than normalised --
 //
@@ -707,7 +791,7 @@ test('DOGFOOD: kh-harness passes its own P0.security check', () => {
     '  check working, and the fix is in the prose, not the detector. Four of the eight findings',
     '  this check was built to clear were not fixtures at all — a test title, a variable name',
     '  (a variable whose name ends in the word password, assigned anything eight characters or longer,',
-    '  is a DB_CRED match), an assertion’s own regex literal,',
+    '  is a credential-assignment match), an assertion’s own regex literal,',
     '  and a comment. Rename the identifier, reword the sentence, or assemble the string.',
     '',
     'WHAT NOT TO DO: do not add a suppression mechanism, an ignore list, or a path exclusion.',

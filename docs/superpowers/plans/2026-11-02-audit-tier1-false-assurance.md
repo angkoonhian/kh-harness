@@ -150,7 +150,7 @@ test('pathTokenExemptions: a ./-prefixed directory and the path itself are exemp
 test('pathTokenExemptions: config-file-shaped tokens are exempt, attached to a flag or not', () =>
   deepEqual sorted(['.eslintrc.cjs', '--config=eslint.config.js', 'tsconfig.build.json']) from 'eslint -c .eslintrc.cjs --config=eslint.config.js . && tsc -p tsconfig.build.json');
 test('pathTokenExemptions: a credential-shaped token is never exempt', () =>
-  assert.equal(pathTokenExemptions('cli --token=abcdefghijkl src/components', ['src/components/a.ts']).has('--token=abcdefghijkl'), false));
+  assert.equal(pathTokenExemptions('cli --token=<redacted> src/components', ['src/components/a.ts']).has('--token=<redacted>'), false));
 // lint-touched.test.mjs (fixture: lint script `node -e "console.error('src/components/Button.tsx:1:1 error x'); process.exit(1)" -- src/components`)
 test('a lint script that names the edited file\'s directory still reports its diagnostics', …)   // code 2, stderr matches /Button\.tsx:1:1/
 // verify-touched.test.mjs (typecheck: `node -e "console.error('tsconfig.build.json: error TS5023'); process.exit(1)" -- tsconfig.build.json`)

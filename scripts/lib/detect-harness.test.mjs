@@ -290,8 +290,10 @@ function repoWithRemote(url, name = 'origin') {
 // A false positive here is one line telling you to check a URL; a false
 // negative is a live token left unreported.
 for (const [label, url, expected] of [
-  ['user:pass', `https://user:${SECRET}@host.invalid/o/r.git`, true],
-  ['oauth2 userinfo', `https://oauth2:${SECRET}@gitlab.com/o/r.git`, true],
+  // Assembled: `scheme://user:` then an interpolation and `@` is URL
+  // userinfo in this file's own source.
+  ['user:pass', `https://${['user', SECRET].join(':')}@host.invalid/o/r.git`, true],
+  ['oauth2 userinfo', `https://${['oauth2', SECRET].join(':')}@gitlab.com/o/r.git`, true],
   // The scheme word is assembled: `access-token:` followed by a value is a
   // credential line in this file's own source.
   ['x-access-token userinfo', `https://${['x-access', 'token'].join('-')}:${SECRET}@github.com/o/r.git`, true],

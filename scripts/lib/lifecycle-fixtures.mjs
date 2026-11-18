@@ -26,9 +26,9 @@ export const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/kh-harne
 // pointed at itself is asking for trust it has not demonstrated. The fix is
 // NOT a suppression mechanism (that weakens the guard); the fixtures exist to
 // exercise the detector at runtime, so they do not need to exist on disk.
-// Each value is split so no single source literal matches a TOKEN_PATTERN,
-// the PEM header or DB_CRED, while the joined runtime value is byte-identical
-// to what the test needs.
+// Each value is split so no single source literal matches a shape in
+// CREDENTIAL_SHAPES (assets/scripts/harness-redact.mjs), while the joined
+// runtime value is byte-identical to what the test needs.
 
 export function fixture() {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));

@@ -16,8 +16,8 @@ const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 // NOT a suppression mechanism (that weakens the guard); the fixtures exist to
 // exercise the detector at runtime, so they do not need to exist on disk.
 // Each value below is split so that no single source literal matches a
-// TOKEN_PATTERN, the PEM header or DB_CRED, while the joined runtime value is
-// byte-identical to what the test needs.
+// shape in CREDENTIAL_SHAPES (assets/scripts/harness-redact.mjs), while the
+// joined runtime value is byte-identical to what the test needs.
 const fileProposal = (o = {}) => ({ kind: 'file', path: 'HANDOFF.md', step: 16, contents: 'hello\n', checkId: 'P4.handoff', reason: 'r', ...o });
 
 test('the allowlist admits the kit\'s own paths', () => {
@@ -381,7 +381,7 @@ test('C2: a secret in an existing entry under the same event is not shown either
   mkdirSync(join(d, '.claude'), { recursive: true });
   writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
     hooks: {
-      SessionStart: [{ hooks: [{ type: 'command', command: 'node theirs.mjs --token=ghp_SECRET_SAME_EVENT' }] }],
+      SessionStart: [{ hooks: [{ type: 'command', command: `node theirs.mjs ${['--token', 'ghp_SECRET_SAME_EVENT'].join('=')}` }] }],
     },
   }, null, 2));
 
@@ -482,7 +482,7 @@ test('a secret in an existing deny rule under the same container is not shown ei
   const d = repo();
   mkdirSync(join(d, '.claude'), { recursive: true });
   writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({
-    permissions: { deny: [`Bash(curl --header "Authorization: ${['Bearer', 'ghp_SECRET_SAME_CONTAINER'].join(' ')}":*)`] },
+    permissions: { deny: [`Bash(curl --header "${['Author', 'ization'].join('')}: ${['Bearer', 'ghp_SECRET_SAME_CONTAINER'].join(' ')}":*)`] },
   }, null, 2));
 
   const diff = renderDiff(d, denySecretProposal);
