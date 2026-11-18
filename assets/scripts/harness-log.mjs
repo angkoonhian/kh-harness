@@ -1,7 +1,8 @@
 // assets/scripts/harness-log.mjs
 //
 // The session log's library: where a repository's log lives on this
-// machine, whether it is enabled, and how it is configured.
+// machine, whether it is enabled, how it is configured, and which harness a
+// session ran under.
 //
 // Installed beside the other hook scripts and called by a hook on every tool
 // use, so it imports only Node built-ins and sibling files, never spawns a
@@ -10,7 +11,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export const GATES_PATH = '.claude/kh-harness/gates.json';
 export const LOCAL_GATES_FILE = 'gates.local.json';
@@ -166,4 +167,87 @@ function serialiseSorted(value) {
  */
 export function canonicalJson(value) {
   return serialiseSorted(JSON.parse(JSON.stringify(value)));
+}
+
+const MANIFEST_PATH = '.claude/kh-harness.manifest.json';
+const UNREADABLE = 'unreadable';
+
+// Spelled here rather than imported, because this file imports only Node
+// built-ins. RULES.md is the owner's once it holds a rule, though `apply`
+// records the scaffold it writes; LEARNED.md and GATES_PATH are the learned
+// set, which `learned` covers.
+const OUTSIDE_BASE = new Set([GATES_PATH, 'docs/harness/LEARNED.md', 'docs/harness/RULES.md']);
+
+const sha256Hex = data => createHash('sha256').update(data).digest('hex');
+
+/** CRLF to LF on the raw bytes; latin1 maps each byte to one code unit, so
+ * nothing else changes and a lone CR stays. */
+function lfNormalised(buf) {
+  return buf.includes(0x0d) ? Buffer.from(buf.toString('latin1').replace(/\r\n/g, '\n'), 'latin1') : buf;
+}
+
+/** A relative path that resolves inside `root`; on win32 a drive-relative
+ * `C:x` resolves elsewhere and `relative` then returns an absolute path. */
+function isInside(root, path) {
+  if (typeof path !== 'string' || path.length === 0 || isAbsolute(path)) return false;
+  const rel = relative(resolve(root), resolve(root, path));
+  return rel.length > 0 && !isAbsolute(rel) && rel.split(sep)[0] !== '..';
+}
+
+/** The manifest when it reads as the kit's schema, null when absent, and
+ * `UNREADABLE` otherwise. Every file path must stay inside the repository,
+ * since each one is read. */
+function readInstalledManifest(root) {
+  const read = readJson(join(root, MANIFEST_PATH));
+  if (!read.ok) return read.absent ? null : UNREADABLE;
+  const m = read.value;
+  if (m === null || typeof m !== 'object' || m.schema !== 1 || !Array.isArray(m.files)) return UNREADABLE;
+  if (m.settingsPatches !== undefined && !Array.isArray(m.settingsPatches)) return UNREADABLE;
+  if (!m.files.every(f => f !== null && typeof f === 'object' && isInside(root, f.path))) return UNREADABLE;
+  return m;
+}
+
+function fileDigest(path) {
+  try {
+    return sha256Hex(lfNormalised(readFileSync(path)));
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'missing' : UNREADABLE;
+  }
+}
+
+function baseHash(root, manifest) {
+  const files = manifest.files
+    .map(f => f.path)
+    .filter(path => !OUTSIDE_BASE.has(path.replace(/\\/g, '/')))
+    .sort()
+    .map(path => [path, fileDigest(join(root, path))]);
+  return sha256Hex(canonicalJson({ files, settingsPatches: manifest.settingsPatches ?? [] }));
+}
+
+/** `id:sha256` for each gate in the file, nothing when the file is absent,
+ * and the one entry `UNREADABLE` when it cannot be read as an array of
+ * objects with string ids, so damage changes the hash. */
+function gatePairs(path) {
+  const read = readJson(path);
+  if (!read.ok) return read.absent ? [] : [UNREADABLE];
+  const gates = read.value;
+  if (!Array.isArray(gates) || !gates.every(g => g !== null && typeof g === 'object' && !Array.isArray(g) && typeof g.id === 'string')) return [UNREADABLE];
+  return gates.map(({ action: _action, ...rest }) => `${rest.id}:${sha256Hex(canonicalJson(rest))}`);
+}
+
+/**
+ * Which harness a session ran under. `base` covers what the kit installed:
+ * the bytes on disk of each manifest-recorded file (so a hand edit shows),
+ * LF-normalised so a CRLF checkout does not, plus the settings patches.
+ * `learned` covers the gates in force, committed and local, each by the
+ * hash of its content without its `action`. A file the kit does not own
+ * changes neither.
+ */
+export function harnessIdentity(root) {
+  const manifest = readInstalledManifest(root);
+  const usable = manifest !== null && manifest !== UNREADABLE;
+  const base = usable ? baseHash(root, manifest) : manifest ?? 'none';
+  const kitVersion = usable && typeof manifest.kitVersion === 'string' ? manifest.kitVersion : null;
+  const pairs = [...gatePairs(join(root, GATES_PATH)), ...gatePairs(join(repoDataDir(root), LOCAL_GATES_FILE))].sort();
+  return { base, learned: sha256Hex(canonicalJson(pairs)), kitVersion };
 }
