@@ -14,6 +14,12 @@ import { closeSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync 
 // only between creating it and writing its owner.
 export const LOCK_STALE_MS = 30_000;
 
+/** The lock files this module's callers take in a repository's data
+ * directory: the learnings', held around every `learn` step, and the
+ * ledger's, held around each append. `log purge` takes both before it
+ * removes the directory. */
+export const DATA_DIR_LOCKS = Object.freeze({ learnings: 'learnings.lock', ledger: 'ledger.jsonl.lock' });
+
 const LOCK_WAIT_MS = 5000;
 const LOCK_RETRY_MS = 5;
 // On win32 a lock file another process is deleting refuses a new `wx` open

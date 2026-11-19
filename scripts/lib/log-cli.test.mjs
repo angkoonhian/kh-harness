@@ -517,6 +517,6 @@ test('the usage text states retention with its conditions, and what maintain nee
   assert.match(usage, /It runs on a disabled log too/);
   assert.doesNotMatch(usage, /Needs the log enabled|run to the end/);
   assert.match(usage, /up to five minutes for each step/);
-  assert.match(usage, /2 is also `maintain` when sealing, retention or the blob sweep did not run or stopped/);
+  assert.match(usage, /2 is also .* `maintain` when sealing, retention or the blob sweep did not run or stopped before its end/);
   assert.doesNotMatch(usage, /`maintain` on a log that is not enabled/);
 });

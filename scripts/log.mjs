@@ -8,8 +8,9 @@ import {
   assertDataDirSafe, checkDataDir, DataDirRefused, disableLog, enableLog, logStatus, renderDisable, renderEnable, renderStatus,
 } from './lib/log-lib.mjs';
 import { maintainLog, renderMaintain } from './lib/log-maintain.mjs';
-import { purgeLog, purgeTarget, renderPurgePlan } from './lib/log-purge.mjs';
+import { purgeLog, purgeTarget, purgeTerminalRefusal, renderPurgePlan } from './lib/log-purge.mjs';
 import { buildLogReport, renderReport } from './lib/log-report.mjs';
+import { requireInteractive } from './lib/tty.mjs';
 
 const KNOWN_FLAGS = new Set(['--yes', '--json', '--help']);
 
@@ -76,13 +77,17 @@ const SUBCOMMANDS = {
       say(renderPurgePlan(root, plan));
       return;
     }
+    const interactive = requireInteractive({ stdin: process.stdin, stdout: process.stdout, env: process.env });
+    if (interactive.ok !== true) fail(3, purgeTerminalRefusal(interactive));
+    let result;
     try {
-      purgeLog(root, plan);
+      result = purgeLog(root, plan, { interactive });
     } catch (error) {
       if (error instanceof DataDirRefused) throw error;
       fail(2, `could not remove ${plan.dir} (${reasonOf(error)}); what remains is still there, and \`status\` says whether the log is still enabled.`);
     }
-    say(`Removed ${plan.dir}. The log for this repository on this machine is gone, and disabled.`);
+    if (!result.removed) fail(2, `purge: ${result.reason}.`);
+    say(`Removed ${plan.dir}. The log, the learnings and this machine's gates for this repository are gone, and the log is disabled.`);
   },
 };
 

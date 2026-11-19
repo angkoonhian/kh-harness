@@ -584,6 +584,16 @@ function withIndexLock(root, judge, fn) {
   }
 }
 
+/**
+ * Runs `fn(held)` holding the index lock, for a caller that removes what
+ * sealing and retention write: `'ran'`, `'locked'` or `'lost'`, as
+ * `withIndexLock` says. `now` is milliseconds since the epoch; `isAlive(pid)`
+ * says whether a lock's owner still runs.
+ */
+export function underIndexLock(root, fn, { now = Date.now(), isAlive = processIsAlive } = {}) {
+  return withIndexLock(root, { now, isAlive }, fn);
+}
+
 const defaultClock = () => performance.now();
 
 /** A check that is true until `budgetMs` of `clock` time has passed since
