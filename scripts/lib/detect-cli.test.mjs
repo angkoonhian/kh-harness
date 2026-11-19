@@ -37,8 +37,10 @@ function harnessed() {
   // rule, and OUR re-injection hook — without all three, P3.intent,
   // P3.rules or P3.reinject would (correctly) propose, and this fixture's
   // whole point is that a fully harnessed repository is proposed nothing.
+  // The failure taxonomy likewise, or P5.failures would propose its scaffold.
   write(d, 'docs/INTENT.md', ['## Purpose', '## Users', '## How it works', '## Success', '## Failure', '## Non-goals', '## Open questions', ''].join('\n'));
   write(d, 'docs/harness/RULES.md', '## R1 — tests run before a commit\n- enforced-by: test\n- pointer: package.json\n');
+  write(d, 'docs/harness/FAILURES.md', '# Failures\n');
   // P2.protected requires at least one entry under permissions.deny — an empty
   // settings.json is indistinguishable from "no deny rules" and must NOT be
   // treated as protection. Task 8b: it also requires that entry to actually
@@ -619,8 +621,10 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
   // Phase 3: an intent document and a one-rule registry, so P3.intent and
   // P3.rules are declared and the ONLY phase-3 proposal is P3.reinject —
   // whose event is occupied by THEIR hook, exactly like the other three.
+  // A failure taxonomy, so P5.failures does not propose either.
   write(d, 'docs/INTENT.md', ['## Purpose', '## Users', '## How it works', '## Success', '## Failure', '## Non-goals', '## Open questions', ''].join('\n'));
   write(d, 'docs/harness/RULES.md', '## R1 — tests run before a commit\n- enforced-by: test\n- pointer: package.json\n');
+  write(d, 'docs/harness/FAILURES.md', '# Failures\n');
   write(d, '.claude/settings.json', JSON.stringify({
     permissions: { deny: ['Edit(migrations/**)'] },
     hooks: {

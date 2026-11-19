@@ -70,3 +70,9 @@ test('every profile applies the phase-3 steps (26, 27, 28) — intent and rules 
     for (const n of [26, 27, 28]) assert.ok(steps.includes(n), `${selectProfile(s).id} must apply step ${n}`);
   }
 });
+
+test('every profile applies step 29 — the failure taxonomy is language-agnostic', () => {
+  for (const s of [tsSingle, tsWorkspace, py, nothing]) {
+    assert.ok(selectProfile(s).appliesToSteps().includes(29), `${selectProfile(s).id} must apply step 29`);
+  }
+});

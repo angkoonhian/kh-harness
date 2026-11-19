@@ -14,6 +14,7 @@ import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
 import { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, RULES_BRIEF_PATH, GENERATOR_SCRIPT_PATHS, protectedDenyRules } from './propose.mjs';
+import { FAILURES_PATH } from './failures-evidence.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
 
@@ -147,6 +148,8 @@ const GENERATOR_PRODUCIBLE_EXACT = new Set([
   // writing into our file (see `templateFor` and `hasUserAuthoredBody`).
   RULES_PATH,
   RULES_BRIEF_PATH,
+  // Written into by a person, like the registry.
+  FAILURES_PATH,
 ]);
 // `.claude/rules/<slug>.md` — one per non-root workspace package, a path
 // pathrules-evidence.mjs derives dynamically from the repository's own
@@ -301,6 +304,7 @@ function templateFor(relPath) {
   // registry — the user's own rules — is exactly what `markdownRemainder`
   // surfaces as user-authored, and this gate keeps it.
   if (relPath === RULES_PATH) return 'RULES.md.tmpl';
+  if (relPath === FAILURES_PATH) return 'FAILURES.md.tmpl';
   return null;
 }
 
