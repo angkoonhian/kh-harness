@@ -32,17 +32,30 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `glob` with `*` only), read from the committed
   `.claude/kh-harness/gates.json` and the machine's own `gates.local.json`.
 - The `learn` command: `candidates`, `evidence`, `draft`, `replay`, `list`,
-  `show`, `approve`, `wrong`, `demote`, `retire`, `tick`, `policy show`,
-  `policy set` and `policy clear`. A drafted gate is replayed against the
-  log before it can act, tried at `observe`, and promoted to `warn` or
-  `block` only by the owner's approval of its hash at a terminal or by a
-  policy whose hash the owner recorded in the ledger at a terminal.
-- Landing and reverting a learning in the repository
-  (`scripts/lib/learn-land.mjs`): its entry in `docs/harness/LEARNED.md`
-  and its gate in `gates.json`, through `apply`'s write path and its
-  refusals, terminal-only for the write. The `learn land` and
-  `learn revert` subcommands that call it are wired into the command line
-  by a separate change.
+  `show`, `approve`, `wrong`, `demote`, `retire`, `tick`, `land`, `revert`,
+  `policy show`, `policy set` and `policy clear`. A drafted gate is replayed
+  against the log before it can act, tried at `observe`, and promoted to
+  `warn` or `block` only by the owner's approval of its hash at a terminal
+  or by a policy whose hash the owner recorded in the ledger at a terminal.
+- `learn evidence <signature>`: up to three recorded failures of one
+  recurrence, the first in each session, with the next successful call's
+  input, printed as escaped JSON between nonce-marked lines that say it is
+  recorded data. A tool's output is never printed.
+- `learn draft --redraft`: a recurrence whose learning the replay rejected,
+  or another labelled with the same failure kind in `FAILURES.md`, is
+  drafted again only with this flag, and the ledger records the redraft.
+  The `harness-learn` skill passes it only when the owner asks.
+- `learn land` and `learn revert`: a learning promoted on this machine goes
+  into `docs/harness/LEARNED.md` and `.claude/kh-harness/gates.json`
+  through `apply`'s write path and refusals, and comes out again. The dry
+  run needs no terminal and writes nothing; the write (`--yes`) needs a
+  person at a terminal and is left uncommitted for the owner. A revert
+  proceeds from whatever trace of the learning remains, reads the commit
+  when the working tree's gate file has lost the gate, and returns a landed
+  learning to this machine or retires a suspended one. An interrupted land
+  or revert, including one killed between a file write and the manifest
+  write, is finished by running the same command again. `retire` refuses a
+  learning whose gate is still committed and names the revert.
 - `docs/harness/LEARNED.md`, the kit-owned registry of landed learnings,
   which the rules brief and `detect` read beside `RULES.md`.
 - The `harness-learn` skill, which reviews the log, drafts one gate per
@@ -50,7 +63,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never runs the terminal-only subcommands.
 - The loop warning, `loop-watch.mjs` (runbook step 13, `P2.loopwatch`): one
   fixed sentence when the same call fails the same way three times in a
-  row.
+  row. It counts without a lock: each failure appends one record and reads
+  back only a capped tail, so no count is dropped when several failures
+  arrive at once.
 - `P5.integrity` (runbook step 32): kit hook scripts against the manifest,
   and each committed gate against its approval in `LEARNED.md`.
 - `P0.kitskew`: unmodified kit files are proposed as updates when the
@@ -64,8 +79,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only when every deny rule the gate hook is installed with is present:
   edits to `.claude/scripts/`, `.claude/kh-harness/`, the manifest,
   `docs/harness/LEARNED.md` and `~/.claude/kh-harness/`, and running the
-  `learn` subcommands that approve or weaken a gate. `apply` proposes the
-  missing ones.
+  eight terminal-only `learn` subcommands (`approve`, `wrong`, `demote`,
+  `retire`, `land`, `revert`, `policy set`, `policy clear`), in the Bash and
+  PowerShell tools. `apply` proposes the missing ones to an install made
+  before they existed.
 - `stripUnsafe` removes more invisible characters: the variation
   selectors, the Hangul fillers, and U+2028, U+2029 and U+0085.
 - `detect`: one credential table now serves both the sweep and the hooks'

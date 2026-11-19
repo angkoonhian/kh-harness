@@ -54,10 +54,39 @@ Fix it by hand; kh-harness never rewrites a settings file it cannot parse.
     <path> no longer matches what kh-harness last wrote (a hand edit, a deletion, or a write that stopped before the manifest recorded it), so kh-harness no longer updates it; restore it from git and run again
 
 From `learn land` or `learn revert`, about `docs/harness/LEARNED.md` or
-`.claude/kh-harness/gates.json`. Nothing is written. Restore the file from
-git (`git checkout -- <path>`) and run the same command again. A land or
-revert that stopped partway also ends here; running it again after the
-restore finishes it.
+`.claude/kh-harness/gates.json`. Exit 3, nothing written. Restore the file
+from git (`git checkout -- <path>`) and run the same command again. A file
+left by a land or revert killed between its write and the manifest's is not
+this case: it is recognised as that step's own write, and running the same
+command again finishes the step.
+
+For a revert, a learned file that still holds the learning gets this
+addition, and the alternative works too:
+
+    …; or, if it is to stay as it is, take <id> out of it by hand and run `learn revert <id> --yes` again, which then finds nothing of <id> in it and goes on
+
+A learned file that exists but that the manifest does not record is
+refused the same way:
+
+    <path> exists and the manifest does not record kh-harness writing it, so kh-harness does not write it; move it aside and run again
+
+> [!NOTE]
+> `apply` treats a kit file you edited differently: it keeps the file,
+> reports it as `kept`, and carries on (exit 0). `learn land` and
+> `learn revert` refuse instead (exit 3), because they would have to write
+> that very file.
+
+### A land stopped before its learning file was written
+
+    <id>: a land of it stopped before its learning file was written; running `learn land <id> --yes` again at a terminal finishes it
+
+From `learn revert`. Run the land again, as it says.
+
+### retire is refused while the gate is committed
+
+    <id>: its gate is still in .claude/kh-harness/gates.json, binding everyone who has the repository; `learn revert <id> --yes` at a terminal takes it out of the repository and retires it
+
+Run the revert it names, at a terminal, and commit the change.
 
 ## The terminal check
 
@@ -66,7 +95,8 @@ restore finishes it.
     approve refused: standard input is not an interactive terminal; it needs a person at an interactive terminal outside Claude Code, and nothing was changed.
 
 Exit 3. The same appears for `wrong`, `demote`, `retire`, `policy set` and
-`policy clear`, and for `land` and `revert` with `--yes`. The reason may
+`policy clear`, and for `land` and `revert` with `--yes` (without it they
+are dry runs, which need no terminal). The reason may
 instead be `standard output is not an interactive terminal` (output is
 redirected or piped), or:
 
@@ -80,15 +110,28 @@ check.
 ### Claude Code declines a learn subcommand
 
 A deny rule such as `Bash(*learn.mjs* approve*)` stopped the command before
-it ran. This is intended: it is the second barrier. Run the command
-yourself, as above. A deny rule also declines an unrelated command that
+it ran. This is intended: it is the second barrier. The rules cover all
+eight terminal-only subcommands, and `land` and `revert` whole, so Claude
+Code also declines their dry runs. Run the command yourself, as above. An
+install made before a rule existed is proposed the rules it lacks by the
+next `apply`. A deny rule also declines an unrelated command that
 holds that text, such as a commit message containing `learn.mjs approve`;
 reword the command.
 
 ## learn
 
 A `learn` step the library refuses prints `kh-harness: <subcommand>: ` and
-then the reason, and exits 2.
+then the reason. It exits 2, except `land` and `revert`, which exit 3 for a
+refusal and 2 when they cannot act.
+
+### only a learning promoted on this machine is landed
+
+    land: <id> is trial; only a learning promoted on this machine is landed
+
+Exit 3. Approve the learning at a terminal first (`learn show`, then
+`learn approve`). `revert` says, for a learning in no state to revert:
+
+    revert: <id> is trial; only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted
 
 ### the hash approved is not the learning's content
 
@@ -196,9 +239,3 @@ approval in `docs/harness/LEARNED.md`, the gate file holds entries the gate
 language rejects, or a landed learning has no gate. Restore what the lines
 name from git, or finish the land or revert that stopped. The kit proposes
 nothing here: restoring a file or approving a gate is your decision.
-
-### A phase with no name
-
-`detect`'s summary prints the fifth phase as `Phase 5 —` with no title. The
-checks under it (`P5.failures`, `P5.sessionlog`, `P5.toolgate`,
-`P5.integrity`) are the session log and learned gates.

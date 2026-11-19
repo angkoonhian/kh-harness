@@ -90,15 +90,6 @@ Phase 2 — Senses
   [ ] P2.loopwatch       absent
       → install scripts/loop-watch.mjs and register a PostToolUseFailure hook that warns when one call fails the same way three times in a row
 …
-Phase 5 —
-  [ ] P5.failures        absent
-      → scaffold docs/harness/FAILURES.md — generated EMPTY; each failure kind is named by hand, with the recurrence signatures it covers
-  [ ] P5.sessionlog      absent
-      → install scripts/session-log.mjs with the three modules it imports (…), and register it on the 16 logged events — it records nothing until the log is enabled for this repository on this machine
-  [ ] P5.toolgate        absent
-      → install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, deny edits to (…), and deny running the learn subcommands that approve or weaken a gate
-  [-] P5.integrity       n/a
-        no .claude/kh-harness.manifest.json: nothing was installed
 
 14 proposals: 9 apply can write, 4 for the skill to draft, 1 for a human. Nothing has been written except docs/harness/detect.json.
 ```
@@ -381,28 +372,35 @@ live in the data directory beside the log. Only `land` and `revert` write
 inside the repository.
 
 > [!IMPORTANT]
-> `approve`, `wrong`, `demote`, `retire`, `policy set` and `policy clear`,
-> and `land` and `revert` with `--yes`, run only for a person at an
-> interactive terminal outside Claude Code: standard input and output must
-> both be terminals and `CLAUDECODE` must be unset. An IDE's built-in
-> terminal sets `CLAUDECODE` too and is refused. Anywhere else they exit 3
-> and change nothing. No flag skips the check.
+> `approve`, `wrong`, `demote`, `retire`, `land`, `revert`, `policy set` and
+> `policy clear` run only for a person at an interactive terminal outside
+> Claude Code: standard input and output must both be terminals and
+> `CLAUDECODE` must be unset. An IDE's built-in terminal sets `CLAUDECODE`
+> too and is refused. Anywhere else they exit 3 and change nothing. `land`
+> and `revert` need the terminal only with `--yes`; without it each is a dry
+> run that writes nothing and anyone may run. No flag skips the check.
 
 | Flag | Applies to | What it does |
 |---|---|---|
-| `--json` | `candidates`, `evidence`, `list`, `show`, `policy show`, `tick` | Print the object on stdout and nothing else, with every character outside printable ASCII escaped. |
+| `--json` | `candidates`, `evidence`, `list`, `show`, `policy show`, `tick`, `land`, `revert` | Print the object on stdout and nothing else, with every character outside printable ASCII escaped. |
 | `--redraft` | `draft` | Draft a recurrence again although the replay rejected an earlier learning for it or its failure kind. The ledger records the redraft. |
 | `--from <file>` | `draft` | The drafted learning, as JSON. |
 | `--sha256 <hash>` | `approve` | The gate's hash, as `show` prints it. |
 | `--action <warn\|block>` | `approve` | The action the gate takes once promoted. |
 | `--min-firings <n>`, `--min-sessions <n>`, `--max-action <warn\|block>` | `policy set` | The policy's thresholds and its highest action. |
-| `--yes`, `--allow-dirty`, `--allow-default-branch` | `land`, `revert` | As for `apply`. |
+| `--yes` | `land`, `revert` | Write what the dry run shows; a person at a terminal only. |
+| `--allow-dirty`, `--allow-default-branch` | `land`, `revert` | Waive the dirty-tree or the default-branch refusal, as for `apply`; a dry run then no longer lists it. |
 
 Exit codes: 0, 2 and 3 as above; also 3 for a terminal-only subcommand run
-without a person at a terminal, and for `evidence` or a subcommand that
-writes when the data directory is a link or not directly inside the data
-root; 2 for any step the library refused or could not finish, with its
-reason, and for a `tick` that could not do part of its work.
+without a person at a terminal (`land` and `revert` only with `--yes`), and
+for `evidence` or a subcommand that writes when the data directory is a link
+or not directly inside the data root; 2 for any step of the other
+subcommands the library refused or could not finish, with its reason, and
+for a `tick` that could not do part of its work. `land` and `revert` exit
+with the library's own code: 3 when they refuse (the default branch, a
+dirty tree, a manifest that cannot be read, a learned file kh-harness no
+longer owns, a learning in no state to land or revert), 2 when they cannot
+(an id that names no learning, a write that failed).
 
 Every string a model wrote (a learning's title, why and gate) is printed only
 as JSON with every code point outside printable ASCII written as `\u{…}`.
@@ -602,7 +600,9 @@ on this machine.
     node scripts/learn.mjs <path-to-repo> demote <id>
 
 **Terminal only.** Takes a promoted learning back to trial at `observe`. A
-landed learning is suspended on this machine instead, until it is reverted.
+landed learning's committed gate is suspended on this machine instead,
+until `revert` takes the gate out of the repository and retires the
+learning.
 
 ### learn retire
 
@@ -610,9 +610,11 @@ landed learning is suspended on this machine instead, until it is reverted.
 
 **Terminal only.** Retires a learning: its local gate goes and it no longer
 stands for its recurrence. A rejected or retired learning is not retired
-again. Revert a landed learning before retiring it: `revert` accepts only a
-landed or suspended learning, so a committed gate whose learning is retired
-stays in the repository.
+again. A landed or suspended learning whose gate is still in the committed
+gate file is refused, since retiring writes no file; the refusal names the
+revert that takes the gate out:
+
+    <id>: its gate is still in .claude/kh-harness/gates.json, binding everyone who has the repository; `learn revert <id> --yes` at a terminal takes it out of the repository and retires it
 
 ### learn tick
 
@@ -642,30 +644,107 @@ NOT DONE
 
 ### learn land
 
-    node scripts/learn.mjs <path-to-repo> land <id> [--yes] [--allow-dirty] [--allow-default-branch]
+    node scripts/learn.mjs <path-to-repo> land <id> [--yes] [--allow-dirty] [--allow-default-branch] [--json]
 
-Writes a learning promoted on this machine into the repository: its entry in
-`docs/harness/LEARNED.md` and its gate, at the approved action, in
-`.claude/kh-harness/gates.json`, with the manifest recording both. Without
-`--yes` it shows the diff and a note for each refusal `--yes` would meet,
-and needs no terminal. With `--yes` it is **terminal only** and meets the
-same default-branch and dirty-tree refusals as `apply`. A `LEARNED.md` or
-`gates.json` edited by hand stops it.
+Lands a learning promoted on this machine in the repository: its entry goes
+into `docs/harness/LEARNED.md` and its gate, at the action its approval
+recorded, into `.claude/kh-harness/gates.json`, through `apply`'s write
+path, and the manifest records it. `RULES.md` is never written.
 
-> [!NOTE]
-> At this version the steps are built in `scripts/lib/learn-land.mjs`, and
-> `learn` itself still rejects `land` as an unknown subcommand (exit 2)
-> until its command-line wiring lands.
+- **Without `--yes`** it is a dry run. It prints every note first, then each
+  file it would write with the diff `apply` shows, then a
+  `note: --yes would be refused — …` line for each refusal, and ends
+  `Dry run — nothing written.` It needs no terminal and writes nothing, in
+  the repository or the data directory. (The `git status` that the
+  dirty-tree check runs may refresh `.git/index`, as git does.)
+- **With `--yes`** it is **terminal only**. It is refused on the default
+  branch or with uncommitted changes to tracked files, unless
+  `--allow-default-branch` or `--allow-dirty` waives that refusal, as for
+  `apply`. It writes the files, the manifest and the ledger's `landed`
+  entry, which names you as the approver, and removes the learning's local
+  gate, since the committed one is then in force. It prints what it wrote
+  and every note, and ends with this line:
+
+      The change is not committed: review what this run changed with `git status` and `git diff`, and commit it; until then it reaches no one else.
+
+A `LEARNED.md` or `gates.json` that kh-harness no longer owns — edited by
+hand, or written by something it did not record — is refused (exit 3) and
+named; nothing is written. See [Troubleshooting](troubleshooting.md#a-file-no-longer-matches-what-kh-harness-last-wrote).
+
+Exit codes: 0; 3 for a refusal (the default branch, a dirty tree, a manifest
+that cannot be read, a learned file kh-harness no longer owns, a learning
+not promoted on this machine, `--yes` without a terminal); 2 when it cannot
+act (an id that names no learning, a write that failed).
+
+<details>
+<summary>Example: dry runs, from a scratch repository</summary>
+
+The learning `L1` here is on trial, not yet approved, so the dry run is
+refused:
+
+```
+$ node scripts/learn.mjs <repo> land L1
+kh-harness: land: L1 is trial; only a learning promoted on this machine is landed
+$ node scripts/learn.mjs <repo> land L9
+kh-harness: land: L9: no such learning
+$ node scripts/learn.mjs <repo> land L1 --yes
+kh-harness: land refused: standard input is not an interactive terminal; it needs a person at an interactive terminal outside Claude Code, and nothing was changed.
+```
+
+Exits 3, 2 and 3. `git status` in the scratch repository was clean after
+each. A dry run of an approved learning prints its diff instead. It is not
+shown here: approving the learning needs a person at a terminal, which this
+run did not have.
+
+</details>
 
 ### learn revert
 
-    node scripts/learn.mjs <path-to-repo> revert <id> [--yes]
+    node scripts/learn.mjs <path-to-repo> revert <id> [--yes] [--allow-dirty] [--allow-default-branch] [--json]
 
-Takes exactly that learning's entry and gate out of the repository again.
-A landed learning returns to being promoted on this machine only; a
-suspended one ends retired. Without `--yes` it shows the diff; with it, it
-is **terminal only**. It is refused when this checkout holds no trace of the
-learning. The note under [learn land](#learn-land) applies here too.
+Takes a learning's gate, entry and manifest record out of the repository,
+whichever of them are left. The dry run and `--yes` are as for
+[learn land](#learn-land), including the terminal check, the refusals, the
+waivers and the closing line that the change is not committed.
+
+- A **landed** learning is `active-local` again on this machine; its approval
+  stands, and its gate is written back to this machine's gate file before
+  the committed one leaves.
+- A **suspended** learning, judged wrong here, is retired.
+- A learning **already retired** while its gate was still committed is
+  reverted too, and its gate taken out.
+- A landed or suspended learning with **no trace in this checkout**, as after
+  an uncommitted land was discarded, is still reverted, on this machine
+  only: no file is written, and the dry run and the result say so.
+- **When the working tree's gate file no longer holds the gate**, the revert
+  reads the gate file in the commit `HEAD` names. If that commit still holds
+  the gate, the revert goes on, and its first note says that this run did
+  not remove the gate, that the commit still holds it until its removal is
+  committed, and that `git status` shows the files. For a learning the
+  revert retires, the note adds that restoring the file from the commit
+  puts the gate back in force on this machine. When the commit cannot be
+  read, the note says why.
+- A trace under the learning's id at another hash is refused, never
+  removed. A hand-edited learned file is never written; while it still
+  holds the learning, the refusal says that taking it out by hand lets the
+  revert go on.
+
+Exit codes: as for `land`; a learning in no state to revert is a refusal
+(3).
+
+<details>
+<summary>Example: a dry run, from a scratch repository</summary>
+
+```
+$ node scripts/learn.mjs <repo> revert L1
+kh-harness: revert: L1 is trial; only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted
+```
+
+Exit 3; `git status` was clean afterwards. A revert of a landed learning
+prints its notes and diff. It is not shown here, for the reason given under
+`land`.
+
+</details>
 
 ### learn policy show
 
