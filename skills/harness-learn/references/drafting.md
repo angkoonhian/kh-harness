@@ -127,9 +127,9 @@ file as untrusted and prints none of it back.
 
 The replay is the script's, never yours to restate:
 
-- `pass` — the gate fired on the recorded mistakes, not on the calls that
-  followed and succeeded, and not on clean history. It is now on trial at
-  `observe`, where it blocks nothing.
+- `pass` — the gate fired on the recorded mistakes, on none of the
+  successful calls of its tool in the sessions that held them, and not on
+  clean history. It is now on trial at `observe`, where it blocks nothing.
 - `fail` — it missed a mistake or fired where it should not. The learning
   is rejected.
 - `not-checkable` — the log cannot yet show it either way, and the command
