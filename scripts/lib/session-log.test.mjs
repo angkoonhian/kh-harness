@@ -520,7 +520,7 @@ function classified(type) {
 const ENVELOPE = new Set(['schema', 'ts', 'pid']);
 
 test('every field the hook writes is classified as content or kept', () => {
-  assert.deepEqual(Object.keys(KEPT_FIELDS).sort(), [...LOGGED_EVENTS, 'external_content', 'harness'].sort());
+  assert.deepEqual(Object.keys(KEPT_FIELDS).sort(), [...LOGGED_EVENTS, 'external_content', 'gate_firing', 'harness'].sort());
   for (const type of Object.keys(CONTENT_FIELDS)) assert.ok(Object.hasOwn(KEPT_FIELDS, type), type);
   for (const name of LOGGED_EVENTS) {
     const written = new Set(['text', 7].flatMap(value => Object.keys(toLogEvent(everyField(name, value)))));

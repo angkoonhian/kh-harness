@@ -11,9 +11,20 @@ import { FAILURE_EVENT, listSessions, SUCCESS_EVENT, TOOL_FIELD } from './recurr
 export const FIRING_EVENT = 'gate_firing';
 
 /** What `rerouted` counts, in the words every reader shows it in. */
-export const REROUTED_MEANS = 'rerouted: after a warn or block firing, the next call of the same tool in that session succeeded; a firing whose call has no tool use id is not counted';
+export const REROUTED_MEANS = 'rerouted: after a warn or block firing, the next call of the same tool by the same agent in that session, started after the firing, succeeded; a firing whose call has no tool use id is not counted';
 
-const ABOVE_OBSERVE = new Set(['warn', 'block']);
+/** The actions at which a gate tells Claude something or stops a call. */
+export const ABOVE_OBSERVE = new Set(['warn', 'block']);
+
+// The logged events that say a call started, and that it was refused before
+// it ran.
+const START_EVENT = 'PreToolUse';
+const DENIED_EVENT = 'PermissionDenied';
+const OUTCOME_EVENTS = new Set([SUCCESS_EVENT, FAILURE_EVENT, DENIED_EVENT]);
+
+/** The agent an event belongs to: a sub-agent's id, or null for the main
+ * agent, whose events carry none. */
+const agentOf = event => (isString(event.agent_id) ? event.agent_id : null);
 const SHA256 = /^[0-9a-f]{64}$/;
 
 const isString = v => typeof v === 'string';
@@ -74,11 +85,14 @@ const blank = () => ({ fired: Object.fromEntries(GATE_ACTIONS.map(a => [a, 0])),
  * every gate id that fired or was marked wrong is.
  *
  * `rerouted` counts, as `REROUTED_MEANS` says, the `warn` and `block`
- * firings after which the next call of the gate's tool in that session
- * succeeded. The fired call's own outcome, which bears its tool use id, is
- * not that next call; a later `block` firing of the tool on another call is
- * that call, denied. An `observe` firing told nobody anything, so it is
- * never counted. `sessionsUnreadable` counts the sessions that could not be
+ * firings after which the next call of the gate's tool by the same agent in
+ * that session succeeded. The fired call's own outcome, which bears its tool
+ * use id, is not that next call; nor is a call of another agent, or one
+ * whose start the log records before the firing, which was already running.
+ * A later `block` firing of the tool on another call is that call, denied,
+ * and so is a call a permission denial refused. A call whose start the log
+ * does not record is taken to have started after the firing. An `observe`
+ * firing told nobody anything, so it is never counted. `sessionsUnreadable` counts the sessions that could not be
  * read in full, whose counts are what did parse, and `sessionsBeingSealed`
  * those with events in a claimed or temporary file, whose firings there are
  * not counted. Throws when the sessions directory cannot be listed.
@@ -92,13 +106,18 @@ export function gateStats(root, ledgerEntries, contents = null, { places = false
     const { events, unreadable } = readEvents(root, sessionId);
     if (unreadable) sessionsUnreadable++;
     let awaiting = [];
+    const startedAt = new Map();
     for (const [index, event] of events.entries()) {
-      if (event.type === FIRING_EVENT) {
+      if (event.type === START_EVENT) {
+        if (isString(event.tool_use_id) && !startedAt.has(event.tool_use_id)) startedAt.set(event.tool_use_id, index);
+      } else if (event.type === FIRING_EVENT) {
         if (!isWellFormedFiring(event)) {
           firingsMalformed++;
           continue;
         }
-        if (event.action === 'block') awaiting = awaiting.filter(f => f.tool !== event.tool || f.toolUseId === event.tool_use_id);
+        if (event.action === 'block') {
+          awaiting = awaiting.filter(f => f.tool !== event.tool || f.agent !== agentOf(event) || f.toolUseId === event.tool_use_id);
+        }
         if (contents !== null && (!contents.has(event.gateId) || contents.get(event.gateId) !== event.gateSha256)) continue;
         if (!byGate.has(event.gateId)) byGate.set(event.gateId, blank());
         const g = byGate.get(event.gateId);
@@ -106,9 +125,12 @@ export function gateStats(root, ledgerEntries, contents = null, { places = false
         g.sessions.add(sessionId);
         if (places) g.places.push({ sessionId, line: index + 1, action: event.action, ts: isString(event.ts) ? event.ts : null });
         if (isString(event.gateSha256) && SHA256.test(event.gateSha256)) g.gateSha256s.add(event.gateSha256);
-        if (ABOVE_OBSERVE.has(event.action) && isString(event.tool_use_id)) awaiting.push({ g, tool: event.tool, toolUseId: event.tool_use_id });
-      } else if (event.type === SUCCESS_EVENT || event.type === FAILURE_EVENT) {
-        const isNext = f => f.tool === event[TOOL_FIELD] && f.toolUseId !== event.tool_use_id;
+        if (ABOVE_OBSERVE.has(event.action) && isString(event.tool_use_id)) {
+          awaiting.push({ g, tool: event.tool, agent: agentOf(event), toolUseId: event.tool_use_id, at: index });
+        }
+      } else if (OUTCOME_EVENTS.has(event.type)) {
+        const isNext = f => f.tool === event[TOOL_FIELD] && f.agent === agentOf(event) && f.toolUseId !== event.tool_use_id
+          && !(startedAt.get(event.tool_use_id) < f.at);
         if (event.type === SUCCESS_EVENT) for (const f of awaiting) if (isNext(f)) f.g.rerouted++;
         awaiting = awaiting.filter(f => !isNext(f));
       }
