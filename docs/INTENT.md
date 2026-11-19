@@ -1,6 +1,6 @@
 # Intent
 
-- last-reviewed: 2026-11-19
+- last-reviewed: 2026-11-20
 
 This is kh-harness's own intent document — the one every repository it
 touches is asked to keep. It is the acceptance test for the shape: if the
@@ -53,11 +53,16 @@ judgement step.
 `log` turns the session log on for one repository on one machine and
 reports what it holds; the log lives outside the repository. `learn` runs
 the learning loop: a model, through the `harness-learn` skill, drafts a
-gate for a recurring failure; the script replays it against the log and
-tries it silently; only `learn approve` run at an interactive terminal
-outside Claude Code, or `tick` under a policy whose hash the ledger
-records, promotes it, and only `learn land --yes` at such a terminal lands
-it in the repository. A process running as the user can forge either check.
+gate for a recurring failure the owner has named in
+`docs/harness/FAILURES.md`, and `learn draft` refuses one the owner has not
+named; the script replays it against the log and tries it silently; only
+`learn approve` run at an interactive terminal outside Claude Code, or
+`tick` under a policy whose hash the ledger records, promotes it, and only
+`learn land --yes` at such a terminal lands it in the repository. The
+terminal check is that standard input and output are both terminals and
+`CLAUDECODE` is unset; it does not show that a person is present, and a
+process running as the user can forge either check. The gate hook enforces
+whatever the gate files hold.
 Mechanics live in `scripts/` and are unit-tested; judgement lives in
 `skills/` as prose the model reads. See `README.md` for the commands.
 

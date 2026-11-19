@@ -94,7 +94,7 @@
 
 ## R11 — A learned enforcer is data, never code
 
-- why: a gate is JSON read by one kit hook that builds no RegExp from it, evaluates no text as code and spawns nothing, so it can be validated, replayed and reviewed; model-written code could do anything
+- why: a gate is JSON read by one kit hook that builds no RegExp from it, evaluates no text as code and spawns nothing, so it can be validated, replayed and reviewed; model-written code could do anything. The hook tries every gate and enforces whatever the two gate files hold; it checks no approval, and a gate message the credential mask would change is rejected
 - enforced-by: test
 - pointer: scripts/lib/harness-gates.test.mjs
 - verify: node --test scripts/lib/harness-gates.test.mjs scripts/lib/tool-gate.test.mjs scripts/lib/learn-lib.test.mjs
@@ -103,7 +103,7 @@
 
 ## R12 — The log never stores an agent claim as an observed event
 
-- why: the loop learns only from what hooks observed; the agent's own account of its work (its last message, a compaction summary) is a claim, and a claim stored as an event would be learned from as fact; a tool's returned text, a sub-agent's report included, is recorded as that tool's output, which is what the hook observed
+- why: the loop learns only from what hooks observed; the agent's own account of its work (its last message, a compaction summary) is a claim, and a claim stored as an event would be learned from as fact; a tool's returned text, a sub-agent's report included, is recorded as that tool's output, which is what the hook observed; a call interrupted while its tool ran is recorded as interrupted and is not counted as a failure
 - enforced-by: test
 - pointer: scripts/lib/session-log.test.mjs
 - verify: node --test scripts/lib/session-log.test.mjs
@@ -112,16 +112,16 @@
 
 ## R13 — No learn command promotes a learning without a terminal check or a recorded policy hash
 
-- why: a gate that warns or blocks changes what the agent may do; the `learn` commands move one past observe only for a hash approved by a command run at an interactive terminal outside Claude Code, or under a policy whose hash the ledger records; and since a committed gate binds everyone, `land` writes one into the repository only from such a terminal too. These are checks against accident and against an agent using the tools as given, not isolation
+- why: a gate that warns or blocks changes what the agent may do; the `learn` commands move one past observe only for a hash approved by a command run where standard input and output are both terminals and CLAUDECODE is unset, or under a policy whose hash the ledger records; and since a committed gate binds everyone, `land` writes one into the repository only where that check passes too, as `log purge --yes` deletes the ledger only there. The check does not show that a person is present, the ledger's chain has no key, and a forged approval reads as approved: these are checks against accident and against an agent using the tools as given, not isolation
 - enforced-by: test
 - pointer: scripts/lib/learn-promote.test.mjs
-- verify: node --test scripts/lib/learn-promote.test.mjs scripts/lib/learn-land.test.mjs scripts/lib/tty.test.mjs scripts/lib/learn-cli.test.mjs
+- verify: node --test scripts/lib/learn-promote.test.mjs scripts/lib/learn-land.test.mjs scripts/lib/tty.test.mjs scripts/lib/learn-cli.test.mjs scripts/lib/log-purge.test.mjs
 - priority: high
 - last-verified: 2026-11-19
 
 ## R14 — Unattended, the loop writes nothing inside the repository and never alters a rule it did not learn
 
-- why: the hooks (the session log, the gate hook, the loop warning), `learn tick`, draft and replay write only to this machine's data directory and the temp marker directory; they act only on learnings the ledger records, never on RULES.md or the kit's base hooks, and a local gate entry the ledger does not vouch for is removed as forged
+- why: the hooks (the session log, the gate hook, the loop warning), `learn tick`, draft and replay write only to this machine's data directory and the temp marker directory, and never through a link there; they act only on learnings the ledger records, never on RULES.md or the kit's base hooks; a local gate entry the ledger does not vouch for is removed, and a learning file that lags the ledger is rolled forward from it
 - enforced-by: test
 - pointer: scripts/lib/learn-promote.test.mjs
 - verify: node --test scripts/lib/learn-promote.test.mjs scripts/lib/learn-lib.test.mjs scripts/lib/session-log.test.mjs scripts/lib/tool-gate.test.mjs scripts/lib/loop-watch.test.mjs
