@@ -5,10 +5,11 @@
 // drafted the gate is never asked. Two checks run over this machine's
 // session log. The differential check: the gate fires on every failing call
 // bearing the recurrence's signature in the recurrence's sessions, and on
-// none of the successful calls of the same tool that followed them. The
-// false-positive check: the gate fires on no call of its own tool in any
-// session that holds no failure with that signature, and enough such calls
-// were replayed for that silence to mean something.
+// none of the successful calls of its own tool in those sessions, of which
+// there must be at least one. The false-positive check: the gate fires on no
+// call of its own tool in any session that holds no failure with that
+// signature, and enough such calls were replayed for that silence to mean
+// something.
 //
 // The log is scrubbed before it is written, so a credential in a recorded
 // input reads as `SCRUB_MARK`, and the gate is replayed against that
@@ -94,19 +95,14 @@ const tested = tally => tally[FIRED] + tally[SILENT];
 /** The calls whose outcome is known, tested or decided by their shape. */
 const decided = tally => tally.calls - tally[MISSING];
 
-/** Replays the session's mistakes and, for each, the next successful call of
- * its tool; a call that follows several mistakes is one successor.
- * `signatures[i]` is the signature of `events[i]`. */
+/** Replays a recurrence session's mistakes, which the gate must fire on, and
+ * every successful call of the gate's own tool in it, before a mistake or
+ * after, which the gate must leave alone. A failure of another signature
+ * is judged neither way. `signatures[i]` is the signature of `events[i]`. */
 function replayDifferential(gate, events, signatures, signature, totals) {
-  const awaiting = new Set();
   events.forEach((event, i) => {
-    if (signatures[i] === signature) {
-      count(totals.mistakes, replayCall(gate, event), totals);
-      awaiting.add(event[TOOL_FIELD]);
-    } else if (event.type === SUCCESS_EVENT && awaiting.has(event[TOOL_FIELD])) {
-      count(totals.successors, replayCall(gate, event), totals);
-      awaiting.delete(event[TOOL_FIELD]);
-    }
+    if (signatures[i] === signature) count(totals.mistakes, replayCall(gate, event), totals);
+    else if (event.type === SUCCESS_EVENT && event[TOOL_FIELD] === gate.tool) count(totals.good, replayCall(gate, event), totals);
   });
 }
 
@@ -127,13 +123,14 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 // The gate's tool is named by this fixed phrase, never by the gate's own
 // `tool` text, which a model drafted.
 const ownToolCalls = n => plural(n, "call of the gate's tool", "calls of the gate's tool");
+const goodCalls = n => `${plural(n, 'successful call')} of the gate's tool in the recurrence's sessions`;
 
 /** The verdict and its reason. A firing beyond the mistakes, or a mistake
  * the gate cannot catch, fails whatever else could not be read, since more
  * reading cannot undo it; otherwise anything either check could not see
  * leaves the gate unchecked. */
 function judge(totals) {
-  const { mistakes, successors, clean } = totals;
+  const { mistakes, good, clean } = totals;
   const failures = [];
   const differentialProblems = [];
   if (mistakes[OTHER_TOOL] > 0) {
@@ -146,9 +143,7 @@ function judge(totals) {
   if (mistakes[FIRED] < tested(mistakes)) {
     differentialProblems.push(`the gate fired on ${mistakes[FIRED]} of ${plural(tested(mistakes), 'replayable mistake')}`);
   }
-  if (successors[FIRED] > 0) {
-    differentialProblems.push(`the gate fired on ${successors[FIRED]} of ${plural(decided(successors), 'successful call')} that followed the mistakes`);
-  }
+  if (good[FIRED] > 0) differentialProblems.push(`the gate fired on ${good[FIRED]} of ${goodCalls(decided(good))}`);
   if (differentialProblems.length > 0) failures.push(`differential check failed: ${differentialProblems.join(' and ')}`);
   if (clean[FIRED] > 0) {
     failures.push(`false-positive check failed: the gate fired on ${clean[FIRED]} of ${ownToolCalls(tested(clean))} in ${plural(totals.cleanSessions, 'session')} with no failure of this signature`);
@@ -167,8 +162,10 @@ function judge(totals) {
   } else if (mistakes[MISSING] > 0) {
     unchecked.push(`${mistakes[MISSING]} of ${plural(mistakes.calls, 'mistake')} could not be replayed`);
   }
-  if (successors[MISSING] > 0) {
-    unchecked.push(`${successors[MISSING]} of ${plural(successors.calls, 'successful call')} that followed the mistakes could not be replayed`);
+  if (good.calls === 0) {
+    unchecked.push("no successful call of the gate's tool is recorded in the recurrence's sessions, so nothing there shows the gate leaves a good call alone");
+  } else if (good[MISSING] > 0) {
+    unchecked.push(`${good[MISSING]} of ${goodCalls(good.calls)} could not be replayed`);
   }
   if (tested(clean) < MIN_CLEAN_CALLS || totals.cleanSessions < MIN_CLEAN_SESSIONS) {
     unchecked.push(`too little clean evidence: ${ownToolCalls(tested(clean))} replayed in ${plural(totals.cleanSessions, 'session')} with no failure of this signature, where at least ${MIN_CLEAN_CALLS} calls in ${MIN_CLEAN_SESSIONS} sessions are required`);
@@ -177,7 +174,7 @@ function judge(totals) {
 
   return {
     verdict: 'pass',
-    reason: `the gate fired on all ${plural(mistakes.calls, 'mistake')}, on none of ${plural(successors.calls, 'successful call')} that followed them, and on none of ${ownToolCalls(tested(clean))} in ${plural(totals.cleanSessions, 'session')} with no failure of this signature`,
+    reason: `the gate fired on all ${plural(mistakes.calls, 'mistake')}, on none of ${goodCalls(good.calls)}, and on none of ${ownToolCalls(tested(clean))} in ${plural(totals.cleanSessions, 'session')} with no failure of this signature`,
   };
 }
 
@@ -212,9 +209,9 @@ function limits(totals) {
 }
 
 function result(totals, verdict, reason) {
-  const { mistakes, successors, clean } = totals;
+  const { mistakes, good, clean } = totals;
   return {
-    differential: { firedOnMistakes: mistakes[FIRED], mistakes: mistakes.calls, firedOnSuccessors: successors[FIRED] },
+    differential: { firedOnMistakes: mistakes[FIRED], mistakes: mistakes.calls, firedOnGoodCalls: good[FIRED], goodCalls: good.calls },
     falsePositives: {
       fired: clean[FIRED],
       callsChecked: tested(clean),
@@ -222,7 +219,7 @@ function result(totals, verdict, reason) {
       notReplayable: clean[MISSING],
       fieldAbsent: clean[ABSENT],
     },
-    contentMissing: mistakes[MISSING] + successors[MISSING] + clean[MISSING],
+    contentMissing: mistakes[MISSING] + good[MISSING] + clean[MISSING],
     sessionsOutsideRecurrence: totals.sessionsOutsideRecurrence,
     sessionsUnreadable: totals.sessionsUnreadable,
     sessionsBeingSealed: totals.sessionsBeingSealed,
@@ -235,8 +232,10 @@ function result(totals, verdict, reason) {
 /**
  * Replays `gate` against this machine's session log for `recurrence`, as
  * `findRecurrences` returns it. Mistakes are the failures bearing the
- * recurrence's signature in its sessions; each one's successor is the next
- * successful call of its tool in that session. For false positives, every
+ * recurrence's signature in its sessions, and the good calls are every
+ * successful call of the gate's own tool in those sessions:
+ * `differential` gives how many of each there were and how many the gate
+ * fired on. For false positives, every
  * call of the gate's own tool in a session holding no failure of that
  * signature is replayed. A call counts as replayed only when its inspected
  * field is a string the gate's pattern was tested against: `callsChecked`
@@ -246,13 +245,14 @@ function result(totals, verdict, reason) {
  * session holding the signature outside the recurrence is left out of both
  * checks and counted in `sessionsOutsideRecurrence`.
  *
- * `pass` requires at least one replayable mistake; the gate firing on every
- * mistake and on no successor or clean call; every mistake, successor and
- * recurrence session readable; and at least `MIN_CLEAN_CALLS` clean calls
- * replayed across at least `MIN_CLEAN_SESSIONS` sessions. Any firing beyond
- * the mistakes, a replayable mistake missed, or a mistake the gate cannot
- * catch (of another tool, or lacking the inspected field as a string) is
- * `fail`; a successor lacking the field is one the gate did not fire on.
+ * `pass` requires at least one replayable mistake and at least one good
+ * call; the gate firing on every mistake and on no good or clean call; every
+ * mistake, good call and recurrence session readable; and at least
+ * `MIN_CLEAN_CALLS` clean calls replayed across at least
+ * `MIN_CLEAN_SESSIONS` sessions. Any firing beyond the mistakes, a
+ * replayable mistake missed, or a mistake the gate cannot catch (of another
+ * tool, or lacking the inspected field as a string) is `fail`; a good call
+ * lacking the field is one the gate did not fire on.
  * Anything else short of a pass is `not-checkable`. A gate that is not well
  * formed is `fail` without being replayed. A session that could not be read
  * in full, or has lines that do not parse, is still used for what did parse
@@ -264,7 +264,7 @@ function result(totals, verdict, reason) {
 export function replayGate(root, gate, recurrence) {
   const totals = {
     mistakes: newTally(),
-    successors: newTally(),
+    good: newTally(),
     clean: newTally(),
     cleanSessions: 0,
     scrubbed: 0,
