@@ -15,16 +15,26 @@
 // recorded hash, its registry entry, its manifest record). A landed or
 // suspended learning with no trace in this checkout, as after an
 // uncommitted land was discarded, is still reverted, on this machine only:
-// no file is written, and the dry run and the result say so. The working
-// tree is not the only witness, though: a gate at the learning's hash in the
-// commit HEAD names means its copy was removed without a revert, and that is
-// refused, naming the two ways on; when that commit cannot be read, the note
-// says so. A learning that has since moved on, retired or demoted, is
-// reverted only to remove a trace it left; a trace under its id at another
-// hash is refused, never removed. A learned file hand-edited away from the
-// kit's copy is never written; a revert leaves it alone once nothing of the
-// learning is left in it, and until then says that taking the learning out
-// of it by hand lets the revert go on.
+// no file is written, and the dry run and the result say so. A learning that
+// has since moved on, retired or demoted, is reverted only to remove a trace
+// it left; a trace under its id at another hash is refused, never removed.
+// For a revert, a learned file that is absent, or holds nothing of the
+// learning, is accepted as it is; a hand-edited one is never written, and
+// while it still holds the learning the revert says that taking it out by
+// hand lets the revert go on.
+//
+// The working tree is not the only witness. Whenever a revert finds the
+// learning's gate absent from the working tree's gate file, however many
+// other traces are left, it reads the gate file in the commit HEAD names
+// (`committedText`). That state is not wrong in itself: it follows every
+// revert until the owner commits, and a revert that stopped part-way. But
+// when the commit holds the gate at the learning's hash, the gate is still
+// committed for everyone, so the revert goes on and its notes say first, in
+// the dry run and the result alike, that this run did not remove the gate,
+// that it was already gone, that the commit still holds it and does until
+// its removal is committed, and that `git status` shows the files. When the
+// commit cannot be read, the notes say so and why. A revert that removes
+// the gate from the working tree itself needs no such note.
 //
 // A gate in the repository binds other people's agents, so landing and
 // reverting take a person at an interactive terminal, as approval does: a
@@ -462,9 +472,12 @@ function landing(root, state, manifest, id) {
  * A learned file the kit may not write any more, a hand edit for one, is
  * left alone when it holds nothing under the learning's id; one that does
  * is refused, saying that taking the learning out of it by hand lets the
- * revert go on. With no trace in this checkout, the commit HEAD names is
- * read too (`committedText`): a gate there at the learning's hash means
- * the working tree's copy was removed without a revert, and is refused.
+ * revert go on. Whenever the working tree's gate file does not hold the
+ * learning's gate, whatever other trace is left, the commit HEAD names is
+ * read too (`committedText`): a gate there at the learning's hash is still
+ * committed for everyone, so the notes say first that this run did not
+ * remove it, it was already gone, and that it stays committed until its
+ * removal is; a commit that cannot be read is noted with the reason.
  */
 function reverting(root, state, manifest, id) {
   const found = learningIn(state, id);
@@ -497,15 +510,13 @@ function reverting(root, state, manifest, id) {
 
   const transition = revertStage(state, learning, gate !== undefined || rule !== undefined || record !== undefined);
   if (transition.error) return transition;
-  let notes = [];
-  if (transition.alone) {
+  const notes = [];
+  const isOurs = g => g.id === id && gateSha256(g) === learning.sha256;
+  if (!committedGates(root).some(isOurs)) {
     const head = committedText(root, GATES_PATH);
-    if (head.text !== undefined && gatesIn(head.text).some(g => g.id === id && gateSha256(g) === learning.sha256)) {
-      return refused(`${id}: the commit this branch is on still holds its gate in ${GATES_PATH}, and the working tree's copy was removed without a revert; `
-        + `either restore ${GATES_PATH}, ${LEARNED_PATH} and ${MANIFEST_PATH} from that commit and run the revert, which then takes the gate out, `
-        + 'or commit their removal and run the revert again');
-    }
-    notes = [aloneNote(id, transition, head.unknown)];
+    if (head.text !== undefined && gatesIn(head.text).some(isOurs)) notes.push(stillCommittedNote(id));
+    if (head.unknown !== undefined) notes.push(`whether the commit this branch is on still holds ${id}'s gate could not be checked (${head.unknown})`);
+    if (transition.alone) notes.push(aloneNote(id, transition));
   }
 
   const proposals = [];
@@ -553,16 +564,20 @@ function revertFile(root, manifest, rel, step, holdsId, id) {
   return { error: `${file.error}; or, if it is to stay as it is, take ${id} out of it by hand and run the revert again, which then finds nothing of ${id} in it and goes on` };
 }
 
+/** What a revert tells the owner when the working tree's gate file had lost
+ * the learning's gate before this run and the commit still holds it. */
+const stillCommittedNote = id => `this run does not remove ${id}'s gate from the working tree: it was already gone from ${GATES_PATH}; `
+  + `the commit this branch is on still holds it, and the gate stays committed for everyone until that removal is committed; git status shows the files concerned`;
+
 /** What a revert with no trace in this checkout tells the owner it does. */
-function aloneNote(id, transition, unknown) {
-  const unchecked = unknown === undefined ? '' : `; whether a commit still holds its gate could not be checked (${unknown})`;
+function aloneNote(id, transition) {
   const outcome = transition.updated.status === 'retired'
     ? 'it is retired'
     : `it is active-local again, its local gate at ${transition.action}`;
   const elsewhere = transition.updated.status === 'retired'
     ? 'if another branch holds the landing, the gate is still committed there, and there it binds this machine again, since its suspension goes with this revert'
     : 'if another branch holds the landing, the gate is still committed there';
-  return `nothing in this checkout holds ${id}, so reverting it writes no file and changes it on this machine only: ${outcome}${unchecked}; ${elsewhere}`;
+  return `nothing in this checkout holds ${id}, so reverting it writes no file and changes it on this machine only: ${outcome}; ${elsewhere}`;
 }
 
 /** The dry run: each proposal with its diff against the repository, what
@@ -711,8 +726,9 @@ function landUnguarded(root, id, options) {
  * `reverted` with `approvedBy: 'owner'` and that action. A learning
  * suspended on this machine ends `retired` with no local gate, the ledger
  * getting `reverted` and then `retired`, both the owner's. Either with no
- * trace in this checkout writes no file, and `notes` say so, unless the
- * commit HEAD names still holds the gate, which is refused. A learning that
+ * trace in this checkout writes no file, and `notes` say so; whenever the
+ * working tree had already lost the gate, they also say whether the commit
+ * HEAD names still holds it, as `reverting` reads it. A learning that
  * moved on since its landing has the trace it left removed. A revert that
  * stopped partway is finished, as `revertStage` recognises it. `options`
  * and the results are as `landLearning`'s; success is `{ ok: true, id,

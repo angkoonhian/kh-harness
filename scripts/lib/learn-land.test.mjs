@@ -826,6 +826,7 @@ test('a suspended learning\'s revert stopped between gates.json and LEARNED.md i
   const finished = revertLearning(root, 'L1', YES);
   assert.equal(finished.ok, true, finished.error);
   assert.deepEqual(finished.written, [LEARNED_PATH]);
+  assert.deepEqual(finished.notes, [STILL_COMMITTED], 'the gate file this revert wrote before it stopped leaves the commit holding the gate');
   assertRevertedAndRetired(root);
 });
 
@@ -928,28 +929,62 @@ function removeByHand(root) {
   writeFileSync(join(root, MANIFEST_PATH), JSON.stringify({ ...raw, files, learnings: [] }, null, 2) + '\n');
 }
 
-test('a gate removed from the working tree while the commit still holds it is refused, dry and real; once the removal is committed the revert goes on', () => {
+const STILL_COMMITTED = 'this run does not remove L1\'s gate from the working tree: it was already gone from .claude/kh-harness/gates.json; '
+  + 'the commit this branch is on still holds it, and the gate stays committed for everyone until that removal is committed; git status shows the files concerned';
+const ALONE = 'nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block; '
+  + 'if another branch holds the landing, the gate is still committed there';
+
+test('a gate removed from the working tree with the manifest rewritten to match is reverted with the note that the commit still holds it', () => {
   const { root, gate } = activeRepo();
   assert.equal(landLearning(root, 'L1', YES).ok, true);
   commitAll(root);
   removeByHand(root);
-  const refusal = {
-    error: `L1: the commit this branch is on still holds its gate in ${GATES_PATH}, and the working tree's copy was removed without a revert; `
-      + `either restore ${GATES_PATH}, ${LEARNED_PATH} and ${MANIFEST_PATH} from that commit and run the revert, which then takes the gate out, `
-      + 'or commit their removal and run the revert again',
-    exitCode: 3,
-  };
-  assert.deepEqual(revertLearning(root, 'L1', {}), refusal);
-  const real = revertLearning(root, 'L1', YES);
-  assert.deepEqual([real.error, real.exitCode], [refusal.error, 3]);
-  assert.equal(statusOf(root), 'landed');
-
-  commitAll(root);
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [STILL_COMMITTED, ALONE]);
   const reverted = revertLearning(root, 'L1', YES);
   assert.equal(reverted.ok, true, reverted.error);
   assert.deepEqual(reverted.written, []);
-  assert.deepEqual(reverted.notes, ['nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block; if another branch holds the landing, the gate is still committed there']);
+  assert.deepEqual(reverted.notes, [STILL_COMMITTED, ALONE], 'the real run carries the dry run\'s notes');
   assert.deepEqual(localGates(root).gates, [gate]);
+  assert.equal(statusOf(root), 'active-local');
+});
+
+test('the gate files deleted with the manifest untouched are reverted with the note, dry and real; once the deletion is committed there is none', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  for (const rel of [GATES_PATH, LEARNED_PATH]) rmSync(join(root, rel));
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [STILL_COMMITTED], 'the manifest record is a trace, so the revert is not alone');
+  const reverted = revertLearning(root, 'L1', YES);
+  assert.equal(reverted.ok, true, reverted.error);
+  assert.deepEqual([reverted.written, reverted.notes], [[], [STILL_COMMITTED]]);
+  assert.deepEqual(manifest(root).learnings, []);
+
+  const again = activeRepo();
+  assert.equal(landLearning(again.root, 'L1', YES).ok, true);
+  commitAll(again.root);
+  for (const rel of [GATES_PATH, LEARNED_PATH]) rmSync(join(again.root, rel));
+  commitAll(again.root);
+  const afterCommit = revertLearning(again.root, 'L1', YES);
+  assert.equal(afterCommit.ok, true, afterCommit.error);
+  assert.deepEqual(afterCommit.notes, [], 'the commit no longer holds the gate, and the record is left to remove');
+});
+
+test('a revert that removes the gate itself carries no note', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  const reverted = revertLearning(root, 'L1', YES);
+  assert.deepEqual([reverted.written, reverted.notes], [[GATES_PATH, LEARNED_PATH], []]);
+});
+
+test('a path named like a revision in the working tree does not stop the commit being read', { skip: process.platform === 'win32' && 'a file name cannot hold a colon on Windows' }, () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  mkdirSync(join(root, `HEAD:${GATES_PATH}`, '..'), { recursive: true });
+  writeFileSync(join(root, `HEAD:${GATES_PATH}`), '{ "schema": 1, "gates": [] }\n');
+  removeByHand(root);
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [STILL_COMMITTED, ALONE]);
 });
 
 test('outside git a revert with no trace goes on, saying the commit could not be checked', () => {
@@ -959,12 +994,20 @@ test('outside git a revert with no trace goes on, saying the commit could not be
   const data = repoDataDir(root);
   rmSync(join(root, '.git'), { recursive: true, force: true });
   cpSync(data, repoDataDir(root), { recursive: true });
-  const note = 'nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block; '
-    + 'whether a commit still holds its gate could not be checked (it is not a git repository); if another branch holds the landing, the gate is still committed there';
-  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [note]);
+  const notes = ['whether the commit this branch is on still holds L1\'s gate could not be checked (it is not a git repository)', ALONE];
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, notes);
   const reverted = revertLearning(root, 'L1', YES);
   assert.equal(reverted.ok, true, reverted.error);
-  assert.deepEqual(reverted.notes, [note], 'the real run carries the dry run\'s notes');
+  assert.deepEqual(reverted.notes, notes, 'the real run carries the dry run\'s notes');
+});
+
+test('on a branch with no commit yet the note says so', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  discardLand(root);
+  git(root, 'checkout', '-q', '--orphan', 'harness/empty');
+  git(root, 'rm', '-rq', '--cached', '.');
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, ['whether the commit this branch is on still holds L1\'s gate could not be checked (the branch has no commit yet)', ALONE]);
 });
 
 test('a hand-edited gate file names the hand removal that lets a revert go on, and that sequence works', () => {
@@ -982,9 +1025,11 @@ test('a hand-edited gate file names the hand removal that lets a revert go on, a
   const handFile = JSON.parse(edited);
   writeFileSync(join(root, GATES_PATH), JSON.stringify({ ...handFile, gates: handFile.gates.filter(g => g.id !== 'L1') }, null, 4) + '\n');
   const handText = text(root, GATES_PATH);
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [STILL_COMMITTED]);
   const reverted = revertLearning(root, 'L1', YES);
   assert.equal(reverted.ok, true, reverted.error);
   assert.deepEqual(reverted.written, [LEARNED_PATH], 'the hand-edited file is never written');
+  assert.deepEqual(reverted.notes, [STILL_COMMITTED], 'the commit still holds the gate until the hand edit is committed');
   assert.equal(text(root, GATES_PATH), handText);
   assert.equal(statusOf(root), 'retired');
   assert.deepEqual(parseRules(text(root, LEARNED_PATH)).rules, []);

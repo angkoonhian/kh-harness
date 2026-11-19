@@ -14,7 +14,7 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { defaultBranches, gitInfo } from './git-info.mjs';
+import { defaultBranches } from './git-info.mjs';
 import { classify, emptyManifest, MANIFEST_PATH, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
@@ -143,34 +143,58 @@ export function writeGateRefusals({ root, git, manifestResult, allowDefaultBranc
   return refusals;
 }
 
+// How long one git call reading a commit may take before the answer counts
+// as one that could not be had.
+const COMMIT_READ_TIMEOUT_MS = 10_000;
+
+/** Why a git call reading a commit failed, as a sentence: the call timing
+ * out, git missing, or the first line git printed. */
+function gitFailure(err, what) {
+  if (err?.code === 'ETIMEDOUT' || (err?.signal ?? null) !== null) return `git did not answer within ${COMMIT_READ_TIMEOUT_MS / 1000} seconds`;
+  if (err?.code === 'ENOENT') return 'git is not installed or not on PATH';
+  const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
+  if (/not a git repository/i.test(stderr)) return 'it is not a git repository';
+  return stderr || `git could not ${what}`;
+}
+
 /**
  * The file `rel` as the commit HEAD names holds it: `{ text }`, `{ absent:
  * true }` when that commit has no such file, or `{ unknown }`, a sentence
- * saying why it could not be read: not a git repository, a branch with no
- * commit yet, or git failing. The working tree and the index are not
- * consulted, so a removal not yet committed does not hide what the commit
- * holds. Runs git with its arguments as an array, never through a shell.
+ * saying truly why it could not be read: not a git repository, a branch
+ * with no commit yet, git missing, failing or not answering in time.
+ *
+ * The working tree and the index are not consulted, so a removal not yet
+ * committed does not hide what the commit holds; nor is anything resolved
+ * against the working tree's file names, since the file is found with
+ * `ls-tree` after `--` and read by its object id. Every call runs git with
+ * `--no-replace-objects`, so no `refs/replace/` object the repository holds
+ * changes what the commit is read as; with its arguments as an array, never
+ * through a shell; and under a timeout.
  */
 export function committedText(root, rel) {
-  const info = gitInfo(root);
-  if (info.error) return { unknown: info.error };
-  if (!info.isRepo) return { unknown: 'it is not a git repository' };
-  const git = args => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const git = args => execFileSync('git', ['--no-replace-objects', '-C', root, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: COMMIT_READ_TIMEOUT_MS,
+  });
   try {
     git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
-  } catch {
-    return { unknown: 'the branch has no commit yet' };
-  }
-  try {
-    git(['cat-file', '-e', `HEAD:${rel}`]);
-  } catch {
-    return { absent: true };
-  }
-  try {
-    return { text: git(['show', `HEAD:${rel}`]) };
   } catch (err) {
-    const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
-    return { unknown: stderr || 'git could not show the committed file' };
+    // `--verify --quiet` exits 1 and says nothing when HEAD names no commit.
+    const silent = err?.status === 1 && String(err?.stderr ?? '').trim() === '';
+    return { unknown: silent ? 'the branch has no commit yet' : gitFailure(err, 'read HEAD') };
+  }
+  let listing;
+  try {
+    listing = git(['ls-tree', '-z', 'HEAD', '--', rel]);
+  } catch (err) {
+    return { unknown: gitFailure(err, 'list the committed file') };
+  }
+  if (listing === '') return { absent: true };
+  const entry = /^(\d+) (\w+) ([0-9a-f]+)\t/.exec(listing);
+  if (entry === null || entry[2] !== 'blob') return { unknown: `the commit holds something other than a file at ${rel}` };
+  try {
+    return { text: git(['cat-file', 'blob', entry[3]]) };
+  } catch (err) {
+    return { unknown: gitFailure(err, 'read the committed file') };
   }
 }
 
