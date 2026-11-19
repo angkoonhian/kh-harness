@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, lstatSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings, replaceFile, MANIFEST_PATH } from './manifest.mjs';
+import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings, replaceFile, displayPath, MANIFEST_PATH } from './manifest.mjs';
 import { APPLY, UNINSTALL, fixture, sandboxDataDir } from './lifecycle-fixtures.mjs';
 
 sandboxDataDir();
@@ -384,4 +384,24 @@ test('replaceFile writes through a link at the path, leaving the link in place',
   replaceFile(link, 'new\n');
   assert.equal(lstatSync(link).isSymbolicLink(), true);
   assert.equal(readFileSync(real, 'utf8'), 'new\n');
+});
+
+// --- displayPath: a path read from the manifest, made safe to print ---------
+
+test('displayPath prints an ordinary path as it is', () => {
+  for (const path of ['HANDOFF.md', '.claude/scripts/lint-touched.mjs', 'docs/harness/RULES.md', '.claude/rules/packages-api_v2.md']) {
+    assert.equal(displayPath(path), path);
+  }
+});
+
+test('displayPath quotes anything else and writes out every character a terminal could act on', () => {
+  assert.equal(displayPath('docs/\u001b[31mred\nnext line.md'), '"docs/\\u{1b}[31mred\\u{a}next line.md"');
+  assert.equal(displayPath('a"b\\c'), '"a\\u{22}b\\u{5c}c"');
+  assert.equal(displayPath('docs/caf\u00e9.md'), '"docs/caf\\u{e9}.md"');
+  assert.equal(displayPath(''), '""');
+  const long = displayPath('x'.repeat(500));
+  assert.ok(long.length < 220 && long.endsWith('..."'), 'and is cut to a length a line can hold');
+  for (const hostile of ['\u001b]0;title\u0007', 'a\rb', 'tab\there', '\u202egnp.exe']) {
+    assert.match(displayPath(hostile), /^"[\x20-\x7e]*"$/, JSON.stringify(hostile));
+  }
 });

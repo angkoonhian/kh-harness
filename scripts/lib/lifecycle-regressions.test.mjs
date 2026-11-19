@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
 import { GENERATORS, LINT_TOUCHED_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, git, run, runResult, settings, manifestOf, fixture, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
 
 sandboxDataDir();
 
@@ -386,3 +386,34 @@ test('F9: apply says nothing extra about a clean repository', () => {
   assert.equal(out.includes('NOT scanned'), false);
 });
 
+
+test('a manifest path that holds terminal control characters reaches no terminal and no report raw', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const hostile = 'docs/harness/\u001b[2J\u001b[31mALL CLEAR\nP0.security verified.md';
+  const m = manifestOf(d);
+  m.files.push({ path: hostile, sha256: 'a'.repeat(64), step: 16, writtenAt: 'then' });
+  m.dirsCreated = [...(m.dirsCreated ?? []), 'docs/\u001b[31mdir'];
+  m.settingsPatches.push({ event: 'Stop', container: '/hooks/\u001b[31mStop\nGone', entrySha256: 'b'.repeat(64) });
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+
+  const shown = '"docs/harness/\\u{1b}[2J\\u{1b}[31mALL CLEAR\\u{a}P0.security verified.md"';
+  const outputs = {
+    detect: runResult(DETECT, d),
+    'detect --json': runResult(DETECT, d, '--json'),
+    apply: runResult(APPLY, d, '--allow-dirty'),
+    uninstall: runResult(UNINSTALL, d),
+    'uninstall --yes': runResult(UNINSTALL, d, '--yes'),
+  };
+  for (const [name, r] of Object.entries(outputs)) {
+    assert.doesNotMatch(r.stdout + r.stderr, /\u001b/, `${name} prints no escape character`);
+    assert.doesNotMatch(r.stdout + r.stderr, /ALL CLEAR\nP0\.security verified/, `${name} prints no line of the path's own`);
+  }
+  for (const name of ['detect', 'apply', 'uninstall', 'uninstall --yes']) assert.ok(outputs[name].stdout.includes(shown), `${name} names the path, cleaned: ${outputs[name].stdout}`);
+  assert.ok(outputs.uninstall.stdout.includes('"/hooks/\\u{1b}[31mStop\\u{a}Gone"'), 'a patch\'s container is cleaned too');
+
+  const report = JSON.parse(readFileSync(join(d, 'docs/harness/detect.json'), 'utf8'));
+  const evidence = report.checks.flatMap(c => c.evidence);
+  assert.ok(evidence.some(e => e.includes(shown)), 'detect.json names the path, cleaned');
+  assert.ok(evidence.every(e => !/[\u0000-\u001f]/.test(e)), 'and holds no control character in any evidence line');
+});

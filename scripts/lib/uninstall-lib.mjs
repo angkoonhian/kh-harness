@@ -656,7 +656,9 @@ export function runUninstall({ root, manifest, plan }) {
       fs.rmSync(join(root, r.path));
       removed.push(r.path);
     } catch (e) {
-      failed.push({ path: r.path, reason: e?.message ?? 'unknown error' });
+      // The code, not the message: the message repeats the path, which is
+      // the manifest's and is not printed raw.
+      failed.push({ path: r.path, reason: e?.code ?? 'unknown error' });
     }
   }
   // A file the plan found gone is dropped from the record only if it is
