@@ -23,6 +23,7 @@
 import { readFileSync } from 'node:fs';
 
 import { readEvents } from '../../assets/scripts/harness-log.mjs';
+import { GATE_ACTIONS } from '../../assets/scripts/harness-gates.mjs';
 import { LEARN_TERMINAL_ONLY } from './cli.mjs';
 import { FAILURES_PATH, failuresNotRead } from './failures-evidence.mjs';
 import { REROUTED_MEANS } from './gate-stats.mjs';
@@ -65,14 +66,10 @@ const SPECS = Object.freeze({
 
 export const LEARN_SUBCOMMANDS = Object.freeze(Object.keys(SPECS));
 
-/** The subcommands that approve a gate, weaken one, or change the
- * repository's, which run only where the terminal check passes: `land` and
- * `revert` only with --yes, without which each is a dry run. The usage
- * text's own list, so the two cannot differ. */
-export const TERMINAL_ONLY = LEARN_TERMINAL_ONLY;
-
-/** The subcommands that write to this machine's data directory. */
-export const WRITES = new Set(['draft', 'replay', 'tick', ...TERMINAL_ONLY]);
+/** The subcommands that write to this machine's data directory: the three
+ * any session may run, and those that run only where the terminal check
+ * passes, `land` and `revert` only with --yes. */
+export const WRITES = new Set(['draft', 'replay', 'tick', ...LEARN_TERMINAL_ONLY]);
 
 // The flags that take no value; every other flag a subcommand owns takes one.
 const BOOLEAN_FLAGS = new Set(['--json', '--help', '--firings', '--redraft', '--yes', '--allow-dirty', '--allow-default-branch']);
@@ -191,9 +188,8 @@ const plain = v => (typeof v === 'number' || typeof v === 'boolean' ? String(v) 
 // A value read from a file is printed bare only when it matches the fixed
 // pattern its field allows; anything else is printed escaped.
 const VERDICTS = new Set(['pass', 'fail', 'not-checkable']);
-const ACTIONS = new Set(['observe', 'warn', 'block']);
 const verdict = v => (VERDICTS.has(v) ? v : visible(v));
-const action = v => (ACTIONS.has(v) ? v : visible(v));
+const action = v => (GATE_ACTIONS.includes(v) ? v : visible(v));
 const hash = v => (isSha256(v) ? v : visible(v));
 const approver = v => (isApprover(v) ? v : visible(v));
 const time = v => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString() : visible(v));

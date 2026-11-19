@@ -17,13 +17,11 @@ import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { readLedgerView } from './ledger.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { listSessions } from './recurrence.mjs';
-import { hookPathTokens } from './settings-merge.mjs';
+import { hookPathTokens, SETTINGS_PATH } from './settings-merge.mjs';
 import { summariseTranscripts } from './transcript-reader.mjs';
 
 /** The hook script that writes the log, as a hook entry names it. */
 export const SESSION_LOG_SCRIPT = '.claude/scripts/session-log.mjs';
-
-const SETTINGS_PATH = '.claude/settings.json';
 
 /** What no hook observes, whatever the log holds. An interrupt while a tool
  * runs is not among them: the failure event carries it, and the hook

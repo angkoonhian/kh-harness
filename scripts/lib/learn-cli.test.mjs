@@ -18,7 +18,7 @@ import { GATES_PATH, readEvents, repoDataDir } from '../../assets/scripts/harnes
 import { LEARNED_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { applyRetention, SEAL_IDLE_MS, sealClosedSessions } from '../../assets/scripts/harness-seal.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
-import { EXIT_CODES, LEARN_USAGE, learnHelp } from './cli.mjs';
+import { EXIT_CODES, LEARN_TERMINAL_ONLY, LEARN_USAGE, learnHelp } from './cli.mjs';
 import { runLearn as runLearnInProcess } from '../learn.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import {
@@ -26,7 +26,7 @@ import {
   repo, signatureOf, stoppedAfterLedger, storedLearning, tempDir, trialRepo, useId, withoutProseHashes, writeLocalGates,
 } from './learn-fixtures.mjs';
 import {
-  CANDIDATES_NOTE, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, renderRepositoryDone, renderRepositoryPlan, renderShow, SHOWN_FIRINGS, TERMINAL_ONLY,
+  CANDIDATES_NOTE, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, renderRepositoryDone, renderRepositoryPlan, renderShow, SHOWN_FIRINGS,
 } from './learn-cli.mjs';
 import { landLearning, revertLearning } from './learn-land.mjs';
 import { FAILURE_EVENT, SUCCESS_EVENT } from './recurrence.mjs';
@@ -626,7 +626,7 @@ test('every terminal-only subcommand run from a child process exits 3 and change
     ['policy', 'set', '--min-firings', '1', '--min-sessions', '1', '--max-action', 'block'],
     ['policy', 'clear'],
   ];
-  assert.deepEqual(runs.map(args => (args[0] === 'policy' ? `policy ${args[1]}` : args[0])), [...TERMINAL_ONLY]);
+  assert.deepEqual(runs.map(args => (args[0] === 'policy' ? `policy ${args[1]}` : args[0])), [...LEARN_TERMINAL_ONLY]);
   const before = snapshot(repoDataDir(root));
   for (const args of runs) {
     const r = runLearn(root, ...args);
@@ -781,7 +781,7 @@ test('every subcommand has --help', () => {
     assert.ok(r.stdout.includes(`learn.mjs <path-to-repo> ${name}`), name);
     assert.ok(LEARN_USAGE.includes(`  ${name}`), `${name} is in the full usage`);
   }
-  for (const name of TERMINAL_ONLY) assert.match(learnHelp(name), /interactive\s+terminal/, name);
+  for (const name of LEARN_TERMINAL_ONLY) assert.match(learnHelp(name), /interactive\s+terminal/, name);
   for (const name of ['land', 'revert']) {
     assert.ok(LEARN_USAGE.includes(`  ${name} <id> [--yes] [--allow-dirty] [--allow-default-branch] [--json]`), `${name}'s synopsis names every flag`);
     for (const flag of ['--yes', '--allow-dirty', '--allow-default-branch', '--json']) assert.ok(learnHelp(name).includes(flag), `${name} --help names ${flag}`);
@@ -806,7 +806,7 @@ test('no terminal-only handler can skip the terminal check', () => {
     'policy set': /setPolicy\(root, [a-z]+, \{ interactive \}\)/,
     'policy clear': /clearPolicy\(root, \{ interactive \}\)/,
   };
-  assert.deepEqual(Object.keys(handlers), [...TERMINAL_ONLY]);
+  assert.deepEqual(Object.keys(handlers), [...LEARN_TERMINAL_ONLY]);
   const learn = sources['learn.mjs'];
   for (const [name, call] of Object.entries(handlers)) {
     const start = learn.indexOf(`  '${name}'(root`);
@@ -840,7 +840,7 @@ test('apply proposes deny rules for each terminal-only subcommand, in Bash and P
   // matches the command text Claude writes, not the same program reached
   // another way, so these are a second barrier behind the terminal check.
   const rules = learnCommandDenyRules();
-  assert.deepEqual(rules, [...TERMINAL_ONLY].flatMap(name => [`Bash(*learn.mjs* ${name}*)`, `PowerShell(*learn.mjs* ${name}*)`]));
+  assert.deepEqual(rules, [...LEARN_TERMINAL_ONLY].flatMap(name => [`Bash(*learn.mjs* ${name}*)`, `PowerShell(*learn.mjs* ${name}*)`]));
   const wildcard = rule => new RegExp(`^${rule.slice(rule.indexOf('(') + 1, -1).split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
   const denied = command => rules.some(rule => wildcard(rule).test(command));
   for (const command of [

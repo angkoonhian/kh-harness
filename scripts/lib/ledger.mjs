@@ -16,7 +16,7 @@ import { join } from 'node:path';
 
 import { canonicalJson, maxLogFileBytes, OVER_LIMIT, readBounded, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
-import { isProcessAlive, withFileLock } from './file-lock.mjs';
+import { DATA_DIR_LOCKS, isProcessAlive, withFileLock } from './file-lock.mjs';
 
 export const LEDGER_KINDS = Object.freeze(['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong', 'policy']);
 
@@ -82,6 +82,11 @@ const POLICY_FIELDS = {
 
 const FIRING_KEYS = ['sessionId', 'line'];
 
+/** The gate actions above `observe`, at which a gate tells Claude something
+ * or stops a call: the ones an approval grants, a registry entry records
+ * and a policy promotes to. */
+export const ABOVE_OBSERVE = Object.freeze(['warn', 'block']);
+
 /** The kinds that record the action they grant: a promotion, and a landing
  * or a revert, each of which carries the promotion's approved action on. */
 export const ACTION_KINDS = Object.freeze(['promoted', 'landed', 'reverted']);
@@ -92,7 +97,7 @@ export const ACTION_KINDS = Object.freeze(['promoted', 'landed', 'reverted']);
 // firing it marks, by session and 1-based event index, so a firing is marked
 // once.
 const KIND_FIELDS = {
-  action: { kinds: ACTION_KINDS, valid: v => v === 'warn' || v === 'block' },
+  action: { kinds: ACTION_KINDS, valid: v => ABOVE_OBSERVE.includes(v) },
   firing: {
     kinds: ['wrong'],
     valid: v => isPlainObject(v) && Object.keys(v).length === FIRING_KEYS.length && FIRING_KEYS.every(k => Object.hasOwn(v, k))
@@ -216,7 +221,7 @@ export function appendLedger(root, entry, { now = Date.now, isAlive = isProcessA
   mkdirSync(dir, { recursive: true });
   // The read of the last line and the append that chains to it are one step
   // across processes.
-  withFileLock(join(dir, `${LEDGER_FILE}.lock`), { name: 'ledger', now, isAlive }, assertHeld => {
+  withFileLock(join(dir, DATA_DIR_LOCKS.ledger), { name: 'ledger', now, isAlive }, assertHeld => {
     const buf = ledgerBytes(root) ?? Buffer.alloc(0);
     const { lines, whole } = splitLines(buf);
     const prev = lines.length === 0 ? null : sha256Hex(lines.at(-1));

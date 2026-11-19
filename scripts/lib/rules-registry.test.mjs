@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { heldByBlockingGate, parseRules, findRules, RULES_PATH, ENFORCERS } from '../../assets/scripts/harness-redact.mjs';
+import { GATE_ACTIONS } from '../../assets/scripts/harness-gates.mjs';
+import { APPROVED_ACTIONS, heldByBlockingGate, parseRules, findRules, RULES_PATH, ENFORCERS } from '../../assets/scripts/harness-redact.mjs';
 
 const ONE_RULE = [
   '# Rules',
@@ -216,6 +217,10 @@ test('approved-action is observe, warn or block, or null when absent or anything
   ].join('\n'));
   assert.deepEqual(several.rules.map(r => [r.id, r.approvedAction]), [['L1', 'warn'], ['L2', null]],
     'a line in a comment, under a second heading with the id, or under no rule heading names no action');
+});
+
+test('the actions an entry may record are the actions a gate may have', () => {
+  assert.deepEqual(APPROVED_ACTIONS, GATE_ACTIONS, 'harness-redact.mjs cannot import harness-gates.mjs, which imports it, so its list is held to the gate language\'s here');
 });
 
 test('a learned rule is held by a blocking gate only when its entry says a hook enforces it and the approved action is block', () => {

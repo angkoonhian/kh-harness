@@ -11,11 +11,10 @@
 // Counts only. This output is serialised into docs/harness/detect.json,
 // which is committed, and a failure kind's title or a signature is
 // whatever its author wrote.
+import { SIGNATURE } from './learned-registry.mjs';
 import { OVER_DOCUMENT_LIMIT, readDocument } from './scan.mjs';
 
 export const FAILURES_PATH = 'docs/harness/FAILURES.md';
-
-const SIGNATURE = /^[0-9a-f]{16}$/;
 
 // `## F<n> — <title>`: the separator is an em-dash, en-dash or hyphen run;
 // the title may be missing while a person is still writing the entry.

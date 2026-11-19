@@ -13,7 +13,7 @@
 //   4. There is no --force. Not a flag, not an option, not a code path.
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { commitReadEnv, defaultBranches, git, gitFailure } from './git-info.mjs';
+import { defaultBranches, git, gitFailure } from './git-info.mjs';
 import { classify, contentMatches, emptyManifest, MANIFEST_PATH, replaceFile, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook, SETTINGS_PATH } from './settings-merge.mjs';
@@ -956,4 +956,4 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
 // production caller should import these to re-derive its own allowlist
 // logic; `assertAllowed`/`isAllowedDirectory` are the two sanctioned
 // readers of them.
-export { SETTINGS_PATH, ALLOWED_PREFIXES, ALLOWED_EXACT, commitReadEnv };
+export { SETTINGS_PATH, ALLOWED_PREFIXES, ALLOWED_EXACT };

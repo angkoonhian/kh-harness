@@ -4,6 +4,7 @@ import { render, versionStamp, machineryStamp, stampVersion, carriesStamp } from
 import { classify, contentMatches, MANIFEST_PATH, sha256 } from './manifest.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { installCommand } from './bootstrap-install.mjs';
+import { LEARN_TERMINAL_ONLY } from './cli.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates } from './protected-evidence.mjs';
@@ -255,11 +256,6 @@ export function toolGateDenyRules() {
   return [...inRepository, 'Edit(~/.claude/kh-harness/**)', ...commandDenyRules()];
 }
 
-// The `learn` subcommands that approve a gate, weaken one, or change the
-// repository's. `land` and `revert` are denied whole, their dry runs too:
-// the owner runs both.
-export const LEARN_TERMINAL_SUBCOMMANDS = Object.freeze(['approve', 'wrong', 'demote', 'retire', 'land', 'revert', 'policy set', 'policy clear']);
-
 /** A deny rule for running `subcommand` of the kit script `script`, in the
  * Bash and in the PowerShell tool. A rule's `*` stands for any text, so
  * `*learn.mjs* approve*` matches the command with any path to the script,
@@ -270,12 +266,15 @@ const denyRunning = (script, subcommand) => COMMAND_TOOLS.map(tool => `${tool}(*
 
 /**
  * Deny rules for running the `learn` subcommands that approve a gate,
- * weaken one or change the repository's. They match the command text Claude
- * writes and not the same program reached another way, so they are a second
- * barrier: the subcommand's own terminal check is the one that holds then.
+ * weaken one or change the repository's: `LEARN_TERMINAL_ONLY`, the list
+ * the usage text and the command itself use. `land` and `revert` are denied
+ * whole, their dry runs too: the owner runs both. The rules match the
+ * command text Claude writes and not the same program reached another way,
+ * so they are a second barrier: the subcommand's own terminal check is the
+ * one that holds then.
  */
 export function learnCommandDenyRules() {
-  return LEARN_TERMINAL_SUBCOMMANDS.flatMap(name => denyRunning('learn.mjs', name));
+  return LEARN_TERMINAL_ONLY.flatMap(name => denyRunning('learn.mjs', name));
 }
 
 /**

@@ -385,7 +385,7 @@ test('the module imports no file-writing function and none of its exports takes 
   const specifiers = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)].map(m => m[1]);
   assert.deepEqual(specifiers, ['../../assets/scripts/harness-gates.mjs', '../../assets/scripts/harness-redact.mjs', './ledger.mjs'],
     'the id pattern, the shared parser and cleaners, and the hash check: nothing it calls writes');
-  assert.match(source, /^import \{ isSha256 \} from '\.\/ledger\.mjs';$/m, 'of the ledger, only the pattern check');
+  assert.match(source, /^import \{ ABOVE_OBSERVE, isSha256 \} from '\.\/ledger\.mjs';$/m, 'of the ledger, only the list of actions and the pattern check');
   assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|\bprocess\b|\bnode:/, 'no dynamic import, require, process or built-in module');
   assert.doesNotMatch(source, /\b(?:writeFile|appendFile|createWriteStream|openSync|mkdir|rename|unlink|rmSync|copyFile)/);
   const params = fn => {
@@ -393,7 +393,7 @@ test('the module imports no file-writing function and none of its exports takes 
     return s.slice(s.indexOf('(') + 1, s.indexOf(')')).split(',').map(p => p.trim());
   };
   assert.deepEqual(Object.keys(learnedRegistry).sort(),
-    ['APPROVED_ACTIONS', 'SIGNATURE', 'TITLE_MAX', 'WHY_MAX', 'registryLine', 'removeLearnedEntry', 'renderLearnedEntry', 'upsertLearnedEntry']);
+    ['SIGNATURE', 'TITLE_MAX', 'WHY_MAX', 'registryLine', 'removeLearnedEntry', 'renderLearnedEntry', 'upsertLearnedEntry']);
   assert.deepEqual(params(learnedRegistry.registryLine), ['raw']);
   assert.deepEqual(params(learnedRegistry.renderLearnedEntry), ['entry']);
   assert.deepEqual(params(learnedRegistry.upsertLearnedEntry), ['text', 'entry']);

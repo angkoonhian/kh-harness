@@ -38,7 +38,7 @@ import { GATE_ID } from '../../assets/scripts/harness-gates.mjs';
 import {
   ANY_H2, ENFORCERS, escapeDelimiters, maskText, parseRules, registryLines, RULE_HEADING, stripUnsafe,
 } from '../../assets/scripts/harness-redact.mjs';
-import { isSha256 } from './ledger.mjs';
+import { ABOVE_OBSERVE, isSha256 } from './ledger.mjs';
 
 /** A failure signature as the learning loop writes one. */
 export const SIGNATURE = /^[0-9a-f]{16}$/;
@@ -53,9 +53,6 @@ const POINTER = /^[^\s<>]{1,200}$/;
  * text a learning stores is cut when it lands. */
 export const TITLE_MAX = 120;
 export const WHY_MAX = 300;
-
-/** The actions an entry may record its gate as approved at. */
-export const APPROVED_ACTIONS = Object.freeze(['warn', 'block']);
 
 /**
  * Untrusted prose as the one line the registry writes: invisible and
@@ -111,7 +108,7 @@ const tooLong = (field, max) => ({ error: `learned entry: ${field} is longer tha
  * `enforcedBy` one of `ENFORCERS`; `pointer` one token; `evidenceSummary`
  * `{ signature, sessions, firstTs, lastTs, external }`, required, with ISO
  * timestamps or null, in order; `approvedSha256` 64 lowercase hex
- * characters; `approvedAction` one of `APPROVED_ACTIONS`, written as the
+ * characters; `approvedAction` one of `ABOVE_OBSERVE`, written as the
  * last key line, or undefined for an entry with no such line, as the kit
  * wrote them before it recorded the action. `title` and `why` are cleaned
  * (see `registryLine`); either with nothing left, or longer than its limit,
@@ -132,7 +129,7 @@ export function renderLearnedEntry(entry) {
   const evidence = evidenceLine(evidenceSummary);
   if (evidence.field) return refuse(evidence.field);
   if (!isSha256(approvedSha256)) return refuse('approved-sha256');
-  if (approvedAction !== undefined && !APPROVED_ACTIONS.includes(approvedAction)) return refuse('approved-action');
+  if (approvedAction !== undefined && !ABOVE_OBSERVE.includes(approvedAction)) return refuse('approved-action');
   return {
     text: [
       `## ${id} — ${cleanTitle}`,

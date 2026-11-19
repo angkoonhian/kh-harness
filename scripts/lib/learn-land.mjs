@@ -141,11 +141,10 @@ import {
 import { isInteractive, needsTerminal } from './learn-promote.mjs';
 import { ACTION_KINDS } from './ledger.mjs';
 import { removeLearnedEntry, renderLearnedEntry, upsertLearnedEntry } from './learned-registry.mjs';
-import { classify, emptyManifest, MANIFEST_PATH, readManifestResult, sha256, writeManifest } from './manifest.mjs';
+import { classify, emptyManifest, KIT_VERSION, MANIFEST_PATH, readManifestResult, sha256, writeManifest } from './manifest.mjs';
 import { TOOL_GATE_STEP } from './propose.mjs';
 import { render, STAMP_MARKER } from './render.mjs';
 
-const KIT_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 const LEARNED_TEMPLATE = new URL('../../assets/templates/LEARNED.md.tmpl', import.meta.url);
 
 // The capability a committed gate belongs to: the gate hook's.

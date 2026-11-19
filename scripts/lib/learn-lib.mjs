@@ -82,11 +82,11 @@ import { canonicalJson, GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, repoDataD
 import { maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import { FAILURES_PATH, failuresNotRead, readFailures } from './failures-evidence.mjs';
-import { LOCKED, withFileLock } from './file-lock.mjs';
+import { DATA_DIR_LOCKS, LOCKED, withFileLock } from './file-lock.mjs';
 import { gateStats } from './gate-stats.mjs';
 import { readCommittedGateFile } from './integrity-evidence.mjs';
 import { registryLine, SIGNATURE, TITLE_MAX, WHY_MAX } from './learned-registry.mjs';
-import { ACTION_KINDS, appendLedger, isApprover, readLedgerView } from './ledger.mjs';
+import { ABOVE_OBSERVE, ACTION_KINDS, appendLedger, isApprover, readLedgerView } from './ledger.mjs';
 import { findRecurrences } from './recurrence.mjs';
 import { replayGate } from './replay.mjs';
 
@@ -104,8 +104,8 @@ const GATE_ACTIONS = Object.freeze({
   candidate: Object.freeze(['observe']),
   rejected: Object.freeze(['observe']),
   trial: Object.freeze(['observe']),
-  'active-local': Object.freeze(['warn', 'block']),
-  landed: Object.freeze(['warn', 'block']),
+  'active-local': ABOVE_OBSERVE,
+  landed: ABOVE_OBSERVE,
   suspended: Object.freeze(['observe']),
   retired: Object.freeze(['observe']),
 });
@@ -145,9 +145,6 @@ export const SETTLED = new Set(['rejected', 'retired']);
 // approved: see `keepsLocalGate`.
 const LOCAL_GATE_STATUSES = new Set(['trial', 'active-local']);
 
-// The actions above `observe`: those a promoted learning's gate may carry.
-const ABOVE_OBSERVE = new Set(GATE_ACTIONS['active-local']);
-
 // The ledger kinds `learn-land.mjs` finishes itself when its step stopped
 // after them: each is half of a change to the repository, so the roll
 // forward leaves a learning whose last entry is one of them alone.
@@ -157,7 +154,6 @@ const LEARNINGS_DIR = 'learnings';
 // The highest id ever assigned on this machine for this repository, so the
 // number of a rejected or removed learning is never assigned again.
 const ID_COUNTER_FILE = 'learning-ids.json';
-const LOCK_FILE = 'learnings.lock';
 
 const ID_NUMBER_MAX = 999_999_999;
 
@@ -210,7 +206,7 @@ export function withLearningsLock(root, fn) {
   try {
     const dir = repoDataDir(root);
     mkdirSync(dir, { recursive: true });
-    return withFileLock(join(dir, LOCK_FILE), { name: 'learnings' }, assertHeld => {
+    return withFileLock(join(dir, DATA_DIR_LOCKS.learnings), { name: 'learnings' }, assertHeld => {
       entered = true;
       return fn(action => {
         assertHeld();
@@ -673,7 +669,7 @@ function suspensionStands(state, id) {
 /** Every ledger entry that granted an action above `observe`: who approved
  * which content of which learning, at which action, and when. */
 const approvalsIn = entries => entries
-  .filter(e => e?.kind === 'promoted' && isApprover(e.approvedBy) && ABOVE_OBSERVE.has(e.action))
+  .filter(e => e?.kind === 'promoted' && isApprover(e.approvedBy) && ABOVE_OBSERVE.includes(e.action))
   .map(e => ({ id: e.learningId, sha256: e.contentSha256, action: e.action, approvedBy: e.approvedBy, ts: e.ts }));
 
 /** The ids of the local gate entries above `observe` that the approval in
@@ -686,7 +682,7 @@ const approvalsIn = entries => entries
 export function unapprovedGateIds(gates, ledgerEntries) {
   const ids = new Set();
   for (const entry of gates) {
-    if (!isGateEntry(entry) || !ABOVE_OBSERVE.has(entry.action)) continue;
+    if (!isGateEntry(entry) || !ABOVE_OBSERVE.includes(entry.action)) continue;
     const state = recordedState(ledgerEntries, entry.id);
     const approved = state !== null && ACTION_KINDS.includes(state.kind) && state.approvedBy !== null
       && state.contentSha256 === gateSha256(entry) && state.action === entry.action;

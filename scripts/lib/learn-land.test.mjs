@@ -15,7 +15,8 @@ import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
-import { commitReadEnv, committedText } from './apply-lib.mjs';
+import { committedText } from './apply-lib.mjs';
+import { commitReadEnv } from './git-info.mjs';
 import { integrityEvidence } from './integrity-evidence.mjs';
 import {
   call, drafted, editLearning, git, HARNESS, kinds, localGates, localGatesPath, log, logFiring, logReadMistakes, MISTAKE, mtimes, READ_GATE,

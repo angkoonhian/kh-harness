@@ -11,6 +11,7 @@ import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
+import { ABOVE_OBSERVE } from './ledger.mjs';
 
 const POLICY_FILE = 'policy.json';
 
@@ -23,7 +24,7 @@ const isThreshold = v => Number.isSafeInteger(v) && v >= 1;
 const FIELDS = {
   minTrialFirings: { valid: isThreshold, expected: 'an integer of at least 1' },
   minTrialSessions: { valid: isThreshold, expected: 'an integer of at least 1' },
-  maxAction: { valid: v => v === 'warn' || v === 'block', expected: "'warn' or 'block'" },
+  maxAction: { valid: v => ABOVE_OBSERVE.includes(v), expected: ABOVE_OBSERVE.map(a => `'${a}'`).join(' or ') },
 };
 
 /**

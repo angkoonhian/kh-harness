@@ -6,15 +6,13 @@
 // learning, both from this one computation. Reads only.
 import { GATE_ACTIONS, GATE_ID } from '../../assets/scripts/harness-gates.mjs';
 import { readEvents } from '../../assets/scripts/harness-log.mjs';
+import { ABOVE_OBSERVE, isSha256 } from './ledger.mjs';
 import { FAILURE_EVENT, listSessions, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
 
 export const FIRING_EVENT = 'gate_firing';
 
 /** What `rerouted` counts, in the words every reader shows it in. */
 export const REROUTED_MEANS = 'rerouted: after a warn or block firing, the next call of the same tool by the same agent in that session, started after the firing, succeeded; a firing whose call has no tool use id is not counted';
-
-/** The actions at which a gate tells Claude something or stops a call. */
-export const ABOVE_OBSERVE = new Set(['warn', 'block']);
 
 // The logged events that say a call started, and that it was refused before
 // it ran.
@@ -25,7 +23,6 @@ const OUTCOME_EVENTS = new Set([SUCCESS_EVENT, FAILURE_EVENT, DENIED_EVENT]);
 /** The agent an event belongs to: a sub-agent's id, or null for the main
  * agent, whose events carry none. */
 const agentOf = event => (isString(event.agent_id) ? event.agent_id : null);
-const SHA256 = /^[0-9a-f]{64}$/;
 
 const isString = v => typeof v === 'string';
 const isWellFormedFiring = e => isString(e.gateId) && GATE_ID.test(e.gateId) && GATE_ACTIONS.includes(e.action) && isString(e.tool);
@@ -124,8 +121,8 @@ export function gateStats(root, ledgerEntries, contents = null, { places = false
         g.fired[event.action]++;
         g.sessions.add(sessionId);
         if (places) g.places.push({ sessionId, line: index + 1, action: event.action, ts: isString(event.ts) ? event.ts : null });
-        if (isString(event.gateSha256) && SHA256.test(event.gateSha256)) g.gateSha256s.add(event.gateSha256);
-        if (ABOVE_OBSERVE.has(event.action) && isString(event.tool_use_id)) {
+        if (isSha256(event.gateSha256)) g.gateSha256s.add(event.gateSha256);
+        if (ABOVE_OBSERVE.includes(event.action) && isString(event.tool_use_id)) {
           awaiting.push({ g, tool: event.tool, agent: agentOf(event), toolUseId: event.tool_use_id, at: index });
         }
       } else if (OUTCOME_EVENTS.has(event.type)) {

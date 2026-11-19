@@ -9,8 +9,8 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { GATE_LIMITS } from '../../assets/scripts/harness-gates.mjs';
-import { LEARN_USAGE, LOG_USAGE } from './cli.mjs';
-import { candidatesView, listView, renderCandidates, renderList, TERMINAL_ONLY } from './learn-cli.mjs';
+import { LEARN_TERMINAL_ONLY, LEARN_USAGE, LOG_USAGE } from './cli.mjs';
+import { candidatesView, listView, renderCandidates, renderList } from './learn-cli.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { draftFor, drafted, FIX_GATE, loggedRepo, logReadMistakes, signatureOf, WATCH_GATE } from './learn-fixtures.mjs';
 import { draftLearning, listLearnings, runTrial } from './learn-lib.mjs';
@@ -177,7 +177,7 @@ test('the skill states the closed lists of what it runs, and every other subcomm
   const learnOwner = ['policy show'];
   for (const name of learnOwner) assert.ok(runs.replace(/\s+/g, ' ').includes(`\`learn\` \`${name}\``), `learn ${name} is named as the owner's`);
   const learnAll = [...learnSynopses().keys()];
-  assert.deepEqual([...learnRuns, ...learnOwner, ...TERMINAL_ONLY].sort(), [...learnAll].sort(), 'every learn subcommand is decided: run by the skill, or the owner\'s');
+  assert.deepEqual([...learnRuns, ...learnOwner, ...LEARN_TERMINAL_ONLY].sort(), [...learnAll].sort(), 'every learn subcommand is decided: run by the skill, or the owner\'s');
   assert.match(runs, /or\s+any\s+other\s+subcommand:\s+each\s+is\s+the\s+owner's/);
   assert.match(runs, /under\s+"What only\s+the\s+owner\s+does"/);
 
@@ -205,7 +205,7 @@ test('the skill forbids the three terminal-only commands by name', () => {
 
 test('the skill names every terminal-only subcommand, and land and revert, as owner-only', () => {
   const owner = section(skill, 'What only the owner does');
-  for (const name of [...TERMINAL_ONLY, 'land', 'revert']) assert.ok(owner.includes(`\`${name}\``), `${name} is not named as the owner's`);
+  for (const name of [...LEARN_TERMINAL_ONLY, 'land', 'revert']) assert.ok(owner.includes(`\`${name}\``), `${name} is not named as the owner's`);
   const approveShown = commandLines(owner).filter(l => / approve /.test(l));
   assert.equal(approveShown.length, 1, 'the owner is given the exact approve command');
   assert.match(approveShown[0], /approve <id> --sha256 <hash> --action <warn\|block>$/);

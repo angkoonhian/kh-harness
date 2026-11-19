@@ -22,14 +22,13 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { classify, MANIFEST_PATH } from './manifest.mjs';
+import { classify, MANIFEST_PATH, PLAIN_PATH } from './manifest.mjs';
 import { GATE_ID, gateSha256, parseGates } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules } from '../../assets/scripts/harness-redact.mjs';
 import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
 
 const SCRIPTS_DIR = '.claude/scripts/';
-const PLAIN_PATH = /^[A-Za-z0-9._/-]{1,200}$/;
 
 const isMachinery = path => path.startsWith(SCRIPTS_DIR) || path === GATES_PATH || path === LEARNED_PATH;
 const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
