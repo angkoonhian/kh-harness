@@ -736,22 +736,36 @@ test('only a session start loads the sealing module', () => {
   assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-lazy-1.jsonl.gz', 's-lazy-2.jsonl']);
 });
 
-test('a session start with the sealing module missing records the event and does nothing more', () => {
+const SEAL_MISSING = /^kh-harness session-log: \.claude\/scripts\/harness-seal\.mjs is missing or cannot be loaded, so sessions are not sealed and old content is not expired/;
+
+/** Asserts the run exited 0 with nothing on stderr and only a
+ * `systemMessage` on stdout, which it returns. */
+function personNotice(result) {
+  assert.equal(result.status, 0, `exit status; stderr: ${result.stderr}`);
+  assert.equal(result.stderr, '');
+  const output = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(output), ['systemMessage'], 'nothing is added to the model\'s context');
+  return output.systemMessage;
+}
+
+test('a session start with the sealing module missing records the event, seals nothing and tells the person once', () => {
   const root = enabledProject();
   const hook = installedHook();
   assertSilentSuccess(runInstalled(hook, root, toolPayload('PostToolUse', 'nomod-1', { tool_response: 'ok' })));
   idle(root, 'nomod-1');
-  assertSilentSuccess(runInstalled(hook, root, { session_id: 'nomod-2', hook_event_name: 'SessionStart', source: 'startup' }));
+  const start = { session_id: 'nomod-2', hook_event_name: 'SessionStart', source: 'startup' };
+  assert.match(personNotice(runInstalled(hook, root, start)), SEAL_MISSING);
+  assertSilentSuccess(runInstalled(hook, root, { ...start, source: 'resume' }));
   assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-nomod-1.jsonl', 's-nomod-2.jsonl']);
-  assert.deepEqual(events(root, 'nomod-2').map(e => e.type), ['SessionStart', 'harness']);
+  assert.deepEqual(events(root, 'nomod-2').map(e => e.type), ['SessionStart', 'harness', 'SessionStart', 'harness']);
   assert.equal(existsSync(join(repoDataDir(root), 'index.jsonl')), false);
 });
 
-test('with autodraft on and the sealing module missing, a session start prints nothing', () => {
+test('with autodraft on and the sealing module missing, a session start gives the model nothing', () => {
   const root = enabledProject();
   setAutodraft(root, true);
   closedSessions(root, 'nomoddraft-1');
-  assertSilentSuccess(runInstalled(installedHook(), root, sessionStart('nomoddraft-2')));
+  assert.match(personNotice(runInstalled(installedHook(), root, sessionStart('nomoddraft-2'))), SEAL_MISSING);
 });
 
 // Measured on the development machine (win32, Node 24) on 2026-11-19, on a

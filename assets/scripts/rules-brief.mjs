@@ -45,40 +45,90 @@
 // `findLearned`) come from harness-redact.mjs, the one module shared with
 // `detect` — so what this hook injects and what `detect` reports can never
 // disagree about what a rule is.
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// UPGRADE SKEW, found on a real repository: kh-harness 0.1.0's
-// harness-redact.mjs was already installed beside this hook, and that copy
-// has no `parseRules` — a static named import died at link time with a
-// stack trace on every prompt. A dynamic import lets this hook probe the
-// asset's shape and fail VISIBLY instead: one stderr line naming the fix,
-// exit 1 (Claude Code shows a hook-error notice; exit 2 would BLOCK the
-// prompt, which a reminder must never do), and nothing on stdout. Silent
-// exit 0 was rejected: a reminder that quietly stopped arriving is the
-// failure this whole phase exists to prevent.
-//
-// The remedy named below has a fallback for a reason (whole-branch review,
-// Important 4): `apply` updates the shared asset only when it is still what
-// the kit wrote (line endings aside — a CRLF checkout is tolerated since the
-// Tier 1 audit fix). After a hand edit it is not — apply reports it
-// `kept (modified)` and the notice would return on every prompt with a
-// remedy that cannot work. `uninstall --yes` then `apply --yes` is the way
-// through in that case, so the one line says both.
+// The shared module beside this hook can be older than the hook: `apply`
+// leaves a hand-edited copy in place, and a static import of a name that copy
+// lacks fails at link time with a stack trace on every prompt. Its shape is
+// probed instead. Beside a stale or missing copy no rule is injected, and the
+// person is told the fix in one `systemMessage`, with exit 0: a reminder
+// that stopped arriving must be visible, and exit 2 would block the prompt.
+// The notice is given once per session when the copy still has the marker
+// helpers, and on every prompt when it does not. `uninstall --yes` then
+// `apply --yes` is named as well, because `apply` alone keeps a copy that
+// was edited by hand. The shared module cannot hold this text: it is the
+// file that may be missing.
 const NEEDED = ['escapeDelimiters', 'findLearned', 'findRules', 'maskText', 'parseRules', 'projectRoot', 'stripUnsafe'];
+const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
-let asset;
+let asset = {};
+let assetProblem = null;
 try {
   asset = await import('./harness-redact.mjs');
+  if (NEEDED.some(name => !(name in asset))) assetProblem = 'is older than this hook and lacks what it needs';
 } catch {
-  // Missing or unloadable (review, Minor 6): the same one-line, exit-1 shape
-  // as the stale case — never a stack trace on every prompt.
-  process.stderr.write(`kh-harness rules-brief: .claude/scripts/harness-redact.mjs is missing or cannot be loaded — ${REMEDY}\n`);
-  process.exit(1);
+  assetProblem = 'is missing or cannot be loaded';
 }
-if (NEEDED.some(name => !(name in asset))) {
-  process.stderr.write(`kh-harness rules-brief: .claude/scripts/harness-redact.mjs is older than this hook and lacks what it needs — ${REMEDY}\n`);
-  process.exit(1);
+
+// A hard ceiling on how long reading stdin may block; see lint-touched.mjs's
+// STDIN_TIMEOUT_MS for why the read is asynchronous.
+const STDIN_TIMEOUT_MS = Number(process.env.HK_STDIN_TIMEOUT_MS) || 5_000;
+
+function readStdin(timeoutMs) {
+  return new Promise(resolve => {
+    let data = '';
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(data), timeoutMs);
+    try {
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', chunk => { data += chunk; });
+      process.stdin.on('end', () => finish(data));
+      process.stdin.on('error', () => finish(data));
+    } catch {
+      finish('');
+    }
+  });
+}
+
+/** The session id the prompt's payload carries, or undefined. The payload is
+ * read only to mark a session as told. */
+async function payloadSessionId() {
+  try {
+    return JSON.parse(await readStdin(STDIN_TIMEOUT_MS))?.session_id;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether the session `rawSessionId` names has not been told `sentence`
+ * yet: true the first time, through a marker created exclusively, and every
+ * time when no marker can be made. */
+function firstTelling(rawSessionId, sentence) {
+  const sessionId = asset.safeSessionId(rawSessionId);
+  const tag = createHash('sha256').update(sentence, 'utf8').digest('hex').slice(0, 16);
+  const path = sessionId === null ? null : asset.markerPath(asset.projectRoot(), sessionId, `rules-brief-notice-${tag}`);
+  if (path === null) return true;
+  try {
+    writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch (error) {
+    return error?.code !== 'EEXIST';
+  }
+}
+
+if (assetProblem !== null) {
+  const sentence = `kh-harness rules-brief: .claude/scripts/harness-redact.mjs ${assetProblem}, so the project rules are not re-told — ${REMEDY}`;
+  const canMark = MARKING.every(name => name in asset);
+  if (!canMark || firstTelling(await payloadSessionId(), sentence)) process.stdout.write(JSON.stringify({ systemMessage: sentence }) + '\n');
+  process.exit(0);
 }
 const { escapeDelimiters, findLearned, findRules, maskText, parseRules, projectRoot, stripUnsafe } = asset;
 
