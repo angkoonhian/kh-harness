@@ -27,4 +27,6 @@ test('every version string agrees: the manifests and the latest CHANGELOG releas
   const latest = /^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$/m.exec(text('CHANGELOG.md'));
   assert.ok(latest, 'CHANGELOG.md has a release heading in Keep a Changelog form');
   assert.equal(latest[1], version, 'the latest release in CHANGELOG.md is the version package.json carries');
+  const badges = [...text('README.md').matchAll(/img\.shields\.io\/badge\/version-([^-]+)-/g)].map(m => m[1]);
+  assert.deepEqual(badges, [version], "the README's version badge is the version package.json carries");
 });

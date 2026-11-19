@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { resolve, join, posix } from 'node:path';
 import { APPLY_USAGE, DETECT_USAGE, LEARN_USAGE, LOG_USAGE, UNINSTALL_USAGE } from './cli.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
@@ -92,27 +92,90 @@ function subcommandsOf(usage) {
 
 const flagsOf = text => [...new Set(text.match(/--[a-z][a-z-]*[a-z]/g))];
 
-test('the README documents the log and learn commands and every flag in their usage text', () => {
-  const t = readme();
+const COMMANDS_PAGE = 'docs/guide/commands.md';
+const commandsPage = () => readFileSync(join(ROOT, COMMANDS_PAGE), 'utf8');
+
+test('the command reference documents every log and learn subcommand and every flag in the usage texts', () => {
+  const t = commandsPage();
   const commands = { log: subcommandsOf(LOG_USAGE), learn: subcommandsOf(LEARN_USAGE) };
   assert.ok(commands.log.length >= 6 && commands.learn.length >= 14, 'the usage texts were read');
   for (const [command, names] of Object.entries(commands)) {
     for (const name of names) {
       const synopsis = new RegExp(`node scripts/${command}\\.mjs +<path-to-repo> +${name.replace(/ /g, ' +')}(?![\\w-])`);
-      assert.ok(synopsis.test(t), `the README's ${command} synopsis lists \`${command} ${name}\``);
+      assert.ok(synopsis.test(t), `${COMMANDS_PAGE} has a synopsis for \`${command} ${name}\``);
+      assert.ok(new RegExp(`^### ${command} ${name}$`, 'm').test(t), `${COMMANDS_PAGE} has a section for \`${command} ${name}\``);
     }
   }
   for (const flag of flagsOf([DETECT_USAGE, APPLY_USAGE, UNINSTALL_USAGE, LOG_USAGE, LEARN_USAGE].join('\n'))) {
-    assert.ok(new RegExp(`${flag}(?![a-z-])`).test(t), `the README names ${flag}`);
+    assert.ok(new RegExp(`${flag}(?![a-z-])`).test(t), `${COMMANDS_PAGE} names ${flag}`);
   }
 });
 
-test('the README names all five commands', () => {
+test('the README links every command and every log and learn subcommand to its section in the command reference', () => {
   const t = readme();
   for (const script of ['detect', 'apply', 'uninstall', 'log', 'learn']) {
     assert.ok(existsSync(join(ROOT, 'scripts', `${script}.mjs`)), `scripts/${script}.mjs exists`);
-    assert.ok(new RegExp(`node scripts/${script}\\.mjs +<path-to-repo>`).test(t), `the README shows \`${script}\``);
+    assert.ok(t.includes(`(${COMMANDS_PAGE}#${script})`), `the README links \`${script}\``);
   }
+  for (const [command, usage] of [['log', LOG_USAGE], ['learn', LEARN_USAGE]]) {
+    for (const name of subcommandsOf(usage)) {
+      const anchor = `${command}-${name.replace(/ /g, '-')}`;
+      assert.ok(t.includes(`(${COMMANDS_PAGE}#${anchor})`), `the README links \`${command} ${name}\``);
+    }
+  }
+});
+
+// --- Links, anchors and diagrams in the README and the pages it links to ---
+
+const GUIDE_PAGES = ['README.md', ...readdirSync(join(ROOT, 'docs', 'guide')).filter(f => f.endsWith('.md')).map(f => `docs/guide/${f}`)];
+
+/** `text` without fenced code blocks, whose contents are not Markdown. */
+const withoutFences = text => text.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[ \t]*$/gm, '');
+
+/** GitHub's anchor for each heading in `text`, a repeated one suffixed -1, -2… */
+function anchorsOf(text) {
+  const seen = new Map();
+  const anchors = new Set();
+  for (const [, heading] of withoutFences(text).matchAll(/^#{1,6} +(.+?) *#* *$/gm)) {
+    const base = heading.replace(/`/g, '').toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, '').replace(/ /g, '-');
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    anchors.add(n === 0 ? base : `${base}-${n}`);
+  }
+  return anchors;
+}
+
+test('every relative link and anchor in the README and the guide pages resolves', () => {
+  let checked = 0;
+  for (const page of GUIDE_PAGES) {
+    const text = withoutFences(readFileSync(join(ROOT, page), 'utf8')).replace(/`[^`\n]*`/g, '');
+    for (const [, target] of text.matchAll(/\]\(([^)\s]+)\)/g)) {
+      if (/^[a-z]+:/i.test(target)) continue;
+      const [path, anchor] = target.split('#');
+      const file = path === '' ? page : posix.join(posix.dirname(page), path);
+      assert.ok(existsSync(join(ROOT, file)), `${page} links ${target}, and ${file} does not exist`);
+      if (anchor !== undefined) {
+        assert.ok(file.endsWith('.md'), `${page} links an anchor in ${file}, which is not a Markdown page`);
+        assert.ok(anchorsOf(readFileSync(join(ROOT, file), 'utf8')).has(anchor), `${page} links #${anchor}, which ${file} has no heading for`);
+      }
+      checked++;
+    }
+  }
+  assert.ok(checked >= 50, `the extractor found the links (${checked})`);
+});
+
+const MERMAID_KEYWORDS = /^(flowchart|graph|stateDiagram-v2|stateDiagram|sequenceDiagram|classDiagram|erDiagram|gantt|pie)\b/;
+
+test('every Mermaid block in the README and the guide pages starts with a known diagram keyword and uses only ASCII', () => {
+  let blocks = 0;
+  for (const page of GUIDE_PAGES) {
+    for (const [, body] of readFileSync(join(ROOT, page), 'utf8').matchAll(/^```mermaid\n([\s\S]*?)^```$/gm)) {
+      blocks++;
+      assert.match(body.trimStart(), MERMAID_KEYWORDS, `a Mermaid block in ${page} starts with a diagram keyword`);
+      assert.doesNotMatch(body, /[^\x20-\x7e\n]/, `a Mermaid block in ${page} holds only printable ASCII`);
+    }
+  }
+  assert.ok(blocks >= 3, 'the README and the learning-loop page carry their diagrams');
 });
 
 test("the README's Limits section names the ledger, the local gate file, the deny rules and the terminal check", () => {
