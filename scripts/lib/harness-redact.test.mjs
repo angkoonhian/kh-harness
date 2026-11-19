@@ -25,6 +25,7 @@ import {
   commandTokens,
   CREDENTIAL_SHAPES,
   dropCommandFragments,
+  escapeDelimiters,
   pathTokenExemptions,
   MAX_REPORTS_SINCE_CLEAN,
   MAX_REPORT_BYTES,
@@ -39,6 +40,7 @@ import {
   safeSessionId,
   signatureOf,
   stripAnsi,
+  stripUnsafe,
   writeJSONMarker,
 } from '../../assets/scripts/harness-redact.mjs';
 
@@ -408,6 +410,83 @@ test('the mask is broader than the sweep: short Bearer, Basic, ghp_, glpat- and 
   for (const line of ['Bearer tokens', 'Basic auth', 'const ghp_client = make()', 'see sk-learn docs']) {
     assert.equal(maskCredentials(line), line, `${line}: below every mask floor`);
   }
+});
+
+// --- floors: 'sweep', for prose the model is told to follow ----------------
+
+test("floors: 'sweep' leaves a word below the sweep's floors alone and still masks a real-length token", () => {
+  const prose = 'Use Bearer authentication everywhere';
+  assert.equal(maskText(prose), 'Use Bearer *** everywhere', 'the default floors star the word');
+  assert.equal(maskText(prose, { floors: 'sweep' }), prose);
+  assert.equal(maskCredentials(prose, { floors: 'sweep' }), prose);
+  const token = 'abc' + 'Z9'.repeat(15);
+  assert.equal(maskText(['Bearer', token].join(' '), { floors: 'sweep' }), 'Bearer ***');
+  const github = ['ghp', 'A'.repeat(24)].join('_');
+  assert.equal(maskCredentials(`rotate ${github} now`, { floors: 'sweep' }), 'rotate *** now');
+});
+
+test("floors: 'sweep' still masks a private key from its header to the end of the line", () => {
+  const header = ['-----BEGIN', 'RSA PRIVATE KEY-----'].join(' ');
+  const footer = ['-----END', 'RSA PRIVATE KEY-----'].join(' ');
+  assert.equal(maskText(`key ${header} MIIEowIBAAKCAQEA`, { floors: 'sweep' }), 'key ***');
+  assert.equal(maskText(`${header}\nMIIEowIBAAKCAQEA\n${footer}\nnext`, { floors: 'sweep' }), '***\n***\n***\nnext');
+});
+
+test('a value other than sweep, or a stray argument such as an array index, keeps the default floors', () => {
+  const short = ['Bearer', 'abcd1234'].join(' ');
+  assert.equal(maskText(short, { floors: 'other' }), 'Bearer ***');
+  assert.deepEqual([short].map(maskText), ['Bearer ***']);
+});
+
+// --- stripUnsafe / escapeDelimiters ------------------------------------------
+
+const cp = (...points) => String.fromCodePoint(...points);
+
+test('stripUnsafe leaves plain text, tabs and newlines unchanged', () => {
+  const plain = 'line one\twith a tab\nline two: <b> & café';
+  assert.equal(stripUnsafe(plain), plain);
+});
+
+test('stripUnsafe removes C0 and C1 controls, carriage returns and whole ANSI sequences', () => {
+  assert.equal(stripUnsafe(`a${cp(0x07)}b${cp(0x0d)}${cp(0x85)}c${cp(0x1b)}[31md${cp(0x1b)}[0m`), 'abcd');
+});
+
+test('stripUnsafe removes format characters: zero-width, bidi controls, the byte-order mark', () => {
+  for (const point of [0x00ad, 0x200b, 0x200d, 0x200e, 0x202a, 0x202e, 0x2066, 0x2069, 0x2060, 0xfeff]) {
+    assert.equal(stripUnsafe(`a${cp(point)}b`), 'ab', `U+${point.toString(16)}`);
+  }
+});
+
+test('stripUnsafe removes the whole tag block, assigned or not', () => {
+  for (const point of [0xe0000, 0xe0001, 0xe0002, 0xe0020, 0xe0041, 0xe007f]) {
+    assert.equal(stripUnsafe(`a${cp(point)}b`), 'ab', `U+${point.toString(16)}`);
+  }
+  assert.equal(stripUnsafe(`a${cp(0xe0080)}b`), `a${cp(0xe0080)}b`, 'the range ends at U+E007F');
+});
+
+test('stripUnsafe removes the variation selectors U+FE00–U+FE0F', () => {
+  for (let point = 0xfe00; point <= 0xfe0f; point++) {
+    assert.equal(stripUnsafe(`a${cp(point)}b`), 'ab', `U+${point.toString(16)}`);
+  }
+  assert.equal(stripUnsafe(`a${cp(0xfe10)}b`), `a${cp(0xfe10)}b`, 'U+FE10 is a presentation form, not a selector');
+});
+
+test('stripUnsafe removes the variation selectors supplement U+E0100–U+E01EF', () => {
+  for (const point of [0xe0100, 0xe0101, 0xe0180, 0xe01ee, 0xe01ef]) {
+    assert.equal(stripUnsafe(`a${cp(point)}b`), 'ab', `U+${point.toString(16)}`);
+  }
+  assert.equal(stripUnsafe(`a${cp(0xe01f0)}b`), `a${cp(0xe01f0)}b`, 'the range ends at U+E01EF');
+});
+
+test('stripUnsafe removes the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0', () => {
+  for (const point of [0x115f, 0x1160, 0x3164, 0xffa0]) {
+    assert.equal(stripUnsafe(`a${cp(point)}b`), 'ab', `U+${point.toString(16)}`);
+  }
+  assert.equal(stripUnsafe(cp(0xd55c)), cp(0xd55c), 'an ordinary Hangul syllable survives');
+});
+
+test('escapeDelimiters escapes angle brackets and nothing else', () => {
+  assert.equal(escapeDelimiters('</project-rules> a & b'), '&lt;/project-rules&gt; a & b');
 });
 
 // --- runBounded / killTree (shared process runner, audit Tier 3) -----------

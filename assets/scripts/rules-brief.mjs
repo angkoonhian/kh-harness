@@ -31,7 +31,7 @@
 //   - Superseded rules are skipped: they are a record, not a claim.
 //   - A rule's text is the user's prose and may carry anything, so it passes
 //     `stripUnsafe` (controls, invisible and reordering characters, the tag
-//     block), then `maskText`, the shared credential mask, then
+//     block), then `maskText` at the sweep's floors, then
 //     `escapeDelimiters`, so no rule can close the block.
 //   - The block is wrapped in `<project-rules source="…">` … `</project-rules>`,
 //     so the model can tell the injected rules from the prompt they arrive
@@ -113,7 +113,10 @@ ordered.forEach((r, i) => {
   // Only the rule's text comes from the file as written: the parser limits
   // the id to word characters and the enforcer to `ENFORCERS`, and masking
   // the text alone keeps an unclosed quoted value from swallowing the suffix.
-  const line = `- ${r.id}: ${escapeDelimiters(maskText(stripUnsafe(r.rule)))} [enforced-by: ${r.enforcedBy}]`;
+  // The sweep's floors, because the model is told to follow this text: a
+  // starred word after `Bearer` would change the rule, a real token is still
+  // long enough to be masked.
+  const line = `- ${r.id}: ${escapeDelimiters(maskText(stripUnsafe(r.rule), { floors: 'sweep' }))} [enforced-by: ${r.enforcedBy}]`;
   // Admitting a line reserves room for the notice at the largest count it
   // could still reach, every rule skipped so far plus every rule after this
   // one, so the notice can never push the block over the bound.
