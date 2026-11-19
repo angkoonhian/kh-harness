@@ -20,9 +20,8 @@
 // `evidence`, stands between two lines that carry a nonce drawn for the run
 // and say that what lies between is recorded data (`dataBlock` in
 // log-report.mjs).
-import { readFileSync } from 'node:fs';
 
-import { readEvents } from '../../assets/scripts/harness-log.mjs';
+import { OVER_LIMIT, readBounded, readEvents } from '../../assets/scripts/harness-log.mjs';
 import { GATE_ACTIONS } from '../../assets/scripts/harness-gates.mjs';
 import { LEARN_TERMINAL_ONLY } from './cli.mjs';
 import { FAILURES_PATH, failuresNotRead } from './failures-evidence.mjs';
@@ -369,16 +368,17 @@ export function renderEvidence(view) {
 // --- draft ------------------------------------------------------------------
 
 /** `{ draft }`, the JSON object in the file at `path`, or an error, which
- * names the path and never the file's content. */
+ * names the path and never the file's content. The size is checked before
+ * anything is read, so a huge file, a pipe or a device costs a stat. */
 export function readDraft(path) {
   const named = showCodePoints(path);
   let bytes;
   try {
-    bytes = readFileSync(path);
+    bytes = readBounded(path, DRAFT_MAX_BYTES);
   } catch (error) {
+    if (error?.code === OVER_LIMIT) return failed(`the draft file ${named} is larger than ${DRAFT_MAX_BYTES} bytes; nothing was written`);
     return failed(`the draft file ${named} could not be read (${codeOf(error)}); nothing was written`);
   }
-  if (bytes.length > DRAFT_MAX_BYTES) return failed(`the draft file ${named} is larger than ${DRAFT_MAX_BYTES} bytes; nothing was written`);
   let draft;
   try {
     draft = JSON.parse(utf8.decode(bytes));

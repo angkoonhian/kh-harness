@@ -412,6 +412,17 @@ test('draft reports a replay that is not checkable, with its reason', () => {
   assert.equal(listLearnings(root).learnings[0].status, 'candidate');
 });
 
+test('a draft file larger than the command reads, or a path that is not a file, is refused before it is read', () => {
+  const root = loggedRepo();
+  const large = runLearn(root, 'draft', '--from', draftFile(`"${'x'.repeat(65_536)}"`));
+  assert.equal(large.status, 2);
+  assert.match(large.stderr, /is larger than 65536 bytes; nothing was written/);
+  const directory = runLearn(root, 'draft', '--from', tempDir('hk-learn-dir-'));
+  assert.equal(directory.status, 2);
+  assert.match(directory.stderr, /could not be read \(EKHNOTFILE\); nothing was written/, 'its kind is seen by the stat, with no read tried');
+  assert.deepEqual(listLearnings(root).learnings, []);
+});
+
 test('a draft file that is not JSON, or not a draft, is one line and exit 2, echoing nothing from it', () => {
   const root = loggedRepo();
   const marker = ['kh', 'draft', 'marker'].join('-');
