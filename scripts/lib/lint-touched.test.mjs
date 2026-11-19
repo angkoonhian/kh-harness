@@ -107,6 +107,91 @@ test('TIMEOUT: a run that emits an attributable line and THEN hangs is still not
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } }, { HK_LINT_TIMEOUT_MS: '200' });
   assert.equal(r.code, 0, 'a timeout is not a lint failure, even when there was something to attribute');
   assert.equal(r.stderr.trim(), '', 'nothing from a timed-out run is ever reported');
+  assert.doesNotMatch(r.stdout, /early-finding/, 'nor does the could-not-check notice carry its output');
+});
+
+// --- Could not check is not clean -----------------------------------------
+//
+// A missing, crashed or timed-out linter used to end in the same silent
+// exit 0 as a clean file. It now says so once per session, through the
+// documented exit-0 channel. Read 2026-11-19 from
+// https://code.claude.com/docs/en/hooks: "Exit 0 means success, and is the
+// intended exit code when you print JSON for structured control"; stdout is
+// JSON output "only when you print one JSON object ... with nothing around it
+// but whitespace"; `systemMessage` is a common field, "Warning message shown
+// to the user", and "Claude never sees stderr from a hook that exits 0".
+// The PostToolUse section lists its own fields "in addition to the JSON
+// output fields available to all hooks" and does not discard systemMessage.
+// The notice carries nothing from the linter's output: that output named no
+// line of the edited file, so none of it is attributed to the file.
+
+/** An Edit payload, with a session_id when one is given. */
+function sessionEdit(filePath, sessionId) {
+  return { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: filePath }, ...(sessionId ? { session_id: sessionId } : {}) };
+}
+
+function noticeOf(r) {
+  assert.equal(r.code, 0, `could-not-check is not a lint failure: ${JSON.stringify(r)}`);
+  assert.equal(r.stderr.trim(), '', 'Claude never sees stderr on exit 0; nothing goes there');
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(Object.keys(out), ['systemMessage'], 'one JSON object, nothing else on stdout');
+  return out.systemMessage;
+}
+
+test('a lint script whose binary is missing says once per session that the file could not be checked, with the exit code', () => {
+  const d = repo('kh-harness-no-such-linter-binary');
+  const message = noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-missing')));
+  const exitCode = process.platform === 'win32' ? 1 : 127;
+  assert.match(message, /src\/a\.ts/, 'the notice names the file');
+  assert.match(message, /could not check/);
+  assert.match(message, new RegExp(`exited with code ${exitCode}\\b`), message);
+  assert.doesNotMatch(message, /kh-harness-no-such-linter-binary|not found|not recognized/i, 'nothing from the shell\'s output');
+});
+
+test('a linter that exits non-zero without naming the file says the same', () => {
+  const d = repo('node lint.cjs');
+  writeFileSync(join(d, 'lint.cjs'), "console.error('config error: unrelated-linter-text'); process.exit(3);\n");
+  const message = noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-unattributed')));
+  assert.match(message, /src\/a\.ts/);
+  assert.match(message, /could not check/);
+  assert.match(message, /exited with code 3\b/, message);
+  assert.doesNotMatch(message, /unrelated-linter-text|config error/, 'nothing from the linter\'s output');
+});
+
+test('a timeout says it timed out', () => {
+  const d = repo('node -e "console.error(\'src/a.ts:1 slow-finding\'); setTimeout(() => process.exit(1), 4000)"');
+  const message = noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-timeout'), { HK_LINT_TIMEOUT_MS: '200' }));
+  assert.match(message, /src\/a\.ts/);
+  assert.match(message, /could not check/);
+  assert.match(message, /timed out/);
+  assert.doesNotMatch(message, /slow-finding/, 'nothing from the linter\'s output');
+});
+
+test('the second occurrence in the same session is silent', () => {
+  const d = repo('kh-harness-no-such-linter-binary');
+  writeFileSync(join(d, 'src', 'b.ts'), 'export const b = 1;\n');
+  noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-twice')));
+  for (const file of ['src/a.ts', 'src/b.ts']) {
+    const r = run(d, sessionEdit(file, 'unchecked-twice'));
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, '', `${file}: already said once this session`);
+    assert.equal(r.stderr, '');
+  }
+  noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-other-session')));
+});
+
+test('a could-not-check notice whose marker cannot be written is shown anyway', () => {
+  const d = repo('kh-harness-no-such-linter-binary');
+  const sessionId = 'unchecked-broken-marker';
+  mkdirSync(markerPath(d, sessionId, 'sensor-unchecked'), { recursive: true });
+  noticeOf(run(d, sessionEdit('src/a.ts', sessionId)));
+  noticeOf(run(d, sessionEdit('src/a.ts', sessionId)));
+});
+
+test('with no session_id the could-not-check notice is shown every time', () => {
+  const d = repo('kh-harness-no-such-linter-binary');
+  noticeOf(run(d, sessionEdit('src/a.ts')));
+  noticeOf(run(d, sessionEdit('src/a.ts')));
 });
 
 // --- Audit Tier 1, finding 2: a lint script that names the edited file's
@@ -235,11 +320,12 @@ test('ORPHAN CANARY: a timed-out lint run kills the whole process tree, not just
 // project. A lint script that fails for reasons unrelated to the file
 // Claude just touched must never be reported as if the edit caused it —
 // that trains Claude to chase pre-existing failures it did not create.
-test('ATTRIBUTION: a lint failure naming only a different file is silent and exits 0', () => {
+test('ATTRIBUTION: a lint failure naming only a different file is not reported to Claude and exits 0', () => {
   const d = repo('node -e "console.error(\'src/other.ts:3 some-other-problem\'); process.exit(1)"');
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 0, 'the failure never mentions the edited file, so it must not be reported');
   assert.equal(r.stderr.trim(), '', 'nothing attributable to the edit was found');
+  assert.doesNotMatch(r.stdout, /some-other-problem|other\.ts/, 'the user\'s could-not-check notice carries none of it either');
 });
 
 test('ATTRIBUTION: a lint failure naming the edited file by its basename alone still reports', () => {
@@ -351,13 +437,17 @@ test('EXTENSIONS: a .mjs file is covered by the same package.json owner as .ts',
   assert.match(r.stderr, /bad/);
 });
 
-test('ignores a nested package whose own package.json has no lint script, even if the repo root has one', () => {
-  const d = repo('node -e "process.exit(1)"');
+test('a nested package.json without a lint script does not disable the sensor under it', () => {
+  // The root's linter is a FILE that names the path it was handed, so the
+  // report shows both that it ran and what it was asked to check.
+  const d = repo('node lint.cjs');
+  writeFileSync(join(d, 'lint.cjs'), "console.error(process.argv[2] + ':1 root-lint-ran'); process.exit(1);\n");
   mkdirSync(join(d, 'packages', 'api'), { recursive: true });
-  writeFileSync(join(d, 'packages', 'api', 'package.json'), JSON.stringify({ name: 'api', scripts: {} }));
+  writeFileSync(join(d, 'packages', 'api', 'package.json'), JSON.stringify({ name: 'api', scripts: { build: 'tsc' } }));
   writeFileSync(join(d, 'packages', 'api', 'b.ts'), 'export const b = 1;\n');
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'packages/api/b.ts' } });
-  assert.equal(r.code, 0, 'the NEAREST package.json owns the file, and it has no lint script');
+  assert.equal(r.code, 2, `the root's lint script must run for a file under a lint-less package: ${JSON.stringify(r)}`);
+  assert.match(r.stderr, /packages\/api\/b\.ts:1 root-lint-ran/, 'handed the path relative to the root, where it runs');
 });
 
 // Major finding: the appended path used to be root-relative (`filePath`),
