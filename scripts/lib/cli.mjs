@@ -75,18 +75,18 @@ function indentedList(items) {
 }
 
 /**
- * The disclosure the review found existed nowhere a user could read before
- * deciding to run the tool (F5). `stopgateProposal`'s own `reason` discloses
- * its cost honestly at proposal time, in a dry-run preview a user may skim,
- * and `sensorProposal`'s says only "no PostToolUse hook registered" — yet the
- * sensor fires far more often. The marginal risk kh-harness adds is not that
- * `npm run lint` is arbitrary code (it always was) but AUTOMATION: the user no
- * longer types it, and a `git pull` that changes `scripts.lint` changes what
- * now runs by itself.
+ * What every hook `apply` installs reads and runs, said where a user can
+ * read it before deciding: in `apply --help` and beside the dry run that
+ * would register a hook. The risk kh-harness adds is not that `npm run lint`
+ * is arbitrary code (it always was) but automation: the user no longer types
+ * it, and a `git pull` that changes `scripts.lint` changes what now runs by
+ * itself. A hook script added to the kit gets an entry here, and the count
+ * in the first sentence moves with it (pinned in cli.test.mjs).
  */
 export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before running \`apply\`
-  Installing the two process hooks means THIS REPOSITORY'S OWN SCRIPTS ARE RUN
-  AUTOMATICALLY, by Claude Code, without being asked each time:
+  \`apply\` registers up to seven hook scripts, each on the events named below.
+  Two of them run THIS REPOSITORY'S OWN SCRIPTS AUTOMATICALLY, by Claude Code,
+  without being asked each time:
 
     PostToolUse (per edit)  the owning package's \`lint\` script, on the one file
                             Claude just edited, bounded at 30s.
@@ -99,8 +99,11 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
   A repository's own lint/test script is arbitrary code in every project; what
   changes here is that you stop typing it. A \`git pull\` that edits
   \`scripts.lint\` therefore changes what runs by itself. \`uninstall\` reverses
-  the hooks it installed. Neither is installed unless its check reported \`absent\` and you
-  ran \`apply --yes\`.
+  the hooks it installed. Neither is installed unless its check reported
+  \`absent\` and you ran \`apply --yes\`.
+
+  The other five run nothing of this repository's. Each reads what is said
+  below and executes no command.
 
   Each hook is registered in Claude Code's exec form — \`node\` plus the
   script's path rooted at \`\${CLAUDE_PROJECT_DIR}\` — so it runs with no shell
@@ -108,14 +111,27 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
   form (\`node .claude/scripts/…\`) is recognised as the same hook and left
   alone.
 
-  The SessionStart hook only reads HANDOFF.md (or docs/HANDOFF.md) and prints
-  the top of it. It executes nothing.
+  SessionStart (per session)     reads HANDOFF.md (or docs/HANDOFF.md) and
+                                 prints the top of it into the session. It
+                                 executes nothing.
 
-  UserPromptSubmit (per prompt)  reads docs/harness/RULES.md and adds up to
-                                 1500 bytes of its rules to the prompt's
-                                 context, high priority first. It executes
-                                 nothing. Proposed only once the registry
-                                 holds at least one rule.
+  UserPromptSubmit (per prompt)  reads docs/harness/RULES.md and
+                                 docs/harness/LEARNED.md and adds up to 1500
+                                 bytes of their rules to the prompt's
+                                 context, your high-priority rules first. It
+                                 executes nothing. Proposed only once the
+                                 two hold at least one rule to add.
+
+  PostToolUseFailure (per failed call)
+                                 reads the failed call's tool name, its
+                                 input and the first line of its error, and
+                                 keeps only a hash of them, per session, in
+                                 a file of its own in the system's temporary
+                                 directory. When one call has failed the same
+                                 way three times in a row it adds one fixed
+                                 sentence to the model's context, telling it
+                                 to change approach. It prints nothing of the
+                                 call and executes nothing.
 
   PreToolUse (per tool call)     runs before every tool call and compares it
                                  with the learned gates in
@@ -136,8 +152,8 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  ledger, policy and local gates), and deny
                                  rules for running the \`learn\` subcommands
                                  that approve or weaken a gate: a second
-                                 barrier, behind their own check for a
-                                 person at a terminal.
+                                 barrier, behind their own check for an
+                                 interactive terminal outside Claude Code.
 
   Session log (per event)        runs on every one of these events:
 ${indentedList(LOGGED_EVENTS)}
