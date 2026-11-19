@@ -5,16 +5,19 @@
 // in this machine's session log, once the log is enabled for the repository.
 //
 // It must never change what Claude Code does: whatever happens it exits 0
-// and writes nothing to stdout or stderr (stdout on PreCompact and on
-// PostModelSwitch would reach the model). It runs on every tool call, so it
-// spawns no child process. Scrubbing, the inline cap and the envelope fields
+// and writes nothing to stdout or stderr. On several of the logged events
+// (SessionStart, UserPromptSubmit, PreCompact and PostModelSwitch) plain
+// stdout reaches the model or the compaction summary, so the hook writes no
+// stdout on any event. It runs on every tool call, so it spawns no child
+// process, and with the log disabled, the default, it reads only the event
+// name and the session id. Scrubbing, the inline cap and the envelope fields
 // are `appendEvent`'s, so the hook hands it raw payload fields.
 //
 // Only what the payload reports as having happened is recorded. The agent's
 // own text (`last_assistant_message`, a compaction summary) is a claim, not
 // an observation, and is never copied.
 import { createHash } from 'node:crypto';
-import { realpathSync, writeFileSync } from 'node:fs';
+import { realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { appendEvent, canonicalJson, harnessIdentity, isEnabled } from './harness-log.mjs';
@@ -73,7 +76,7 @@ const FIELDS_BY_EVENT = {
   PermissionRequest: toolCall,
   PermissionDenied: p => ({ ...toolCall(p), ...carried(p, { reason: 'reason' }) }),
   PostToolUse: p => toolResult(p, 'ok', p.tool_response),
-  PostToolUseFailure: p => toolResult(p, failureStatus(p), typeof p.error === 'string' ? p.error : p.tool_response),
+  PostToolUseFailure: p => toolResult(p, failureStatus(p), p.error),
   SubagentStart: p => carried(p, { agent_type: 'agentType' }),
   SubagentStop: p => carried(p, { agent_type: 'agentType', stop_hook_active: 'stopHookActive' }),
   Stop: p => carried(p, { stop_hook_active: 'stopHookActive' }),
@@ -100,9 +103,11 @@ const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray
 export function toLogEvent(payload) {
   if (!isPlainObject(payload)) return null;
   const type = payload.hook_event_name;
-  if (typeof type !== 'string' || !Object.hasOwn(FIELDS_BY_EVENT, type)) return null;
+  if (!isLoggedEvent(type)) return null;
   return { type, ...identityOf(payload), ...FIELDS_BY_EVENT[type](payload) };
 }
+
+const isLoggedEvent = name => typeof name === 'string' && Object.hasOwn(FIELDS_BY_EVENT, name);
 
 function identityOf(payload) {
   return Object.fromEntries(IDENTITY_FIELDS.filter(f => typeof payload[f] === 'string').map(f => [f, payload[f]]));
@@ -113,17 +118,32 @@ const EXTERNAL_TOOL_EVENTS = new Set(['PostToolUse', 'PostToolUseFailure']);
 const fetchesOutsideContent = tool =>
   typeof tool === 'string' && (tool === 'WebFetch' || tool === 'WebSearch' || tool.startsWith('mcp__'));
 
-/** True the first time it is asked for this repository and session. A
- * marker that cannot be made answers true: a repeated flag is harmless, a
- * missing one is not. The exclusive create never follows a planted link. */
-function firstExternalInSession(root, sessionId) {
+/**
+ * Writes the session's `external_content` line unless an earlier call
+ * already did. The once-only marker is an exclusive create, which never
+ * follows a planted link and lets one of several parallel hooks win. A
+ * repeated flag is harmless and a missing one is not, so a marker that
+ * cannot be made still lets the line be written, and a marker this call made
+ * is removed again when the line could not be written, so the next call
+ * retries.
+ */
+function recordExternal(root, sessionId, payload, tool) {
   const path = markerPath(root, sessionId, 'session-log-external');
-  if (path === null) return true;
+  let created = false;
+  if (path !== null) {
+    try {
+      writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+      created = true;
+    } catch (error) {
+      if (error?.code === 'EEXIST') return;
+    }
+  }
+  const { written } = appendEvent(root, sessionId, { type: 'external_content', ...identityOf(payload), tool });
+  if (written || !created) return;
   try {
-    writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
-    return true;
-  } catch (error) {
-    return error?.code !== 'EEXIST';
+    rmSync(path, { force: true });
+  } catch {
+    // a marker left in place costs this session its flag; nothing else reads it
   }
 }
 
@@ -158,18 +178,16 @@ function recordHarness(root, sessionId, payload) {
 }
 
 function record(payload) {
-  const event = toLogEvent(payload);
-  if (event === null) return;
+  if (!isPlainObject(payload) || !isLoggedEvent(payload.hook_event_name)) return;
   const sessionId = safeSessionId(payload.session_id);
   if (sessionId === null) return;
   const root = projectRoot();
   if (!isEnabled(root)) return;
+  const event = toLogEvent(payload);
   const { written } = appendEvent(root, sessionId, event);
   if (!written) return;
   if (HARNESS_EVENTS.has(event.type)) recordHarness(root, sessionId, payload);
-  if (EXTERNAL_TOOL_EVENTS.has(event.type) && fetchesOutsideContent(event.tool) && firstExternalInSession(root, sessionId)) {
-    appendEvent(root, sessionId, { type: 'external_content', ...identityOf(payload), tool: event.tool });
-  }
+  if (EXTERNAL_TOOL_EVENTS.has(event.type) && fetchesOutsideContent(event.tool)) recordExternal(root, sessionId, payload, event.tool);
 }
 
 async function readStdin() {

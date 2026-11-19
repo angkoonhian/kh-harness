@@ -7,7 +7,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -18,6 +18,7 @@ import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'session-log.mjs');
 const FORBID_SPAWN = resolve(import.meta.dirname, 'session-log-forbid-spawn.cjs');
+const PROBES = resolve(import.meta.dirname, 'session-log-probes.cjs');
 
 const made = [];
 const tempDir = prefix => {
@@ -125,6 +126,22 @@ test('with the log disabled the hook writes nothing and exits 0', () => {
   assert.deepEqual(readdirSync(markers), []);
 });
 
+/** The payload fields the hook read, recorded by the probe preload. */
+function fieldsRead(root, payload) {
+  const probe = join(tempDir('hk-slog-probe-'), 'reads');
+  assertSilentSuccess(runHook(root, payload, { nodeArgs: ['--require', PROBES], env: { KH_PAYLOAD_PROBE: probe } }));
+  return existsSync(probe) ? new Set(readFileSync(probe, 'utf8').split('\n').filter(Boolean)) : new Set();
+}
+
+test('with the log disabled the hook does not read the tool response', () => {
+  const payload = toolPayload('PostToolUse', 'probe-1', { tool_response: { stdout: 'x' } });
+  assert.deepEqual([...fieldsRead(project(), payload)].sort(), ['hook_event_name', 'session_id']);
+  // The probe sees the reads an enabled hook makes, so its silence above is
+  // evidence rather than a probe that never ran.
+  const enabled = fieldsRead(enabledProject(), payload);
+  assert.ok(enabled.has('tool_response') && enabled.has('tool_input'), [...enabled].join(','));
+});
+
 test('an unwritable data directory exits 0 with no output', () => {
   const root = enabledProject();
   // A file where the sessions directory belongs makes the append fail.
@@ -219,6 +236,11 @@ test('a failure with no error text records no error line', () => {
   const event = toLogEvent(toolPayload('PostToolUseFailure', 's', { error: '\n \n' }));
   assert.equal(event.status, 'error');
   assert.equal(event.firstErrorLine, undefined);
+
+  // The documented failure payload carries `error`, not `tool_response`.
+  const undocumented = toLogEvent(toolPayload('PostToolUseFailure', 's', { tool_response: 'Exit code 1' }));
+  assert.equal(undocumented.firstErrorLine, undefined);
+  assert.equal(undocumented.output, undefined);
 });
 
 test('a credential in tool input or output is masked in the stored line', () => {
@@ -374,6 +396,17 @@ test('an MCP tool marks the session external once', () => {
   assert.equal(events(root, 'ext-3').filter(e => e.type === 'external_content').length, 0);
 });
 
+test('an outside-content flag that fails to write is retried on the next call', () => {
+  const root = enabledProject();
+  const mcp = toolPayload('PostToolUse', 'ext-retry', { tool_name: 'mcp__docs__search', tool_input: { q: 'x' }, tool_response: 'r' });
+  const failing = { nodeArgs: ['--require', PROBES], env: { KH_FAIL_APPEND_MATCHING: '"type":"external_content"' } };
+  assertSilentSuccess(runHook(root, mcp, failing));
+  assert.deepEqual(events(root, 'ext-retry').map(e => e.type), ['PostToolUse']);
+  assertSilentSuccess(runHook(root, mcp));
+  assertSilentSuccess(runHook(root, mcp));
+  assert.deepEqual(events(root, 'ext-retry').map(e => e.type), ['PostToolUse', 'PostToolUse', 'external_content', 'PostToolUse']);
+});
+
 test('the spawn trap records a child process', () => {
   const trap = join(tempDir('hk-slog-trap-'), 'calls');
   const result = spawnSync(process.execPath, ['--require', FORBID_SPAWN, '-e', 'try { require("node:child_process").spawnSync("x"); } catch {}'], {
@@ -420,7 +453,8 @@ const timed = run => {
 
 const medianOf = times => {
   const sorted = [...times].sort((a, b) => a - b);
-  return (sorted[9] + sorted[10]) / 2;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
 test('median wall time over 20 runs is under the budget recorded in the test', () => {
