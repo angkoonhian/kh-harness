@@ -607,6 +607,13 @@ report counts: recurrences, replays, firings and what followed them.
 
     npm test
 
+**`npm test` needs Node 22.1 or later**, a step above the Node 22 the kit
+itself needs: it runs the latency budget tests after the rest of the suite,
+alone, and leaves them out of the first run with `--test-skip-pattern`,
+which Node added in 22.1.0. The commands and the hooks the kit installs run
+on Node 22.0. `scripts/lib/latency-phase.test.mjs` holds this sentence to
+the flags the script uses.
+
 The suite needs no network. **The eval suite cannot measure
 `harness-init`:** its `disable-model-invocation: true` keeps it out of the
 model's context, and `claude plugin eval` passes prompts verbatim, so a
