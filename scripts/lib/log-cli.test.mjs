@@ -74,11 +74,11 @@ test('enable says recording starts only when the hook is registered on every log
   registerHook(root, LOGGED_EVENTS);
   const r = runLog(root, 'enable');
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, new RegExp(`The hook is registered on all ${LOGGED_EVENTS.length} logged events in \\.claude/settings\\.json: recording starts with the next event\\.`));
+  assert.match(r.stdout, /^The hook is registered in \.claude\/settings\.json: recording starts with the next event\.$/m);
   const json = statusJson(root);
   assert.equal(json.hookRegistered, true);
   assert.deepEqual(json.hookEvents, { registered: LOGGED_EVENTS.length, logged: LOGGED_EVENTS.length });
-  assert.match(runLog(root, 'status').stdout, new RegExp(`the hook is registered on all ${LOGGED_EVENTS.length} logged events`));
+  assert.match(runLog(root, 'status').stdout, /^ {2}the hook is registered in \.claude\/settings\.json$/m);
 });
 
 test('a hook registered on some of the logged events is said to record only those', () => {
