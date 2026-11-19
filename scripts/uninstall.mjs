@@ -57,6 +57,17 @@ const manifest = manifestResult.manifest;
 
 const plan = planUninstall({ root, manifest });
 
+/** Why a file is kept, as the plan and the result print it: the reason's
+ * code, or for a learned file a sentence saying what would let it go. */
+function keptWhy(k) {
+  if (k.why === 'holds-landed-learnings') {
+    const one = k.learnings === 1;
+    return `holds ${k.learnings} landed learning${one ? '' : 's'}, which ${one ? 'is' : 'are'} yours: \`learn revert <id>\` takes each out of the repository, and uninstall removes this file once it holds none`;
+  }
+  if (k.why === 'learned-partner-kept') return `kept because ${k.partner} is: the learned registry and the gate file stay or go together`;
+  return k.why;
+}
+
 // A forged or malformed record can lack a container; it is still listed.
 const patchLabel = p => p.container ?? '(no container)';
 
@@ -78,7 +89,7 @@ if (plan.revert.length) {
 if (plan.keep.length) {
   console.log('Will keep:');
   for (const k of plan.keep) {
-    console.log(`  ${k.path} (${k.why})`);
+    console.log(`  ${k.path} (${keptWhy(k)})`);
   }
 }
 
@@ -175,7 +186,7 @@ if (result.failed.length > 0) {
 if (result.changedSincePlan.length > 0) {
   console.log('Changed since plan (kept):');
   for (const c of result.changedSincePlan) {
-    console.log(`  ${c.path} (${c.why})`);
+    console.log(`  ${c.path} (${keptWhy(c)})`);
   }
 }
 
@@ -227,7 +238,7 @@ if (result.patchesNotReverted.length > 0) {
 if (plan.keep.length > 0 || result.patchesKept.length > 0) {
   console.log('Kept:');
   for (const k of plan.keep) {
-    console.log(`  ${k.path} (${k.why})`);
+    console.log(`  ${k.path} (${keptWhy(k)})`);
   }
   for (const p of result.patchesKept) {
     console.log(`  ${patchLabel(p)} (${p.why})`);

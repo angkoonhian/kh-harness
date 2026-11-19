@@ -18,7 +18,6 @@ import { FAILURES_PATH } from './failures-evidence.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { GATES_PATH, repoDataDir } from '../../assets/scripts/harness-log.mjs';
-import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { LEARNED_PATH, parseRules } from '../../assets/scripts/harness-redact.mjs';
 
 const SETTINGS = '.claude/settings.json';
@@ -194,9 +193,8 @@ const GENERATOR_PRODUCIBLE_EXACT = new Set([
   RULES_PATH,
   // Written into by a person, like the registry.
   FAILURES_PATH,
-  // The two files a landed learning is written into (learn-land.mjs). Both
-  // are kit-owned, and removable only while they hold nothing but learnings
-  // the manifest records (see `holdsOnlyRecordedLearnings`).
+  // The two files a landed learning is written into (learn-land.mjs),
+  // removable only while they hold no learning (see `ownContentRefusal`).
   LEARNED_PATH,
   GATES_PATH,
 ]);
@@ -416,74 +414,73 @@ function hasUserAuthoredBody(root, relPath) {
 }
 
 /**
- * The learned registry and the committed gate file are the deliberate
- * exception to the empty-scaffold rule above: the kit writes their body, one
- * entry per landed learning. True when every entry of the file at `relPath`
- * is a learning `manifest.learnings` records: each registry entry by its id
- * and `approved-sha256`, each gate by its id and content hash. An entry the
- * kit did not record landing is somebody's own, so the file is kept. Fails
- * closed: a file that cannot be read or parsed holds something unaccounted
- * for.
+ * How many learnings the learned file at `relPath` holds: the registry's
+ * entries, or the gate file's gates. Null when the file cannot be read as
+ * one, which is not shown to hold none.
  */
-function holdsOnlyRecordedLearnings(root, manifest, relPath) {
-  const recorded = new Map((manifest?.learnings ?? []).map(l => [l.id, l.gateSha256]));
+function learningsHeld(root, relPath) {
   let text;
   try {
     text = fs.readFileSync(join(root, relPath), 'utf8');
   } catch {
-    return false;
+    return null;
   }
-  if (relPath === LEARNED_PATH) return parseRules(text).rules.every(r => recorded.get(r.id) === r.approvedSha256);
-  let file;
+  if (relPath === LEARNED_PATH) return parseRules(text).rules.length;
   try {
-    file = JSON.parse(text);
+    const gates = JSON.parse(text)?.gates;
+    return Array.isArray(gates) ? gates.length : null;
   } catch {
-    return false;
+    return null;
   }
-  const isEntry = g => g !== null && typeof g === 'object' && !Array.isArray(g);
-  return Array.isArray(file?.gates) && file.gates.every(g => isEntry(g) && recorded.get(g.id) === gateSha256(g));
 }
 
+const LEARNED_PARTNER = Object.freeze({ [LEARNED_PATH]: GATES_PATH, [GATES_PATH]: LEARNED_PATH });
+
 /**
- * Every CONTENT-level reason a recorded file may not be removed, in one
- * place — `classify`'s verdict, the stamp, and the user's own body.
+ * Every content-level reason a recorded file may not be removed, in one
+ * place, so the dry run's prediction and the real removal decide it
+ * identically: `{ why }`, with `learnings` when the reason is the learnings
+ * the file holds and `partner` when it is the other learned file being
+ * kept, or null when the content permits removal.
  *
- * Shared because `planUninstall`'s read-only PREDICTION and
- * `runUninstall`'s real REMOVAL must decide this identically or the preview
- * promises something `--yes` does not do (the exact defect Task 9b's
- * coordinator round 2 found for the DIRECTORY sweep, and the reason
- * `sweepRemovableDirs` is one function with two callers). They used to ask
- * these three questions in two places with two different ways of naming
- * the answer; now there is one.
- *
- * @returns {null|string} null when the content permits removal, otherwise
- *   the reason to record against the entry that will be kept instead.
+ * The two learned files are decided together: if either is kept for any
+ * reason, both are, so a committed gate is never left without its registry
+ * entry, nor an entry that claims an approval without its gate.
  */
 function contentRefusal(root, manifest, relPath) {
   const own = ownContentRefusal(root, manifest, relPath);
   if (own !== null) return own;
-  // The two learned files are decided together, so a committed gate is never
-  // left with no registry entry: the registry stays while the gate file
-  // stays, and the gate file stays while the registry is kept for holding a
-  // learning the manifest does not record.
-  if (relPath === LEARNED_PATH && fs.existsSync(join(root, GATES_PATH)) && ownContentRefusal(root, manifest, GATES_PATH) !== null) return 'gate-file-kept';
-  if (relPath === GATES_PATH && fs.existsSync(join(root, LEARNED_PATH)) && ownContentRefusal(root, manifest, LEARNED_PATH) === 'unrecorded-learning') return 'unrecorded-learning';
+  const partner = LEARNED_PARTNER[relPath];
+  if (partner !== undefined && fs.existsSync(join(root, partner)) && (guardRemoval(root, partner) !== null || ownContentRefusal(root, manifest, partner) !== null)) {
+    return { why: 'learned-partner-kept', partner };
+  }
   return null;
 }
 
-/** `contentRefusal` for the file alone, without its learned partner. */
+/**
+ * `contentRefusal` for the file alone, without its learned partner.
+ *
+ * A landed learning is the owner's content, as a filled rules registry is:
+ * the owner approved it, and this machine's ledger still records it as
+ * landed. So a learned file that holds any learning is kept, whatever the
+ * manifest says of it, and `learn revert` is what takes each one out. One
+ * that cannot be read as a learned file is not shown to hold none.
+ */
 function ownContentRefusal(root, manifest, relPath) {
+  if (Object.hasOwn(LEARNED_PARTNER, relPath) && fs.existsSync(join(root, relPath))) {
+    const learnings = learningsHeld(root, relPath);
+    if (learnings === null) return { why: 'unreadable-learned-file' };
+    if (learnings > 0) return { why: 'holds-landed-learnings', learnings };
+  }
   const state = classify(root, manifest, relPath);
-  if (state !== 'ours-unmodified') return state;
-  // CRITICAL finding, second half: `classify` says the hash matches what the
-  // manifest claims — exactly what a forged entry naming the user's own,
-  // real file (its real hash) also produces. Independent, IN-FILE provenance
-  // is required before this is treated as ours to delete.
-  if (!carriesStamp(root, relPath)) return 'missing-stamp';
-  // F6: and in-file provenance is not enough either, for the one family of
-  // artefacts whose designed workflow is the user writing into our file.
-  if (hasUserAuthoredBody(root, relPath)) return 'user-authored-body';
-  if ((relPath === LEARNED_PATH || relPath === GATES_PATH) && !holdsOnlyRecordedLearnings(root, manifest, relPath)) return 'unrecorded-learning';
+  if (state !== 'ours-unmodified') return { why: state };
+  // The hash matches what the manifest claims, which a forged entry naming
+  // the owner's own file with its real hash also produces: the file must
+  // carry the stamp too before it is the kit's to delete.
+  if (!carriesStamp(root, relPath)) return { why: 'missing-stamp' };
+  // And for the artefacts the owner is meant to write into, a stamped file
+  // that holds their writing is theirs.
+  if (hasUserAuthoredBody(root, relPath)) return { why: 'user-authored-body' };
   return null;
 }
 
@@ -559,9 +556,9 @@ export function planUninstall({ root, manifest }) {
     }
     // The three content-level gates, from the one function `runUninstall`
     // also calls — see `contentRefusal`.
-    const contentWhy = contentRefusal(root, manifest, f.path);
-    if (contentWhy) {
-      keep.push({ path: f.path, why: contentWhy });
+    const content = contentRefusal(root, manifest, f.path);
+    if (content) {
+      keep.push({ path: f.path, ...content });
       continue;
     }
     remove.push({ path: f.path, step: f.step });
@@ -662,8 +659,8 @@ export function runUninstall({ root, manifest, plan }) {
       refused.push({ path: r.path, why: refusal });
       continue;
     }
-    const contentWhy = contentRefusal(root, manifest, r.path);
-    if (contentWhy === null) {
+    const content = contentRefusal(root, manifest, r.path);
+    if (content === null) {
       try {
         fs.rmSync(join(root, r.path));
         removed.push(r.path);
@@ -676,7 +673,7 @@ export function runUninstall({ root, manifest, plan }) {
       // place and the plan's own check (or a caller that skipped it) let it
       // through regardless. The reason is computed by the SAME function the
       // plan used, so the two can never name the same situation differently.
-      changedSincePlan.push({ path: r.path, why: contentWhy });
+      changedSincePlan.push({ path: r.path, ...content });
     }
   }
 
