@@ -785,7 +785,7 @@ test('the learning loop beyond its first path: a stopped step, a policy, a demot
     rmSync(join(repoDataDir(a), LOCAL_GATES_FILE));
 
     const stuck = ok(learn(a, 'list'));
-    assert.match(stuck, /^ {2}L1 {2}candidate {2}observe .* {2}\(the ledger does not vouch for this\)$/m, stuck);
+    assert.match(stuck, /^ {2}L1 {2}candidate {2}observe .* {2}\(the ledger does not vouch for this; `show L1` says why and what mends it\)$/m, stuck);
     assert.match(stuck, /^ {2}of them, learning files a stopped step left behind the ledger, which the next step that writes rolls forward: L1$/m, stuck);
 
     const again = learn(a, 'replay', 'L1');

@@ -449,6 +449,8 @@ test('show makes an invisible character visible', () => {
   assert.ok(text.includes('"Tests run once\\u{202E}"'), text);
   assert.ok(text.includes(`gateSha256: ${gateSha256(gate)}`), text);
   assert.match(text, /the ledger does not vouch for it: L1: the ledger records other content for this learning/);
+  assert.match(text, /^ {2}to mend it: run again the step that stopped partway, or `tick`, if one did; if the file was changed by hand, put it back as it was\. Until then approve, wrong, demote, retire, land and revert refuse it, except to finish a step of their own that stopped\.$/m, 'show names what ends the state');
+  assert.match(ok(runLearn(root, 'list')), /^ {2}L1 {2}trial {2}observe .* {2}\(the ledger does not vouch for this; `show L1` says why and what mends it\)$/m, 'list names where the remedy is');
   const view = json(root, 'show', 'L1');
   assert.deepEqual(view.gate, gate, '--json parses back to the gate itself');
   assert.match(runLearn(root, 'show', 'L1', '--json').stdout, PRINTABLE);

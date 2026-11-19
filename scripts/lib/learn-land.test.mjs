@@ -457,6 +457,22 @@ test('a land stopped between its ledger entry and the learning file is finished 
   assert.ok(blocks(root));
 });
 
+test('a land resumed after its landed entry is refused when the file holds a title the ledger does not record', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  editLearning(root, 'L1', { status: 'active-local', title: 'Another title, written into the file by hand' });
+  const before = { registry: text(root, LEARNED_PATH), gates: text(root, GATES_PATH), ledger: kinds(root) };
+  const refusal = ['L1: the ledger records another title, why or evidence for this learning', 3];
+  const refusalOf = ({ error, exitCode }) => [error, exitCode];
+
+  assert.deepEqual(refusalOf(landLearning(root, 'L1', {})), refusal, 'the dry run proposes no registry entry from the file');
+  assert.deepEqual(refusalOf(landLearning(root, 'L1', YES)), refusal);
+  assert.equal(text(root, LEARNED_PATH), before.registry, 'the registry entry keeps the title the ledger vouches for');
+  assert.equal(text(root, GATES_PATH), before.gates);
+  assert.deepEqual(kinds(root), before.ledger);
+  assert.equal(storedLearning(root, 'L1').status, 'active-local');
+});
+
 test('a revert stopped before its ledger entry keeps the gate in force on this machine, and the next revert finishes it', () => {
   const { root, gate } = activeRepo();
   assert.equal(landLearning(root, 'L1', YES).ok, true);
@@ -983,6 +999,30 @@ function appendAsStopped(root, learning, action, ...kindsToAppend) {
     });
   }
 }
+
+test('a revert resumed after its reverted entry is refused when the file holds a title the ledger does not record', () => {
+  const refusal = 'L1: the ledger records another title, why or evidence for this learning';
+  const edit = root => editLearning(root, 'L1', { title: 'Another title, written into the file by hand' });
+
+  // A suspended learning: `reverted` written, `retired` not yet.
+  const suspended = suspendedLandedRepo();
+  withLedgerHeld(suspended.root, () => revertLearning(suspended.root, 'L1', YES));
+  appendAsStopped(suspended.root, storedLearning(suspended.root, 'L1'), suspended.gate.action, 'reverted');
+  edit(suspended.root);
+  const ledger = kinds(suspended.root);
+  assert.deepEqual([revertLearning(suspended.root, 'L1', YES).error, revertLearning(suspended.root, 'L1', YES).exitCode], [refusal, 3]);
+  assert.deepEqual(kinds(suspended.root), ledger, 'no entry is added that would record the edited title');
+  assert.equal(storedLearning(suspended.root, 'L1').status, 'suspended');
+
+  // A landed learning: `reverted` written, the learning file still landed.
+  const landed = activeRepo();
+  assert.equal(landLearning(landed.root, 'L1', YES).ok, true);
+  withLedgerHeld(landed.root, () => revertLearning(landed.root, 'L1', YES));
+  appendAsStopped(landed.root, landed.learning, landed.gate.action, 'reverted');
+  edit(landed.root);
+  assert.deepEqual([revertLearning(landed.root, 'L1', YES).error, revertLearning(landed.root, 'L1', YES).exitCode], [refusal, 3]);
+  assert.equal(storedLearning(landed.root, 'L1').status, 'landed');
+});
 
 /** L1 landed, committed, suspended here and then retired by a hand-written
  * ledger entry, as an older kit let it be, its gate still committed. */

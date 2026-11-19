@@ -435,7 +435,7 @@ export function renderList(view) {
   out.push('LEARNINGS');
   if (view.learnings.length === 0) out.push('  none');
   for (const l of view.learnings) {
-    out.push(`  ${ids([l.id])}  ${l.status}  ${action(l.action)}  sha256 ${hash(l.sha256)}${l.vouched ? '' : '  (the ledger does not vouch for this)'}`);
+    out.push(`  ${ids([l.id])}  ${l.status}  ${action(l.action)}  sha256 ${hash(l.sha256)}${l.vouched ? '' : `  (the ledger does not vouch for this; \`show ${ids([l.id])}\` says why and what mends it)`}`);
     out.push(`      title: ${visible(l.title)}`);
     out.push(`      replay: ${l.replayVerdict === null ? 'not yet' : verdict(l.replayVerdict)}`);
   }
@@ -466,6 +466,9 @@ const ID_COLLISION_REMEDY = 'ids are assigned per machine and nothing renumbers 
 
 /** What it means that the ledger records no hash of a learning's prose. */
 const PROSE_UNRECORDED_MEANS = 'each was drafted before kh-harness recorded that hash: an approval or a landing at a terminal records it, and until then a policy does not promote it';
+
+/** What ends the state of a learning the ledger does not vouch for. */
+const UNVOUCHED_REMEDY = 'to mend it: run again the step that stopped partway, or `tick`, if one did; if the file was changed by hand, put it back as it was. Until then approve, wrong, demote, retire, land and revert refuse it, except to finish a step of their own that stopped.';
 
 // --- show -------------------------------------------------------------------
 
@@ -536,7 +539,8 @@ export function renderShow(view) {
     `LEARNING ${view.id}`,
     ...indent([
       `status: ${view.status}; ${view.vouched ? 'the ledger vouches for it' : `the ledger does not vouch for it: ${showCodePoints(view.unvouchedBecause)}`}`,
-      ...(view.vouched && !view.proseRecorded ? [`the ledger records no hash of the title, why and evidence below: ${PROSE_UNRECORDED_MEANS}`] : []),
+      ...(view.vouched ? [] : [UNVOUCHED_REMEDY]),
+      ...(view.vouched && !view.proseRecorded ?[`the ledger records no hash of the title, why and evidence below: ${PROSE_UNRECORDED_MEANS}`] : []),
       ...(view.idCollision ? [`the committed gate file holds another gate under this id, so this learning's gate is not applied: ${ID_COLLISION_REMEDY}`] : []),
       `title: ${visible(view.title)}`,
       `why: ${visible(view.why)}`,

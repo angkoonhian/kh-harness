@@ -336,14 +336,16 @@ const LAND_REFUSAL = 'only a learning promoted on this machine is landed';
  * `active-local` is landed afresh. One whose file is still `active-local`
  * while the ledger's last entry for it is already its `landed` is a land
  * stopped between that entry and the learning file, finished without
- * another entry.
+ * another entry: only when the ledger vouches for the file as that land
+ * would have left it, since the registry entry is written from the file's
+ * title, why and evidence.
  */
 function landStage(state, learning) {
   const unrecorded = unrecordedReason(learning, state.view);
   const action = approvedAction(state, learning);
   const updated = { ...learning, status: 'landed' };
   if (learning.status === 'active-local' && unrecorded === null) return { updated, entries: [{ ...ownerEntry('landed', action), bindsProse: true }], action };
-  if (learning.status === 'active-local' && state.view.intact && ledgerEndsWith(state, learning, ['landed'])) return { updated, entries: [], action };
+  if (learning.status === 'active-local' && unrecordedReason(updated, state.view) === null) return { updated, entries: [], action };
   if (unrecorded !== null) return refused(unrecorded);
   return refused(`${learning.id} is ${learning.status}; ${LAND_REFUSAL}`);
 }
@@ -367,7 +369,9 @@ const REVERT_REFUSAL = 'only a learning landed or suspended on this machine, or 
  * Otherwise the ledger's last entries for it say how far a revert got: its
  * `reverted` written and the learning file not yet, or a suspended or
  * retired learning's `reverted` written and `retired` not yet, and the rest
- * is written. A learning that is neither landed nor suspended any more, with a
+ * is written, when the ledger vouches for the file as its last entry leaves
+ * it: an entry added here records the file's title, why and evidence. A
+ * learning that is neither landed nor suspended any more, with a
  * trace left, has the trace removed: with no new entry when a `reverted`
  * for its content follows its last `landed`, whatever status it reached
  * since; and recorded `reverted` then `retired` when it was retired
@@ -383,6 +387,7 @@ function revertStage(state, learning, traced) {
   const reverted = ownerEntry('reverted', action);
   const retired = { kind: 'retired', approvedBy: 'owner' };
   const ends = kinds => state.view.intact && ledgerEndsWith(state, learning, kinds);
+  const resumes = (kinds, asRecorded) => ends(kinds) && unrecordedReason(asRecorded, state.view) === null;
   const stage = (updated, entries, more = {}) => ({ updated, entries, action: updated.gate.action, holdsLocal: false, alone: false, ...more });
   const own = statusEntriesFor(state.view.entries, id).filter(e => e.contentSha256 === learning.sha256);
   const lastLanded = own.findLastIndex(e => e.kind === 'landed');
@@ -390,10 +395,10 @@ function revertStage(state, learning, traced) {
 
   if (unrecorded === null && status === 'landed') return stage(toActive, [reverted], { holdsLocal: true, alone: !traced });
   if (unrecorded === null && status === 'suspended') return stage(toRetired, [reverted, retired], { alone: !traced });
-  if (status === 'landed' && ends(['landed', 'reverted'])) return stage(toActive, []);
-  if (status === 'suspended' && ends(['suspended', 'reverted'])) return stage(toRetired, [retired]);
-  if (status === 'suspended' && ends(['suspended', 'reverted', 'retired'])) return stage(toRetired, []);
-  if (status === 'retired' && ends(['retired', 'reverted'])) return stage(learning, [retired]);
+  if (status === 'landed' && resumes(['landed', 'reverted'], toActive)) return stage(toActive, []);
+  if (status === 'suspended' && resumes(['suspended', 'reverted'], toActive)) return stage(toRetired, [retired]);
+  if (status === 'suspended' && resumes(['suspended', 'reverted', 'retired'], toRetired)) return stage(toRetired, []);
+  if (status === 'retired' && resumes(['retired', 'reverted'], toActive)) return stage(learning, [retired]);
   if (status === 'active-local' && ends(['landed'])) {
     return refused(`${id}: a land of it stopped before its learning file was written; running \`learn land ${id} --yes\` again at a terminal finishes it`);
   }
