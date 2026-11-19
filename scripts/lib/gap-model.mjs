@@ -789,28 +789,19 @@ const CHECKS = [
   },
   {
     id: 'P5.failures', step: 29, phase: 5,
-    lookedFor: [FAILURES_PATH, "the recurrences in this machine's session log"],
+    lookedFor: [FAILURES_PATH],
     // Never `verified`: labels are a person's judgement and nothing here
     // executes. The evidence is counts only — failures-evidence.mjs's own
-    // comment says why no log content may reach detect.json.
+    // comment says why, and why the session log is not read here.
     check: ({ harness }) => {
       const f = harness.failures ?? null;
       if (!f) return { state: 'absent', proposal: `scaffold ${FAILURES_PATH} — generated EMPTY; each failure kind is named by hand, with the recurrence signatures it covers` };
-      if (!f.readable) return { state: 'declared', evidence: [`${f.path} exists but could not be read — its failure kinds and the recurrences it labels are unknown`] };
+      if (!f.readable) return { state: 'declared', evidence: [`${f.path} exists but could not be read — the failure kinds it names are unknown`] };
       const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-      const evidence = [`${f.path}: ${plural(f.kinds, 'failure kind')} named`];
+      const evidence = [`${f.path}: ${plural(f.kinds, 'failure kind')} named, listing ${plural(f.signatures, 'signature id')}`];
       if (f.malformedSignatures) evidence.push(`${plural(f.malformedSignatures, 'malformed signature id')} ignored (a signature id is 16 lowercase hex characters)`);
-      const log = f.log;
-      if (!log.read) {
-        evidence.push(log.why === 'disabled'
-          ? 'no sessions read — the session log is not enabled on this machine'
-          : "no sessions read — the session log's directory could not be listed");
-      } else if (log.sessionsRead === 0) {
-        evidence.push('no sessions read — the session log holds no sessions');
-      } else {
-        evidence.push(`${plural(log.sessionsRead, 'session')} read: ${plural(log.recurrences, 'recurrence')}, ${log.unlabelled} not labelled in ${FAILURES_PATH}`);
-        if (log.sessionsUnreadable) evidence.push(`${log.sessionsUnreadable} of those sessions could not be read in full`);
-      }
+      if (f.ignoredHeadings) evidence.push(`${plural(f.ignoredHeadings, 'level-2 heading')} ignored (a failure kind's heading is "## F<n> — <title>")`);
+      evidence.push('`log report` shows which recurrences no failure kind labels');
       return { state: 'declared', evidence };
     },
   },
