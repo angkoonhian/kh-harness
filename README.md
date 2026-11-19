@@ -18,6 +18,10 @@ installed, the harness can also keep a log of your sessions on your machine
 and turn a tool failure that recurs into a small gate, which takes effect
 only when you approve it.
 
+**What it will not do:** overwrite or delete a file it did not write, or
+write `CLAUDE.md`; send anything over the network; or let a learned gate
+warn or block without your approval at a terminal or a policy you set there.
+
 **What you get**
 
 - **A capability report** — `docs/harness/detect.json`, each check
@@ -67,7 +71,8 @@ claude plugin install kh-harness@kh-harness-local
 ```
 
 Only `./` works; `claude plugin marketplace add .` is rejected with
-`Invalid marketplace source format`. `claude plugin list` then lists
+`Invalid marketplace source format` (measured earlier and recorded in
+`scripts/lib/plugin-install.test.mjs`; not re-run for this release). `claude plugin list` then lists
 `kh-harness@kh-harness-local`, with `Read from:` naming your checkout: a
 folder marketplace reads from the working tree, so it is not a copy. The
 plugin ships two skills, `harness-init` and `harness-learn`, and declares no
@@ -118,6 +123,7 @@ node <kh-harness>/scripts/apply.mjs .
 ```
 
 ```
+…
 kh-harness: 35 actions to close 9 capability gaps for <repo>
 
 --- docs/harness/RULES.md  [P3.rules]
@@ -189,7 +195,9 @@ Kept:
 
 A file you edited is kept and named, and then the manifest is kept with it.
 The session log is never removed by `uninstall`; `log purge --yes` removes
-it.
+it. `uninstall` also removes the two files `learn land` writes, which takes
+landed gates out of the repository for everyone; see
+[what uninstall removes](docs/guide/commands.md#uninstall).
 
 ## How it works
 
@@ -297,15 +305,13 @@ Each takes `--help` for its full contract. The flags of the first three:
 | [`policy clear`](docs/guide/commands.md#learn-policy-clear) | Withdraws the policy | data directory | **yes** |
 
 > [!IMPORTANT]
-> A **standalone terminal** means a person at an interactive terminal
-> outside Claude Code: standard input and output are both terminals and
-> `CLAUDECODE` is unset. An IDE's built-in terminal sets `CLAUDECODE` too
-> and is refused. Anywhere else these subcommands exit 3 and change nothing.
-> This is how the agent is kept from approving its own work. The eight
-> owner-only subcommands are `approve`, `wrong`, `demote`, `retire`, `land`,
-> `revert`, `policy set` and `policy clear`; `apply`'s deny rules make Claude
-> Code decline all eight, the dry runs of `land` and `revert` included. The
-> `harness-learn` skill runs none of them, nor `policy show`.
+> The eight subcommands marked **yes** run only for a person at a
+> standalone terminal, outside Claude Code and outside an IDE's built-in
+> terminal; `apply`'s deny rules also make Claude Code decline them. This is
+> how the agent is kept from approving its own work. What counts as a
+> standalone terminal, what a refusal still does, and what the deny rules
+> do and do not catch are set out once, in
+> [the terminal check and the deny rules](docs/guide/learning-loop.md#the-terminal-check-and-the-deny-rules).
 
 ## Turning on the session log and the learning loop
 
@@ -322,6 +328,7 @@ Once `apply` has installed the session-log and gate hooks:
      kept at: <data>
    …
    Credentials are masked before anything is written, on a best-effort basis: some may be missed, so treat the log as able to hold a secret.
+   …
    ```
 
 2. **The hooks** record each session while you work normally.
@@ -333,6 +340,7 @@ Once `apply` has installed the session-log and gate hooks:
    ```
 
    ```
+   …
    RECURRENCES (the same failure in two or more sessions under one harness and model)
      harness 327164425d96edf6f4693e61c4beb79d25cab9673231adbd20754486febb1926, model claude-opus-5
        23bdd7aaf71db0a4  Bash: in 2 sessions, 2 times, from 2026-11-19T15:30:54.672Z to 2026-11-19T15:30:55.737Z
@@ -349,6 +357,10 @@ Once `apply` has installed the session-log and gate hooks:
    ## F1 — npm script name mistyped
    - signatures: 23bdd7aaf71db0a4
    ```
+
+   The `harness-learn` skill drafts nothing for a recurrence you have not
+   labelled. That is the skill holding back: `learn draft` itself accepts an
+   unlabelled signature and records the learning with no failure kind.
 
 5. **The `harness-learn` skill** drafts. Invoke it, or let the model invoke
    it. It runs `learn candidates`, `learn evidence`, then `learn draft`,
@@ -431,9 +443,12 @@ never in the repository. Once enabled, it stores:
 
 It never stores the agent's own account of its work (its last message, a
 compaction summary), the input of a pre-tool event beyond its hash, or a
-transcript's contents. While disabled, it stores nothing. Content is kept
-90 days; structure is kept until you purge. Full detail, what the scrub
-misses, and the cost figures are on [The session log](docs/guide/session-log.md).
+transcript's contents. While disabled, it stores nothing new. Content of a
+sealed session is removed once its last event is 90 days old, but only
+while the log is enabled: after `log disable`, everything already recorded
+stays until `log purge --yes`. Structure is kept until you purge. Full
+detail, what the scrub misses, and the cost figures are on
+[The session log](docs/guide/session-log.md).
 
 ## Limits
 
@@ -443,13 +458,18 @@ misses, and the cost figures are on [The session log](docs/guide/session-log.md)
 > undo them.
 
 - An agent with a shell can append a syntactically valid line to the
-  ledger, including a forged approval or forged wrong marks. The hash chain
-  makes such a line permanent and visible in `learn list` and `log status`;
-  it does not make it impossible.
+  ledger, including a forged approval or wrong marks, or rewrite the ledger
+  with a new valid chain. Nothing marks such a line as forged: `learn list`
+  prints a forged approval as `approved by owner`, like a real one, and the
+  chain shows only damage that breaks it. The seal index of the session log
+  is chained the same way, with no key, and can be rewritten the same way.
 - One line of junk in the ledger breaks its chain. While it is broken,
   every learned gate in this machine's gate file is removed at the next
-  `learn` step that writes, none is restored, and nothing is promoted.
-  There is no command that repairs the ledger.
+  `learn` step that writes, none is restored, and nothing is promoted. The
+  same repair drops this machine's suspensions, so a committed gate you
+  suspended acts here again. There is no command that repairs the ledger;
+  what to do is under
+  [the ledger is broken](docs/guide/troubleshooting.md#the-ledger-is-broken).
 - An agent can write `gates.local.json` directly, and the gate hook enforces
   what it holds. `tick`, or the next `learn` command that writes, removes
   every gate the ledger does not vouch for; until then the forged gate acts.
@@ -481,7 +501,16 @@ misses, and the cost figures are on [The session log](docs/guide/session-log.md)
   needs a rule you add yourself.
 - `log enable`, `log disable`, `log maintain` and `log purge --yes` need no
   terminal and are not denied. `log purge --yes` deletes the ledger, the
-  learnings and the policy with the log.
+  learnings, the policy and this machine's gate file with the log, so one
+  command switches off every gate promoted on this machine. `log disable`
+  stops firings being recorded, so `observe` gates do nothing and no policy
+  can promote.
+- Retention runs only while the log is enabled: at a session start, or from
+  `log maintain`, which refuses a disabled log. After `log disable`, every
+  prompt and every tool input and output already recorded stays on disk,
+  with no time limit, until `log purge --yes`.
+- A refused terminal-only step changes no learning, but first runs the gate
+  repair, which can rewrite this machine's `gates.local.json`.
 - A fresh log returns `not-checkable` for most drafts until it holds at
   least 20 clean calls of the gate's tool across 2 sessions.
 - After a branch switch to a checkout without a committed gate, or once an
@@ -499,6 +528,15 @@ misses, and the cost figures are on [The session log](docs/guide/session-log.md)
 - The credential scrub is best-effort; see
   [what the scrub misses](docs/guide/session-log.md#the-credential-scrub-and-what-it-misses).
   The log will at some point hold a secret.
+- The lint sensor and the Stop gate filter what they show the model by
+  dropping lines that repeat a part of their own command, but only parts of
+  8 characters or more count: a shorter secret in a
+  `sh: <word>: command not found` line reaches the model unless the
+  credential mask recognises it.
+- `uninstall` removes the two files `learn land` writes when they hold only
+  learnings the manifest records, which takes every landed gate out of the
+  repository for everyone once committed; the ledger still records those
+  learnings as landed.
 
 Nothing here claims that the harness or an agent improved. The commands
 report counts: recurrences, replays, firings and what followed them.
@@ -524,8 +562,9 @@ report counts: recurrences, replays, firings and what followed them.
 The suite needs no network. **The eval suite cannot measure
 `harness-init`:** its `disable-model-invocation: true` keeps it out of the
 model's context, and `claude plugin eval` passes prompts verbatim, so a
-literal `/harness-init` is inert text. Two CI runs reported `meanDelta: 0`
-for that reason, not because the plugin makes no difference. No eval case
+literal `/harness-init` is inert text. The comments in
+`.github/workflows/ci.yml` record earlier CI runs that reported
+`meanDelta: 0` for that reason, not because the plugin makes no difference. No eval case
 exists for `harness-learn`. The CI `eval` job runs only on
 `workflow_dispatch`, and shows as skipped, never passed, without a
 credential.

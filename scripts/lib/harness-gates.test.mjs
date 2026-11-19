@@ -436,6 +436,27 @@ test('the module passes no non-literal pattern to RegExp or a pattern-taking str
   assert.deepEqual(nonLiteralRegExpCalls(readFileSync(MODULE_PATH, 'utf8')), []);
 });
 
+const GATE_HOOK_PATH = new URL('../../assets/scripts/tool-gate.mjs', import.meta.url);
+
+test('the gate hook passes no non-literal pattern to RegExp or a pattern-taking string method', () => {
+  assert.deepEqual(nonLiteralRegExpCalls(readFileSync(GATE_HOOK_PATH, 'utf8')), []);
+});
+
+/** Each place in `source` that turns text into running code: `eval`, the
+ * `Function` constructor, or the `vm` module. */
+const codeFromText = source => [...source.matchAll(/\beval\s*\(|\bnew\s+Function\b|\bFunction\s*\(|['"](?:node:)?vm['"]/g)].map(m => m[0]);
+
+test('the code scan recognises eval, the Function constructor and the vm module', () => {
+  assert.equal(codeFromText("eval(x); new Function('a', b); Function(x); import vm from 'node:vm'; require(\"vm\")").length, 5);
+  assert.deepEqual(codeFromText('evaluate(x); const fn = f; // evaluated'), []);
+});
+
+test('neither the gate language nor the gate hook turns text into code', () => {
+  for (const path of [MODULE_PATH, GATE_HOOK_PATH]) {
+    assert.deepEqual(codeFromText(readFileSync(path, 'utf8')), [], path.pathname);
+  }
+});
+
 test('the module imports only Node built-ins and sibling files, and no child process', () => {
   const source = readFileSync(MODULE_PATH, 'utf8');
   const specifiers = [...source.matchAll(/^\s*import\b[^'"]*['"]([^'"]+)['"]/gm)].map(m => m[1]);

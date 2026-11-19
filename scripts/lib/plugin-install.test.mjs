@@ -95,7 +95,7 @@ const flagsOf = text => [...new Set(text.match(/--[a-z][a-z-]*[a-z]/g))];
 const COMMANDS_PAGE = 'docs/guide/commands.md';
 const commandsPage = () => readFileSync(join(ROOT, COMMANDS_PAGE), 'utf8');
 
-test('the command reference documents every log and learn subcommand and every flag in the usage texts', () => {
+test('the command reference documents every log and learn subcommand in the usage texts', () => {
   const t = commandsPage();
   const commands = { log: subcommandsOf(LOG_USAGE), learn: subcommandsOf(LEARN_USAGE) };
   assert.ok(commands.log.length >= 6 && commands.learn.length >= 14, 'the usage texts were read');
@@ -106,9 +106,48 @@ test('the command reference documents every log and learn subcommand and every f
       assert.ok(new RegExp(`^### ${command} ${name}$`, 'm').test(t), `${COMMANDS_PAGE} has a section for \`${command} ${name}\``);
     }
   }
-  for (const flag of flagsOf([DETECT_USAGE, APPLY_USAGE, UNINSTALL_USAGE, LOG_USAGE, LEARN_USAGE].join('\n'))) {
-    assert.ok(new RegExp(`${flag}(?![a-z-])`).test(t), `${COMMANDS_PAGE} names ${flag}`);
+});
+
+/** The text of the section headed exactly `heading` (`## x` or `### x`), up to
+ * the next heading of the same or a higher level. */
+function sectionOf(text, heading) {
+  const level = heading.match(/^#+/)[0].length;
+  const at = text.split('\n').findIndex(l => l === heading);
+  if (at < 0) return null;
+  const lines = text.split('\n').slice(at + 1);
+  const end = lines.findIndex(l => new RegExp(`^#{1,${level}} `).test(l));
+  return lines.slice(0, end < 0 ? undefined : end).join('\n');
+}
+
+/** Each subcommand of a usage text with the flags its synopsis line names. */
+const synopsisFlags = usage => {
+  const block = usage.split('\nSUBCOMMANDS\n')[1].split(/\n(?=\S)/)[0];
+  const lines = [...block.matchAll(/^ {2}(\S.*)$/gm)].map(m => m[1].split(/\s{2,}/)[0]);
+  return subcommandsOf(usage).map((name, i) => [name, flagsOf(lines[i])]);
+};
+
+/** Each flag of `log`'s FLAGS block with the subcommands it applies to
+ * ("--yes    purge only: …", "--json   status and report only: …"). */
+const logFlagOwners = () => [...LOG_USAGE.split('\nFLAGS\n')[1].matchAll(/^ {2}(--[a-z-]+)\s+(.+?) only:/gm)]
+  .map(m => [m[1], m[2].split(/, | and /)]);
+
+test('the command reference documents each flag in the section of the command or subcommand that owns it', () => {
+  const t = commandsPage();
+  let checked = 0;
+  const expectIn = (heading, flag) => {
+    const section = sectionOf(t, heading);
+    assert.ok(section !== null, `${COMMANDS_PAGE} has a section "${heading}"`);
+    assert.ok(new RegExp(`${flag}(?![a-z-])`).test(section), `${COMMANDS_PAGE}'s section "${heading}" names ${flag}`);
+    checked++;
+  };
+  const usages = [['detect', DETECT_USAGE], ['apply', APPLY_USAGE], ['uninstall', UNINSTALL_USAGE], ['log', LOG_USAGE], ['learn', LEARN_USAGE]];
+  for (const [command, usage] of usages) {
+    const synopses = usage.split('\nUSAGE\n')[1].split('\n\n')[0];
+    for (const flag of flagsOf(synopses)) expectIn(`## ${command}`, flag);
   }
+  for (const [flag, owners] of logFlagOwners()) for (const owner of owners) expectIn(`### log ${owner}`, flag);
+  for (const [name, flags] of synopsisFlags(LEARN_USAGE)) for (const flag of flags) expectIn(`### learn ${name}`, flag);
+  assert.ok(checked >= 25, `the owners of the flags were read (${checked})`);
 });
 
 test('the README links every command and every log and learn subcommand to its section in the command reference', () => {

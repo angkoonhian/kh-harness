@@ -1,8 +1,10 @@
 # Troubleshooting
 
 The refusals and notices an owner is likely to meet, quoted from the code,
-and what ends each one. A message reads `kh-harness: …` on stderr unless
-said otherwise. `<…>` stands for a value the message fills in.
+and what ends each one. Messages go to stderr. `apply`, `log` and `learn`
+put `kh-harness: ` before each (and `learn` the subcommand's name after
+it), which the quotes below leave out; `uninstall` prints its messages with
+no prefix. `<…>` stands for a value the message fills in.
 
 [Back to the README](../../README.md) ·
 [Command reference](commands.md) ·
@@ -38,9 +40,26 @@ When git cannot be consulted at all, `--yes` needs both waivers.
 
     <repo>/.claude/kh-harness.manifest.json exists but could not be read as a valid kh-harness manifest. Continuing would overwrite it with a fresh, empty one and permanently lose the record of what this tool previously installed — refusing instead. Restore the file from git history (or from a backup) and re-run; there is no automatic repair.
 
-Exit 3, from `apply`; `uninstall` says `refusing to uninstall:` and the
-same reason. Restore the manifest with `git checkout -- .claude/kh-harness.manifest.json`
-or from a backup. There is no flag that skips this.
+Exit 3, from `apply`. `uninstall` refuses in its own words:
+
+    refusing to uninstall: <repo>/.claude/kh-harness.manifest.json exists but could not be read as a valid kh-harness manifest, so what this tool installed cannot be told apart from your own files. Restore it from git history and re-run.
+
+and `learn land` and `learn revert` in theirs:
+
+    .claude/kh-harness.manifest.json exists but could not be read as a valid kh-harness manifest, so nothing is written; restore it from git and run again
+
+Each exits 3. Restore the manifest with
+`git checkout -- .claude/kh-harness.manifest.json` or from a backup. There
+is no flag that skips this.
+
+### nothing to uninstall
+
+    nothing to uninstall: no manifest found
+
+Exit 3, from `uninstall`. There is no `.claude/kh-harness.manifest.json` in
+the repository given: nothing was installed there, or the manifest was
+deleted, in which case the kit's own files can no longer be told apart and
+must be removed by hand.
 
 ### settings.json cannot take a patch
 
@@ -102,21 +121,18 @@ redirected or piped), or:
 
     CLAUDECODE is set: this is a Claude Code session; run the command from a separate terminal
 
-Run the command yourself in a standalone terminal window, not through
-Claude Code and not in an IDE's built-in terminal, which sets `CLAUDECODE`
-too. Do not redirect its input or output. No flag or variable skips the
-check.
+Run the command yourself in a standalone terminal window, without
+redirecting its input or output. What the check requires is in
+[the terminal check and the deny rules](learning-loop.md#the-terminal-check-and-the-deny-rules).
 
 ### Claude Code declines a learn subcommand
 
 A deny rule such as `Bash(*learn.mjs* approve*)` stopped the command before
-it ran. This is intended: it is the second barrier. The rules cover all
-eight terminal-only subcommands, and `land` and `revert` whole, so Claude
-Code also declines their dry runs. Run the command yourself, as above. An
-install made before a rule existed is proposed the rules it lacks by the
-next `apply`. A deny rule also declines an unrelated command that
-holds that text, such as a commit message containing `learn.mjs approve`;
-reword the command.
+it ran, as intended, including a dry run of `land` or `revert`. Run the
+command yourself, as above. If the declined command was not a `learn`
+command at all, such as a commit message containing `learn.mjs approve`,
+reword it. See
+[the terminal check and the deny rules](learning-loop.md#the-terminal-check-and-the-deny-rules).
 
 ## learn
 
@@ -177,12 +193,32 @@ run `learn replay <id>`.
 
     the ledger cannot be read or its chain is broken, so no learning can be told settled and no id never used can be assigned
 
-While the ledger's chain is broken, `draft` refuses, `tick` removes every
-learned local gate and restores none, and nothing is promoted. `log status`
-reports where the chain breaks. There is no repair command. Restore
-`ledger.jsonl` from a backup of the data directory if you have one;
-otherwise `log purge --yes` removes the ledger with everything else, and
-the learnings start again.
+While the ledger's chain is broken:
+
+- `draft` refuses, and nothing is promoted;
+- the next `learn` step that writes, `tick` included, removes every learned
+  gate from this machine's gate file and restores none;
+- the same repair drops this machine's suspensions, so a committed gate you
+  suspended acts on this machine again.
+
+`log status` reports the line where the chain breaks. There is no repair
+command. Restore `ledger.jsonl` from a backup of the data directory if you
+have one.
+
+Otherwise `log purge --yes` removes the ledger with the rest of the data
+directory, and the learnings start again. It does not touch the repository:
+every landed gate stays in `.claude/kh-harness/gates.json`, binding everyone,
+with no learning left on this machine to suspend or `revert` it. To take
+them out, either:
+
+- run `uninstall --yes`, which removes `docs/harness/LEARNED.md` and
+  `gates.json` whole, with every landed gate in them, when both hold only
+  learnings the manifest records (see
+  [uninstall](commands.md#uninstall)); then `apply --yes` to reinstall the
+  rest; or
+- edit both files by hand to take out the gates you no longer want, and
+  commit. Both files are kit-owned, so `detect`'s `P5.integrity` then
+  reports them as modified, and kh-harness no longer updates them.
 
 ### tick could not do all of its work
 

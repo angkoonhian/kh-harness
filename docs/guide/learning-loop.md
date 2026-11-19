@@ -84,6 +84,7 @@ stateDiagram-v2
     trial --> active_local: approve or policy
     trial --> retired: cited paths gone
     active_local --> trial: demote or two wrong marks
+    active_local --> suspended: demote while its gate is committed
     active_local --> landed: land
     landed --> active_local: revert
     landed --> suspended: demote or two wrong marks
@@ -104,8 +105,8 @@ of the diagram for clarity; the table below gives its conditions.
 | `trial` | `active-local` | `learn approve` | you, at a terminal |
 | `trial` | `active-local` | `learn tick` under a recorded policy | `tick`, which anyone can run |
 | `trial` | `retired` | `learn tick`, when every cited path is gone | `tick` |
-| `active-local` | `trial` | `learn demote` | you, at a terminal |
-| `active-local` | `trial` | the second wrong mark since its promotion | you mark it (terminal); `tick` finishes a demotion that did not happen |
+| `active-local` | `trial` | `learn demote`, or the second wrong mark since its promotion, while its gate is not in the committed gate file | you, at a terminal; `tick` finishes a demotion that did not happen |
+| `active-local` | `suspended` | the same, while its gate is in the committed gate file (a land that stopped before its ledger entry, or a checkout that already holds it) | you, at a terminal; or `tick` |
 | `active-local` | `landed` | `learn land --yes` | you, at a terminal |
 | `landed` | `active-local` | `learn revert --yes` | you, at a terminal |
 | `landed` | `suspended` | `learn demote`, or the second wrong mark since its landing | you, at a terminal; or `tick` |
@@ -148,25 +149,50 @@ recurrences a rejection covers follows the failure kinds as `FAILURES.md`
 labels them now. The skill passes `--redraft` only when you ask for a new
 draft in the conversation.
 
-## Approval and the terminal check
+## The terminal check and the deny rules
+
+This is the one place these two barriers are described; the other pages
+link here.
 
 > [!IMPORTANT]
-> `approve`, `wrong`, `demote`, `retire`, `land`, `revert`, `policy set` and
-> `policy clear` run only for a person at an interactive terminal outside
-> Claude Code: standard input and output must both be terminals and
-> `CLAUDECODE` must be unset. The built-in terminal of an IDE is refused,
-> because the Claude Code extensions set `CLAUDECODE` there too. Use a
-> separate terminal window. `land` and `revert` need it only with `--yes`;
-> their dry run needs none and writes nothing.
+> Eight subcommands are terminal-only: `approve`, `wrong`, `demote`,
+> `retire`, `land`, `revert`, `policy set` and `policy clear`. Each runs
+> only for a person at an interactive terminal outside Claude Code.
 
-To approve, run `learn show <id>`, read the gate, and pass the hash it
-prints to `learn approve <id> --sha256 <hash> --action <warn|block>`. Any
-change to the gate's content changes the hash and voids the approval.
-`apply` also installs deny rules that make Claude Code decline these eight
-subcommands, as a second barrier. The rules cover `land` and `revert` whole,
-their dry runs included, so an agent cannot run even the dry run; you do.
-The skill never runs any of the eight, nor `policy show`. Neither barrier is
-isolation; see [Limits](../../README.md#limits).
+**The terminal check.** Standard input and standard output must both be
+terminals, and `CLAUDECODE` must be unset. Claude Code sets `CLAUDECODE` in
+every process it starts, and its IDE extensions set it in their built-in
+terminals too, so those are refused; use a separate terminal window. Run
+anywhere else, or with either stream redirected, a terminal-only
+subcommand exits 3. It changes no learning, but it first runs the gate
+repair, which can rewrite this machine's `gates.local.json`. `land` and
+`revert` need the terminal only with `--yes`: without it each is a dry run
+that writes nothing, and anyone may run it. No flag or variable skips the
+check.
+
+**The deny rules.** `apply` installs, beside the gate hook, Bash and
+PowerShell deny rules over `learn.mjs` for all eight, so Claude Code
+declines to run them: a second barrier. Each rule matches the text
+`learn.mjs` followed, after a space, by one of the subcommand words. The
+rules cover `land` and `revert` whole, their dry runs included, by design:
+the dry run is yours to read. A command that reaches the script another
+way, through a package script or with the subcommand quoted, is not caught
+by them, and only the terminal check stops it. An unrelated command that
+holds that text, such as a commit message, is declined too. An install made
+before a rule existed is proposed the ones it lacks by the next `apply`.
+
+**The skill.** `harness-learn` runs none of the eight, not even the dry
+runs of `land` and `revert`, and not `policy show`.
+
+Neither barrier is isolation: a process running as you can forge a terminal
+and clear `CLAUDECODE`, or call the kit's functions from Node directly. See
+[Limits](../../README.md#limits).
+
+## Approval
+
+Run `learn show <id>`, read the gate, and pass the hash it prints to
+`learn approve <id> --sha256 <hash> --action <warn|block>`, at a terminal.
+Any change to the gate's content changes the hash and voids the approval.
 
 ## The policy
 
@@ -230,33 +256,9 @@ every committed gate has an approved entry.
 
 `learn revert <id>` takes the learning's gate, entry and manifest record out
 of the repository, whichever are left; `--yes` at a terminal writes it, and
-the dry run writes nothing.
-
-- A landed learning returns to `active-local`. Its gate is written back to
-  this machine's gate file first, so it never stops acting here, and its
-  approval stands.
-- A suspended learning ends `retired`.
-- A learning retired while its gate was still committed is reverted too,
-  and its gate taken out.
-- A landed or suspended learning with no trace in this checkout, as after an
-  uncommitted land was discarded, is reverted on this machine only: no file
-  is written, and the dry run and the result say so.
-
-Whenever the working tree's gate file no longer holds the learning's gate,
-the revert reads the gate file in the commit `HEAD` names. If that commit
-still holds the gate at the learning's hash, the gate is still committed for
-everyone, so the revert goes on, and its first note says so: this run did
-not remove the gate, it was already gone from the working tree, the commit
-holds it until its removal is committed, and `git status` shows the files.
-For a learning the revert retires, the note adds that restoring the file
-from the commit puts the gate back in force on this machine. When the commit
-cannot be read, or holds a gate file larger than the gate hook loads, the
-notes say so and why. A revert that removes the gate itself needs no such
-note.
-
-A trace under the learning's id at another hash is refused, never removed.
-A hand-edited learned file is never written; while it still holds the
-learning, the refusal says that taking it out by hand lets the revert go on.
+the dry run writes nothing. What it does in each case, and what to type
+after a land or revert that stopped, is in the table under
+[Recovery and every revert case](#recovery-and-every-revert-case).
 
 ## Suspending
 
@@ -269,39 +271,27 @@ the repository and retires the learning. `learn retire` is refused while
 the gate is still committed, since retiring writes no file, and the refusal
 names the revert.
 
-## Recovery from an interrupted land or revert
+## Recovery and every revert case
 
-Each step's writes happen in a fixed order, so a stop at any point leaves a
-state that the same command, run again, finishes or reports:
+Each step writes in a fixed order — a land writes `LEARNED.md`, then
+`gates.json`, the manifest, its ledger entry, the learning file, and last
+removes the local gate; a revert first writes a landed learning's gate back
+to the local gate file, and keeps the manifest record until its ledger
+entries are written — so a step that stops leaves a state the same command
+finishes. A committed gate never stands without its registry entry; until a
+stopped step is finished, `P5.integrity` reports what it left as failing.
 
-| Step | Order |
-|---|---|
-| land | `LEARNED.md`, then `gates.json`; the manifest; the ledger's `landed` entry, the learning file, and the removal of the local gate |
-| revert | a landed learning's gate written back to the local gate file; `gates.json`, then `LEARNED.md`, when either holds a trace; the manifest, the record kept; the ledger's `reverted` (and `retired`, for a suspended learning or one retired with its gate still committed) entries, then the learning file; the manifest record dropped, when there was one |
-
-Run the same command again and it finishes:
-
-- **A kill between a file write and the manifest write.** The file on disk
-  is recognised when it is exactly what this step makes from the file the
-  manifest records (or from no file, where it records none). The step goes
-  on from the recorded file and records the one on disk. Any other
-  difference is a hand edit, and is refused.
-- **A land stopped before its ledger entry** finds every file already as it
-  would write them. One stopped between its `landed` entry and the learning
-  file is recognised from the ledger. A revert of such a learning says that
-  running the land again finishes it.
-- **A revert** keeps the manifest record until its ledger entries are
-  written, so a trace is always left for the next revert. One whose entries
-  are written in part or whole, its learning file not yet, is recognised
-  from the ledger's last entries for the learning, and only what is missing
-  is written. A record left once every entry is written is removed by the
-  next revert, whatever the learning's status has become since.
-
-A committed gate never stands without its registry entry. At worst an entry
-approves a gate not yet written, or is left for a gate already removed, and
-`P5.integrity` reports either as failing until the step is finished.
-
-After a branch switch to a checkout without the committed gate, or once an
-uncommitted land is discarded, a landed learning is enforced nowhere until
-the next `learn` command or `tick` writes its local gate back. A revert then
-returns it to `active-local` on this machine.
+| Situation | Type, at a terminal | Result |
+|---|---|---|
+| A landed learning, its gate and entry in the working tree | `learn revert <id> --yes` | Gate, entry and manifest record removed; the learning is `active-local` again, its gate written back to this machine first, its approval standing. Commit the change. |
+| A suspended learning | `learn revert <id> --yes` | Gate, entry and record removed; the learning is retired. |
+| A learning retired while its gate was still committed | `learn revert <id> --yes` | The gate is taken out; the ledger records `reverted` and `retired` again. |
+| A landed or suspended learning with nothing of it in this checkout (an uncommitted land discarded) | `learn revert <id> --yes` | Reverted on this machine only; no file is written, and the dry run and the result say so. |
+| The working tree's `gates.json` no longer holds the gate, and the commit `HEAD` names still does | `learn revert <id> --yes` | It goes on. Its first note says this run did not remove the gate, the commit still holds it until its removal is committed, and `git status` shows the files; for a learning it retires, that restoring the file from the commit puts the gate back in force here. |
+| The same, and the commit cannot be read, or holds a gate file larger than the hook loads | `learn revert <id> --yes` | It goes on; the notes say why the commit could not be checked. |
+| A land or revert killed between a file write and the manifest write | the same command again | The file on disk is recognised as that step's own write (exactly what it makes from the recorded file) and the step finishes. Any other difference is a hand edit and is refused. |
+| A land stopped before its ledger entry, or between that entry and the learning file | `learn land <id> --yes` | Every file is found as it would write it, and the land finishes. A revert of such a learning says to run the land again. |
+| A revert stopped after part or all of its ledger entries | `learn revert <id> --yes` | Recognised from the ledger's last entries; only what is missing is written, and a manifest record left behind is removed. |
+| A learned file edited by hand, still holding the learning | restore it from git, or take the learning out of it by hand, then `learn revert <id> --yes` | Refused (exit 3) until then; the refusal says both ways. |
+| A gate, entry or record under the same id at another hash | — | Refused, never removed: it is not this learning's. |
+| A branch switch to a checkout without the committed gate | any writing `learn` command, or `learn tick` | The landed learning's gate is enforced nowhere until then; the repair writes it back to this machine. |
