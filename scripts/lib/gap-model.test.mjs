@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildGaps, countProposals, STATES } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
-import { deriveCouldNotDerive } from './report.mjs';
+import { buildReport, deriveCouldNotDerive, renderSummary } from './report.mjs';
+import { MANIFEST_PATH } from './manifest.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, GENERATORS, toolGateDenyRules } from './propose.mjs';
@@ -1878,4 +1879,73 @@ test('P3 checks apply to the generic profile too', () => {
   for (const s of [26, 27, 28]) assert.ok(steps.includes(s), `generic must include step ${s}`);
   const cs = gaps(nothing, p3Harness());
   for (const id of ['P3.intent', 'P3.rules', 'P3.reinject']) assert.notEqual(byId(cs, id).state, 'n/a', id);
+});
+
+// --- Every phase has a title ------------------------------------------------
+
+test('every phase a check belongs to has a title in the summary, and phase 5 is Learning', () => {
+  const checks = gaps(fullStack, richHarness);
+  const phases = [...new Set(checks.map(c => c.phase))].sort();
+  assert.deepEqual(phases, [0, 1, 2, 3, 4, 5], 'fixture sanity: every phase is present');
+  const summary = renderSummary(buildReport({ root: '/r', kitVersion: '0.2.0', git: { branch: 'x', isRepo: true }, stack: fullStack, harness: richHarness, exposures: [], profile: selectProfile(fullStack), checks }));
+  const headings = summary.split('\n').filter(line => line.startsWith('Phase '));
+  assert.equal(headings.length, phases.length);
+  for (const heading of headings) assert.match(heading, /^Phase \d — \S/, `"${heading}" has no title`);
+  assert.ok(headings.includes('Phase 5 — Learning'));
+});
+
+// --- A check says what it could not read ------------------------------------
+
+function repoWith(files) {
+  const d = mkdtempSync(join(tmpdir(), 'hk-gap-'));
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(join(d, rel, '..'), { recursive: true });
+    writeFileSync(join(d, rel), text);
+  }
+  return d;
+}
+const unapprovedGates = JSON.stringify({ schema: 1, gates: [{ id: 'L1', tool: 'Bash', field: 'command', match: { kind: 'token', value: '--force' }, message: 'Not that.', action: 'block' }] });
+
+test('P0.kitskew over a manifest that cannot be read says so, and does not say the manifest records nothing', () => {
+  const d = repoWith({ [MANIFEST_PATH]: '{not json' });
+  const c = byId(gaps(bareStack, bareHarness, [], undefined, [], d, null), 'P0.kitskew');
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [`${MANIFEST_PATH} could not be read as a manifest, so no installed file was compared with what this kit generates`]);
+});
+
+test('P0.kitskew tells no manifest from a manifest that records no file', () => {
+  const none = byId(gaps(bareStack, bareHarness, [], undefined, [], repoWith({}), null), 'P0.kitskew');
+  assert.deepEqual([none.state, none.evidence], ['n/a', [`no ${MANIFEST_PATH}: no file is recorded as installed`]]);
+  const empty = byId(gaps(bareStack, bareHarness, [], undefined, [], repoWith({}), { schema: 1, kitVersion: '0.2.0', files: [], settingsPatches: [] }), 'P0.kitskew');
+  assert.deepEqual([empty.state, empty.evidence], ['n/a', [`${MANIFEST_PATH} records no installed file`]]);
+  const unread = byId(gaps(bareStack, bareHarness), 'P0.kitskew');
+  assert.deepEqual([unread.state, unread.evidence], ['n/a', ['no manifest was read, so no installed file was compared']]);
+});
+
+test('P5.integrity with no manifest says what it looked at, and that nothing is recorded to check', () => {
+  const c = byId(gaps(bareStack, bareHarness, [], undefined, [], repoWith({}), null), 'P5.integrity');
+  assert.equal(c.state, 'n/a');
+  assert.deepEqual(c.evidence, [
+    `no ${MANIFEST_PATH}: no installed file is recorded, so none was checked`,
+    'no kh-harness hook is registered in .claude/settings.json',
+    '.claude/kh-harness/gates.json: no committed gate file',
+  ]);
+});
+
+test('P5.integrity with no manifest still fails on a committed gate nobody approved', () => {
+  const d = repoWith({ '.claude/kh-harness/gates.json': unapprovedGates });
+  const c = byId(gaps(bareStack, bareHarness, [], undefined, [], d, null), 'P5.integrity');
+  assert.equal(c.state, 'failing');
+  assert.ok(c.evidence.some(e => /^L1 in \.claude\/kh-harness\/gates\.json: no entry in docs\/harness\/LEARNED\.md approves it$/.test(e)), JSON.stringify(c.evidence));
+});
+
+test('P5.integrity with no manifest fails when kit hooks are registered, since their scripts cannot be checked', () => {
+  const c = byId(gaps(fullStack, richHarness, [], undefined, [], repoWith({}), null), 'P5.integrity');
+  assert.equal(c.state, 'failing');
+  assert.match(c.evidence[0], /^7 kh-harness hook scripts are registered in \.claude\/settings\.json \(.*\.claude\/scripts\/tool-gate\.mjs.*\), but no \.claude\/kh-harness\.manifest\.json records what kh-harness wrote, so they could not be checked against it$/);
+});
+
+test('P5.toolgate says it looked at the deny rules as well as the hook', () => {
+  const c = byId(gaps(bareStack, bareHarness), 'P5.toolgate');
+  assert.deepEqual(c.lookedFor, ['a PreToolUse hook in .claude/settings.json', 'the deny rules the gate hook is installed with, in the settings in effect']);
 });

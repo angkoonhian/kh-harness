@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import { countProposals } from './gap-model.mjs';
 
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
-const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 3: 'Intent', 4: 'Continuity' };
+const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 3: 'Intent', 4: 'Continuity', 5: 'Learning' };
 const UNWRITTEN_NOTE = {
   skill: ' (the skill drafts this; apply does not write it)',
   human: ' (a human does this; apply does not write it)',
