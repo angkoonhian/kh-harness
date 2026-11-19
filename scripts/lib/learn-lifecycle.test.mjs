@@ -26,6 +26,7 @@ import { approveLearning, markWrong } from './learn-promote.mjs';
 import {
   APPLY, DETECT, fixture, git, LEARN, linesAfter, LOG, manifestOf, runRegisteredHook, runResult, sandboxDataDir, UNINSTALL,
 } from './lifecycle-fixtures.mjs';
+import { purgeLog, purgeTarget } from './log-purge.mjs';
 import { MIN_CLEAN_CALLS, MIN_CLEAN_SESSIONS } from './replay.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 import { requireInteractive } from './tty.mjs';
@@ -330,9 +331,11 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.equal(r.errorLine, WATCH_ERROR);
     assert.deepEqual(report.gates.firings, [], 'no gate exists yet');
     signature = r.signature;
+    // The report prints what the log recorded inside its data block, one
+    // level deeper than `learn candidates` prints it.
     const text = ok(log('report'));
-    assert.match(text, new RegExp(`^ {4}${signature} {2}Bash: in 2 sessions, 2 times, from `, 'm'), text);
-    assert.match(text, /^ {6}failure kind: unlabelled$/m);
+    assert.match(text, new RegExp(`^ {6}${signature} {2}Bash: in 2 sessions, 2 times, from `, 'm'), text);
+    assert.match(text, /^ {8}failure kind: unlabelled$/m);
     // Listed under the recurrences that may be drafted, and none apart as
     // rejected before.
     const candidates = ok(learn('candidates'));
@@ -347,7 +350,7 @@ test('the learning loop end to end, through the real commands and the installed 
     // FORMAT describes below its comment.
     appendFileSync(join(d, 'docs/harness/FAILURES.md'), `\n## F1 — The tests are started in watch mode\n- signatures: ${signature}\n`);
     owner(d, 'commit', '-q', '-a', '-m', 'name failure F1');
-    assert.match(ok(log('report')), new RegExp(`^ {4}${signature} .*\\n.*\\n {6}failure kind: F1$`, 'm'));
+    assert.match(ok(log('report')), new RegExp(`^ {6}${signature} .*\\n.*\\n {8}failure kind: F1$`, 'm'));
     assert.deepEqual(JSON.parse(ok(log('report', '--json'))).groups[0].recurrences[0].failureKinds, ['F1']);
   });
 
@@ -615,14 +618,16 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.match(ok(learn('list')), /^ {2}L1 {2}retired /m, 'and its ledger');
   });
 
-  await step('18. log purge lists what it would remove, and with --yes removes the data directory', () => {
+  await step('18. log purge lists what it would remove; --yes is refused without a terminal; through the library, at a terminal, the data directory goes', () => {
     const data = dataSnapshot();
     const dry = ok(log('purge'));
     assert.ok(dry.startsWith(`Would remove ${dataDir} (`), dry);
     assert.match(dry, /, 9 sessions\):$/m, dry);
     for (const entry of ['ledger.jsonl', 'learnings/', 'sessions/', 'gates.local.json', 'index.jsonl']) assert.match(dry, new RegExp(`^ {2}${escapeRegExp(entry)} {2}`, 'm'), entry);
     assert.deepEqual(dataSnapshot(), data, 'the dry run removed nothing');
-    assert.equal(ok(log('purge', '--yes')), `Removed ${dataDir}. The log for this repository on this machine is gone, and disabled.\n`);
+    refusedForTerminal(log('purge', '--yes'));
+    assert.deepEqual(dataSnapshot(), data, 'the refused purge removed nothing');
+    assert.deepEqual(purgeLog(d, purgeTarget(d), { interactive: AT_TERMINAL }), { removed: true });
     assert.equal(existsSync(dataDir), false);
     assert.ok(existsSync(DATA_ROOT), 'only this repository\'s directory goes');
   });
