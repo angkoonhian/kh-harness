@@ -29,7 +29,10 @@ const median = times => {
  * difference of medians that read 45 ms on a quiet machine read 100 to
  * 130 ms beside a full suite, for the same hook. The load comes and goes, so
  * the fastest run of each kind is the least slowed one; a delay in the hook
- * is in every hook run, the fastest included.
+ * is in every hook run, the fastest included. `npm test` runs the tests
+ * named `latency budget: …` after the rest of the suite, one file at a time
+ * (latency-phase.test.mjs holds that in place), so the suite's own processes
+ * are never that load.
  */
 export function addedLatency({ runHookOnce, stdin, env, pairs }) {
   const hook = [];

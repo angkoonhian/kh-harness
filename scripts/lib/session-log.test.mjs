@@ -718,7 +718,7 @@ test('with autodraft on and the sealing module missing, a session start prints n
 const ADDED_LATENCY_BUDGET_MS = 100;
 const LATENCY_PAIRS = 40;
 
-test('the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
+test('latency budget: the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
   const root = enabledProject();
   const payload = toolPayload('PostToolUse', 'latency-1', { tool_response: { stdout: 'x'.repeat(4096) }, duration_ms: 10 });
   const stdin = JSON.stringify(payload);

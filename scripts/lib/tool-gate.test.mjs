@@ -447,7 +447,7 @@ test('a payload for another event gets no notice even when a sibling is missing'
 const ADDED_LATENCY_BUDGET_MS = 100;
 const LATENCY_PAIRS = 40;
 
-test('the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
+test('latency budget: the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
   const root = project();
   const kinds = ['literal', 'token', 'glob'];
   const gates = Array.from({ length: GATE_LIMITS.gatesMax }, (_, i) =>

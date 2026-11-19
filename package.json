@@ -5,7 +5,7 @@
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test \"scripts/lib/**/*.test.mjs\"",
+    "test": "node --test --test-skip-pattern=\"^latency budget: \" \"scripts/lib/**/*.test.mjs\" && node --test --test-concurrency=1 --test-name-pattern=\"^latency budget: \" scripts/lib/session-log.test.mjs scripts/lib/tool-gate.test.mjs",
     "detect": "node scripts/detect.mjs",
     "log": "node scripts/log.mjs",
     "learn": "node scripts/learn.mjs"
