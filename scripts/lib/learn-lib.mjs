@@ -1024,9 +1024,12 @@ export function listLearnings(root) {
  * firings after which the next call of the gate's tool in that session
  * succeeded; `wrong`, the firings marked wrong since its last promotion or
  * landing, or ever when it had neither; `wrongTotal`, those marked wrong in all;
- * and `sessionsUnreadable`. Reads only. Returns `{ error }` for an id that
- * names no learning, for a learning the ledger does not vouch for, or when
- * the log cannot be read.
+ * `sessionsUnreadable`; and `places`, where each of those firings is, oldest
+ * first: `{ sessionId, line, action, ts, markedWrong }`, `sessionId` and
+ * `line` as a wrong mark names the firing and `markedWrong` whether the
+ * ledger records a mark of it for this learning. Reads only. Returns
+ * `{ error }` for an id that names no learning, for a learning the ledger
+ * does not vouch for, or when the log cannot be read.
  */
 export function learningStats(root, id) {
   try {
@@ -1045,6 +1048,17 @@ function learningStatsUnguarded(root, id) {
   const unrecorded = unrecordedReason(read.learning, view);
   if (unrecorded !== null) return { error: unrecorded };
   const { gates, sessionsUnreadable } = gateStats(root, view.entries, new Map([[id, read.learning.sha256]]));
-  const { firings, sessions, rerouted, wrong } = gates.get(id);
-  return { firings, sessions, rerouted, wrong: wrong.sinceGrant, wrongTotal: wrong.total, sessionsUnreadable };
+  const { firings, sessions, rerouted, places, wrong } = gates.get(id);
+  const marked = new Set(view.entries
+    .filter(e => e?.kind === 'wrong' && e.learningId === id && isPlainObject(e.firing))
+    .map(e => placeKey(e.firing)));
+  return {
+    firings, sessions, rerouted, wrong: wrong.sinceGrant, wrongTotal: wrong.total, sessionsUnreadable,
+    places: places.toSorted(byTime).map(p => ({ ...p, markedWrong: marked.has(placeKey(p)) })),
+  };
 }
+
+const placeKey = ({ sessionId, line }) => JSON.stringify([sessionId, line]);
+// Oldest first, a firing with no time before every other; `toSorted` is
+// stable, so firings of one time keep the order they were read in.
+const byTime = (a, b) => ((a.ts ?? '') < (b.ts ?? '') ? -1 : (a.ts ?? '') > (b.ts ?? '') ? 1 : 0);

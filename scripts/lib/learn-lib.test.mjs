@@ -617,7 +617,28 @@ test('stats count firings across sessions', () => {
   const mark = (learningId, line) => appendLedger(root, { kind: 'wrong', learningId, contentSha256: learning.sha256, evidence, base: 'b', learned: 'l', approvedBy: 'owner', firing: { sessionId: 'later-a', line } });
   mark('L1', 1);
   mark('L2', 2);
-  assert.deepEqual(learningStats(root, 'L1'), { firings: 5, sessions: 4, rerouted: 2, wrong: 1, wrongTotal: 1, sessionsUnreadable: 0 });
+  const { places, ...counts } = learningStats(root, 'L1');
+  assert.deepEqual(counts, { firings: 5, sessions: 4, rerouted: 2, wrong: 1, wrongTotal: 1, sessionsUnreadable: 0 });
+  // Where each counted firing is, as a wrong mark names it, oldest first;
+  // only L1's own mark counts for it.
+  assert.deepEqual(places.map(({ ts, ...place }) => place), [
+    { sessionId: 'later-a', line: 1, action: 'block', markedWrong: true },
+    { sessionId: 'later-b', line: 1, action: 'block', markedWrong: false },
+    { sessionId: 'later-b', line: 3, action: 'block', markedWrong: false },
+    { sessionId: 'later-d', line: 1, action: 'observe', markedWrong: false },
+    { sessionId: 'later-e', line: 1, action: 'warn', markedWrong: false },
+  ]);
+  assert.ok(places.every(p => !Number.isNaN(Date.parse(p.ts))));
+});
+
+test('a learning\'s firings are ordered by when they were recorded, not by session id', () => {
+  const { root, learning } = trialRepo();
+  logFiring(root, 'zz-first', learning.gate, 'z-1');
+  // An event's time is the millisecond it was appended: the next firing is
+  // appended in a later one.
+  for (const start = Date.now(); Date.now() === start;);
+  logFiring(root, 'aa-second', learning.gate, 'a-1');
+  assert.deepEqual(learningStats(root, 'L1').places.map(p => p.sessionId), ['zz-first', 'aa-second']);
 });
 
 test('nothing in this module writes inside the repository', () => {

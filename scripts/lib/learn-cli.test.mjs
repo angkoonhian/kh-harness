@@ -23,11 +23,11 @@ import {
   draftFor, drafted, FIX_GATE, git, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, READ_GATE, repo, signatureOf, tempDir,
   trialRepo, useId, writeLocalGates,
 } from './learn-fixtures.mjs';
-import { DATA_MARKERS, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, renderRepositoryDone, TERMINAL_ONLY } from './learn-cli.mjs';
+import { DATA_MARKERS, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, renderRepositoryDone, SHOWN_FIRINGS, TERMINAL_ONLY } from './learn-cli.mjs';
 import { landLearning, revertLearning } from './learn-land.mjs';
 import { FAILURE_EVENT, SUCCESS_EVENT } from './recurrence.mjs';
 import { listLearnings, runTrial } from './learn-lib.mjs';
-import { approveLearning, retireLearning, setPolicy } from './learn-promote.mjs';
+import { approveLearning, markWrong, retireLearning, setPolicy } from './learn-promote.mjs';
 import { appendLedger } from './ledger.mjs';
 import { buildLogReport, NOT_CLAIMED, REROUTED_MEANS } from './log-report.mjs';
 import { learnCommandDenyRules } from './propose.mjs';
@@ -406,11 +406,43 @@ test('show prints the gate, its hash, the replay and the stats', () => {
   assert.ok(text.includes(REROUTED_MEANS), 'what rerouted counts is stated beside it');
   const view = json(root, 'show', 'L1');
   assert.equal(view.gateSha256, learning.sha256);
-  assert.deepEqual(view.stats, { firings: 1, sessions: 1, rerouted: 0, wrong: 0, wrongTotal: 0, sessionsUnreadable: 0 });
+  const { latestFirings, ...counts } = view.stats;
+  assert.deepEqual(counts, { firings: 1, sessions: 1, rerouted: 0, wrong: 0, wrongTotal: 0, sessionsUnreadable: 0 });
+  assert.deepEqual(latestFirings.map(f => [f.sessionId, f.action]), [['fire-a', 'observe']]);
   assert.equal(view.replay.verdict, 'pass');
   const missing = runLearn(root, 'show', 'L9');
   assert.equal(missing.status, 2);
   assert.match(missing.stderr, /L9: no such learning/);
+});
+
+test('show names the latest firings as wrong takes them, the latest last, and says which are marked wrong', () => {
+  const { root, gate } = promotedRepo('block');
+  const refs = Array.from({ length: SHOWN_FIRINGS + 2 }, (_, i) => fired(root, `fire-${String(i).padStart(2, '0')}`, gate));
+  const latest = refs.slice(-SHOWN_FIRINGS);
+  const marked = markWrong(root, latest[0], { interactive: AT_TERMINAL });
+  assert.equal(marked.ok, true, marked.error);
+
+  const text = ok(runLearn(root, 'show', 'L1'));
+  const lines = text.split('\n');
+  const heading = lines.indexOf(`  firings, the latest ${SHOWN_FIRINGS} of ${refs.length}, the latest last, each as \`wrong\` takes it:`);
+  assert.ok(heading !== -1, text);
+  const listed = lines.slice(heading + 1, heading + 1 + SHOWN_FIRINGS);
+  assert.deepEqual(listed.map(l => l.trim().split(/ {2}/)[0]), latest.map(r => `${r.sessionId}:${r.line}`), text);
+  assert.ok(listed.every(l => / {2}block {2}at \d{4}-\d\d-\d\dT[\d:.]+Z/.test(l)), text);
+  assert.deepEqual(listed.map(l => l.endsWith('  marked wrong')), latest.map((_, i) => i === 0), text);
+
+  const view = json(root, 'show', 'L1');
+  assert.deepEqual(view.stats.latestFirings.map(f => ({ sessionId: f.sessionId, line: f.line, action: f.action, markedWrong: f.markedWrong })),
+    latest.map((r, i) => ({ ...r, action: 'block', markedWrong: i === 0 })));
+  assert.equal(view.stats.firings, refs.length);
+  assert.equal(SHOWN_FIRINGS, 10);
+  assert.match(learnHelp('show').replace(/\s+/g, ' '), /the latest ten each named <session>:<line>, as `wrong` takes it/, 'the help says how many');
+});
+
+test('show lists no firing for a gate that never fired', () => {
+  const { root } = trialRepo();
+  assert.doesNotMatch(ok(runLearn(root, 'show', 'L1')), /each as `wrong` takes it/);
+  assert.deepEqual(json(root, 'show', 'L1').stats.latestFirings, []);
 });
 
 test('list shows every learning with its status and what the ledger says beside them', () => {

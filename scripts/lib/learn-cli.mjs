@@ -468,8 +468,27 @@ export function showView(root, id) {
     title: learning.title, why: learning.why, signature: learning.signature, failureId: learning.failureId,
     external: learning.external, evidence: learning.evidence,
     gate: learning.gate, gateSha256: learning.sha256, replay: learning.replay,
-    stats: stats.error === undefined ? stats : null, statsError: stats.error ?? null,
+    stats: stats.error === undefined ? shownStats(stats) : null, statsError: stats.error ?? null,
   };
+}
+
+/** How many of a learning's firings `show` lists: the latest. */
+export const SHOWN_FIRINGS = 10;
+
+/** The stats as `show` holds them: the counts, and where the latest
+ * `SHOWN_FIRINGS` firings are, as `latestFirings`. */
+const shownStats = ({ places, ...counts }) => ({ ...counts, latestFirings: places.slice(-SHOWN_FIRINGS) });
+
+/** The latest firings, each named as `wrong` takes it; nothing for a gate
+ * that never fired. */
+function firingLines(view) {
+  const latest = view.stats?.latestFirings ?? [];
+  if (latest.length === 0) return [];
+  const which = latest.length === view.stats.firings ? 'the latest last' : `the latest ${latest.length} of ${view.stats.firings}, the latest last`;
+  return [
+    `firings, ${which}, each as \`wrong\` takes it:`,
+    ...latest.map(f => `  ${sessionName(f.sessionId)}:${f.line}  ${action(f.action)}  at ${time(f.ts)}${f.markedWrong ? '  marked wrong' : ''}`),
+  ];
 }
 
 function statsLine(view) {
@@ -499,6 +518,7 @@ export function renderShow(view) {
       view.replay === null ? 'replay: not yet' : `replay: ${verdict(view.replay.verdict)}: ${visible(view.replay.reason)}`,
       statsLine(view),
       ...(view.stats === null ? [] : [`  ${REROUTED_MEANS}`]),
+      ...firingLines(view),
     ]),
   ].join('\n');
 }
