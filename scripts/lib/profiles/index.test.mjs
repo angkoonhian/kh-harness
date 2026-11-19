@@ -82,3 +82,9 @@ test('every profile applies step 30 — the gate hook is language-agnostic', () 
     assert.ok(selectProfile(s).appliesToSteps().includes(30), `${selectProfile(s).id} must apply step 30`);
   }
 });
+
+test('every profile applies step 31 — the logging hook is language-agnostic', () => {
+  for (const s of [tsSingle, tsWorkspace, py, nothing]) {
+    assert.ok(selectProfile(s).appliesToSteps().includes(31), `${selectProfile(s).id} must apply step 31`);
+  }
+});

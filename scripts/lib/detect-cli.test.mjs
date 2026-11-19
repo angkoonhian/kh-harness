@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { detectExposures, UNREADABLE_KIND } from './detect-exposure.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { toolGateDenyRules } from './propose.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { selectProfile } from './profiles/index.mjs';
 
 const CLI = resolve(import.meta.dirname, '..', 'detect.mjs');
@@ -53,17 +54,16 @@ function harnessed() {
   // `absent` + a new proposal, breaking this test's own "no proposals" point.
   // Hooks are credited from this registry, not from filenames under
   // .claude/scripts/ — a script nothing registers does nothing.
-  write(d, '.claude/settings.json', JSON.stringify({
-    permissions: { deny: ['Edit(*-lock.json)'] },
-    hooks: {
-      PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node .claude/scripts/lint-touched.mjs' }] }],
-      Stop: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/verify-touched.mjs' }] }],
-      SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command: 'node .claude/scripts/session-brief.mjs' }] }],
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/rules-brief.mjs' }] }],
-      PostToolUseFailure: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/loop-watch.mjs' }] }],
-      PreToolUse: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/tool-gate.mjs' }] }],
-    },
-  }));
+  const hooks = {
+    PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'node .claude/scripts/lint-touched.mjs' }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/verify-touched.mjs' }] }],
+    SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command: 'node .claude/scripts/session-brief.mjs' }] }],
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/rules-brief.mjs' }] }],
+    PostToolUseFailure: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/loop-watch.mjs' }] }],
+    PreToolUse: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/tool-gate.mjs' }] }],
+  };
+  for (const event of LOGGED_EVENTS) (hooks[event] ??= []).push({ hooks: [{ type: 'command', command: 'node .claude/scripts/session-log.mjs' }] });
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(*-lock.json)'] }, hooks }));
   write(d, '.claude/rules/api.md', '#');
   write(d, '.claude/scripts/lint-touched.mjs', '//');
   write(d, '.claude/scripts/verify-touched.mjs', '//');
@@ -71,6 +71,7 @@ function harnessed() {
   write(d, '.claude/scripts/rules-brief.mjs', '//');
   write(d, '.claude/scripts/loop-watch.mjs', '//');
   write(d, '.claude/scripts/tool-gate.mjs', '//');
+  write(d, '.claude/scripts/session-log.mjs', '//');
   // P4.remote is satisfied by having a remote at all; the URL is never contacted.
   execFileSync('git', ['init', '-q', d]);
   execFileSync('git', ['-C', d, 'remote', 'add', 'origin', 'https://example.invalid/x.git']);
@@ -665,10 +666,19 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
   assert.ok(protectedCheck.proposal);
   assert.ok(protectedCheck.evidence.some(e => e.includes('Edit(migrations/**)')));
 
-  // Seven proposals now (six hooks + protected paths), where there used to
+  // The logging hook shares every one of those events, and each of their
+  // hooks is named as not ours.
+  const logCheck = r.checks.find(x => x.id === 'P5.sessionlog');
+  assert.equal(logCheck.state, 'absent');
+  assert.ok(logCheck.proposal);
+  for (const cmd of ['docs/agent-context/inject.js', 'tools/lint.js', 'tools/verify.js', 'tools/remind.js', 'tools/alert.js', 'tools/gate.js']) {
+    assert.ok(logCheck.evidence.some(e => e.includes(cmd)), `P5.sessionlog evidence must name ${cmd}; got ${JSON.stringify(logCheck.evidence)}`);
+  }
+
+  // Eight proposals now (seven hooks + protected paths), where there used to
   // be none — the defect, inverted.
   assert.doesNotMatch(cli(d), /no proposals/i);
-  assert.match(cli(d), /7 proposals/i);
+  assert.match(cli(d), /8 proposals/i);
 });
 
 // D1: a real repository keeps 456 lines under docs/wiki/ and names it in

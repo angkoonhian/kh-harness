@@ -17,6 +17,9 @@ import { join, resolve } from 'node:path';
 import {
   parseArgv, wantsHelp, APPLY_USAGE, DETECT_USAGE, UNINSTALL_USAGE, EXECUTION_DISCLOSURE, EXIT_CODES,
 } from './cli.mjs';
+import { sandboxDataDir } from './lifecycle-fixtures.mjs';
+
+sandboxDataDir();
 
 const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
 const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');

@@ -1,11 +1,9 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { readIfPresent } from './scan.mjs';
 import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates, denyRuleCoverage } from './protected-evidence.mjs';
-import { matcherCovers, normalizeMatcher } from './settings-merge.mjs';
+import { registeredHook } from './hook-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote, fixtureExposureNote } from './detect-exposure.mjs';
@@ -20,7 +18,8 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, kitSkew, toolGateDenyRules } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, kitSkew, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { MANIFEST_PATH } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
@@ -232,109 +231,6 @@ function typecheckAdvice(pkg, files, root) {
     return { text: `${pkg.name}: typecheck -> pyright — derived from the pyright config found in this repository`, pyDerived: true };
   }
   return { text: `${pkg.name}: no typecheck command declared for this package, and neither a mypy nor a pyright config was found, so the command cannot be derived`, pyDerived: false };
-}
-
-/**
- * Credit an event from `.claude/settings.json`'s hook registry rather than from
- * a filename under `.claude/scripts/`. A hook's script may live anywhere in the
- * repository, so a filename check cannot be made adequate here — and does not
- * need to be, because settings.json is an exact record of what is wired up.
- *
- * Task 8b (the defect the coordinator found while this plan's own lifecycle
- * test was being written): this used to credit `declared` the moment the
- * event had ANYTHING registered on it — any hook at all, ours or not. A user
- * with their own unrelated `PostToolUse` hook was told the per-edit sensor
- * was already in place. The fix is `ourPath`: the resolved script path OUR
- * OWN generator registers for this event (propose.mjs's
- * `LINT_TOUCHED_PATH`/`VERIFY_TOUCHED_PATH`/`BRIEF_PATH` — the single source
- * of truth that generator also uses, so the two cannot drift). `declared`
- * now means OUR path is among what is registered, not merely that the event
- * is occupied.
- *
- * This is the same identification `apply-lib.mjs`'s `hasEquivalentHook` uses
- * — the script, under a matcher that fires whenever ours would
- * (`matcherCovers`, settings-merge.mjs; Tier 2 review, Important 1: crediting
- * by path alone read our per-edit sensor registered under `Bash` as in
- * place) — expressed against the representation THIS layer carries safely:
- * `hookRegistrations` resolves each hook's command to a script PATH (or
- * `null` when it can't) beside its normalised matcher, never the raw command
- * string, specifically so a credential embedded in a hook's arguments never
- * reaches `harness` — which is serialised wholesale into
- * docs/harness/detect.json on every run. Calling `hasEquivalentHook` itself
- * here would need the raw settings object threaded into this check, which
- * has nowhere safe to live: stashing it on `harness` would undo that
- * redaction for every hook on every event, not just the one this check
- * cares about.
- *
- * Does NOT suppress the proposal when the event is occupied by something
- * that isn't ours — the coordinator's ruling: their hook may do something
- * unrelated, and deciding for them is not this tool's place. It still
- * widens to `declared` only when ours is found (so the central
- * absent-only-may-propose invariant is untouched); otherwise it stays
- * `absent` + the proposal, with evidence naming what else is already there,
- * so adding a second entry to the same event is never a surprise.
- */
-function registeredHook(harness, event, ourPath, proposal, { manifest, root, matcher } = {}) {
-  const registrations = harness.claudeDir.hookRegistrations?.[event] ?? [];
-  const scripts = registrations.map(r => r.script);
-  const ours = registrations.filter(r => r.script === ourPath);
-  if (ours.length && !ours.some(r => matcherCovers(r.matcher, matcher))) {
-    // Registered, but under a matcher that does not fire when ours would:
-    // not the capability, and the user is told exactly why.
-    return {
-      state: 'absent', proposal,
-      evidence: ours.map(r => `${event} hook: ${ourPath} is registered, but under matcher "${r.matcher}", which does not fire for ${normalizeMatcher(matcher)} — a registration that does is still needed`),
-    };
-  }
-  if (ours.length) {
-    // Coordinator finding (Minor): this used to list EVERY resolved script
-    // on the event, presenting a user's own, unrelated hook as part of
-    // OUR credit. List only ours — if theirs is worth mentioning, it is
-    // mentioned as theirs, in the `absent` branches below, never folded
-    // into what we are claiming as declared.
-    return { state: 'declared', evidence: [`${event} hook: ${ourPath}`] };
-  }
-  // Major (coordinator, post-8b review): `commandScript` (detect-harness.mjs)
-  // resolves a hook's script only against the SCAN list (listFiles —
-  // tracked, or fallback-walk-visible) — so a repository that gitignores
-  // `.claude/` makes OUR OWN hook's script permanently unresolvable there,
-  // even though it is genuinely registered and genuinely on disk. Without
-  // this branch, such a repository is told forever, on every run, that the
-  // harness it just installed is absent and not its own.
-  //
-  // The manifest — OUR OWN record of what we installed, already the
-  // authority `uninstall` trusts to decide what to remove — plus a direct
-  // `existsSync` (never the scan list) is the right way to answer "is OURS
-  // present" here. The scan list stays reserved for the USER's own
-  // content (the `theirs` evidence below): naming a path the scan list
-  // already surfaced is safe because the user chose to make it visible;
-  // naming anything `existsSync` alone would admit risks naming a path
-  // the user deliberately kept out of git.
-  //
-  // Coordinator finding (Major, this fix's own false `declared`): this
-  // used to gate on `scripts.length > 0` — the event being OCCUPIED by
-  // ANYTHING — not on whether the occupant could plausibly be ours. If a
-  // user replaces our hook entry with an unrelated one that DOES resolve
-  // (a real, different, tracked script), `scripts` is `['their/script']`
-  // — a positive, certain answer that it is NOT ours — yet the manifest
-  // and our old script file (never cleaned up, because nothing told it
-  // to) would still make this branch fire. Gating on `scripts.includes(null)`
-  // restricts this to the one case it exists for: the event has something
-  // registered that COULD be ours, but the scan list cannot say either way
-  // because it is unresolvable (gitignored) — never a registration we can
-  // already positively identify as someone else's. This is the Task 8b
-  // ruling itself ("ours", not "occupied"), applied to the branch THIS
-  // fix added.
-  if (scripts.includes(null) && root && manifest?.settingsPatches?.some(p => p.event === event) && existsSync(join(root, ourPath))) {
-    return { state: 'declared', evidence: [`${event} hook: ${ourPath} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] };
-  }
-  if (scripts.length === 0) return { state: 'absent', proposal, evidence: [] };
-  return {
-    state: 'absent', proposal,
-    evidence: scripts.map(s => s
-      ? `${event} hook already registered, but not ours: ${s}`
-      : `${event} hook already registered, but not ours (its script could not be resolved)`),
-  };
 }
 
 /**
@@ -818,6 +714,37 @@ const CHECKS = [
       if (f.ignoredHeadings) evidence.push(`${plural(f.ignoredHeadings, 'level-2 heading')} ignored (a failure kind's heading is "## F<n> — <title>")`);
       evidence.push('`log report` shows which recurrences no failure kind labels');
       return { state: 'declared', evidence };
+    },
+  },
+  {
+    id: 'P5.sessionlog', step: 31, phase: 5,
+    lookedFor: [`a hook running ${SESSION_LOG_PATH} on each of the ${LOGGED_EVENTS.length} logged events in .claude/settings.json`],
+    // Decided from the hook registry alone. Whether the log is enabled on
+    // this machine is not read, and nothing executes, so it is never
+    // `verified`.
+    check: ({ harness, manifest, root }) => {
+      const byEvent = sessionLogRegistrations(harness, { manifest, root });
+      const missing = byEvent.filter(r => r.state !== 'declared');
+      const total = LOGGED_EVENTS.length;
+      if (missing.length === 0) {
+        // An event credited other than through the file scan keeps its own
+        // line, which says how it was confirmed.
+        const qualified = byEvent.flatMap(r => r.evidence.filter(e => e !== `${r.event} hook: ${SESSION_LOG_PATH}`));
+        return { state: 'declared', evidence: [`${SESSION_LOG_PATH} is registered on all ${total} logged events: ${LOGGED_EVENTS.join(', ')}`, ...qualified] };
+      }
+      const occupants = missing.flatMap(r => r.evidence);
+      if (missing.length === total) {
+        return {
+          state: 'absent', evidence: occupants,
+          proposal: `install scripts/session-log.mjs with the session log library and sealer it imports, and register it on the ${total} logged events — it records nothing until the log is enabled for this repository on this machine`,
+        };
+      }
+      const n = missing.length;
+      return {
+        state: 'absent',
+        evidence: [`${SESSION_LOG_PATH} is registered on ${total - n} of the ${total} logged events; ${n} ${n === 1 ? 'is' : 'are'} missing: ${missing.map(r => r.event).join(', ')}`, ...occupants],
+        proposal: `register ${SESSION_LOG_PATH} on the ${n} logged event${n === 1 ? '' : 's'} it is missing`,
+      };
     },
   },
   {

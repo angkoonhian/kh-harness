@@ -17,7 +17,7 @@ import { buildProposals } from './lib/propose.mjs';
 import { deriveCouldNotDerive, exposureSectionLines, stillOpen, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason } from './lib/apply-lib.mjs';
-import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
+import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE, EXECUTION_DISCLOSURE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const KNOWN_FLAGS = new Set(['--yes', '--allow-default-branch', '--allow-dirty', '--help', '-h']);
@@ -335,6 +335,9 @@ try {
 }
 
 if (!flags.has('--yes')) {
+  // A hook runs by itself once registered, so what each one does is said
+  // beside the dry run that would register it, not only under --help.
+  if (proposals.some(p => p.kind === 'settings-hook')) process.stdout.write(EXECUTION_DISCLOSURE + '\n\n');
   reportDrift();
   // What `--yes` would refuse, said now rather than after the diffs have
   // been read and acted on — see gateRefusals.

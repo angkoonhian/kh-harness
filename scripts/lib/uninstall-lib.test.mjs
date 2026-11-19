@@ -13,6 +13,9 @@ import { render } from './render.mjs';
 import { addHookEntry, addDenyRules } from './settings-merge.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
+import { sandboxDataDir } from './lifecycle-fixtures.mjs';
+
+sandboxDataDir();
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-uninst-'));
 // Task 8b (CRITICAL finding): uninstall additionally requires the on-disk

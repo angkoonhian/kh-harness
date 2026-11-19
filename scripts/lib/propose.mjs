@@ -14,6 +14,8 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 // the other five.
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
+import { registeredHook } from './hook-evidence.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -30,24 +32,26 @@ const VERIFY_TOUCHED_PATH = '.claude/scripts/verify-touched.mjs';
 const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
 // Phase 3 (intent and rules): the UserPromptSubmit hook that re-injects the
 // rules registry into every prompt. Declared here, like the other three
-// hook paths, so gap-model.mjs's `registeredHook` can ask "is OURS here"
+// hook paths, so `registeredHook` (hook-evidence.mjs) can ask "is OURS here"
 // against the same constant the generator registers — one source of truth.
 const RULES_BRIEF_PATH = '.claude/scripts/rules-brief.mjs';
 const LOOP_WATCH_PATH = '.claude/scripts/loop-watch.mjs';
+const SESSION_LOG_PATH = '.claude/scripts/session-log.mjs';
 const TOOL_GATE_PATH = '.claude/scripts/tool-gate.mjs';
 const HARNESS_GATES_PATH = '.claude/scripts/harness-gates.mjs';
 const HARNESS_LOG_PATH = '.claude/scripts/harness-log.mjs';
+const HARNESS_SEAL_PATH = '.claude/scripts/harness-seal.mjs';
 
 /**
  * Task 9b, finding 2: a settings-hook proposal's own `reason` used to be a
  * hardcoded "no <event> hook registered in .claude/settings.json" — true
  * only when the event is genuinely empty. When a user already has an
- * UNRELATED hook on the same event (the exact shape gap-model.mjs's
+ * UNRELATED hook on the same event (the exact shape hook-evidence.mjs's
  * `registeredHook` exists to disclose, never suppress), that sentence is
  * printed immediately above apply-lib.mjs's own diff caveat
  * "(appended after N existing hooks.<event> entries, ...)" — two adjacent,
  * self-contradicting claims about the same file. `detect` already gets this
- * right (gap-model.mjs's `registeredHook`, evidence: "<event> hook already
+ * right (hook-evidence.mjs's `registeredHook`, evidence: "<event> hook already
  * registered, but not ours: <path>"); this reuses that EXACT text — the
  * check's own `evidence`, passed through from buildProposals, never a
  * second independently-worded copy that could drift from it — rather than
@@ -280,6 +284,37 @@ function loopWatchProposal({ kitVersion, check }) {
     requiresFiles: files.map(f => f.path),
     reason: hookRegistrationReason('PostToolUseFailure', check),
   }];
+}
+
+const SESSION_LOG_STEP = 31;
+
+/**
+ * `registeredHook`'s verdict on each event in `LOGGED_EVENTS`, with the
+ * event's name: whether our logging hook is registered there, and what else
+ * is. P5.sessionlog decides from this, and its generator registers exactly
+ * the events it finds missing, each with that event's own evidence as its
+ * reason.
+ */
+export function sessionLogRegistrations(harness, { manifest, root } = {}) {
+  return LOGGED_EVENTS.map(event => ({ event, ...registeredHook(harness, event, SESSION_LOG_PATH, null, { manifest, root }) }));
+}
+
+/**
+ * The logging hook: `session-log.mjs` on every logged event, with no
+ * `matcher`, so the tool events fire for every tool. No evidence gate: the
+ * hook records nothing until the log is enabled for the repository on this
+ * machine, which no file in the repository can say. An install that
+ * predates an event is given only the events it lacks.
+ */
+function sessionLogProposal({ kitVersion, harness, manifest, root }) {
+  const files = hookFiles(SESSION_LOG_PATH, kitVersion);
+  const missing = sessionLogRegistrations(harness, { manifest, root }).filter(r => r.state !== 'declared');
+  return [...files, ...missing.map(r => ({
+    kind: 'settings-hook', event: r.event, step: SESSION_LOG_STEP,
+    entry: execEntry(SESSION_LOG_PATH),
+    requiresFiles: files.map(f => f.path),
+    reason: hookRegistrationReason(r.event, r),
+  }))];
 }
 
 const TOOL_GATE_STEP = 30;
@@ -642,6 +677,7 @@ const HOOK_SCRIPTS = Object.freeze({
   [BRIEF_PATH]: { asset: 'scripts/session-brief.mjs', step: 16, reason: 'no SessionStart brief hook registered' },
   [RULES_BRIEF_PATH]: { asset: 'scripts/rules-brief.mjs', step: REINJECT_STEP, reason: 'no UserPromptSubmit re-injection hook registered' },
   [LOOP_WATCH_PATH]: { asset: 'scripts/loop-watch.mjs', step: LOOP_WATCH_STEP, reason: 'no PostToolUseFailure loop-warning hook registered' },
+  [SESSION_LOG_PATH]: { asset: 'scripts/session-log.mjs', step: SESSION_LOG_STEP, reason: 'no session-log hook registered', modules: [HARNESS_LOG_PATH, HARNESS_SEAL_PATH] },
   [TOOL_GATE_PATH]: { asset: 'scripts/tool-gate.mjs', step: TOOL_GATE_STEP, reason: 'no PreToolUse gate hook registered', modules: [HARNESS_GATES_PATH, HARNESS_LOG_PATH] },
 });
 const GENERATOR_SCRIPT_PATHS = Object.freeze(Object.keys(HOOK_SCRIPTS));
@@ -654,7 +690,8 @@ const GENERATOR_SCRIPT_PATHS = Object.freeze(Object.keys(HOOK_SCRIPTS));
  */
 const HOOK_MODULES = Object.freeze({
   [HARNESS_GATES_PATH]: { asset: 'scripts/harness-gates.mjs', step: TOOL_GATE_STEP, reason: 'the gate language the PreToolUse gate hook interprets' },
-  [HARNESS_LOG_PATH]: { asset: 'scripts/harness-log.mjs', step: TOOL_GATE_STEP, reason: 'the session log library the gate hook records firings with' },
+  [HARNESS_LOG_PATH]: { asset: 'scripts/harness-log.mjs', step: TOOL_GATE_STEP, reason: 'the session log library the logging hook writes with and the gate hook records firings with' },
+  [HARNESS_SEAL_PATH]: { asset: 'scripts/harness-seal.mjs', step: SESSION_LOG_STEP, reason: 'the module the logging hook loads at session start to seal closed sessions and expire old content' },
 });
 const HOOK_MODULE_PATHS = Object.freeze(Object.keys(HOOK_MODULES));
 
@@ -837,6 +874,7 @@ const GENERATORS = {
   'P3.rules': rulesScaffoldProposal,
   'P3.reinject': reinjectProposal,
   'P5.failures': failuresScaffoldProposal,
+  'P5.sessionlog': sessionLogProposal,
   'P5.toolgate': toolGateProposal,
   // Each update goes through `buildProposals`' recorded-path branch like any
   // other proposal for a recorded file.
@@ -960,4 +998,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // generator (a pyproject-only Python repo: `detect` advertised a proposal,
 // `apply` produced nothing) without any test failing, because nothing
 // checked the two against each other.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS };

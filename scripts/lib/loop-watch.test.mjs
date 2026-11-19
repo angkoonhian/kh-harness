@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { markerPath } from '../../assets/scripts/harness-redact.mjs';
-import { APPLY, DETECT, UNINSTALL, git, run, settings } from './lifecycle-fixtures.mjs';
+import { APPLY, DETECT, UNINSTALL, git, run, settings, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
 import { LOOP_WATCH_PATH } from './propose.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -74,6 +74,7 @@ after(() => {
 });
 
 sandboxMarkerDir();
+sandboxDataDir();
 
 const failure = (session, o = {}) => ({ ...PAYLOAD_EXAMPLE, session_id: session, ...o });
 /** The marker for one agent of one session, as the hook names it. */
@@ -288,7 +289,7 @@ test('apply installs the loop warning and uninstall then leaves git status clean
   run(APPLY, d, '--yes');
   assert.ok(existsSync(join(d, LOOP_WATCH_PATH)));
   assert.ok(existsSync(join(d, '.claude/scripts/harness-redact.mjs')));
-  assert.deepEqual(settings(d).hooks.PostToolUseFailure, [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${LOOP_WATCH_PATH}`] }] }]);
+  assert.deepEqual(hooksBesideLog(settings(d), 'PostToolUseFailure'), [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${LOOP_WATCH_PATH}`] }] }]);
   const installed = JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P2.loopwatch');
   assert.equal(installed.state, 'declared');
 

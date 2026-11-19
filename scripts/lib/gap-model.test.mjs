@@ -8,9 +8,17 @@ import { selectProfile } from './profiles/index.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, GENERATORS } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, GENERATORS } from './propose.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { hasEquivalentHook } from './settings-merge.mjs';
 import { UNREADABLE_KIND, splitExposures } from './detect-exposure.mjs';
+
+/** `byEvent` with `entry` appended on every logged event: the logging hook
+ * is registered on all of them in a fully harnessed repository. */
+function withSessionLog(byEvent, entry) {
+  return Object.fromEntries([...new Set([...Object.keys(byEvent), ...LOGGED_EVENTS])]
+    .map(event => [event, [...(byEvent[event] ?? []), ...(LOGGED_EVENTS.includes(event) ? [entry] : [])]]));
+}
 
 const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
@@ -21,18 +29,18 @@ const bareHarness = {
 };
 const richHarness = {
   instructions: { path: 'CLAUDE.md', lines: 153 }, agentsMd: null, reconPresent: true,
-  claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs', '.claude/scripts/loop-watch.mjs', '.claude/scripts/tool-gate.mjs'],
+  claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs', '.claude/scripts/loop-watch.mjs', '.claude/scripts/tool-gate.mjs', SESSION_LOG_PATH],
     // hookEvents entries are RESOLVED SCRIPT PATHS, never command strings.
-    hookEvents: { PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'], UserPromptSubmit: ['.claude/scripts/rules-brief.mjs'], PostToolUseFailure: ['.claude/scripts/loop-watch.mjs'], PreToolUse: ['.claude/scripts/tool-gate.mjs'] },
+    hookEvents: withSessionLog({ PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'], UserPromptSubmit: ['.claude/scripts/rules-brief.mjs'], PostToolUseFailure: ['.claude/scripts/loop-watch.mjs'], PreToolUse: ['.claude/scripts/tool-gate.mjs'] }, SESSION_LOG_PATH),
     // The same registrations with their matchers — what registeredHook decides from.
-    hookRegistrations: {
+    hookRegistrations: withSessionLog({
       PostToolUse: [{ script: '.claude/scripts/lint-touched.mjs', matcher: 'Edit|Write' }],
       Stop: [{ script: '.claude/scripts/verify-touched.mjs', matcher: null }],
       SessionStart: [{ script: '.claude/scripts/session-brief.mjs', matcher: null }],
       UserPromptSubmit: [{ script: '.claude/scripts/rules-brief.mjs', matcher: null }],
       PostToolUseFailure: [{ script: '.claude/scripts/loop-watch.mjs', matcher: null }],
       PreToolUse: [{ script: '.claude/scripts/tool-gate.mjs', matcher: null }],
-    },
+    }, { script: SESSION_LOG_PATH, matcher: null }),
     agents: Array.from({ length: 13 }, (_, i) => `.claude/agents/c${i}.md`), skills: [], commands: [], rules: ['.claude/rules/api.md'] },
   otherEditors: [], architecture: 'docs/ARCHITECTURE.md', handoff: 'HANDOFF.md',
   bootstrap: 'scripts/bootstrap.sh', gitattributes: true, remotes: [{ name: 'origin', hasCredential: false }],

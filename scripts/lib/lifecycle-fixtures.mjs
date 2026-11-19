@@ -6,18 +6,42 @@
 // suite's wall time on its own, could become three files that run in
 // parallel.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { after } from 'node:test';
+import { SESSION_LOG_PATH } from './propose.mjs';
 
 export const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
 export const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
 export const UNINSTALL = resolve(import.meta.dirname, '..', 'uninstall.mjs');
 
+/**
+ * Points `KH_DATA_DIR` at a fresh directory for this test process and
+ * removes it once the file's tests are done. `uninstall` reports this
+ * machine's session log for the repository, so a suite that runs it calls
+ * this once at the top and no test reads the real data directory under the
+ * home directory. Set in the process, so every CLI the suite spawns
+ * inherits it.
+ */
+export function sandboxDataDir() {
+  const dir = mkdtempSync(join(tmpdir(), 'hk-data-'));
+  process.env.KH_DATA_DIR = dir;
+  after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
 export const git = (d, ...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 export const run = (script, d, ...a) => execFileSync(process.execPath, [script, d, ...a], { encoding: 'utf8' });
 export const settings = d => JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
 export const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/kh-harness.manifest.json'), 'utf8'));
+
+const LOGGING_HOOK_ARG = `\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_PATH}`;
+/** The matcher entries on `event` in the settings object `s`, leaving out
+ * the logging hook's: apply registers it on every logged event beside
+ * whatever else the event holds, so a test about another hook counts that
+ * hook's entries alone. */
+export const hooksBesideLog = (s, event) => (s.hooks?.[event] ?? []).filter(m => !m.hooks?.some(h => h.args?.[0] === LOGGING_HOOK_ARG));
 
 // Coordinator ruling (post-review, concern 5): credential-SHAPED fixtures are
 // ASSEMBLED AT RUNTIME, never committed as literals. kh-harness's own

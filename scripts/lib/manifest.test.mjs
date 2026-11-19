@@ -5,7 +5,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileS
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings, MANIFEST_PATH } from './manifest.mjs';
-import { APPLY, UNINSTALL, fixture } from './lifecycle-fixtures.mjs';
+import { APPLY, UNINSTALL, fixture, sandboxDataDir } from './lifecycle-fixtures.mjs';
+
+sandboxDataDir();
 
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-man-')); }
 function write(d, rel, content) {

@@ -21,6 +21,7 @@
 // codes, where the manifest is) are written ONCE below and shared, rather
 // than copied into three help strings that would drift the way the parsers
 // did.
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 /**
  * Splits argv into flags, the first non-flag argument, every non-flag
@@ -49,6 +50,27 @@ export function warnUnknown(unknown) {
 }
 
 // --- The sentences every command shares -----------------------------------
+
+const DISCLOSURE_INDENT = ' '.repeat(33);
+
+/** `items` joined by ", " in lines of at most `width` characters after
+ * `DISCLOSURE_INDENT`, so a list read from code sits in the column the
+ * disclosure's prose uses. */
+function indentedList(items, width = 46) {
+  const lines = [];
+  let line = '';
+  for (const [i, item] of items.entries()) {
+    const word = i < items.length - 1 ? `${item},` : `${item}.`;
+    if (line && line.length + 1 + word.length > width) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.map(l => DISCLOSURE_INDENT + l).join('\n');
+}
 
 /**
  * The disclosure the review found existed nowhere a user could read before
@@ -109,7 +131,22 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  to the gate file, the manifest,
                                  docs/harness/LEARNED.md, and
                                  ~/.claude/kh-harness/ (this machine's log,
-                                 ledger, policy and local gates).`;
+                                 ledger, policy and local gates).
+
+  Session log (per event)        runs on every one of these events:
+${indentedList(LOGGED_EVENTS)}
+                                 It records nothing until the log is enabled
+                                 for this repository on this machine. Once it
+                                 is, it records every one of those events,
+                                 TOOL INPUT AND OUTPUT INCLUDED, on this
+                                 machine only: in this machine's kh-harness
+                                 data directory (~/.claude/kh-harness/, or
+                                 KH_DATA_DIR), outside the repository.
+                                 Credentials it recognises are scrubbed
+                                 before anything is written, but the scrub is
+                                 best-effort: a credential in a shape it does
+                                 not know is recorded as it is. It executes
+                                 nothing and never blocks a call.`;
 
 export const EXIT_CODES = `EXIT CODES
   0  did what it said

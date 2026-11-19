@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
 import { GENERATORS } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, settings, fixture } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, git, run, settings, fixture, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
+
+sandboxDataDir();
 
 test('a repository that gitignores .claude/ still recognises its own hook as declared after apply (Task 8b Major)', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-gitignore-'));
@@ -191,7 +193,7 @@ test('a user who replaces our hook with their own is told it is absent again, no
   const d = fixture();
   run(APPLY, d, '--yes');
   assert.ok(existsSync(join(d, '.claude/scripts/session-brief.mjs')), 'our script is genuinely on disk');
-  assert.equal(settings(d).hooks.SessionStart.length, 1);
+  assert.equal(hooksBesideLog(settings(d), 'SessionStart').length, 1);
 
   // The user replaces OUR hook entry with their own, unrelated automation
   // — a real, tracked file, not a typo or a gitignored one.

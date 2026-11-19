@@ -39,7 +39,7 @@ test('a user\'s shell-form registration of our script is declared and not re-pro
   const report = JSON.parse(run(DETECT, d, '--json'));
   assert.equal(report.checks.find(c => c.id === 'P2.stopgate').state, 'declared', 'their shell-form registration is ours, recognised');
   const dry = run(APPLY, d);
-  assert.doesNotMatch(dry, /\(hook: Stop\)/, 'and no second registration is proposed');
+  assert.doesNotMatch(dry, /\(hook: Stop\)  \[P2\.stopgate\]/, 'and no second registration is proposed');
 });
 
 // --- Audit Tier 3, finding 19: the dry run is where the diffs are -------------

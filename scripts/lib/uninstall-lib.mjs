@@ -17,8 +17,51 @@ import { REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, GENERATOR_SCRIPT_PATHS, HOOK_M
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
+import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
 
 const SETTINGS = '.claude/settings.json';
+
+/**
+ * This machine's session log for the repository: its directory, the bytes of
+ * the regular files under it, and how many entries could not be read, so a
+ * size is never presented as complete when it is not. Null when there is no
+ * such directory. The log is data, not installation: uninstall reports it
+ * and never removes it. A link inside it is not followed, because what it
+ * points at is not the log's.
+ */
+function sessionLogUsage(root) {
+  const location = repoDataDir(root);
+  try {
+    if (!fs.lstatSync(location).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  let bytes = 0, unread = 0;
+  const pending = [location];
+  while (pending.length) {
+    const dir = pending.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      unread += 1;
+      continue;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(path);
+      } else if (entry.isFile()) {
+        try {
+          bytes += fs.lstatSync(path).size;
+        } catch {
+          unread += 1;
+        }
+      }
+    }
+  }
+  return { location, bytes, unread };
+}
 
 /**
  * What our generators could have written into this repository's settings,
@@ -547,6 +590,7 @@ export function planUninstall({ root, manifest }) {
     remove, keep, revert, keepPatches, gonePatches,
     removeSettingsFile: removeSettingsFile ? SETTINGS : null,
     removeDirs,
+    sessionLog: sessionLogUsage(root),
   };
 }
 

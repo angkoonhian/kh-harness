@@ -115,6 +115,13 @@ if (plan.removeDirs.length) {
   }
 }
 
+if (plan.sessionLog) {
+  const { location, bytes, unread } = plan.sessionLog;
+  const notRead = unread ? `, not counting ${unread} entr${unread === 1 ? 'y' : 'ies'} that could not be read` : '';
+  console.log("Will keep this machine's session log for this repository (data, outside the repository — uninstall never removes it):");
+  console.log(`  ${location} (${bytes} byte${bytes === 1 ? '' : 's'}${notRead})`);
+}
+
 if (!doYes) {
   console.log('');
   console.log('Run with --yes to apply.');

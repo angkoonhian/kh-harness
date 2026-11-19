@@ -47,7 +47,7 @@ import { dirname, join, resolve } from 'node:path';
 import { GATE_LIMITS, gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH as LOG_GATES_PATH, LOCAL_GATES_FILE as LOG_LOCAL_GATES_FILE, readEvents, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { GATES_PATH, LOCAL_GATES_FILE } from '../../assets/scripts/tool-gate.mjs';
-import { APPLY, DETECT, UNINSTALL, git, run, settings } from './lifecycle-fixtures.mjs';
+import { APPLY, DETECT, UNINSTALL, git, run, settings, hooksBesideLog } from './lifecycle-fixtures.mjs';
 import { HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH, TOOL_GATE_PATH, toolGateDenyRules } from './propose.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -503,7 +503,7 @@ test('apply installs the gate hook and uninstall then leaves git status clean', 
 
   run(APPLY, d, '--yes');
   for (const path of [TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH]) assert.ok(existsSync(join(d, path)), path);
-  assert.deepEqual(settings(d).hooks.PreToolUse, [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${TOOL_GATE_PATH}`] }] }]);
+  assert.deepEqual(hooksBesideLog(settings(d), 'PreToolUse'), [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${TOOL_GATE_PATH}`] }] }]);
   const installed = JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P5.toolgate');
   assert.equal(installed.state, 'declared');
 

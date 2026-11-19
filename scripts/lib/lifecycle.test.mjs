@@ -18,7 +18,9 @@ import { sha256, emptyManifest } from './manifest.mjs';
 // hand-maintained id list, so a capability added later is covered with no
 // test edit (same discipline as propose.test.mjs's coherence test).
 import { GENERATORS, toolGateDenyRules } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
+
+sandboxDataDir();
 
 test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall', () => {
   const d = fixture();
@@ -38,7 +40,7 @@ test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall'
   run(APPLY, d, '--yes');
   assert.ok(existsSync(join(d, 'HANDOFF.md')));
   assert.ok(existsSync(join(d, '.claude/scripts/session-brief.mjs')));
-  assert.equal(settings(d).hooks.SessionStart.length, 1);
+  assert.equal(hooksBesideLog(settings(d), 'SessionStart').length, 1);
   assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)', ...toolGateDenyRules()] }, 'their settings survive apply, and ours are appended');
 
   // 4. THE CLOSED LOOP: what we wrote, we now recognise as present
@@ -60,7 +62,7 @@ test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall'
   const handoffHash = readFileSync(join(d, 'HANDOFF.md'), 'utf8');
   run(APPLY, d, '--yes');
   assert.equal(readFileSync(join(d, 'HANDOFF.md'), 'utf8'), handoffHash);
-  assert.equal(settings(d).hooks.SessionStart.length, 1, 'no duplicate hook');
+  assert.equal(hooksBesideLog(settings(d), 'SessionStart').length, 1, 'no duplicate hook');
 
   // 6. the user edits what we wrote
   writeFileSync(join(d, 'HANDOFF.md'), '# My own handoff\nMid-refactor.\n');
@@ -197,25 +199,25 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     // (finding 8: the three code paths are not identical). Found by
     // content, not by a fixed index, since which one apply appends after
     // is an implementation detail, not something this test should pin.
-    assert.equal(s1.hooks.PostToolUse.length, 2, 'the user\'s own PostToolUse hook survives, ours is added beside it');
-    assert.equal(s1.hooks.Stop.length, 2, 'the user\'s own Stop hook survives, ours is added beside it');
-    assert.equal(s1.hooks.SessionStart.length, 2, 'the user\'s own SessionStart hook survives, ours is added beside it');
+    assert.equal(hooksBesideLog(s1, 'PostToolUse').length, 2, 'the user\'s own PostToolUse hook survives, ours is added beside it');
+    assert.equal(hooksBesideLog(s1, 'Stop').length, 2, 'the user\'s own Stop hook survives, ours is added beside it');
+    assert.equal(hooksBesideLog(s1, 'SessionStart').length, 2, 'the user\'s own SessionStart hook survives, ours is added beside it');
 
-    const theirPostToolUse = s1.hooks.PostToolUse.find(m => m.hooks[0].command === 'node my-own-thing.mjs');
-    const ourPostToolUse = s1.hooks.PostToolUse.find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/lint-touched.mjs');
+    const theirPostToolUse = hooksBesideLog(s1, 'PostToolUse').find(m => m.hooks[0].command === 'node my-own-thing.mjs');
+    const ourPostToolUse = hooksBesideLog(s1, 'PostToolUse').find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/lint-touched.mjs');
     assert.ok(theirPostToolUse, 'the user\'s own hook must still be there');
     assert.equal(theirPostToolUse.matcher, undefined, 'their hook is untouched — it never had a matcher');
     assert.ok(ourPostToolUse, 'our hook must be registered');
     assert.equal(ourPostToolUse.matcher, 'Write|Edit');
 
-    const theirStop = s1.hooks.Stop.find(m => m.hooks[0].command === 'node my-own-stop-thing.mjs');
-    const ourStop = s1.hooks.Stop.find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/verify-touched.mjs');
+    const theirStop = hooksBesideLog(s1, 'Stop').find(m => m.hooks[0].command === 'node my-own-stop-thing.mjs');
+    const ourStop = hooksBesideLog(s1, 'Stop').find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/verify-touched.mjs');
     assert.ok(theirStop, 'the user\'s own Stop hook must still be there');
     assert.ok(ourStop, 'our Stop hook must be registered');
     assert.equal(ourStop.matcher, undefined, 'the Stop entry takes no matcher');
 
-    const theirSessionStart = s1.hooks.SessionStart.find(m => m.hooks[0].command === 'node my-own-startup-thing.mjs');
-    const ourSessionStart = s1.hooks.SessionStart.find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/session-brief.mjs');
+    const theirSessionStart = hooksBesideLog(s1, 'SessionStart').find(m => m.hooks[0].command === 'node my-own-startup-thing.mjs');
+    const ourSessionStart = hooksBesideLog(s1, 'SessionStart').find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/session-brief.mjs');
     assert.ok(theirSessionStart, 'the user\'s own SessionStart hook must still be there');
     assert.ok(ourSessionStart, 'our SessionStart hook must be registered');
 
@@ -259,9 +261,9 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     run(APPLY, d, '--yes');
     for (const p of NEW_PATHS) assert.equal(readFileSync(join(d, p), 'utf8'), before2[p], `${p} must be byte-identical after a no-op re-apply`);
     const s2 = settings(d);
-    assert.equal(s2.hooks.PostToolUse.length, 2, 'no duplicate PostToolUse hook — still exactly theirs + ours');
-    assert.equal(s2.hooks.Stop.length, 2, 'no duplicate Stop hook — still exactly theirs + ours');
-    assert.equal(s2.hooks.SessionStart.length, 2, 'no duplicate SessionStart hook — still exactly theirs + ours');
+    assert.equal(hooksBesideLog(s2, 'PostToolUse').length, 2, 'no duplicate PostToolUse hook — still exactly theirs + ours');
+    assert.equal(hooksBesideLog(s2, 'Stop').length, 2, 'no duplicate Stop hook — still exactly theirs + ours');
+    assert.equal(hooksBesideLog(s2, 'SessionStart').length, 2, 'no duplicate SessionStart hook — still exactly theirs + ours');
     assert.deepEqual(s2.permissions.deny, s1.permissions.deny, 'no duplicate deny rules');
   });
 
@@ -362,7 +364,7 @@ test('STOPGATE: apply installs verify-touched.mjs, the shared redaction asset, a
   run(APPLY, d, '--yes');
   assert.ok(existsSync(join(d, '.claude/scripts/verify-touched.mjs')), 'the Stop gate script is installed');
   assert.ok(existsSync(join(d, '.claude/scripts/harness-redact.mjs')), 'the shared redaction asset is installed');
-  const stopHooks = settings(d).hooks.Stop;
+  const stopHooks = hooksBesideLog(settings(d), 'Stop');
   assert.equal(stopHooks.length, 1);
   assert.equal(stopHooks[0].matcher, undefined, 'the Stop entry takes no matcher');
   assert.equal(stopHooks[0].hooks[0].command, 'node');
@@ -410,7 +412,7 @@ test('FINDING 5: a settings-hook is never registered when its shared dependency 
   run(APPLY, d, '--yes');
   assert.ok(existsSync(join(d, '.claude/scripts/lint-touched.mjs')));
   assert.ok(existsSync(join(d, '.claude/scripts/harness-redact.mjs')));
-  assert.equal(settings(d).hooks.PostToolUse.length, 1);
+  assert.equal(hooksBesideLog(settings(d), 'PostToolUse').length, 1);
   // `-a` would stage only MODIFICATIONS to already-tracked files; settings.json
   // here is a brand-new (untracked) file, same as HANDOFF.md/lint-touched.mjs,
   // so this needs `-A` to actually pick it up.
@@ -430,7 +432,7 @@ test('FINDING 5: a settings-hook is never registered when its shared dependency 
   assert.ok(existsSync(join(d, '.claude/scripts/verify-touched.mjs')), 'the Stop gate script is still written');
   assert.equal(existsSync(join(d, '.claude/scripts/harness-redact.mjs')), false,
     'sanity: the shared module genuinely was not rewritten this run — the dependency really is missing');
-  assert.equal(settings(d).hooks.Stop, undefined,
+  assert.deepEqual(hooksBesideLog(settings(d), 'Stop'), [],
     'the Stop hook must NEVER be registered while the module it imports is missing from disk');
   assert.match(out, /missing-dependency/, 'the skip must be reported, not silent');
   assert.match(out, /harness-redact\.mjs/, 'the report must name which dependency was missing');
@@ -438,7 +440,7 @@ test('FINDING 5: a settings-hook is never registered when its shared dependency 
   // The EARLIER PostToolUse hook, registered in a previous run while its
   // own dependency genuinely existed, is untouched by this run — this
   // fix only ever refuses a NEW activation, never revokes an existing one.
-  assert.equal(settings(d).hooks.PostToolUse.length, 1, 'an already-registered, unrelated hook is left alone');
+  assert.equal(hooksBesideLog(settings(d), 'PostToolUse').length, 1, 'an already-registered, unrelated hook is left alone');
 
   // The manifest (tracked since step 1's `git add -A`) was just updated
   // in place by this run's own write of verify-touched.mjs's entry —
@@ -457,7 +459,7 @@ test('FINDING 5: a settings-hook is never registered when its shared dependency 
   // remains, and this time its dependency check passes.
   writeFileSync(join(d, '.claude/scripts/harness-redact.mjs'), 'export const CREDENTIAL_SHAPES = [];\n');
   run(APPLY, d, '--yes');
-  assert.equal(settings(d).hooks.Stop.length, 1,
+  assert.equal(hooksBesideLog(settings(d), 'Stop').length, 1,
     'once the dependency genuinely exists on disk again, activation proceeds — this is a real-state gate, not a one-way trap');
 });
 
@@ -597,7 +599,7 @@ test('apply refuses on an unparseable manifest — exit 3, names the file, and d
 test('I3: a deleted settings file lets uninstall finish, clear the manifest, and exit 0', () => {
   const d = fixture();
   run(APPLY, d, '--yes');
-  assert.equal(settings(d).hooks.SessionStart.length, 1);
+  assert.equal(hooksBesideLog(settings(d), 'SessionStart').length, 1);
   assert.equal(existsSync(join(d, '.claude/kh-harness.manifest.json')), true);
 
   // The user deletes their own settings file. No hook remains registered.
@@ -830,7 +832,7 @@ test('PHASE 3 LIFECYCLE: scaffold → fill → hook → uninstall keeps the fill
   assert.ok(existsSync(join(d, RULES)));
   assert.match(readFileSync(join(d, RULES), 'utf8'), /Generated by kh-harness/);
   assert.equal(existsSync(join(d, BRIEF)), false, 'no hook until there is a rule to inject');
-  assert.equal(settings(d).hooks?.UserPromptSubmit, undefined);
+  assert.deepEqual(hooksBesideLog(settings(d), 'UserPromptSubmit'), []);
 
   // 3. detect: scaffold recognised as ours, still empty; the hook now asks.
   const r3 = JSON.parse(run(DETECT, d, '--json'));
@@ -854,8 +856,8 @@ test('PHASE 3 LIFECYCLE: scaffold → fill → hook → uninstall keeps the fill
   run(APPLY, d, '--yes');
   assert.ok(existsSync(join(d, BRIEF)));
   assert.ok(existsSync(join(d, '.claude/scripts/harness-redact.mjs')));
-  assert.equal(settings(d).hooks.UserPromptSubmit.length, 1);
-  assert.equal('matcher' in settings(d).hooks.UserPromptSubmit[0], false, 'UserPromptSubmit takes no matcher');
+  assert.equal(hooksBesideLog(settings(d), 'UserPromptSubmit').length, 1);
+  assert.equal('matcher' in hooksBesideLog(settings(d), 'UserPromptSubmit')[0], false, 'UserPromptSubmit takes no matcher');
   assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)', ...toolGateDenyRules()] }, 'their settings survive, and ours are appended');
 
   // 6. THE CLOSED LOOP: everything we wrote, we now recognise as present.
@@ -925,4 +927,87 @@ test('a second apply after the update proposes nothing', () => {
   assert.ok(readFileSync(join(d, SESSION_BRIEF), 'utf8').includes(`kh-harness ${KIT_VERSION} `), 'the hook script is the current kit\'s');
   assert.equal(manifestOf(d).kitVersion, KIT_VERSION);
   assert.match(run(APPLY, d), /no actions/);
+});
+
+// --- The logging hook -------------------------------------------------------
+import { symlinkSync } from 'node:fs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
+import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { EXECUTION_DISCLOSURE } from './cli.mjs';
+import { SESSION_LOG_PATH } from './propose.mjs';
+
+/** How many registrations of our logging hook each logged event holds. */
+const loggingHookCounts = d => LOGGED_EVENTS.map(e => (settings(d).hooks?.[e] ?? [])
+  .flatMap(m => m.hooks)
+  .filter(h => h.args?.[0] === `\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_PATH}`).length);
+
+test('the dry run states that the hook records tool input and output on this machine once enabled, and that it is inert until then', () => {
+  const d = fixture();
+  const out = run(APPLY, d);
+  assert.match(out, /\.claude\/settings\.json \(hook: PostCompact\)  \[P5\.sessionlog\]/, 'fixture sanity: the logging hook is proposed');
+  assert.ok(out.includes(EXECUTION_DISCLOSURE), 'the disclosure is printed in full');
+  const text = EXECUTION_DISCLOSURE.replace(/\s+/g, ' ');
+  for (const event of LOGGED_EVENTS) assert.ok(text.includes(event), `the disclosure names ${event}`);
+  assert.match(text, /records nothing until the log is enabled for this repository on this machine/);
+  assert.match(text, /TOOL INPUT AND OUTPUT INCLUDED, on this machine only/);
+  assert.match(text, /the scrub is best-effort/);
+});
+
+test('a dry run that registers no hook does not print the disclosure', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'accept kh-harness settings patch');
+  rmSync(join(d, 'HANDOFF.md'));
+  const m = manifestOf(d);
+  m.files = m.files.filter(f => f.path !== 'HANDOFF.md');
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+  const out = run(APPLY, d);
+  assert.match(out, /--- HANDOFF\.md  \[P4\.handoff\]/, 'fixture sanity: a file is proposed');
+  assert.equal(out.includes(EXECUTION_DISCLOSURE), false);
+});
+
+test('a second apply proposes nothing', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  assert.deepEqual(loggingHookCounts(d), LOGGED_EVENTS.map(() => 1), 'one registration per logged event');
+  const report = JSON.parse(run(DETECT, d, '--json'));
+  assert.equal(report.checks.find(c => c.id === 'P5.sessionlog').state, 'declared');
+  assert.match(run(APPLY, d), /no actions/);
+  assert.deepEqual(loggingHookCounts(d), LOGGED_EVENTS.map(() => 1));
+});
+
+test('apply then uninstall leaves git status clean', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  assert.ok(existsSync(join(d, SESSION_LOG_PATH)), 'fixture sanity: the logging hook was installed');
+  run(UNINSTALL, d, '--yes');
+  const status = execFileSync('git', ['-C', d, 'status', '--porcelain'], { encoding: 'utf8' });
+  assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
+});
+
+test('uninstall prints the log\'s location and size and does not remove it', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const dir = repoDataDir(d);
+  const before = run(UNINSTALL, d);
+  assert.equal(before.includes(dir), false, 'nothing is said about a log that does not exist');
+  assert.doesNotMatch(before, /session log/i);
+
+  mkdirSync(join(dir, 'sessions'), { recursive: true });
+  writeFileSync(join(dir, 'enabled.json'), 'x'.repeat(20));
+  writeFileSync(join(dir, 'sessions', 'one.jsonl'), 'y'.repeat(100));
+  // A link inside the log is not followed: what it points at is not the log's.
+  const elsewhere = mkdtempSync(join(tmpdir(), 'hk-life-elsewhere-'));
+  writeFileSync(join(elsewhere, 'big'), 'z'.repeat(5000));
+  symlinkSync(elsewhere, join(dir, 'linked'), 'junction');
+
+  const expected = `  ${dir} (120 bytes)`;
+  const dry = run(UNINSTALL, d);
+  assert.ok(dry.split('\n').includes(expected), dry);
+  const out = run(UNINSTALL, d, '--yes');
+  assert.ok(out.split('\n').includes(expected), out);
+  assert.match(out, /Removed/, 'fixture sanity: the harness itself was removed');
+  assert.ok(existsSync(join(dir, 'sessions', 'one.jsonl')), 'the log survives uninstall');
+  assert.ok(existsSync(join(dir, 'enabled.json')));
+  assert.ok(existsSync(join(elsewhere, 'big')));
 });
