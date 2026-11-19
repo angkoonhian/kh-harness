@@ -10,12 +10,13 @@ import {
 } from './lib/log-lib.mjs';
 import { maintainLog, renderMaintain } from './lib/log-maintain.mjs';
 import { purgeLog, purgeTarget, renderPurgePlan } from './lib/log-purge.mjs';
+import { buildLogReport, renderReport } from './lib/log-report.mjs';
 
 const KNOWN_FLAGS = new Set(['--yes', '--json', '--help']);
 
-// Each flag means something to one subcommand only; elsewhere it is said to
-// be ignored, as an unknown flag is.
-const FLAG_OWNER = { '--yes': 'purge', '--json': 'status' };
+// Each flag means something to the subcommands named here only; elsewhere it
+// is said to be ignored, as an unknown flag is.
+const FLAG_OWNERS = { '--yes': ['purge'], '--json': ['status', 'report'] };
 
 const argv = process.argv.slice(2);
 
@@ -27,7 +28,7 @@ if (wantsHelp(argv)) {
 const { flags, positionals, unknown } = parseArgv(argv, KNOWN_FLAGS);
 warnUnknown(unknown);
 
-const usage = 'usage: log <repo-path> <enable|disable|status|maintain|purge> [--yes] [--json]   (--help for the full contract)';
+const usage = 'usage: log <repo-path> <enable|disable|status|report|maintain|purge> [--yes] [--json]   (--help for the full contract)';
 const fail = (code, message) => {
   process.stderr.write(`kh-harness: ${message}\n`);
   process.exit(code);
@@ -50,6 +51,10 @@ const SUBCOMMANDS = {
   status(root) {
     const status = logStatus(root);
     say(flags.has('--json') ? JSON.stringify(status, null, 2) : renderStatus(status));
+  },
+  report(root) {
+    const report = buildLogReport(root);
+    say(flags.has('--json') ? JSON.stringify(report, null, 2) : renderReport(report));
   },
   maintain(root) {
     if (!isEnabled(root)) fail(3, `the log is not enabled for ${root} on this machine; nothing was done. Enable it first: ${logCommand(root, 'enable')}`);
@@ -80,8 +85,8 @@ const SUBCOMMANDS = {
 
 if (!Object.hasOwn(SUBCOMMANDS, subcommand)) fail(2, `unknown subcommand: ${subcommand}\n${usage}`);
 
-for (const [flag, owner] of Object.entries(FLAG_OWNER)) {
-  if (flags.has(flag) && owner !== subcommand) process.stderr.write(`kh-harness: ${flag} applies only to ${owner}; ignored.\n`);
+for (const [flag, owners] of Object.entries(FLAG_OWNERS)) {
+  if (flags.has(flag) && !owners.includes(subcommand)) process.stderr.write(`kh-harness: ${flag} applies only to ${owners.join(' and ')}; ignored.\n`);
 }
 
 const root = resolve(target);
