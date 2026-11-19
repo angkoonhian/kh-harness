@@ -57,13 +57,13 @@ import { join } from 'node:path';
 // person is told the fix in one `systemMessage`, with exit 0: a reminder
 // that stopped arriving must be visible, and exit 2 would block the prompt.
 // The notice is given once per session when the copy still has the marker
-// helpers, and on every prompt when it does not. `uninstall --yes` then
-// `apply --yes` is named as well, because `apply` alone keeps a copy that
-// was edited by hand. The shared module cannot hold this text: it is the
-// file that may be missing.
+// helpers, and on every prompt when it does not. Restoring the file is
+// named as well, because `apply` keeps a copy that was edited by hand and
+// does not write a deleted one again. The shared module cannot hold this
+// text: it is the file that may be missing.
 const NEEDED = ['escapeDelimiters', 'findLearned', 'findRules', 'heldByBlockingGate', 'maskText', 'parseRules', 'projectRoot', 'stripUnsafe'];
 const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
-const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 let asset = {};
 let assetProblem = null;
 try {

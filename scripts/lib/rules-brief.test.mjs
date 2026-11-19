@@ -418,7 +418,9 @@ test('an older harness-redact.mjs beside the hook gives the person one line nami
   const notice = skewNotice(d, 'export function projectRoot() { return process.env.CLAUDE_PROJECT_DIR || process.cwd(); }\n');
   assert.match(notice, /^kh-harness rules-brief: \.claude\/scripts\/harness-redact\.mjs is older than this hook and lacks what it needs, so the project rules are not re-told/);
   assert.match(notice, /apply/);
-  assert.match(notice, /uninstall/, 'when apply reports the asset as modified (CRLF checkouts, hand edits), uninstall then apply is the way through');
+  assert.match(notice, /if apply reports a file kept or gone, restore it to what kh-harness wrote \(git holds it, in the commit that installed it\), then run `apply --yes` again\.$/,
+    'apply keeps a copy edited by hand, and so does uninstall, so restoring the file is the way through');
+  assert.doesNotMatch(notice, /uninstall/);
 });
 
 test('a missing harness-redact.mjs beside the hook gives the person one line, and exit 0', () => {

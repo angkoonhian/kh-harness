@@ -52,7 +52,7 @@ import { closeSync, constants, fstatSync, readSync, writeFileSync, writeSync } f
 // missing.
 const NEEDED = ['canonicalJson', 'markerPath', 'openMarker', 'projectRoot', 'safeSessionId', 'stripAnsi'];
 const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
-const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 let asset = {};
 let assetProblem = null;
 try {

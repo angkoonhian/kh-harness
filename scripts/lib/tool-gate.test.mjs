@@ -469,7 +469,7 @@ function installedCopy(present) {
   return join(dir, 'tool-gate.mjs');
 }
 
-const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports one kept or modified, run `uninstall --yes` and then `apply --yes`.';
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 
 test('a missing or older sibling module gives the person one line and exits 0', () => {
   const root = project();

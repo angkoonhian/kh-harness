@@ -221,7 +221,8 @@ test('an older harness-redact.mjs that lacks one export gets a one-line notice n
   assert.equal(r.stdout.trim().split('\n').length, 1, r.stdout);
   assert.match(r.stdout, /harness-redact\.mjs is older than this hook/);
   assert.match(r.stdout, /apply/);
-  assert.match(r.stdout, /uninstall/);
+  assert.match(r.stdout, /if apply reports a file kept or gone, restore it to what kh-harness wrote \(git holds it, in the commit that installed it\), then run `apply --yes` again\.\n$/);
+  assert.doesNotMatch(r.stdout, /uninstall/);
   assert.doesNotMatch(r.stdout, /Mid-refactor/, 'nothing unsanitised is injected');
 });
 

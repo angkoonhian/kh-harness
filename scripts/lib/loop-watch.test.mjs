@@ -325,7 +325,7 @@ function installedCopy(asset) {
   return join(dir, 'loop-watch.mjs');
 }
 
-const ASSET_REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+const ASSET_REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 const assetNotice = problem => JSON.stringify({ systemMessage: `kh-harness loop-watch: .claude/scripts/harness-redact.mjs ${problem}, so repeated failures are not counted — ${ASSET_REMEDY}` }) + '\n';
 const OLDER = assetNotice('is older than this hook and lacks what it needs');
 const MISSING = assetNotice('is missing or cannot be loaded');

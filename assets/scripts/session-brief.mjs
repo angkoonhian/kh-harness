@@ -30,7 +30,7 @@ import { join } from 'node:path';
 // SessionStart hook has nothing to block. The asset cannot hold this text:
 // it is the file that may be missing.
 const NEEDED = ['boundReport', 'escapeDelimiters', 'findHandoff', 'HANDOFF_CANDIDATES', 'maskText', 'projectRoot', 'stripUnsafe'];
-const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 let asset;
 try {
   asset = await import('./harness-redact.mjs');

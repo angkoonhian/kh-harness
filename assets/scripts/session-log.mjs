@@ -46,7 +46,7 @@ const SIBLINGS = [
 const SEAL_SIBLING = ['./harness-seal.mjs', ['applyRetention', 'sealClosedSessions', 'sessionsSealedSince']];
 const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
 
-const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports one kept or modified, run `uninstall --yes` and then `apply --yes`.';
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 
 /** The sibling's module and null, or null and what is wrong with it. */
 async function loadSibling([specifier, names]) {
