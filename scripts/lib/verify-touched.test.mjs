@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
+import { assertNoSurvivor, killRecorded, writeCanary } from './canary-fixtures.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 // Session markers go in a per-run directory that is removed afterwards, so
@@ -457,82 +458,26 @@ test('TIMEOUT: a second Stop in the same session SKIPS re-running the command en
 });
 
 /**
- * Review hygiene correction: mutating killTree (proven separately, see
- * the report's Finding 4 mutation) leaves a REAL orphaned process pair on
- * the machine running this suite — found by hand, once, via
- * `Win32_Process`. A test that can leak a process must own cleaning it
- * up itself, in a teardown that runs whether the test passed, failed, or
- * threw — precisely because the failure mode (killTree regressing) is
- * the one moment this test cannot trust verify-touched.mjs's own kill to
- * have worked. The canary writes ITS OWN pid and its grandchild's pid to
- * a file BEFORE doing anything else, so the teardown below can find and
- * force-kill both directly — independent of, and never relying on,
- * whatever the hook under test did or didn't manage to kill.
+ * A test that can leak a process owns killing it: the teardown kills every
+ * pid the canary's tree recorded, whatever the hook managed, because the
+ * failure this guards against is the hook's own kill not working.
  */
 test('ORPHAN CANARY: a timeout kills the whole process tree, not just the shell', async () => {
   // The old `spawnSync({ timeout })` implementation killed only the
   // SHELL — with `shell: true`, whatever the shell went on to run (a
   // `tsc`/test-runner grandchild) survived, one orphan per turn, forever.
-  // This proves the new kill tears down the grandchild too: the canary
-  // writes an incrementing heartbeat to a file every 50ms; if it is still
-  // alive a moment after the hook returns, the heartbeat keeps advancing.
-  const d = repo({});
-  const heartbeat = join(d, 'heartbeat.txt');
-  const pidsFile = join(d, 'pids.txt');
-  writeFileSync(
-    join(d, 'canary.cjs'),
-    [
-      "const { spawn } = require('child_process');",
-      `const heartbeatPath = ${JSON.stringify(heartbeat)};`,
-      `const pidsPath = ${JSON.stringify(pidsFile)};`,
-      "const grandchild = spawn(process.execPath, ['-e', 'let n=0; setInterval(() => { n++; require(\"fs\").writeFileSync(process.argv[1], String(n)); }, 50);', heartbeatPath], { stdio: 'ignore' });",
-      // Written FIRST, before anything else, so the teardown below can
-      // find both pids even if the test assertions fail partway through.
-      "require('fs').writeFileSync(pidsPath, process.pid + '\\n' + grandchild.pid + '\\n');",
-      "console.error('typecheck: launched canary');",
-      'setInterval(() => {}, 1000);', // the parent itself also hangs, simulating a slow tsc
-    ].join('\n'),
-  );
-  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { typecheck: 'node canary.cjs' } }));
-
+  // How far the tree has got when the 300 ms timeout fires depends on how
+  // fast the machine starts processes, so what is asserted is that nothing
+  // it started survives. killTree's own test in harness-redact.test.mjs
+  // kills a tree known to be running.
+  const d = repo({ typecheck: 'node canary.cjs' });
+  const { heartbeat, pidsFile } = writeCanary(d, 'typecheck: launched canary');
   try {
     const r = run(d, payload(), { HK_VERIFY_TIMEOUT_MS: '300', HK_VERIFY_KILL_GRACE_MS: '500' });
     assert.equal(r.code, 2, 'sanity: the timeout path actually ran');
-
-    await new Promise(res => setTimeout(res, 400));
-    const afterKill = existsSync(heartbeat) ? readFileSync(heartbeat, 'utf8') : null;
-    assert.ok(afterKill !== null, 'sanity: the canary grandchild actually started and wrote at least one heartbeat');
-    await new Promise(res => setTimeout(res, 400));
-    const later = readFileSync(heartbeat, 'utf8');
-    assert.equal(afterKill, later, 'the heartbeat must stop advancing — no grandchild survived the timeout kill');
+    await assertNoSurvivor(pidsFile, heartbeat);
   } finally {
-    // Teardown: ALWAYS runs — pass, fail, or throw. Reads the pids file
-    // fresh here rather than trusting any variable set inside `try`,
-    // specifically so a throw partway through the try block still leaves
-    // this able to find and kill what was spawned.
-    let pids = [];
-    try {
-      if (existsSync(pidsFile)) {
-        // Positive integers only: on POSIX, kill(0) and kill(-n) signal a
-        // whole process group — the runner's own, for 0 (see the same
-        // teardown in lint-touched.test.mjs).
-        pids = readFileSync(pidsFile, 'utf8').split(/\s+/).map(Number).filter(n => Number.isInteger(n) && n > 0);
-      }
-    } catch {
-      // best-effort — a teardown that itself throws must never mask the
-      // test's own result
-    }
-    for (const pid of pids) {
-      try {
-        if (process.platform === 'win32') {
-          spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
-        } else {
-          process.kill(pid, 'SIGKILL');
-        }
-      } catch {
-        // already gone, or never started — nothing left to clean up
-      }
-    }
+    killRecorded(pidsFile);
   }
 });
 

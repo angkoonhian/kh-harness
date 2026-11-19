@@ -10,9 +10,11 @@
 // entirely on indirection through its two callers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { closeSync, constants, mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, basename, dirname } from 'node:path';
+import { assertNoSurvivor, killRecorded, writeCanary } from './canary-fixtures.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 // Session markers go in a per-run directory that is removed afterwards, so
@@ -37,6 +39,7 @@ import {
   openMarker,
   readJSONMarker,
   rootTag,
+  killTree,
   runBounded,
   safeSessionId,
   signatureOf,
@@ -520,6 +523,26 @@ test('runBounded reports a timeout as timedOut with no exit status', async () =>
   });
   assert.equal(r.timedOut, true);
   assert.equal(r.overflowed, false);
+});
+
+test('killTree kills a running shell\'s grandchild, not just the shell', async (t) => {
+  // The tree is running before the kill, so what is killed never depends on
+  // how fast the machine starts processes: the shell is spawned as
+  // runBounded spawns it, and the kill comes once the grandchild beats.
+  const dir = mkdtempSync(join(tmpdir(), 'hk-killtree-'));
+  const { heartbeat, pidsFile } = writeCanary(dir, 'launched canary');
+  t.after(() => {
+    killRecorded(pidsFile);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const shell = spawn('node canary.cjs', { cwd: dir, shell: true, stdio: 'ignore', detached: process.platform !== 'win32' });
+  const ready = Date.now() + 30_000;
+  while (!existsSync(heartbeat)) {
+    assert.ok(Date.now() < ready, 'fixture sanity: the canary grandchild started within 30 s');
+    await new Promise(res => setTimeout(res, 50));
+  }
+  killTree(shell);
+  await assertNoSurvivor(pidsFile, heartbeat);
 });
 
 // --- Tier 3 final review, Important 3 and Minor 4 ---------------------------
