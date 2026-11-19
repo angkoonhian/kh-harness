@@ -994,12 +994,16 @@ test('apply denies the terminal-only learn subcommands, and uninstall removes th
   assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
 });
 
-test('an install made before the learn deny rules existed is given exactly those, a second apply proposes nothing, and uninstall still leaves git status clean', () => {
+/**
+ * An install made before the deny rules `added` existed is reported and
+ * given exactly those, a second apply proposes nothing for them, and
+ * uninstall still leaves git status clean.
+ */
+function olderInstallIsRepaired(added) {
   const d = fixture();
   run(APPLY, d, '--yes');
   // Rewrite the install as one made before these rules existed: they leave
   // the settings and the patch that recorded the deny rules.
-  const added = new Set(learnCommandDenyRules());
   const s = settings(d);
   s.permissions.deny = s.permissions.deny.filter(rule => !added.has(rule));
   const ending = readFileSync(join(d, '.claude/settings.json'), 'utf8').endsWith('\n') ? '\n' : '';
@@ -1028,6 +1032,16 @@ test('an install made before the learn deny rules existed is given exactly those
   rmSync(join(d, 'docs/harness/detect.json'));
   const status = execFileSync('git', ['-C', d, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' });
   assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
+}
+
+test('an install made before the learn deny rules existed is given exactly those, a second apply proposes nothing, and uninstall still leaves git status clean', () => {
+  olderInstallIsRepaired(new Set(learnCommandDenyRules()));
+});
+
+test('an install made before land and revert were learn subcommands is given their deny rules alone, and uninstall still leaves git status clean', () => {
+  const added = new Set(learnCommandDenyRules().filter(rule => /learn\.mjs\* (land|revert)\*\)$/.test(rule)));
+  assert.deepEqual([...added], ['Bash(*learn.mjs* land*)', 'PowerShell(*learn.mjs* land*)', 'Bash(*learn.mjs* revert*)', 'PowerShell(*learn.mjs* revert*)']);
+  olderInstallIsRepaired(added);
 });
 
 test('uninstall prints the log\'s location and size and does not remove it', t => {

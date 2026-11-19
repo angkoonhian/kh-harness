@@ -225,10 +225,10 @@ export function retireLearning(root, id, options) {
     return byHand(root, id, optionsOf(options), 'a retirement', (write, state, learning) => {
       if (SETTLED.has(learning.status)) return { error: `${id} is ${learning.status}; a rejected or retired learning is not retired again` };
       if (learning.status === 'suspended' && isCommitted(root, learning)) {
-        return { error: `${id}: its gate is still in ${GATES_PATH}, binding everyone who has the repository; reverting ${id} takes it out of the repository and retires it` };
+        return { error: `${id}: its gate is still in ${GATES_PATH}, binding everyone who has the repository; \`learn revert ${id} --yes\` at a terminal takes it out of the repository and retires it` };
       }
       if (learning.status === 'landed' && isCommitted(root, learning)) {
-        return { error: `${id}: its gate is still in ${GATES_PATH}, binding everyone who has the repository; reverting ${id} takes it out of the repository, and it can be retired after that` };
+        return { error: `${id}: its gate is still in ${GATES_PATH}, binding everyone who has the repository; \`learn revert ${id} --yes\` at a terminal takes it out of the repository, and it can be retired after that` };
       }
       const written = retire(root, write, state, learning, { approvedBy: 'owner' });
       return written.error === undefined ? { status: 'retired' } : written;

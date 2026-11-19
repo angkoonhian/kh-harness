@@ -7,8 +7,9 @@ import { LEARN_USAGE, learnHelp, wantsHelp, warnUnknown } from './lib/cli.mjs';
 import {
   asciiJson, candidatesView, evidenceView, failureLine, helpName, listView, parseFiringRef, parseLearnArgv, plural, policyFrom, policyView, readDraft,
   renderApproved, renderCandidates, renderDemoted, renderDraft, renderEvidence, renderList, renderPolicy, renderPolicyCleared, renderPolicySet,
-  renderReplay, renderRetired, renderShow, renderTick, renderWrong, resolveCommand, showView, terminalRefusal, WRITES,
+  renderReplay, renderRepositoryDone, renderRepositoryPlan, renderRetired, renderShow, renderTick, renderWrong, resolveCommand, showView, terminalRefusal, WRITES,
 } from './lib/learn-cli.mjs';
+import { landLearning, revertLearning } from './lib/learn-land.mjs';
 import { draftLearning, listLearnings, runTrial } from './lib/learn-lib.mjs';
 import { approveLearning, clearPolicy, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './lib/learn-promote.mjs';
 import { assertDataDirSafe, checkDataDir } from './lib/log-lib.mjs';
@@ -44,6 +45,21 @@ const settle = (name, interactive, result, render) => {
   if (interactive.ok !== true) fail(3, terminalRefusal(name, interactive, result));
   if (result.error !== undefined) fail(2, failureLine(name, result));
   say(render(result));
+};
+
+/** Ends `land` or `revert`: a dry run's plan, which needs no terminal; a
+ * refusal (3) when the write was asked for and no person is at an
+ * interactive terminal, whatever the library returned; a refusal (3) when
+ * the write met the default-branch or dirty-tree refusal, as `apply` exits;
+ * a failure (2) when the library refused for another reason or could not
+ * finish; otherwise what it did. */
+const settleRepository = (name, command, interactive, result) => {
+  if (result.error !== undefined) {
+    if (command.yes && interactive.ok !== true) fail(3, terminalRefusal(name, interactive, result));
+    fail(result.refusals === undefined ? 2 : 3, failureLine(name, result));
+  }
+  if (result.dryRun === true) print(result, view => renderRepositoryPlan(name, command.args[0], view));
+  else print(result, view => renderRepositoryDone(name, view));
 };
 
 // Each terminal-only subcommand has its own handler, which asks
@@ -110,6 +126,18 @@ const SUBCOMMANDS = {
     const [id] = command.args;
     const result = retireLearning(root, id, { interactive });
     settle('retire', interactive, result, renderRetired);
+  },
+  'land'(root, command) {
+    const interactive = requireInteractive({ stdin: process.stdin, stdout: process.stdout, env: process.env });
+    const [id] = command.args;
+    const result = landLearning(root, id, { yes: command.yes, interactive, allowDirty: command.allowDirty, allowDefaultBranch: command.allowDefaultBranch });
+    settleRepository('land', command, interactive, result);
+  },
+  'revert'(root, command) {
+    const interactive = requireInteractive({ stdin: process.stdin, stdout: process.stdout, env: process.env });
+    const [id] = command.args;
+    const result = revertLearning(root, id, { yes: command.yes, interactive, allowDirty: command.allowDirty, allowDefaultBranch: command.allowDefaultBranch });
+    settleRepository('revert', command, interactive, result);
   },
   'tick'(root) {
     const result = tick(root);

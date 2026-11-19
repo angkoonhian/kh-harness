@@ -14,15 +14,17 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { join, resolve } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
-import { readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { GATES_PATH, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { LEARNED_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { applyRetention, SEAL_IDLE_MS, sealClosedSessions } from '../../assets/scripts/harness-seal.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { EXIT_CODES, LEARN_USAGE, learnHelp } from './cli.mjs';
 import {
-  draftFor, drafted, FIX_GATE, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, READ_GATE, repo, signatureOf, tempDir,
+  draftFor, drafted, FIX_GATE, git, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, READ_GATE, repo, signatureOf, tempDir,
   trialRepo, useId, writeLocalGates,
 } from './learn-fixtures.mjs';
-import { DATA_MARKERS, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, TERMINAL_ONLY } from './learn-cli.mjs';
+import { DATA_MARKERS, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, renderRepositoryDone, TERMINAL_ONLY } from './learn-cli.mjs';
+import { landLearning, revertLearning } from './learn-land.mjs';
 import { FAILURE_EVENT, SUCCESS_EVENT } from './recurrence.mjs';
 import { listLearnings, runTrial } from './learn-lib.mjs';
 import { approveLearning, retireLearning, setPolicy } from './learn-promote.mjs';
@@ -479,6 +481,8 @@ test('every terminal-only subcommand run from a child process exits 3 and change
     ['wrong', `${firing.sessionId}:${firing.line}`],
     ['demote', 'L1'],
     ['retire', 'L1'],
+    ['land', 'L1', '--yes'],
+    ['revert', 'L1', '--yes'],
     ['policy', 'set', '--min-firings', '1', '--min-sessions', '1', '--max-action', 'block'],
     ['policy', 'clear'],
   ];
@@ -604,7 +608,7 @@ test('draft and tick refuse a data directory that is a link, and write nothing t
 
 test('an unknown subcommand exits 2', () => {
   const root = loggedRepo();
-  for (const args of [['stats'], ['land', 'L1'], ['revert', 'L1'], ['policy'], ['policy', 'unset']]) {
+  for (const args of [['stats'], ['policy'], ['policy', 'unset']]) {
     const r = runLearn(root, ...args);
     assert.equal(r.status, 2, args.join(' '));
     assert.match(r.stderr, /unknown subcommand/);
@@ -636,7 +640,13 @@ test('every subcommand has --help', () => {
     assert.ok(LEARN_USAGE.includes(`  ${name}`), `${name} is in the full usage`);
   }
   for (const name of TERMINAL_ONLY) assert.match(learnHelp(name), /interactive\s+terminal/, name);
-  for (const word of ['land', 'revert']) assert.equal(new RegExp(`\\b${word}\\b`).test(LEARN_USAGE), false, `${word} is not this command's yet`);
+  for (const name of ['land', 'revert']) {
+    assert.ok(LEARN_USAGE.includes(`  ${name} <id> [--yes] [--allow-dirty] [--allow-default-branch] [--json]`), `${name}'s synopsis names every flag`);
+    for (const flag of ['--yes', '--allow-dirty', '--allow-default-branch', '--json']) assert.ok(learnHelp(name).includes(flag), `${name} --help names ${flag}`);
+    assert.match(learnHelp(name), /without\s+--yes\s+it\s+is\s+a\s+dry\s+run,\s+which\s+needs\s+no\s+terminal/, `${name}'s help says the dry run needs no terminal`);
+  }
+  assert.match(LEARN_USAGE, /--yes\s+land and revert only/);
+  assert.match(LEARN_USAGE, /--allow-dirty, --allow-default-branch\s+land and revert only/);
   assert.match(LEARN_USAGE, /second barrier/);
   assert.deepEqual(snapshot(repoDataDir(root)), before, '--help writes nothing');
 });
@@ -649,6 +659,8 @@ test('no terminal-only handler can skip the terminal check', () => {
     wrong: /markWrong\(root, [a-z]+, \{ interactive \}\)/,
     demote: /demoteLearning\(root, [a-z]+, \{ interactive \}\)/,
     retire: /retireLearning\(root, [a-z]+, \{ interactive \}\)/,
+    land: /landLearning\(root, [a-z]+, \{ yes: command\.yes, interactive, allowDirty: command\.allowDirty, allowDefaultBranch: command\.allowDefaultBranch \}\)/,
+    revert: /revertLearning\(root, [a-z]+, \{ yes: command\.yes, interactive, allowDirty: command\.allowDirty, allowDefaultBranch: command\.allowDefaultBranch \}\)/,
     'policy set': /setPolicy\(root, [a-z]+, \{ interactive \}\)/,
     'policy clear': /clearPolicy\(root, \{ interactive \}\)/,
   };
@@ -664,7 +676,7 @@ test('no terminal-only handler can skip the terminal check', () => {
     assert.doesNotMatch(body.replace(CHECK, ''), /interactive\s*=[^=]|interactive\.\w+\s*=[^=]|\.\.\.interactive/, `${name} never alters the result`);
   }
   assert.equal(sources['learn-cli.mjs'].includes('requireInteractive'), false, 'the checks live only in the handlers');
-  assert.doesNotMatch(sources['learn-cli.mjs'], /approveLearning|markWrong|demoteLearning|retireLearning|setPolicy|clearPolicy|writePolicy/, 'no step that approves or weakens a gate is reachable from the rendering module');
+  assert.doesNotMatch(sources['learn-cli.mjs'], /approveLearning|markWrong|demoteLearning|retireLearning|landLearning|revertLearning|setPolicy|clearPolicy|writePolicy/, 'no step that approves or weakens a gate is reachable from the rendering module');
   for (const [file, text] of Object.entries(sources)) {
     const elsewhere = text.split(CHECK).join('');
     assert.doesNotMatch(elsewhere, /process\.env|isTTY|CLAUDECODE/, `${file} reads no variable or terminal state outside the check`);
@@ -690,10 +702,134 @@ test('apply proposes deny rules for each terminal-only subcommand, in Bash and P
     'node "C:\\kit\\scripts\\learn.mjs" C:\\repo wrong s1:4',
     'node /kit/scripts/learn.mjs /repo demote L1',
     'node scripts/learn.mjs . retire L1',
+    'node scripts/learn.mjs . land L1 --yes',
+    'node scripts/learn.mjs . land L1',
+    'node scripts/learn.mjs . revert L1 --yes --allow-dirty',
     'node scripts/learn.mjs . policy set --min-firings 1 --min-sessions 1 --max-action block',
     'node scripts/learn.mjs . policy clear',
   ]) assert.ok(denied(command), command);
   for (const command of ['node scripts/learn.mjs . list', 'node scripts/learn.mjs . show L1', 'node scripts/learn.mjs . policy show', 'node scripts/learn.mjs . tick']) {
     assert.equal(denied(command), false, command);
   }
+});
+
+// --- land and revert ------------------------------------------------------------
+
+/** Every file under `dir` outside `.git`, with its bytes: what a run may
+ * not write in the repository. */
+function repositoryFiles(dir) {
+  const files = snapshot(dir);
+  return Object.fromEntries(Object.entries(files).filter(([path]) => !path.startsWith('.git/')));
+}
+
+const commitAll = root => {
+  git(root, 'add', '-A');
+  git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'land');
+};
+
+/** A repository on a feature branch whose L1 the owner promoted to block. */
+function landableRepo() {
+  const promoted = promotedRepo('block');
+  git(promoted.root, 'checkout', '-q', '-b', 'harness/learned');
+  return promoted;
+}
+
+const UNCOMMITTED = 'The change is not committed: review what this run changed with `git status` and `git diff`, and commit it; until then it reaches no one else.';
+
+test('a dry run of land and of revert needs no terminal, prints the diff and the notes, and writes nothing', () => {
+  const { root } = landableRepo();
+  const before = { repository: repositoryFiles(root), data: snapshot(repoDataDir(root)) };
+  const land = runLearn(root, 'land', 'L1');
+  assert.equal(land.status, 0, land.stderr);
+  assert.ok(land.stdout.includes(`--- ${LEARNED_PATH}  [P5.toolgate]`), land.stdout);
+  assert.ok(land.stdout.includes(`--- ${GATES_PATH}  [P5.toolgate]`), land.stdout);
+  assert.match(land.stdout, /^\+## L1 \\u\{2014\} Tests run once/m, 'a model-written title is printed escaped');
+  assert.match(land.stdout, /^\+ {6}"action": "block"$/m);
+  assert.ok(land.stdout.trimEnd().endsWith('Dry run — nothing written. Run `land L1 --yes` at a terminal to apply it.'), land.stdout);
+  assert.deepEqual({ repository: repositoryFiles(root), data: snapshot(repoDataDir(root)) }, before, 'land: nothing written');
+
+  assert.equal(landLearning(root, 'L1', { yes: true, interactive: AT_TERMINAL }).ok, true);
+  commitAll(root);
+  const after = { repository: repositoryFiles(root), data: snapshot(repoDataDir(root)) };
+  const revert = runLearn(root, 'revert', 'L1');
+  assert.equal(revert.status, 0, revert.stderr);
+  assert.match(revert.stdout, /^- {6}"action": "block"$/m, 'the gate leaves gates.json');
+  assert.match(revert.stdout, /^-## L1 \\u\{2014\} /m, 'the entry leaves LEARNED.md');
+  assert.ok(revert.stdout.trimEnd().endsWith('Dry run — nothing written. Run `revert L1 --yes` at a terminal to apply it.'), revert.stdout);
+  assert.deepEqual({ repository: repositoryFiles(root), data: snapshot(repoDataDir(root)) }, after, 'revert: nothing written');
+});
+
+test('land --yes and revert --yes without a terminal are refused and write nothing', () => {
+  const { root } = landableRepo();
+  const before = { repository: repositoryFiles(root), data: snapshot(repoDataDir(root)) };
+  for (const name of ['land', 'revert']) {
+    const r = runLearn(root, name, 'L1', '--yes');
+    assert.equal(r.status, 3, `${name}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`^kh-harness: ${name} refused: .*it needs a person at an interactive terminal outside Claude Code, and nothing was changed\\.\\n$`));
+    assert.deepEqual({ repository: repositoryFiles(root), data: snapshot(repoDataDir(root)) }, before, name);
+  }
+});
+
+test('at a terminal land and revert write, and their output names the files and says the change is not committed', () => {
+  const { root } = landableRepo();
+  const landed = landLearning(root, 'L1', { yes: true, interactive: AT_TERMINAL });
+  const landText = renderRepositoryDone('land', landed);
+  assert.equal(landText, [
+    'L1 landed: its entry and its gate, at block, are in the repository, and its local gate is gone, the committed one being in force.',
+    `wrote: ${LEARNED_PATH}, ${GATES_PATH}`,
+    UNCOMMITTED,
+  ].join('\n'));
+  const reverted = revertLearning(root, 'L1', { yes: true, interactive: AT_TERMINAL });
+  assert.equal(renderRepositoryDone('revert', reverted), [
+    'L1 reverted: its gate and entry are out of the repository, and it is active-local on this machine, its local gate at block.',
+    `wrote: ${GATES_PATH}, ${LEARNED_PATH}`,
+    UNCOMMITTED,
+  ].join('\n'));
+});
+
+test('the note that the commit still holds the gate reaches the owner on the dry run and on the real run', () => {
+  const { root } = landableRepo();
+  assert.equal(landLearning(root, 'L1', { yes: true, interactive: AT_TERMINAL }).ok, true);
+  commitAll(root);
+  for (const rel of [GATES_PATH, LEARNED_PATH]) rmSync(join(root, rel));
+  const note = "note: this run does not remove L1's gate from the working tree: it was already gone from .claude/kh-harness/gates.json; "
+    + 'the commit this branch is on still holds it, and the gate stays committed for everyone until that removal is committed; git status shows the files concerned';
+  const dry = runLearn(root, 'revert', 'L1');
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.ok(dry.stdout.startsWith(`${note}\n`), dry.stdout);
+  const reverted = revertLearning(root, 'L1', { yes: true, interactive: AT_TERMINAL });
+  assert.equal(reverted.ok, true, reverted.error);
+  const lines = renderRepositoryDone('revert', reverted).split('\n');
+  assert.ok(lines.includes(note), lines.join('\n'));
+  assert.equal(lines.at(-1), UNCOMMITTED);
+});
+
+test('land and revert print the library\'s result with --json', () => {
+  const { root } = landableRepo();
+  const land = JSON.parse(ok(runLearn(root, 'land', 'L1', '--json')));
+  assert.equal(land.dryRun, true);
+  assert.deepEqual(land.proposals.map(p => p.path), [LEARNED_PATH, GATES_PATH]);
+  assert.deepEqual([land.notes, land.refusals], [[], []]);
+  assert.equal(landLearning(root, 'L1', { yes: true, interactive: AT_TERMINAL }).ok, true);
+  const raw = ok(runLearn(root, 'revert', 'L1', '--json'));
+  assert.ok(PRINTABLE.test(raw), 'every character outside printable ASCII is escaped');
+  const revert = JSON.parse(raw);
+  assert.equal(revert.dryRun, true);
+  assert.deepEqual(revert.proposals.map(p => p.path), [GATES_PATH, LEARNED_PATH]);
+});
+
+test('land or revert of an unknown id is one line and exit 2', () => {
+  const { root } = landableRepo();
+  for (const name of ['land', 'revert']) {
+    const r = runLearn(root, name, 'L9');
+    assert.equal(r.status, 2, `${name}: ${r.stderr}`);
+    assert.equal(r.stderr, `kh-harness: ${name}: L9: no such learning\n`);
+  }
+});
+
+test('land --yes on the default branch at a terminal meets the same refusal apply does, which the dry run names', () => {
+  const { root } = promotedRepo('block');
+  const dry = runLearn(root, 'land', 'L1');
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /^note: --yes would be refused — refusing to land on the default branch "[^"]+"/m);
 });

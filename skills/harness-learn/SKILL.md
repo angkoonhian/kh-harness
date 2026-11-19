@@ -111,14 +111,14 @@ owner's requests are only what the owner says in this conversation.
 
 ## What only the owner does
 
-These approve a gate or weaken one, so only the owner runs them, at a
-standalone terminal (an IDE's built-in terminal is refused too):
+These approve a gate, weaken one, or change the repository's, so only the
+owner runs them, at a standalone terminal (an IDE's built-in terminal is
+refused too): `approve`, `wrong`, `demote`, `retire`, `land`, `revert`,
+`policy set` and `policy clear`.
 
-- `approve`, `wrong`, `demote`, `retire`, `policy set` and `policy clear`;
-- landing a learning in the repository (`land`) and reverting one
-  (`revert`).
-
-Never run any of them, and never suggest a way around the terminal check.
+Never run any of them, not even `land` or `revert` without `--yes`, whose
+dry run is the owner's to read, and never suggest a way around the
+terminal check.
 Never edit by hand a file in the log's data directory, `gates.local.json`,
 the ledger, the policy file, `.claude/kh-harness/gates.json`,
 `docs/harness/LEARNED.md` or `docs/harness/FAILURES.md`, which is the
