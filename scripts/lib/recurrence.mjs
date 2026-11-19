@@ -89,9 +89,11 @@ export function failureSignature(event, root) {
   return createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16);
 }
 
-/** Every session id with a file in `dir`, plain or compressed, once each and
- * sorted; a missing directory holds none. */
-function sessionIds(dir) {
+/** Every session id with a file in the repository's sessions directory,
+ * plain or compressed, once each and sorted; a missing directory holds none.
+ * Throws when the directory exists and cannot be listed. */
+export function sessionIds(root) {
+  const dir = join(repoDataDir(root), 'sessions');
   let names;
   try {
     names = readdirSync(dir);
@@ -141,7 +143,7 @@ function identityOf(event) {
  */
 export function findRecurrences(root, { minSessions = 2 } = {}) {
   if (!Number.isSafeInteger(minSessions) || minSessions < 1) throw new RangeError('minSessions must be a positive integer');
-  const ids = sessionIds(join(repoDataDir(root), 'sessions'));
+  const ids = sessionIds(root);
   const groups = new Map();
   let sessionsUnreadable = 0;
   let linesUnparseable = 0;
