@@ -13,6 +13,9 @@
 // name and the session id. Scrubbing, the inline cap and the envelope fields
 // are `appendEvent`'s, so the hook hands it raw payload fields.
 //
+// A session start also seals the repository's other sessions and expires
+// old content, within a time budget.
+//
 // Only what the payload reports as having happened is recorded. The agent's
 // own text (`last_assistant_message`, a compaction summary) is a claim, not
 // an observation, and is never copied.
@@ -20,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { appendEvent, canonicalJson, harnessIdentity, isEnabled } from './harness-log.mjs';
+import { appendEvent, applyRetention, canonicalJson, harnessIdentity, isEnabled, sealClosedSessions } from './harness-log.mjs';
 import { markerPath, projectRoot, readJSONMarker, safeSessionId, stripAnsi, writeJSONMarker } from './harness-redact.mjs';
 
 const IDENTITY_FIELDS = ['session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
@@ -177,6 +180,16 @@ function recordHarness(root, sessionId, payload) {
   if (written && path !== null) writeJSONMarker(path, current);
 }
 
+// The wall-clock time a session start may spend sealing earlier sessions and
+// expiring old content; what is left over is done on a later session start.
+const MAINTENANCE_BUDGET_MS = 150;
+
+function maintain(root, currentSessionId) {
+  const started = performance.now();
+  sealClosedSessions(root, { currentSessionId, budgetMs: MAINTENANCE_BUDGET_MS });
+  applyRetention(root, { budgetMs: MAINTENANCE_BUDGET_MS - (performance.now() - started) });
+}
+
 function record(payload) {
   if (!isPlainObject(payload) || !isLoggedEvent(payload.hook_event_name)) return;
   const sessionId = safeSessionId(payload.session_id);
@@ -188,6 +201,7 @@ function record(payload) {
   if (!written) return;
   if (HARNESS_EVENTS.has(event.type)) recordHarness(root, sessionId, payload);
   if (EXTERNAL_TOOL_EVENTS.has(event.type) && fetchesOutsideContent(event.tool)) recordExternal(root, sessionId, payload, event.tool);
+  if (event.type === 'SessionStart') maintain(root, sessionId);
 }
 
 async function readStdin() {
