@@ -218,6 +218,7 @@ function recordFiring(root, sessionId, gate, payload) {
       action: gate.action,
       tool: payload.tool_name,
       tool_use_id: typeof payload.tool_use_id === 'string' ? payload.tool_use_id : undefined,
+      agent_id: typeof payload.agent_id === 'string' ? payload.agent_id : undefined,
       session_id: sessionId,
     });
   } catch {

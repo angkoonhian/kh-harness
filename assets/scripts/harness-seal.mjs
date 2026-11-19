@@ -59,7 +59,7 @@ const TOOL_RESULT = [...TOOL_CALL, 'status', 'outputBytes', 'durationMs'];
 const frozenByType = entries => Object.freeze(Object.fromEntries(Object.entries(entries).map(([type, fields]) => [type, Object.freeze(fields)])));
 
 /**
- * Every field, by event type, that the hook writes and retention keeps: an
+ * Every field, by event type, that the hooks write and retention keeps: an
  * identifier, a path, a name from a fixed set, a hash, a size, a time, a
  * flag or a failure's first error line. The first error line is masked and
  * then cut to 300 characters when written, and with the tool and the input hash
@@ -87,6 +87,7 @@ export const KEPT_FIELDS = frozenByType({
   SessionEnd: [...IDENTITY, 'reason'],
   harness: [...IDENTITY, 'base', 'learned', 'kitVersion', 'model'],
   external_content: [...IDENTITY, 'tool'],
+  gate_firing: [...IDENTITY, 'gateId', 'gateSha256', 'action', 'tool'],
 });
 
 /**

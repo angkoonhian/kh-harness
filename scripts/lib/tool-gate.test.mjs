@@ -46,6 +46,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { GATE_LIMITS, gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH as LOG_GATES_PATH, LOCAL_GATES_FILE as LOG_LOCAL_GATES_FILE, readEvents, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
+import { CONTENT_FIELDS, KEPT_FIELDS } from '../../assets/scripts/harness-seal.mjs';
 import { GATES_PATH, LOCAL_GATES_FILE } from '../../assets/scripts/tool-gate.mjs';
 import { addedLatency } from './latency-fixtures.mjs';
 import { APPLY, DETECT, UNINSTALL, git, run, settings, hooksBesideLog } from './lifecycle-fixtures.mjs';
@@ -151,6 +152,17 @@ test('an observe gate records a firing and prints nothing', () => {
 
   assert.equal(runHook(root, call('observe-1', 'npm test')), null);
   assert.equal(firings(root, 'observe-1').length, 1, 'a call no gate matches records nothing');
+});
+
+test('a firing carries the agent that made the call, and every field of it is one retention keeps', () => {
+  const root = project();
+  writeCommitted(root, gateFile([gate('L1')]));
+  assert.equal(runHook(root, call('agent-1', 'rm -rf build', { agent_id: 'sub-7' })), null);
+  const [firing] = firings(root, 'agent-1');
+  assert.equal(firing.agent_id, 'sub-7');
+  const envelope = new Set(['schema', 'ts', 'pid']);
+  assert.deepEqual(Object.keys(firing).filter(k => !envelope.has(k) && !KEPT_FIELDS.gate_firing.includes(k)), []);
+  assert.deepEqual(CONTENT_FIELDS.gate_firing, undefined, 'a firing holds no content for retention to remove');
 });
 
 test('an observe gate with the session log disabled does nothing at all', () => {
