@@ -137,10 +137,16 @@ kit writes into: it adds only its own hook entries and deny rules, but it
 parses and re-serialises the whole file, so the content and the indentation
 and trailing newline are kept while key order and inline spacing are
 normalised; `--yes` prints a `note` saying so when that changed the file.
-Every settings patch of a run is merged in memory and the file is replaced
-once, by a temporary file and a rename; the patches are recorded after
-that, and the manifest is written next. A kill between the settings rename
-and the manifest rename leaves entries the manifest does not record.
+Every settings patch of a run is merged in memory. The manifest is written
+first, holding those patch records and every file written so far; then the
+settings file is replaced once, by a temporary file and a rename; then the
+manifest is written again. A run killed before the settings rename leaves
+records of entries that are not in the file, which `uninstall` drops and
+the next `apply` writes; one killed after it leaves the entries recorded,
+and loses only the note that the kit created the settings file, so
+`uninstall` leaves a file the kit created as an empty object. A run killed
+earlier, while the files are being written, leaves files the manifest does
+not record, which are removed by hand (or `git clean`).
 
 **Hook scripts are written at one kit version or not at all.** The kit's
 scripts under `.claude/scripts/` load one another, and a script written by

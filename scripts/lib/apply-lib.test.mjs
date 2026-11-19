@@ -908,6 +908,50 @@ test('a settings write that dies midway leaves the owner\'s file as it was, and 
   assert.deepEqual(r.manifest.files.map(f => f.path), ['HANDOFF.md'], 'the file written before it is recorded');
 });
 
+test('the manifest holding the staged patch records is written before the settings file is replaced', () => {
+  const d = repoWithSettings();
+  const order = [];
+  let staged = null;
+  const r = applyProposals({
+    root: d, proposals: [fileProposal(), batchHook('SessionStart'), batchDeny(['Edit(a)'])], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0',
+    persistManifest: manifest => { order.push('manifest'); staged = structuredClone(manifest); },
+    replaceSettings: (path, text) => { order.push('settings'); writeFileSync(path, text); },
+  });
+  assert.deepEqual(order, ['manifest', 'settings']);
+  assert.deepEqual(staged.settingsPatches, r.manifest.settingsPatches, 'every patch about to be written is on record first');
+  assert.deepEqual(staged.files.map(f => f.path), ['HANDOFF.md'], 'with every file written so far');
+});
+
+test('a manifest that cannot be written before the settings file leaves that file as it was and records no patch', () => {
+  const d = repoWithSettings();
+  let settingsWrites = 0;
+  const r = applyProposals({
+    root: d, proposals: [batchHook('Stop')], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0',
+    persistManifest: () => { throw new Error('EROFS: read-only file system'); },
+    replaceSettings: () => { settingsWrites += 1; },
+  });
+  assert.equal(settingsWrites, 0);
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), OWNERS_SETTINGS);
+  assert.deepEqual([r.manifest.settingsPatches, r.patched], [[], []]);
+  assert.deepEqual(r.failed.map(f => f.path), ['.claude/kh-harness.manifest.json']);
+  assert.match(r.failed[0].error, /^failed to record the settings patches in \.claude\/kh-harness\.manifest\.json, so \.claude\/settings\.json was not written: EROFS/);
+});
+
+test('a patch staged again replaces the record a killed run left for it, so each entry has one record', () => {
+  const d = repoWithSettings();
+  // The record a run killed before the settings write leaves: the patches
+  // recorded, the settings file as it was.
+  let killed = null;
+  applyProposals({
+    root: d, proposals: [batchHook('Stop'), batchDeny(['Edit(a)'])], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0',
+    persistManifest: manifest => { killed = structuredClone(manifest); },
+    replaceSettings: () => { throw new Error('killed'); },
+  });
+  assert.equal(killed.settingsPatches.length, 2);
+  const again = applyProposals({ root: d, proposals: [batchHook('Stop'), batchDeny(['Edit(a)'])], manifest: killed, kitVersion: '0.2.0' });
+  assert.deepEqual(again.manifest.settingsPatches.map(p => p.container), ['/hooks/Stop', '/permissions/deny']);
+});
+
 test('after a run the file holds every entry the manifest records and no kit entry it does not', () => {
   const d = repoWithSettings();
   const proposals = [batchHook('SessionStart'), batchHook('Stop'), batchDeny(['Edit(a)', 'Edit(b)'])];

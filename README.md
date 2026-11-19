@@ -716,9 +716,17 @@ the scrub misses, and the cost figures are on
   per session, which names the remedy: run `apply --yes`, and if `apply`
   reports a file kept or gone, restore it to what kh-harness wrote and run
   `apply --yes` again.
-- `apply --yes` replaces `.claude/settings.json` once, by a temporary file
-  and a rename, and writes the manifest next. A kill between those two
-  renames leaves settings entries the manifest does not record.
+- `apply --yes` writes the manifest, holding the settings patches it is
+  about to make and every file written so far, then replaces
+  `.claude/settings.json` once, by a temporary file and a rename, then
+  writes the manifest again. A kill on either side of the settings rename
+  leaves a state `uninstall` removes and the next `apply` completes; after
+  a kill between the rename and the last manifest write, a settings file
+  the kit created is not recorded as its own, so `uninstall` leaves it as
+  an empty object. A kill earlier, while the files are being written,
+  leaves files the manifest does not record: remove them by hand (or
+  `git clean`), since `apply` does not overwrite a file it has no record
+  of.
 
 Nothing here claims that the harness or an agent improved. The commands
 report counts: recurrences, replays, firings and what followed them.

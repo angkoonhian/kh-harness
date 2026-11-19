@@ -836,31 +836,50 @@ function stageSettingsDeny({ proposal, batch, skipped }) {
   batch.patched.push({ event: 'permissions.deny', step: proposal.step, checkId: proposal.checkId });
 }
 
+/** What makes two patch records the same patch. */
+const patchKey = patch => `${patch.container}\n${patch.entrySha256}`;
+
 /**
- * Writes what the batch staged, in one whole-file replacement, and records
- * its patches only once that write has returned: so the file on disk is
- * the owner's old one or the complete new one, and the manifest never
- * records a patch the file does not hold. A failed write is reported in
- * `failed` and records nothing. The caller writes the manifest next; a run
- * killed between the two leaves entries in the file with no record, the one
- * gap two files cannot close.
+ * Writes what the batch staged, in one whole-file replacement, so the file
+ * on disk is the owner's old one or the complete new one. The manifest is
+ * written first (`persistManifest`), holding the staged patch records and
+ * every file written so far: a run killed before the settings file is
+ * replaced leaves records of entries that are not there, which `uninstall`
+ * drops and the next `apply` writes; one killed after it leaves the entries
+ * recorded. Either way no entry is in the file without a record. A record
+ * staged again replaces the one already held for the same patch, whose
+ * entry is no longer in the file or it would not have been staged.
+ *
+ * A write that fails is reported in `failed`, and the records are taken
+ * back out of `nextManifest`, which the caller writes next.
  *
  * `settingsCreated` is set the first time a run finds the file absent and
- * writes it, and never reset: once the file was the kit's to create, it
- * stays the kit's to remove when empty.
+ * has written it, and never reset: once the file was the kit's to create,
+ * it stays the kit's to remove when empty. It is recorded only after the
+ * write, so a file the kit did not create is never taken for one it did.
  */
-function writeSettingsBatch({ root, batch, nextManifest, patched, failed, replaceSettings }) {
+function writeSettingsBatch({ root, batch, nextManifest, patched, failed, replaceSettings, persistManifest }) {
   if (batch === null || batch.records.length === 0) return;
-  // Before the write, whose own mkdir would hide which directories are new.
+  // Before the writes, whose own mkdir would hide which directories are new.
   recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
+  const held = nextManifest.settingsPatches;
+  const staged = new Set(batch.records.map(patchKey));
+  nextManifest.settingsPatches = [...held.filter(patch => !staged.has(patchKey(patch))), ...batch.records];
+  try {
+    persistManifest(nextManifest);
+  } catch (err) {
+    nextManifest.settingsPatches = held;
+    failed.push({ path: MANIFEST_PATH, error: `failed to record the settings patches in ${MANIFEST_PATH}, so ${SETTINGS_PATH} was not written: ${err?.message ?? String(err)}` });
+    return;
+  }
   try {
     replaceSettings(join(root, SETTINGS_PATH), serializeSettings(batch.settings, batch.read.raw));
   } catch (err) {
+    nextManifest.settingsPatches = held;
     failed.push({ path: SETTINGS_PATH, error: `failed to write ${SETTINGS_PATH}: ${err?.message ?? String(err)}` });
     return;
   }
   if (batch.read.raw === null) nextManifest.settingsCreated = true;
-  nextManifest.settingsPatches.push(...batch.records);
   patched.push(...batch.patched);
 }
 
@@ -883,8 +902,14 @@ function writeSettingsBatch({ root, batch, nextManifest, patched, failed, replac
  * observable on every platform this project is developed on).
  * `replaceSettings` is `replaceFile` in production, and overridable for the
  * same reason: so a test can make the one settings write fail partway.
+ *
+ * `persistManifest` writes the manifest it is given. A caller whose
+ * proposals patch the settings file passes it, since the patch records must
+ * be on disk before the settings file is replaced (`writeSettingsBatch`);
+ * it is not called for a batch with no settings patch. The caller still
+ * writes the returned manifest afterwards.
  */
-export function applyProposals({ root, proposals, manifest, kitVersion, chmod = chmodSync, replaceSettings = replaceFile }) {
+export function applyProposals({ root, proposals, manifest, kitVersion, chmod = chmodSync, replaceSettings = replaceFile, persistManifest = () => {} }) {
   // Pass 1: validate. No write happens until every proposal in the batch has
   // cleared both the allowlist and the containment check.
   //
@@ -940,7 +965,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
       break;
     }
   }
-  writeSettingsBatch({ root, batch, nextManifest, patched, failed, replaceSettings });
+  writeSettingsBatch({ root, batch, nextManifest, patched, failed, replaceSettings, persistManifest });
 
   // The version that last wrote, not the one that first created the
   // manifest. A run that changed nothing leaves it alone. It says nothing

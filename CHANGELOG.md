@@ -183,8 +183,9 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   execution disclosure whenever a hook is proposed, and the disclosure
   names every hook `apply` installs, its events, and what it reads and
   runs. `.claude/settings.json` is replaced once per run, by a temporary
-  file and a rename, with the manifest written next; a kill between the
-  two leaves entries the manifest does not record.
+  file and a rename, with the manifest written before it, holding the
+  patch records, and again after it; a kill on either side of the rename
+  leaves a state `uninstall` removes and the next `apply` completes.
 - `detect`, `apply` and `uninstall` reject a second path (exit 2). A
   dry-run `apply` over a manifest that cannot be read exits 3.
 - `uninstall` reverts the settings before it removes a file, and keeps a

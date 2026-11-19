@@ -235,7 +235,7 @@ const settingsWasCanonical = isCanonicalJson(readRawIfPresent(join(root, SETTING
 // escape as a stack trace and exit 1.
 let result;
 try {
-  result = applyProposals({ root, proposals, manifest, kitVersion: KIT_VERSION });
+  result = applyProposals({ root, proposals, manifest, kitVersion: KIT_VERSION, persistManifest: staged => writeManifest(root, staged) });
 } catch (err) {
   process.stderr.write(`kh-harness: apply failed: ${err && err.message ? err.message : String(err)}\n`);
   // Nothing was written: pass 1 validates the whole batch before pass 2
