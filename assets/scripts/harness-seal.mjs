@@ -928,19 +928,25 @@ export function verifyIndex(root) {
     ?? { intact: false, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: true };
 }
 
+/** How many lines the index holds, a position `sessionsSealedSince` takes;
+ * null when the index cannot be read. */
+export function indexLineCount(root) {
+  return readIndex(root)?.lines.length ?? null;
+}
+
 /**
- * How many sessions the index names whose latest sealed record holds an
- * event later than `sinceMs`, milliseconds since the epoch; with `sinceMs`
- * null, how many sessions it names at all. The index records no time of
- * sealing, so a session sealed after `sinceMs` whose every event came
- * before it is not counted. 0 when the index cannot be read.
+ * How many sessions were sealed at index line `sinceLine` or later, each
+ * counted once. A retention rewrite's line is not a sealing. An index with
+ * fewer than `sinceLine` lines is not the one that position was taken from,
+ * so every session it seals counts. 0 when the index cannot be read.
  */
-export function sessionsSealedSince(root, sinceMs) {
+export function sessionsSealedSince(root, sinceLine) {
   const index = readIndex(root);
   if (index === null) return 0;
-  let count = 0;
-  for (const record of index.latest.values()) {
-    if (sinceMs === null || (record.lastTs !== null && Date.parse(record.lastTs) > sinceMs)) count++;
+  const from = sinceLine > index.lines.length ? 0 : sinceLine;
+  const sealed = new Set();
+  for (const { record } of index.lines.slice(from)) {
+    if (record !== null && record.contentExpired !== true) sealed.add(record.sessionId);
   }
-  return count;
+  return sealed.size;
 }

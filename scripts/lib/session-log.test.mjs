@@ -508,15 +508,19 @@ test('with the log disabled a session start seals nothing', () => {
 });
 
 // Pinned against the hooks reference, https://code.claude.com/docs/en/hooks,
-// read on 2026-11-19, "SessionStart decision control" and "JSON output": a
+// read on 2026-11-19. "SessionStart decision control" and "JSON output": a
 // SessionStart hook adds context for Claude with `additionalContext` inside
 // `hookSpecificOutput`, beside `hookEventName: "SessionStart"`; its stdout is
 // read as JSON only when it is one JSON object with nothing around it but
-// whitespace, and exit 0 is the code for JSON output.
+// whitespace, and exit 0 is the code for JSON output. "SessionStart input":
+// `source` is "startup" for new sessions, "resume" for resumed sessions,
+// "clear" after /clear, "compact" after compaction, or "fork" for a new
+// session forked from an existing one.
 const NOTICE_TEXT = 'kh-harness: <n> sealed sessions since the last learn tick. The harness-learn skill can review them.';
 const noticeOutput = n => JSON.stringify({
   hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: NOTICE_TEXT.replace('<n>', String(n)) },
 });
+const OTHER_SOURCES = ['resume', 'clear', 'compact', 'fork'];
 
 function assertNotice(result, n) {
   assert.equal(result.status, 0, `exit status; stderr: ${result.stderr}`);
@@ -525,8 +529,11 @@ function assertNotice(result, n) {
 }
 
 const setAutodraft = (root, autodraft) => writeFileSync(join(repoDataDir(root), 'config.json'), JSON.stringify({ autodraft }));
-const writeLastTick = (root, ts) => writeFileSync(join(repoDataDir(root), 'last-tick.json'), JSON.stringify({ ts }));
-const sessionStart = sessionId => ({ session_id: sessionId, hook_event_name: 'SessionStart', source: 'startup' });
+const writeLastTick = (root, text) => writeFileSync(join(repoDataDir(root), 'last-tick.json'), text);
+const indexLineCount = root => readFileSync(join(repoDataDir(root), 'index.jsonl'), 'utf8').split('\n').filter(Boolean).length;
+/** `last-tick.json` as `learn tick` writes it now. */
+const tickNow = root => writeLastTick(root, JSON.stringify({ ts: new Date().toISOString(), indexLines: indexLineCount(root) }));
+const sessionStart = (sessionId, source = 'startup') => ({ session_id: sessionId, hook_event_name: 'SessionStart', source });
 
 /** Records one finished tool call in each of `sessionIds` and leaves each
  * idle long enough for the next session start to seal it. */
@@ -557,31 +564,48 @@ test('the notice contains only the count', () => {
   assert.equal(additionalContext.replace(/\b2\b/, '<n>'), NOTICE_TEXT);
 });
 
-test('the notice counts only the sessions sealed since the last learn tick', () => {
+test('only a new session gets the notice: a resumed, cleared, compacted or forked one stays silent', () => {
+  for (const source of OTHER_SOURCES) {
+    const root = enabledProject();
+    setAutodraft(root, true);
+    closedSessions(root, `src-${source}-1`);
+    assertSilentSuccess(runHook(root, sessionStart(`src-${source}-2`, source)));
+    assert.deepEqual(readdirSync(sessionsDir(root)).sort(), [`s-src-${source}-1.jsonl.gz`, `s-src-${source}-2.jsonl`], `${source} still seals`);
+    assertNotice(runHook(root, sessionStart(`src-${source}-3`)), 1);
+  }
+});
+
+test('the notice counts the sessions the index gained since the last learn tick, by position', () => {
   const root = enabledProject();
   setAutodraft(root, true);
   closedSessions(root, 'tick-1');
   assertNotice(runHook(root, sessionStart('tick-2')), 1);
-  const tickMs = Date.now();
-  writeLastTick(root, new Date(tickMs).toISOString());
-  while (Date.now() <= tickMs) {
-    // the next events must carry a time after the tick's
-  }
+  tickNow(root);
+  // tick-2 ended before the tick and is sealed only after it: it counts.
   idle(root, 'tick-2');
   closedSessions(root, 'tick-3');
-  assertNotice(runHook(root, sessionStart('tick-4')), 1);
+  assertNotice(runHook(root, sessionStart('tick-4')), 2);
   assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-tick-1.jsonl.gz', 's-tick-2.jsonl.gz', 's-tick-3.jsonl.gz', 's-tick-4.jsonl']);
 });
 
-test('no session sealed since the last learn tick, or a last tick that cannot be read, prints nothing', () => {
-  for (const tick of [new Date(Date.now() + 3_600_000).toISOString(), 'not a time', null]) {
+test('no session sealed since the last learn tick prints nothing', () => {
+  const root = enabledProject();
+  setAutodraft(root, true);
+  closedSessions(root, 'later-1');
+  assertNotice(runHook(root, sessionStart('later-2')), 1);
+  tickNow(root);
+  assertSilentSuccess(runHook(root, sessionStart('later-3')));
+});
+
+test('a last tick that cannot be read, or records no index position, counts every sealed session', () => {
+  for (const text of ['{ not json', JSON.stringify({ ts: new Date().toISOString() }), JSON.stringify({ indexLines: -1 }), JSON.stringify({ indexLines: '1' })]) {
     const root = enabledProject();
     setAutodraft(root, true);
-    closedSessions(root, 'later-1');
-    if (tick === null) writeFileSync(join(repoDataDir(root), 'last-tick.json'), '{ not json');
-    else writeLastTick(root, tick);
-    assertSilentSuccess(runHook(root, sessionStart('later-2')));
-    assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-later-1.jsonl.gz', 's-later-2.jsonl']);
+    closedSessions(root, 'every-1');
+    assertNotice(runHook(root, sessionStart('every-2')), 1);
+    writeLastTick(root, text);
+    idle(root, 'every-2');
+    assertNotice(runHook(root, sessionStart('every-3')), 2);
   }
 });
 

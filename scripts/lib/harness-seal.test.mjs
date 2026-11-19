@@ -13,7 +13,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 
 import { appendEvent, readEvents, repoDataDir, sessionFileName, storeBlob } from '../../assets/scripts/harness-log.mjs';
 import {
-  applyRetention, CLAIMED_SUFFIX, SEAL_IDLE_MS, SEAL_TEMP_SUFFIX, sealClosedSessions, untrustedBecause, verifyIndex,
+  applyRetention, CLAIMED_SUFFIX, indexLineCount, SEAL_IDLE_MS, SEAL_TEMP_SUFFIX, sealClosedSessions, sessionsSealedSince, untrustedBecause, verifyIndex,
 } from '../../assets/scripts/harness-seal.mjs';
 import { FAILURE_EVENT, failureSignature } from './recurrence.mjs';
 
@@ -465,6 +465,36 @@ test('a retention rewrite is itself recorded so the index stays intact', () => {
   assert.notEqual(lines[2].sha256, lines[0].sha256);
   assert.equal(lines[2].sha256, sha256OfBytes(gunzipSync(readFileSync(sealedFile(root, 'aged')))));
   assert.deepEqual(verifyIndex(root), INTACT);
+});
+
+test('the sessions sealed since an index position are counted once each, and a retention rewrite is not a seal', () => {
+  const root = tempDir('hk-seal-since-');
+  assert.equal(indexLineCount(root), 0, 'no index is an empty one');
+  assert.equal(sessionsSealedSince(root, 0), 0);
+  writeSession(root, 'first', 1);
+  seal(root);
+  const atTick = indexLineCount(root);
+  assert.equal(atTick, 1);
+  writeSession(root, 'second', 1);
+  writeSession(root, 'third', 1);
+  seal(root);
+  writeSession(root, 'second', 1);
+  seal(root);
+  assert.deepEqual(indexLines(root).map(l => l.sessionId), ['first', 'second', 'third', 'second']);
+  assert.equal(sessionsSealedSince(root, atTick), 2, 'a session sealed twice since is one session');
+  assert.equal(sessionsSealedSince(root, 0), 3);
+  const beforeRetention = indexLineCount(root);
+  applyRetention(root, { now: Date.now() + 91 * DAY_MS });
+  assert.ok(indexLineCount(root) > beforeRetention, 'retention appended its own lines');
+  assert.equal(sessionsSealedSince(root, beforeRetention), 0);
+  assert.equal(sessionsSealedSince(root, indexLineCount(root) + 5), 3, 'a position past the end means the index was replaced, so every session counts');
+});
+
+test('an index that cannot be read has no line count and no sessions sealed', () => {
+  const root = tempDir('hk-seal-since-unreadable-');
+  mkdirSync(dataFile(root, 'index.jsonl'), { recursive: true });
+  assert.equal(indexLineCount(root), null);
+  assert.equal(sessionsSealedSince(root, 0), 0);
 });
 
 test('a crash during a retention rewrite is pending and finished on the next run', () => {

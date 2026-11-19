@@ -5,13 +5,13 @@ import { resolve } from 'node:path';
 
 import { LEARN_USAGE, learnHelp, wantsHelp, warnUnknown } from './lib/cli.mjs';
 import {
-  asciiJson, candidatesView, failureLine, helpName, listView, parseFiringRef, parseLearnArgv, plural, policyFrom, policyView, readDraft,
-  renderApproved, renderCandidates, renderDemoted, renderDraft, renderList, renderPolicy, renderPolicyCleared, renderPolicySet,
+  asciiJson, candidatesView, evidenceView, failureLine, helpName, listView, parseFiringRef, parseLearnArgv, plural, policyFrom, policyView, readDraft,
+  renderApproved, renderCandidates, renderDemoted, renderDraft, renderEvidence, renderList, renderPolicy, renderPolicyCleared, renderPolicySet,
   renderReplay, renderRetired, renderShow, renderTick, renderWrong, resolveCommand, showView, terminalRefusal, WRITES,
 } from './lib/learn-cli.mjs';
 import { draftLearning, listLearnings, runTrial } from './lib/learn-lib.mjs';
 import { approveLearning, clearPolicy, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './lib/learn-promote.mjs';
-import { assertDataDirSafe } from './lib/log-lib.mjs';
+import { assertDataDirSafe, checkDataDir } from './lib/log-lib.mjs';
 import { requireInteractive } from './lib/tty.mjs';
 
 const argv = process.argv.slice(2);
@@ -52,6 +52,11 @@ const settle = (name, interactive, result, render) => {
 const SUBCOMMANDS = {
   'candidates'(root) {
     print(candidatesView(root), renderCandidates);
+  },
+  'evidence'(root, command) {
+    const view = evidenceView(root, command.args[0]);
+    if (view.error !== undefined) fail(2, failureLine('evidence', view));
+    print(view, renderEvidence);
   },
   'draft'(root, command) {
     const read = readDraft(command.values.get('--from'));
@@ -141,6 +146,14 @@ if (WRITES.has(command.name)) {
   } catch (error) {
     fail(3, `${error.message}. Nothing was written.`);
   }
+}
+
+// `evidence` prints recorded tool inputs, so it refuses the same data
+// directories: through a link it would print whatever the link points at as
+// this repository's record.
+if (command.name === 'evidence') {
+  const check = checkDataDir(root);
+  if (check.state === 'refused') fail(3, `refusing to read ${check.dir}: ${check.reason}. Nothing was printed from it.`);
 }
 
 // The contract is exit 0, 2 or 3: a refusal is 3, and anything unexpected is

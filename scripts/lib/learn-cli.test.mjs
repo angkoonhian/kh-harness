@@ -15,11 +15,15 @@ import { join, resolve } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { applyRetention, SEAL_IDLE_MS, sealClosedSessions } from '../../assets/scripts/harness-seal.mjs';
+import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { EXIT_CODES, LEARN_USAGE, learnHelp } from './cli.mjs';
 import {
-  draftFor, drafted, learningFile, logClean, logFiring, loggedRepo, logReadMistakes, repo, signatureOf, tempDir, trialRepo, useId, writeLocalGates,
+  draftFor, drafted, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, repo, signatureOf, tempDir, trialRepo, useId,
+  writeLocalGates,
 } from './learn-fixtures.mjs';
-import { LEARN_SUBCOMMANDS, TERMINAL_ONLY } from './learn-cli.mjs';
+import { DATA_BEGIN, DATA_END, LEARN_SUBCOMMANDS, TERMINAL_ONLY } from './learn-cli.mjs';
+import { FAILURE_EVENT, SUCCESS_EVENT } from './recurrence.mjs';
 import { listLearnings } from './learn-lib.mjs';
 import { approveLearning, setPolicy } from './learn-promote.mjs';
 import { appendLedger } from './ledger.mjs';
@@ -116,6 +120,84 @@ test('candidates says when the ledger cannot vouch for what stands', () => {
   const view = json(root, 'candidates');
   assert.equal(view.ledgerIntact, false);
   assert.match(ok(runLearn(root, 'candidates')), /ledger cannot be read or its chain is broken/);
+});
+
+const OUTPUT_MARKER = ['kh', 'output', 'marker'].join('-');
+const WATCH_COMMAND = 'npm test --watch ‮';
+
+/** A repository whose log holds one Bash failure, with an invisible
+ * character in its input, in two sessions: in the first it is followed by
+ * a successful call, and both calls carry the marker in their output only. */
+function evidenceRepo() {
+  const root = repo();
+  const event = (type, sessionId, toolInput, outcome) => toLogEvent({ hook_event_name: type, session_id: sessionId, tool_use_id: useId('ev'), tool_name: 'Bash', tool_input: toolInput, ...outcome });
+  const failure = id => event(FAILURE_EVENT, id, { command: WATCH_COMMAND }, { error: `Error: watch mode needs a terminal\n${OUTPUT_MARKER} in the rest of the output` });
+  log(root, 'ev-1', HARNESS, failure('ev-1'), read('ev-1'), event(SUCCESS_EVENT, 'ev-1', { command: 'npm test' }, { tool_response: { stdout: OUTPUT_MARKER } }));
+  log(root, 'ev-2', HARNESS, failure('ev-2'), read('ev-2'));
+  return root;
+}
+
+test('evidence prints each recorded failure escaped, inside the recorded-data lines, and reads only', () => {
+  const root = evidenceRepo();
+  const signature = signatureOf(root);
+  const before = snapshot(repoDataDir(root));
+  const text = ok(runLearn(root, 'evidence', signature));
+  const lines = text.trimEnd().split('\n');
+  assert.deepEqual(lines.slice(0, 3), [`EVIDENCE ${signature}`, '  failed in 2 sessions, 2 times; 2 failures shown, the first in each session', `  ${DATA_BEGIN}`]);
+  assert.equal(lines.at(-1), `  ${DATA_END}`);
+  assert.deepEqual(lines.slice(3, -1), [
+    '    failure in session ev-1, event 2',
+    '      tool: "Bash"',
+    '      input: {"command":"npm test --watch \\u{202E}"}',
+    '      error: "Error: watch mode needs a terminal"',
+    '      next success of the same tool, event 4:',
+    '        input: {"command":"npm test"}',
+    '    failure in session ev-2, event 2',
+    '      tool: "Bash"',
+    '      input: {"command":"npm test --watch \\u{202E}"}',
+    '      error: "Error: watch mode needs a terminal"',
+    '      next success of the same tool: none in this session',
+  ]);
+  assert.match(text, PRINTABLE);
+  const view = json(root, 'evidence', signature);
+  assert.deepEqual(view.failures.map(f => [f.sessionId, f.line, f.input, f.nextSuccess?.input ?? null]),
+    [['ev-1', 2, { command: WATCH_COMMAND }, { command: 'npm test' }], ['ev-2', 2, { command: WATCH_COMMAND }, null]]);
+  assert.deepEqual(snapshot(repoDataDir(root)), before, 'evidence writes nothing');
+});
+
+test('evidence never prints a tool output', () => {
+  const root = evidenceRepo();
+  const signature = signatureOf(root);
+  for (const args of [[], ['--json']]) {
+    const r = runLearn(root, 'evidence', signature, ...args);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(`${r.stdout}${r.stderr}`.includes(OUTPUT_MARKER), false, r.stdout);
+  }
+});
+
+test('evidence says an input past the retention period was removed', () => {
+  const root = evidenceRepo();
+  const signature = signatureOf(root);
+  assert.equal(sealClosedSessions(root, { now: Date.now() + SEAL_IDLE_MS + 60_000 }).sealed.length, 2);
+  assert.equal(applyRetention(root, { now: Date.now() + 91 * 86_400_000 }).contentRemoved, 2);
+  const text = ok(runLearn(root, 'evidence', signature));
+  assert.ok(text.includes('      input: removed: past the content retention period\n'), text);
+  assert.ok(text.includes('        input: removed: past the content retention period\n'), 'the next success too');
+  assert.ok(text.includes('      error: "Error: watch mode needs a terminal"'), 'the first error line is structure, and kept');
+  assert.equal(text.includes('npm test'), false, text);
+  assert.deepEqual(json(root, 'evidence', signature).failures.map(f => f.expired), [true, true]);
+});
+
+test('evidence of a signature that is not a current recurrence is one line and exit 2', () => {
+  const root = evidenceRepo();
+  for (const [signature, reason] of [['f'.repeat(16), /not the signature of a current recurrence/], ['not-hex', /must be 16 lowercase hex characters/]]) {
+    const r = runLearn(root, 'evidence', signature);
+    assert.equal(r.status, 2, signature);
+    assert.equal(r.stderr.trim().split('\n').length, 1, r.stderr);
+    assert.match(r.stderr, reason);
+    assert.equal(r.stdout, '');
+  }
+  assert.equal(runLearn(root, 'evidence').status, 2, 'a missing signature');
 });
 
 test('draft reads a file and reports each stage', () => {
@@ -367,6 +449,7 @@ test('replay of a learning that is not a candidate is one line and exit 2', () =
 test('draft and tick refuse a data directory that is a link, and write nothing through it', () => {
   const root = loggedRepo();
   const path = draftFile(JSON.stringify(draftFor(root)));
+  const signature = signatureOf(root);
   const moved = tempDir('hk-learn-moved-');
   const dataDir = repoDataDir(root);
   // The log so far moves elsewhere, and the data directory becomes a link to it.
@@ -382,6 +465,10 @@ test('draft and tick refuse a data directory that is a link, and write nothing t
     assert.deepEqual(snapshot(moved), before, args[0]);
   }
   assert.equal(runLearn(root, 'list').status, 0, 'a subcommand that only reads still runs');
+  const evidence = runLearn(root, 'evidence', signature);
+  assert.equal(evidence.status, 3, evidence.stderr);
+  assert.match(evidence.stderr, /refusing to read .*: it is a link.*Nothing was printed from it\./);
+  assert.equal(evidence.stdout, '');
 });
 
 test('an unknown subcommand exits 2', () => {

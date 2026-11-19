@@ -12,6 +12,7 @@ import { join } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { SEAL_IDLE_MS, sealClosedSessions } from '../../assets/scripts/harness-seal.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import {
   call, drafted, editLearning, FIX, git, HARNESS, kinds, localGates, localGatesPath, log, logClean, logFiring, loggedRepo, logMistakes,
@@ -200,7 +201,21 @@ test('with a broken ledger every learned local gate is removed, and tick promote
   });
   assert.deepEqual(localGates(root).gates, []);
   assert.equal(denied(hookOn(root, MISTAKE)), false);
-  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T12:00:00.000Z' });
+  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T12:00:00.000Z', indexLines: 0 });
+});
+
+test('tick records how many lines the seal index held, and records none when the index cannot be read', () => {
+  const root = loggedRepo();
+  assert.deepEqual(sealClosedSessions(root, { now: Date.now() + SEAL_IDLE_MS + 60_000 }).sealed.length, 4);
+  const lines = readFileSync(join(repoDataDir(root), 'index.jsonl'), 'utf8').split('\n').filter(Boolean).length;
+  assert.equal(lines, 4);
+  tick(root, { now: () => Date.parse('2026-11-19T10:00:00.000Z') });
+  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T10:00:00.000Z', indexLines: 4 });
+
+  const unreadable = loggedRepo();
+  mkdirSync(join(repoDataDir(unreadable), 'index.jsonl'));
+  tick(unreadable, { now: () => Date.parse('2026-11-19T11:00:00.000Z') });
+  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(unreadable), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T11:00:00.000Z' });
 });
 
 test('with no policy, tick promotes nothing', () => {
@@ -498,7 +513,7 @@ test('tick writes nothing inside the repository', () => {
   assert.deepEqual(ticked.promoted, ['L2']);
   assert.deepEqual(ticked.unapprovedRemoved, ['L60']);
   assert.deepEqual(localGates(root).gates, [{ ...other.gate, action: 'block' }]);
-  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T08:00:00.000Z' });
+  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T08:00:00.000Z', indexLines: 0 });
 
   assert.equal(repoStatus(root), before);
   assert.deepEqual(mtimes(root), times);
@@ -762,7 +777,7 @@ test('a local gate file that cannot be rewritten is reported, and tick carries o
   assert.match(ticked.errors[0], /^the local gate file is not a gate file and could not be rewritten \([A-Z]+\); it was left as it is$/);
   assert.deepEqual(ticked.retired, ['L1'], 'retirement still runs');
   assert.deepEqual(ticked.errors.slice(1), ['L2: the local gate file is not a gate file; nothing was written'], 'the demotion is tried and its failure reported');
-  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T09:00:00.000Z' });
+  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T09:00:00.000Z', indexLines: 0 });
 });
 
 test('a suspension does not stand when a different gate with the same id comes first in the committed file', () => {

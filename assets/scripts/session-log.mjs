@@ -16,10 +16,10 @@
 //
 // A session start also seals the repository's other sessions and expires
 // old content, within a time budget. With `autodraft` set in the log's
-// configuration, it then tells the model, as SessionStart
-// `additionalContext`, how many sessions were sealed since the last
-// `learn tick`, when that is any; the notice is fixed text and that count,
-// and nothing read from the log.
+// configuration, the start of a new session then tells the model, as
+// SessionStart `additionalContext`, how many sessions were sealed since the
+// last `learn tick`, when that is any; the notice is fixed text and that
+// count, and nothing read from the log.
 //
 // Only what the payload reports as having happened is recorded. The agent's
 // own text (`last_assistant_message`, a compaction summary) is a claim, not
@@ -200,35 +200,37 @@ function maintain(seal, root, currentSessionId) {
   seal.applyRetention(root, { budgetMs: MAINTENANCE_BUDGET_MS - (performance.now() - started) });
 }
 
-/** The time `learn tick` last ran, in milliseconds since the epoch: null
- * when it never has, undefined when its record cannot be read. */
-function lastTickMs(root) {
+/** The seal index position `learn tick` recorded when it last ran; 0, so
+ * that every sealed session counts, when it never ran or its record cannot
+ * be read. */
+function indexLinesAtLastTick(root) {
   let text;
   try {
     text = readFileSync(join(repoDataDir(root), LAST_TICK_FILE), 'utf8');
-  } catch (error) {
-    return error?.code === 'ENOENT' ? null : undefined;
+  } catch {
+    return 0;
   }
-  const ts = parsedObject(text)?.ts;
-  const ms = typeof ts === 'string' ? Date.parse(ts) : NaN;
-  return Number.isNaN(ms) ? undefined : ms;
+  const lines = parsedObject(text)?.indexLines;
+  return Number.isSafeInteger(lines) && lines >= 0 ? lines : 0;
 }
 
 /** The notice for the model, or null: a fixed sentence holding only the
  * count, since it reaches the model's context. */
 function learnNotice(seal, root) {
   if (!readConfig(root).autodraft) return null;
-  const since = lastTickMs(root);
-  if (since === undefined) return null;
-  const count = seal.sessionsSealedSince(root, since);
+  const count = seal.sessionsSealedSince(root, indexLinesAtLastTick(root));
   if (count === 0) return null;
   return `kh-harness: ${count} sealed sessions since the last learn tick. The harness-learn skill can review them.`;
 }
 
+// Only a new session is told: a resumed, cleared, compacted or forked one
+// continues a conversation that may already hold the notice.
+const NOTICE_SOURCE = 'startup';
+
 /** Maintenance at a session start, then the notice or null. The sealing
  * module is loaded here, not at the top, so no other event parses it; a
  * module that cannot be loaded means nothing is done. */
-async function sessionStart(root, currentSessionId) {
+async function sessionStart(root, currentSessionId, source) {
   let seal;
   try {
     seal = await import('./harness-seal.mjs');
@@ -236,7 +238,7 @@ async function sessionStart(root, currentSessionId) {
     return null;
   }
   maintain(seal, root, currentSessionId);
-  return learnNotice(seal, root);
+  return source === NOTICE_SOURCE ? learnNotice(seal, root) : null;
 }
 
 /** Records the payload; returns the context the model is to be given, or
@@ -252,7 +254,7 @@ async function record(payload) {
   if (!written) return null;
   if (HARNESS_EVENTS.has(event.type)) recordHarness(root, sessionId, payload);
   if (EXTERNAL_TOOL_EVENTS.has(event.type) && fetchesOutsideContent(event.tool)) recordExternal(root, sessionId, payload, event.tool);
-  return event.type === 'SessionStart' ? sessionStart(root, sessionId) : null;
+  return event.type === 'SessionStart' ? sessionStart(root, sessionId, payload.source) : null;
 }
 
 async function readStdin() {

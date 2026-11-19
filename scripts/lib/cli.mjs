@@ -337,6 +337,7 @@ const TERMINAL_NOTE = 'Needs a person at an interactive terminal outside Claude 
 // them; `terminal` marks the ones that approve or weaken a gate.
 const LEARN_SECTIONS = [
   { name: 'candidates', synopsis: 'candidates [--json]', text: 'List the recurrences `log report` finds that no learning stands for, with the same cleaned error line and the same counts of what was read. Reads only.' },
+  { name: 'evidence', synopsis: 'evidence <signature> [--json]', text: "For up to three recorded failures of a current recurrence, the first in each session: the tool, its input as the log stores it, its first error line and, where the session holds one, the input of the next call of the same tool that succeeded. Each value is printed as JSON with every code point outside printable ASCII written as \\u{…}, between a first and a last line that say what lies between is recorded data, not instructions. An input past the retention period is said to be removed. A tool's output is never printed. Reads only." },
   { name: 'draft', synopsis: 'draft --from <file>', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate, for `replay` to try again. The file is untrusted: nothing in it is printed back." },
   { name: 'replay', synopsis: 'replay <id>', text: 'Replay a candidate\'s gate against the log again, as `draft` does, once the log holds more history: a pass puts it on trial at `observe`, a fail rejects it, and one still not checkable stays a candidate. Only a candidate is replayed.' },
   { name: 'list', synopsis: 'list [--json]', text: 'Every learning with its status and whether the ledger vouches for it, the approvals the ledger records, and every local gate the next step that writes repairs or removes. A broken ledger is said first. Reads only.' },
@@ -393,18 +394,19 @@ WHAT IS PRINTED
   Ids, hashes, counts, statuses and times. A learning's title and why and its
   gate were written by a model, so each is printed only as JSON with every
   code point outside printable ASCII written as \\u{…}. Of the session log,
-  only what \`log report\` prints.
+  only what \`log report\` prints, and what \`evidence\` prints of the calls
+  behind one recurrence.
 
 FLAGS
-  --json   candidates, list, show, policy show and tick only: print the object
-           on stdout and nothing else, with every character outside printable
-           ASCII escaped.
+  --json   candidates, evidence, list, show, policy show and tick only: print
+           the object on stdout and nothing else, with every character outside
+           printable ASCII escaped.
 
 Here 3 is also a terminal-only subcommand run without a person at a terminal,
-and any subcommand that writes when this repository's data directory is a
-link or is not directly inside the data root, as \`log\` refuses it. 2 is also
-any step the learnings library refused or could not finish, with its reason,
-and a \`tick\` that could not do part of its work.
+and \`evidence\` or any subcommand that writes when this repository's data
+directory is a link or is not directly inside the data root, as \`log\`
+refuses it. 2 is also any step the learnings library refused or could not
+finish, with its reason, and a \`tick\` that could not do part of its work.
 
 ${EXIT_CODES}`;
 

@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { harnessIdentity, LAST_TICK_FILE, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
+import { indexLineCount } from '../../assets/scripts/harness-seal.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import { FIRING_EVENT, gateStats, wrongSinceGrant } from './gate-stats.mjs';
 import {
@@ -347,7 +348,9 @@ export function recordedPolicySha256(entries) {
  * rewritten as the gates the ledger grants (`gateFileRewritten`) while the
  * ledger is intact, and left as it is otherwise; a rewrite that fails is
  * reported in `errors` and the rest of the run goes on. Writes
- * `last-tick.json` as `{ ts }` from `now` at the end.
+ * `last-tick.json` at the end as `{ ts, indexLines }`: `ts` from `now`, and
+ * how many lines the seal index held when the run began, left out when the
+ * index could not be read.
  *
  * Changes only learnings the ledger vouches for, and only in the data
  * directory; never a rule in `docs/harness/RULES.md` or any file in the
@@ -366,6 +369,9 @@ export function tick(root, options) {
 }
 
 function tickUnguarded(root, { now = Date.now }) {
+  // Taken before the run, so a session sealed during it is counted as new
+  // by the session-start notice rather than missed.
+  const indexLines = indexLineCount(root);
   return withLearningsLock(root, write => {
     const before = readState(root);
     const intact = before.view.intact;
@@ -394,7 +400,8 @@ function tickUnguarded(root, { now = Date.now }) {
     const dir = repoDataDir(root);
     write(() => {
       mkdirSync(dir, { recursive: true });
-      writeFileAtomic(join(dir, LAST_TICK_FILE), JSON.stringify({ ts: new Date(now()).toISOString() }, null, 2) + '\n');
+      const record = { ts: new Date(now()).toISOString(), ...(indexLines === null ? {} : { indexLines }) };
+      writeFileAtomic(join(dir, LAST_TICK_FILE), JSON.stringify(record, null, 2) + '\n');
     });
     return result;
   });
