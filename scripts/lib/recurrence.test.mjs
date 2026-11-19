@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 import { appendEvent, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
+import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { failureSignature, FAILURE_EVENT, findRecurrences, normaliseError, SUCCESS_EVENT } from './recurrence.mjs';
 
 const made = [];
@@ -28,7 +29,7 @@ const HARNESS = { type: 'harness', base: 'base-one', learned: 'learned-one', mod
 
 const failure = (sessionId, over = {}) => ({
   type: FAILURE_EVENT,
-  tool_name: 'Bash',
+  tool: 'Bash',
   inputHash: 'input-one',
   firstErrorLine: 'Error: tests failed',
   session_id: sessionId,
@@ -50,7 +51,7 @@ test('the event type names match the hook events they stand for', () => {
 test('the same failure in two sessions under one harness recurs', () => {
   const root = tempDir('hk-rec-repo-');
   log(root, 'one', HARNESS, failure('one'));
-  log(root, 'two', HARNESS, { type: SUCCESS_EVENT, tool_name: 'Read', inputHash: 'x' }, failure('two'));
+  log(root, 'two', HARNESS, { type: SUCCESS_EVENT, tool: 'Read', inputHash: 'x' }, failure('two'));
   const result = findRecurrences(root);
   assert.equal(result.sessionsRead, 2);
   assert.equal(result.sessionsUnreadable, 0);
@@ -75,7 +76,7 @@ test('the same failure in two sessions under one harness recurs', () => {
 test('the same failure twice in one session does not', () => {
   const root = tempDir('hk-rec-repo-');
   log(root, 'one', HARNESS, failure('one'), failure('one'));
-  log(root, 'two', HARNESS, failure('two', { tool_name: 'Edit' }));
+  log(root, 'two', HARNESS, failure('two', { tool: 'Edit' }));
   assert.deepEqual(findRecurrences(root).recurrences, []);
 });
 
@@ -148,7 +149,7 @@ test('two sessions with no kit harness installed and the same model do recur', (
 test('unattributed failures are counted', () => {
   const root = tempDir('hk-rec-repo-');
   log(root, 'one', failure('one'), HARNESS, failure('one'), { ...HARNESS, base: 'unreadable' }, failure('one'), failure('one'));
-  log(root, 'two', failure('two'), HARNESS, failure('two'), { type: SUCCESS_EVENT, tool_name: 'Read', inputHash: 'x' });
+  log(root, 'two', failure('two'), HARNESS, failure('two'), { type: SUCCESS_EVENT, tool: 'Read', inputHash: 'x' });
   const result = findRecurrences(root);
   assert.equal(result.failuresUnattributed, 4);
   assert.equal(result.recurrences.length, 1);
@@ -291,14 +292,27 @@ test('normaliseError matches a win32 root in either separator and any letter cas
   assert.equal(normaliseError('at c:/WORK/Repo/a.mjs', ROOT), 'at a.mjs');
 });
 
+test('a failure as the logging hook records it has a signature', () => {
+  const event = toLogEvent({
+    hook_event_name: FAILURE_EVENT,
+    session_id: 'one',
+    tool_use_id: 'use-one',
+    tool_name: 'Bash',
+    tool_input: { command: 'npm test' },
+    error: 'Error: tests failed\nmore',
+  });
+  assert.match(failureSignature(event, ROOT), /^[0-9a-f]{16}$/);
+  assert.equal(failureSignature(event, ROOT), failureSignature(failure('one', { inputHash: event.inputHash }), ROOT));
+});
+
 test('failureSignature is null for anything but a failure', () => {
   const event = failure('one');
   assert.equal(failureSignature({ ...event, type: SUCCESS_EVENT }, ROOT), null);
-  assert.equal(failureSignature({ ...event, tool_name: undefined }, ROOT), null);
+  assert.equal(failureSignature({ ...event, tool: undefined }, ROOT), null);
   assert.equal(failureSignature({ ...event, firstErrorLine: 7 }, ROOT), null);
   assert.equal(failureSignature(null, ROOT), null);
   assert.notEqual(failureSignature(event, ROOT), failureSignature({ ...event, inputHash: 'input-two' }, ROOT));
-  assert.notEqual(failureSignature(event, ROOT), failureSignature({ ...event, tool_name: 'Edit' }, ROOT));
+  assert.notEqual(failureSignature(event, ROOT), failureSignature({ ...event, tool: 'Edit' }, ROOT));
   assert.equal(
     failureSignature({ ...event, firstErrorLine: `${POSIX_ROOT}/a.mjs:1` }, ROOT),
     failureSignature({ ...event, firstErrorLine: 'a.mjs:22' }, ROOT),

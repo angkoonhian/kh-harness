@@ -13,6 +13,10 @@ import { readEvents, repoDataDir, sessionFileName } from '../../assets/scripts/h
 export const FAILURE_EVENT = 'PostToolUseFailure';
 export const SUCCESS_EVENT = 'PostToolUse';
 
+/** The field a logged tool event names its tool in; the logging hook writes
+ * the payload's `tool_name` there. */
+export const TOOL_FIELD = 'tool';
+
 const HARNESS_EVENT = 'harness';
 const EXTERNAL_EVENT = 'external_content';
 const UNREADABLE_BASE = 'unreadable';
@@ -79,7 +83,7 @@ export function normaliseError(line, root) {
  */
 export function failureSignature(event, root) {
   if (event === null || typeof event !== 'object' || event.type !== FAILURE_EVENT) return null;
-  const { tool_name: tool, inputHash, firstErrorLine } = event;
+  const { [TOOL_FIELD]: tool, inputHash, firstErrorLine } = event;
   if (!isString(tool) || !isString(inputHash) || !isString(firstErrorLine)) return null;
   const key = JSON.stringify([tool, inputHash, normaliseError(firstErrorLine, root)]);
   return createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16);
@@ -163,7 +167,7 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
       const key = JSON.stringify([base, model, signature]);
       let entry = groups.get(key);
       if (entry === undefined) {
-        entry = { signature, tool: event.tool_name, errorLine: normaliseError(event.firstErrorLine, root), base, model, sessions: new Map(), count: 0, external: false, firstTs: null, lastTs: null };
+        entry = { signature, tool: event[TOOL_FIELD], errorLine: normaliseError(event.firstErrorLine, root), base, model, sessions: new Map(), count: 0, external: false, firstTs: null, lastTs: null };
         groups.set(key, entry);
       }
       entry.count++;
