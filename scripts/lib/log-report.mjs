@@ -77,6 +77,7 @@ function shownRecurrence(r, taxonomy) {
     sessions: r.sessions,
     count: r.count,
     external: r.external,
+    subagent: r.subagent,
     firstTs: isoOrNull(r.firstTs),
     lastTs: isoOrNull(r.lastTs),
     exampleEventRefs: r.exampleEventRefs,
@@ -184,6 +185,7 @@ function recurrenceLines(r, taxonomyState) {
       `error: ${r.errorLine}`,
       kindLine(r.failureKinds, taxonomyState),
       ...(r.external ? ['a contributing session read outside content (web or MCP)'] : []),
+      ...(r.subagent ? ["a contributing failure was a sub-agent's, whose model is not recorded; the model named is its session's"] : []),
       `examples: ${r.exampleEventRefs.map(ref => `${ref.sessionId} event ${ref.line}`).join(', ')}`,
     ]),
   ];

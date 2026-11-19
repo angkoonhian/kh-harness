@@ -183,6 +183,18 @@ test('a recurrence with no external session is not marked external', () => {
   assert.equal(findRecurrences(root).recurrences[0].external, false);
 });
 
+test('a recurrence with a sub-agent\'s failure says so, since the model recorded is the session\'s', () => {
+  const root = tempDir('hk-rec-repo-');
+  log(root, 'one', HARNESS, failure('one'));
+  log(root, 'two', HARNESS, failure('two', { agent_id: 'sub-1' }));
+  assert.equal(findRecurrences(root).recurrences[0].subagent, true);
+
+  const main = tempDir('hk-rec-repo-');
+  log(main, 'one', HARNESS, failure('one'));
+  log(main, 'two', HARNESS, failure('two'));
+  assert.equal(findRecurrences(main).recurrences[0].subagent, false);
+});
+
 test('line numbers in the error do not split a signature', () => {
   const root = tempDir('hk-rec-repo-');
   log(root, 'one', HARNESS, failure('one', { firstErrorLine: 'SyntaxError at line 12, column 3' }));

@@ -183,6 +183,10 @@ function identityOf(event) {
  * or temporary file, which were not read, and `sessionsOverLimit` names the
  * ones with a file larger than is read, which are among the unreadable.
  *
+ * A recurrence is `subagent` when any of its failures carries an agent id:
+ * a sub-agent's events record no model of their own, so the group's model
+ * is then the session's and may not be the one that failed.
+ *
  * Recurrences come most sessions first, then most occurrences, then by
  * signature. An example reference names the first occurrence in each of the
  * first sessions, by the event's 1-based position in what `readEvents`
@@ -227,11 +231,12 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
       const key = JSON.stringify([base, model, signature]);
       let entry = groups.get(key);
       if (entry === undefined) {
-        entry = { signature, tool: event[TOOL_FIELD], errorLine: normaliseError(event.firstErrorLine, rootOf(event, root)), base, model, sessions: new Map(), count: 0, external: false, firstTs: null, lastTs: null };
+        entry = { signature, tool: event[TOOL_FIELD], errorLine: normaliseError(event.firstErrorLine, rootOf(event, root)), base, model, sessions: new Map(), count: 0, external: false, subagent: false, firstTs: null, lastTs: null };
         groups.set(key, entry);
       }
       entry.count++;
       entry.external ||= external;
+      entry.subagent ||= isString(event.agent_id);
       if (!entry.sessions.has(sessionId)) entry.sessions.set(sessionId, index + 1);
       if (isString(event.ts)) {
         if (entry.firstTs === null || event.ts < entry.firstTs) entry.firstTs = event.ts;
