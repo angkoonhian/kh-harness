@@ -56,7 +56,13 @@ scoped to the `Write` and `Edit` tools exactly, so that every time Claude
 edits or writes a `.ts`/`.tsx`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.py` file, this
 repository's own lint script runs against that one file, automatically.
 
-When the owning package's lint script reports a problem, the hook writes
+The lint script that runs is the nearest one: the hook walks up from the
+edited file to the project root and uses the first `package.json` (for a
+`.py` file, `pyproject.toml`) that declares a lint script. A manifest that
+declares none is passed over, so a workspace package that leaves linting
+to the root is still linted by the root's script.
+
+When that lint script reports a problem, the hook writes
 it to stderr and exits 2. This never blocks the edit that already
 happened — only Claude's next turn sees it — so the point is speed, not
 gatekeeping. **It never goes silent on a standing failure.** If the
@@ -68,6 +74,17 @@ exits 2. This is deliberate: silence from a sensor is indistinguishable
 from the lint passing, and the one moment this feedback matters most — a
 fix attempt that did not work — is exactly the moment going quiet would
 report success by omission instead.
+
+**A run that did not confirm the file clean says so.** If the linter is
+missing, crashes, times out, or exits non-zero without reporting on the
+edited file (a whole-project lint failing on another file, say), the hook
+exits 0 with one sentence — for example `lint-touched: the lint script
+exited with code 127 without reporting on src/a.ts, so src/a.ts was not
+confirmed clean.` — shown to the user and added to Claude's context. It
+names the file and the exit code, signal or timeout, and nothing from the
+linter's output, since none of that output was about this file. It is
+said once per session, and says so: a broken linter fails the same way for
+every file, so later files it does not confirm are not reported again.
 
 ## Step 10 — the stop gate
 

@@ -107,7 +107,7 @@ test('TIMEOUT: a run that emits an attributable line and THEN hangs is still not
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } }, { HK_LINT_TIMEOUT_MS: '200' });
   assert.equal(r.code, 0, 'a timeout is not a lint failure, even when there was something to attribute');
   assert.equal(r.stderr.trim(), '', 'nothing from a timed-out run is ever reported');
-  assert.doesNotMatch(r.stdout, /early-finding/, 'nor does the could-not-check notice carry its output');
+  assert.doesNotMatch(r.stdout, /early-finding/, 'nor does the not-confirmed-clean notice carry its output');
 });
 
 // --- Could not check is not clean -----------------------------------------
@@ -122,6 +122,14 @@ test('TIMEOUT: a run that emits an attributable line and THEN hangs is still not
 // to the user", and "Claude never sees stderr from a hook that exits 0".
 // The PostToolUse section lists its own fields "in addition to the JSON
 // output fields available to all hooks" and does not discard systemMessage.
+// A systemMessage reaches the person, not the model; for the model, the same
+// read: "The `additionalContext` field passes a string from your hook into
+// Claude's context window", returned "inside `hookSpecificOutput` alongside
+// the event name"; for PostToolUse it is inserted "next to the tool result",
+// and the PostToolUse table lists `additionalContext` as "String added to
+// Claude's context alongside the tool result". On exit 0 "Claude Code applies
+// any JSON output fields your hook printed". Plain-text stdout is NOT added
+// as context for PostToolUse, so the JSON form is the only channel.
 // The notice carries nothing from the linter's output: that output named no
 // line of the edited file, so none of it is attributed to the file.
 
@@ -130,11 +138,13 @@ function sessionEdit(filePath, sessionId) {
   return { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: filePath }, ...(sessionId ? { session_id: sessionId } : {}) };
 }
 
+/** The notice, after checking it reaches the person and the model alike. */
 function noticeOf(r) {
-  assert.equal(r.code, 0, `could-not-check is not a lint failure: ${JSON.stringify(r)}`);
+  assert.equal(r.code, 0, `not-confirmed-clean is not a lint failure: ${JSON.stringify(r)}`);
   assert.equal(r.stderr.trim(), '', 'Claude never sees stderr on exit 0; nothing goes there');
   const out = JSON.parse(r.stdout);
-  assert.deepEqual(Object.keys(out), ['systemMessage'], 'one JSON object, nothing else on stdout');
+  assert.deepEqual(Object.keys(out).sort(), ['hookSpecificOutput', 'systemMessage'], 'one JSON object, nothing else on stdout');
+  assert.deepEqual(out.hookSpecificOutput, { hookEventName: 'PostToolUse', additionalContext: out.systemMessage }, 'the model is given the same sentence as the person');
   return out.systemMessage;
 }
 
@@ -143,8 +153,7 @@ test('a lint script whose binary is missing says once per session that the file 
   const message = noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-missing')));
   const exitCode = process.platform === 'win32' ? 1 : 127;
   assert.match(message, /src\/a\.ts/, 'the notice names the file');
-  assert.match(message, /could not check/);
-  assert.match(message, new RegExp(`exited with code ${exitCode}\\b`), message);
+  assert.match(message, new RegExp(`exited with code ${exitCode} without reporting on src/a\\.ts, so src/a\\.ts was not confirmed clean`), message);
   assert.doesNotMatch(message, /kh-harness-no-such-linter-binary|not found|not recognized/i, 'nothing from the shell\'s output');
 });
 
@@ -153,8 +162,7 @@ test('a linter that exits non-zero without naming the file says the same', () =>
   writeFileSync(join(d, 'lint.cjs'), "console.error('config error: unrelated-linter-text'); process.exit(3);\n");
   const message = noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-unattributed')));
   assert.match(message, /src\/a\.ts/);
-  assert.match(message, /could not check/);
-  assert.match(message, /exited with code 3\b/, message);
+  assert.match(message, /exited with code 3 without reporting on src\/a\.ts, so src\/a\.ts was not confirmed clean/, message);
   assert.doesNotMatch(message, /unrelated-linter-text|config error/, 'nothing from the linter\'s output');
 });
 
@@ -162,8 +170,7 @@ test('a timeout says it timed out', () => {
   const d = repo('node -e "console.error(\'src/a.ts:1 slow-finding\'); setTimeout(() => process.exit(1), 4000)"');
   const message = noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-timeout'), { HK_LINT_TIMEOUT_MS: '200' }));
   assert.match(message, /src\/a\.ts/);
-  assert.match(message, /could not check/);
-  assert.match(message, /timed out/);
+  assert.match(message, /timed out .*before reporting on src\/a\.ts, so src\/a\.ts was not confirmed clean/, message);
   assert.doesNotMatch(message, /slow-finding/, 'nothing from the linter\'s output');
 });
 
@@ -180,7 +187,7 @@ test('the second occurrence in the same session is silent', () => {
   noticeOf(run(d, sessionEdit('src/a.ts', 'unchecked-other-session')));
 });
 
-test('a could-not-check notice whose marker cannot be written is shown anyway', () => {
+test('a not-confirmed-clean notice whose marker cannot be written is shown anyway', () => {
   const d = repo('kh-harness-no-such-linter-binary');
   const sessionId = 'unchecked-broken-marker';
   mkdirSync(markerPath(d, sessionId, 'sensor-unchecked'), { recursive: true });
@@ -188,7 +195,7 @@ test('a could-not-check notice whose marker cannot be written is shown anyway', 
   noticeOf(run(d, sessionEdit('src/a.ts', sessionId)));
 });
 
-test('with no session_id the could-not-check notice is shown every time', () => {
+test('with no session_id the not-confirmed-clean notice is shown every time', () => {
   const d = repo('kh-harness-no-such-linter-binary');
   noticeOf(run(d, sessionEdit('src/a.ts')));
   noticeOf(run(d, sessionEdit('src/a.ts')));
@@ -325,7 +332,7 @@ test('ATTRIBUTION: a lint failure naming only a different file is not reported t
   const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
   assert.equal(r.code, 0, 'the failure never mentions the edited file, so it must not be reported');
   assert.equal(r.stderr.trim(), '', 'nothing attributable to the edit was found');
-  assert.doesNotMatch(r.stdout, /some-other-problem|other\.ts/, 'the user\'s could-not-check notice carries none of it either');
+  assert.doesNotMatch(r.stdout, /some-other-problem|other\.ts/, 'the not-confirmed-clean notice carries none of it either');
 });
 
 test('ATTRIBUTION: a lint failure naming the edited file by its basename alone still reports', () => {
