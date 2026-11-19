@@ -1,6 +1,6 @@
 // scripts/lib/cli.mjs
 //
-// Argument parsing and `--help` text for all three entry points.
+// Argument parsing and `--help` text for every entry point.
 //
 // Whole-branch review, F10: three entry points, three argument conventions.
 // `detect.mjs` and `apply.mjs` each carried their own identical copy of the
@@ -23,17 +23,19 @@
 // did.
 
 /**
- * Splits argv into flags, the first non-flag argument, and any flag not in
- * `knownFlags`. `target` is `null` when none was given — each caller decides
- * whether that is a default (`detect`/`apply`: the current directory) or a
- * refusal (`uninstall`: there is no safe default for a command that
- * deletes).
+ * Splits argv into flags, the first non-flag argument, every non-flag
+ * argument in order, and any flag not in `knownFlags`. `target` is `null`
+ * when none was given — each caller decides whether that is a default
+ * (`detect`/`apply`: the current directory) or a refusal (`uninstall`: there
+ * is no safe default for a command that deletes).
  */
 export function parseArgv(argv, knownFlags) {
   const flags = new Set(argv.filter(a => a.startsWith('--')));
+  const positionals = argv.filter(a => !a.startsWith('--'));
   return {
     flags,
-    target: argv.find(a => !a.startsWith('--')) ?? null,
+    target: positionals[0] ?? null,
+    positionals,
     unknown: [...flags].filter(f => !knownFlags.has(f)),
   };
 }
@@ -206,6 +208,48 @@ beforehand never is.
 
 FLAGS
   --yes   Actually remove. Without it, nothing is removed.
+
+${EXIT_CODES}`;
+
+export const LOG_USAGE = `kh-harness log — the session log for one repository on this machine
+
+USAGE
+  node scripts/log.mjs <path-to-repo> <enable|disable|status|maintain|purge> [--yes] [--json]
+
+The log lives outside the repository, under the user's Claude directory
+(\`~/.claude/kh-harness/<key>\`, or \`$KH_DATA_DIR/<key>\`), keyed by the
+repository's git common directory so its worktrees share one log. It is
+inert until enabled here: a teammate or a CI run that has the same hook
+records nothing.
+
+SUBCOMMANDS
+  enable     Turn the log on for this repository on this machine. Once the
+             session-log hook is installed, it records every tool call's
+             input and output. Credentials are masked on a best-effort basis;
+             some may be missed. Content is kept for the retention period
+             (90 days unless \`config.json\` beside the log says otherwise);
+             structure is kept until purged.
+  disable    Turn it off. What the log holds is kept.
+  status     Report what the log holds and whether it can be trusted: the
+             sealed-session index, the learning ledger's chain, what could
+             not be read, retention and transcript coverage, and what hooks
+             cannot see. Reads only; writes nothing.
+  maintain   Seal closed sessions, expire content past the retention period
+             and remove unreferenced blobs: what the hook does at session
+             start within 150 ms, here run to the end for a log that has
+             outgrown that. Needs the log enabled.
+  purge      List what would be removed. With --yes, remove this
+             repository's log directory, and nothing else, which also
+             disables the log.
+
+No subcommand prints a prompt, a tool's input or output, or an error line.
+
+FLAGS
+  --yes    purge only: actually remove. Without it, nothing is removed.
+  --json   status only: print the status object on stdout and nothing else.
+
+Here 3 is also \`maintain\` on a log that is not enabled, and \`purge\` of a
+directory that is a link or is not inside the data root.
 
 ${EXIT_CODES}`;
 

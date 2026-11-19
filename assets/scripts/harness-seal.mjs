@@ -590,7 +590,7 @@ export function sealClosedSessions(root, {
 }
 
 /** The fields retention removes from an event of `type`. */
-const contentFieldsOf = type => {
+export const contentFieldsOf = type => {
   if (!Object.hasOwn(KEPT_FIELDS, type)) return UNKNOWN_TYPE_CONTENT;
   return Object.hasOwn(CONTENT_FIELDS, type) ? CONTENT_FIELDS[type] : [];
 };
@@ -731,9 +731,10 @@ function writeVerified(root, verified, held) {
   }
 }
 
-/** Why the index cannot be trusted to name every blob sealed content
- * references, or null when it can. */
-function untrustedBecause(check) {
+/** Why the index, as `verifyIndex` found it, cannot be trusted to name every
+ * blob sealed content references, so the blob sweep removes nothing; null
+ * when it can. */
+export function untrustedBecause(check) {
   if (check.brokenAt !== null) return `the index chain is broken at line ${check.brokenAt}`;
   const parts = [];
   if (check.sessionsAltered.length > 0) parts.push(`altered: ${check.sessionsAltered.join(', ')}`);

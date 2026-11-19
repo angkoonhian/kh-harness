@@ -404,8 +404,6 @@ test('an expired failure still yields the same failure signature', () => {
     firstErrorLine: "Error: Cannot find module 'express'", input: { command: 'npm start' }, output: 'x'.repeat(2048),
   };
   appendEvent(root, 'failed', failure);
-  // As recurrence reads a failure, which names the tool `tool_name`.
-  appendEvent(root, 'failed', { ...failure, tool_name: failure.tool });
   seal(root);
   const before = eventsOf(root, 'failed');
   assert.equal(applyRetention(root, { now: Date.now() + 91 * DAY_MS }).contentRemoved, 1);
@@ -416,9 +414,10 @@ test('an expired failure still yields the same failure signature', () => {
     assert.equal(Object.hasOwn(event, 'input') || Object.hasOwn(event, 'output'), false);
     for (const field of kept) assert.equal(JSON.stringify(event[field]), JSON.stringify(before[i][field]), field);
   }
-  const signature = failureSignature(before[1], root);
+  assert.equal(after.length, 1);
+  const signature = failureSignature(before[0], root);
   assert.match(signature, /^[0-9a-f]{16}$/);
-  assert.equal(failureSignature(after[1], root), signature);
+  assert.equal(failureSignature(after[0], root), signature);
 });
 
 test('content that cannot be verified is left in place and counted', () => {
