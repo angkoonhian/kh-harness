@@ -10,9 +10,9 @@ import { lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 
 import {
-  dataRoot, gunzipBounded, isEnabled, LINK_REFUSED, maxLogFileBytes, parsedObject, readBounded, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
+  dataRoot, isEnabled, LINK_REFUSED, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
 } from '../../assets/scripts/harness-log.mjs';
-import { contentFieldsOf, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
+import { contentFieldsOf, SEALED_SUFFIX, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { verifyLedger } from './ledger.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { listSessions } from './recurrence.mjs';
@@ -148,24 +148,70 @@ function isReadableTranscript(path) {
   }
 }
 
+/** The kinds of session `status` counts as holding content past the
+ * retention period, by what stands between the content and its removal. */
+const PAST_RETENTION_REASONS = Object.freeze(['notSealed', 'awaitingMaintenance', 'unverifiable', 'unreadable']);
+
+/** The newest modification time among a session's sealed and plain files,
+ * or NaN when neither can be examined. */
+function newestFileTime(root, id) {
+  const plain = join(sessionsDir(root), sessionFileName(id));
+  const times = [plain, `${plain}${SEALED_SUFFIX}`].map(path => {
+    try {
+      return statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? Number.NaN;
+    } catch {
+      return Number.NaN;
+    }
+  }).filter(t => !Number.isNaN(t));
+  return times.length === 0 ? Number.NaN : Math.max(...times);
+}
+
+/**
+ * Where a session stands against the retention period: one of
+ * `PAST_RETENTION_REASONS` when it holds content and its last event is
+ * older than `cutoff`, `'withoutTime'` when it holds content and no event of
+ * it carries a time, so that retention never judges it past the period, and
+ * null otherwise. A session that could not be read in full is judged by its
+ * newest file's age, since what it holds cannot be told; a line that does
+ * not parse may hold content, so it counts as content. `isUnverifiable`
+ * says whether a sealed file is one retention leaves in place.
+ */
+function retentionStanding(root, session, { events, unparseable, unreadable }, cutoff, isUnverifiable) {
+  if (unreadable) return newestFileTime(root, session.id) < cutoff ? 'unreadable' : null;
+  const holdsContent = unparseable > 0 || events.some(event => contentFieldsOf(event.type).some(f => Object.hasOwn(event, f)));
+  if (!holdsContent) return null;
+  let last = Number.NaN;
+  for (const event of events) {
+    const at = timeOf(event.ts);
+    if (!Number.isNaN(at) && !(at <= last)) last = at;
+  }
+  if (Number.isNaN(last)) return 'withoutTime';
+  if (!(last < cutoff)) return null;
+  if (session.sealed && isUnverifiable(session.id)) return 'unverifiable';
+  return session.unsealed ? 'notSealed' : 'awaitingMaintenance';
+}
+
 /** What reading every session's events finds: its date range, the lines and
- * sessions that could not be read, the sessions larger than is read, and
- * each session's transcript path. */
-function readSessions(root, ids) {
+ * sessions that could not be read, the sessions larger than is read, each
+ * session's transcript path, and how many sessions stand where against the
+ * retention period (`retentionStanding`). */
+function readSessions(root, sessions, cutoff, isUnverifiable) {
   let first = Number.NaN;
   let last = Number.NaN;
   let unparseableLines = 0;
   let unreadableSessions = 0;
   let withoutTranscript = 0;
+  let contentWithoutTime = 0;
   const overLimit = [];
   const transcriptPaths = new Set();
-  for (const id of ids) {
-    const { events, unparseable, unreadable, overLimit: tooLarge } = readEvents(root, id);
-    unparseableLines += unparseable;
-    if (unreadable) unreadableSessions++;
-    if (tooLarge) overLimit.push(id);
+  const pastRetention = Object.fromEntries(PAST_RETENTION_REASONS.map(reason => [reason, 0]));
+  for (const session of sessions) {
+    const read = readEvents(root, session.id);
+    unparseableLines += read.unparseable;
+    if (read.unreadable) unreadableSessions++;
+    if (read.overLimit) overLimit.push(session.id);
     let hasTranscript = false;
-    for (const event of events) {
+    for (const event of read.events) {
       const at = timeOf(event.ts);
       if (!Number.isNaN(at)) {
         if (!(at >= first)) first = at;
@@ -177,9 +223,22 @@ function readSessions(root, ids) {
       }
     }
     if (!hasTranscript) withoutTranscript++;
+    const standing = retentionStanding(root, session, read, cutoff, isUnverifiable);
+    if (standing === 'withoutTime') contentWithoutTime++;
+    else if (standing !== null) pastRetention[standing]++;
   }
   const iso = t => (Number.isNaN(t) ? null : new Date(t).toISOString());
-  return { firstTs: iso(first), lastTs: iso(last), unparseableLines, unreadableSessions, overLimit, withoutTranscript, transcriptPaths: [...transcriptPaths] };
+  return {
+    firstTs: iso(first),
+    lastTs: iso(last),
+    unparseableLines,
+    unreadableSessions,
+    overLimit,
+    withoutTranscript,
+    transcriptPaths: [...transcriptPaths],
+    contentPastRetention: { sessions: PAST_RETENTION_REASONS.reduce((n, reason) => n + pastRetention[reason], 0), ...pastRetention },
+    contentWithoutTime,
+  };
 }
 
 /** Coverage from the transcripts the sessions name. Strings read from a
@@ -190,60 +249,17 @@ function transcriptCoverage(paths, withoutTranscript) {
   return { checked, notChecked, interrupts, unknownLineTypes: unknownLineTypes.length, skipped: paths.length - readable.length, sessionsWithoutTranscript: withoutTranscript };
 }
 
-/** Whether a sealed session's content still holds a field retention would
- * remove, and when its last event was; a line that does not parse may hold
- * content, so it counts as content. */
-function sealedContentState(bytes) {
-  let holdsContent = false;
-  let last = Number.NaN;
-  for (const line of bytes.toString('utf8').split('\n')) {
-    if (line.length === 0) continue;
-    const event = parsedObject(line);
-    if (event === null) {
-      holdsContent = true;
-      continue;
-    }
-    if (contentFieldsOf(event.type).some(f => Object.hasOwn(event, f))) holdsContent = true;
-    const at = timeOf(event.ts);
-    if (!(at <= last)) last = at;
-  }
-  return { holdsContent, last };
-}
-
-/** How many of the sealed sessions `ids`, which retention leaves in place
- * because they cannot be verified, still hold content older than `cutoff`.
- * A sealed file that cannot be read is judged by its modification time,
- * since what it holds cannot be told. */
-function unverifiedPastRetention(root, ids, cutoff) {
-  let count = 0;
-  for (const id of ids) {
-    const path = join(sessionsDir(root), `${sessionFileName(id)}.gz`);
-    const mtimeMs = () => statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? Number.NaN;
-    let state;
-    try {
-      state = sealedContentState(gunzipBounded(readBounded(path, maxLogFileBytes())));
-    } catch {
-      try {
-        if (mtimeMs() < cutoff) count++;
-      } catch {
-        // unreadable even to stat: its age cannot be told
-      }
-      continue;
-    }
-    const last = Number.isNaN(state.last) ? mtimeMs() : state.last;
-    if (state.holdsContent && last < cutoff) count++;
-  }
-  return count;
-}
-
 /**
  * What this repository's log on this machine holds and whether it can be
  * trusted, from reads alone: nothing is written, not even the sweep's
  * verification record. `index` is `verifyIndex`'s result, which covers
  * `sealedSessions` and not the events of the `unsealedSessions`;
- * `blobSweep` says whether the next sweep would remove nothing, and why.
- * When the sessions directory cannot be listed, every count read from it is
- * null.
+ * `blobSweep` says whether the next sweep would remove nothing, and why;
+ * `contentPastRetention` counts the sessions that hold content though their
+ * last event is older than the retention period, in all and by what stands
+ * in the way, and `contentWithoutTime` those whose content never expires
+ * because no event of theirs carries a time. When the sessions directory
+ * cannot be listed, every count read from it is null.
  */
 export function logStatus(root) {
   const location = repoDataDir(root);
@@ -257,13 +273,12 @@ export function logStatus(root) {
     // reported as not read
   }
   const listed = sessions !== null;
-  const ids = listed ? sessions.map(session => session.id) : [];
-  const sealedIds = listed ? sessions.filter(session => session.sealed).map(session => session.id) : [];
-  const read = readSessions(root, ids);
   const index = verifyIndex(root);
   const untrusted = untrustedBecause(index);
-  const usage = exists ? diskUsage(location) : { bytes: 0, unreadable: 0 };
+  const altered = new Set(index.sessionsAltered);
   const cutoff = Date.now() - config.contentRetentionDays * DAY_MS;
+  const read = readSessions(root, sessions ?? [], cutoff, id => index.unreadable || altered.has(id));
+  const usage = exists ? diskUsage(location) : { bytes: 0, unreadable: 0 };
   const whenListed = value => (listed ? value : null);
   return {
     enabled: isEnabled(root),
@@ -271,9 +286,9 @@ export function logStatus(root) {
     location,
     bytes: usage.bytes,
     unreadableEntries: usage.unreadable,
-    sessions: whenListed(ids.length),
+    sessions: whenListed(sessions?.length),
     sessionsUnlistable: !listed,
-    sealedSessions: whenListed(sealedIds.length),
+    sealedSessions: whenListed(sessions?.filter(session => session.sealed).length),
     unsealedSessions: whenListed(sessions?.filter(session => session.unsealed).length),
     sessionsBeingSealed: whenListed(sessions?.filter(session => session.beingSealed).length),
     sessionsOverLimit: whenListed(read.overLimit),
@@ -287,9 +302,8 @@ export function logStatus(root) {
     settingsProblem: hook.problem,
     retentionDays: config.contentRetentionDays,
     configUnreadable: config.configUnreadable === true,
-    contentPastRetentionUnverified: index.unreadable
-      ? whenListed(unverifiedPastRetention(root, sealedIds, cutoff))
-      : unverifiedPastRetention(root, index.sessionsAltered, cutoff),
+    contentPastRetention: whenListed(read.contentPastRetention),
+    contentWithoutTime: whenListed(read.contentWithoutTime),
     blobSweep: { skipped: untrusted !== null, reason: untrusted },
     transcripts: whenListed(transcriptCoverage(read.transcriptPaths, read.withoutTranscript)),
     blindSpots: [...BLIND_SPOTS],
@@ -354,6 +368,23 @@ function transcriptLines(t) {
   ];
 }
 
+const PAST_RETENTION_TEXT = {
+  notSealed: 'not yet sealed, which `maintain` seals and then expires',
+  awaitingMaintenance: 'sealed, waiting for a session start or `maintain`',
+  unverifiable: 'kept, because the sealed file does not match the index or the index cannot be read',
+  unreadable: "unreadable, judged by the file's age",
+};
+
+function pastRetentionLines(s) {
+  const past = s.contentPastRetention;
+  if (past === null) return [`sessions holding content past the period: ${NOT_READ}`];
+  return [
+    `sessions holding content past the period: ${past.sessions}`,
+    ...PAST_RETENTION_REASONS.filter(reason => past[reason] > 0).map(reason => `  ${PAST_RETENTION_TEXT[reason]}: ${past[reason]}`),
+    ...(s.contentWithoutTime > 0 ? [`sessions holding content whose events carry no time, which never expire: ${s.contentWithoutTime}`] : []),
+  ];
+}
+
 /** The status as text for a person. */
 export function renderStatus(s) {
   const out = [];
@@ -384,9 +415,10 @@ export function renderStatus(s) {
     ]));
     out.push('', 'RETENTION');
     out.push(...indent([
-      `content is kept ${s.retentionDays} days; structure is kept until the log is purged`,
+      `content is removed once a session's last event is ${s.retentionDays} days old: at a session start while the log is enabled, or by \`maintain\`, and only from a session that is sealed and matches the index; structure is kept until the log is purged`,
+      ...(s.enabled ? [] : ['the log is disabled, so no session start seals or expires anything; `maintain` still does']),
       ...(s.configUnreadable ? ['config.json beside the log could not be read, so the defaults are in force'] : []),
-      `content past the period, kept because it could not be verified: ${s.contentPastRetentionUnverified === null ? NOT_READ : `${s.contentPastRetentionUnverified} sessions`}`,
+      ...pastRetentionLines(s),
       s.blobSweep.skipped
         ? `blob sweep: blocked, so content held in blobs is not being expired: ${s.blobSweep.reason}`
         : 'blob sweep: not blocked; every sealed session matches its latest index line',
@@ -425,7 +457,7 @@ export function renderEnable({ root, location, hook, config }) {
     hookState,
     '',
     'Credentials are masked before anything is written, on a best-effort basis: some may be missed, so treat the log as able to hold a secret.',
-    `Content (prompts, tool input and output) is kept for ${config.contentRetentionDays} days and then removed; structure is kept until the log is purged: which tools ran, when, their sizes, hashes and first error lines.`,
+    `Content (prompts, tool input and output) is removed once a session's last event is ${config.contentRetentionDays} days old, but only from a session that has been sealed and still matches the index, and only when a session starts while the log is enabled or \`maintain\` is run; \`status\` counts the sessions past the period and says why. Structure is kept until the log is purged: which tools ran, when, their sizes, hashes and first error lines.`,
     ...(config.configUnreadable ? ['config.json beside the log could not be read, so the defaults are in force.'] : []),
     '',
     `To turn it off:  ${logCommand(root, 'disable')}`,

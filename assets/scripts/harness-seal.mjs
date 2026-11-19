@@ -220,6 +220,9 @@ function dropTornTail(root, index, held) {
 // Why a run stops before it appends: a line after the unfinished one would
 // join it.
 const TORN_TAIL_KEPT = 'the unfinished last line of the index could not be removed';
+// Why a run stops part-way: the line may be torn, and the chain in memory is
+// then no longer the file's.
+const APPEND_FAILED = 'an index append failed';
 
 /** Appends `record` to the index chained to the last line, and records it as
  * its session's latest. A failed append sets `appendFailed`, since a line
@@ -602,9 +605,11 @@ function budget(clock, budgetMs) {
  *
  * Runs under an exclusive lock and does nothing while another process holds
  * it; `lockLost` says the run stopped because its lock was broken under it,
- * and `notRun` says why sealing did not start at all (null when it did): the
+ * `notRun` says why sealing did not start at all (null when it did): the
  * lock, an unreadable index, or a log directory, sessions directory or blob
- * store that is a link, through which nothing is written.
+ * store that is a link, through which nothing is written; and `stopped`
+ * says why a run that started gave up before the last session (null when
+ * it did not).
  * Stops before the next session once `budgetMs` of `clock` time has passed;
  * the rest are sealed on a later call. The budget is checked between
  * sessions and one session is read whole, so `maxSessionBytes` bounds what
@@ -620,9 +625,10 @@ export function sealClosedSessions(root, {
   const sealed = [];
   let outcome = 'ran';
   let notRun = null;
+  let stopped = null;
   const withinBudget = budget(clock, budgetMs);
   const linked = logDirProblem(root);
-  if (linked !== null) return { sealed, lockLost: false, notRun: linked };
+  if (linked !== null) return { sealed, lockLost: false, notRun: linked, stopped };
   try {
     outcome = withIndexLock(root, { now, isAlive }, held => {
       const index = readIndex(root);
@@ -648,14 +654,17 @@ export function sealClosedSessions(root, {
           rethrowLockLost(error);
           // this session is left for a later run
         }
-        if (index.appendFailed) return;
+        if (index.appendFailed) {
+          stopped = APPEND_FAILED;
+          return;
+        }
       }
     });
   } catch {
     // nothing more is sealed this run
   }
   if (outcome === 'locked') notRun = 'the index lock could not be taken';
-  return { sealed, lockLost: outcome === 'lost', notRun };
+  return { sealed, lockLost: outcome === 'lost', notRun, stopped };
 }
 
 /** The fields retention removes from an event of `type`. */
@@ -830,9 +839,11 @@ export function untrustedBecause(check) {
  * Returns `contentRemoved`, the number of sessions that lost content this
  * run (sessions, not events); `contentUnverifiable`, the number of sessions
  * past the period whose sealed content was left in place because it has no
- * index line or does not match it; `blobSweep`, `{ skipped, reason }`; and
+ * index line or does not match it; `blobSweep`, `{ skipped, reason }`;
  * `lockLost`, true when the run stopped because its lock was broken under
- * it. The sweep removes nothing unless every sealed session matches its
+ * it; `notRun`, why nothing was expired or swept because the run did not
+ * start (null when it did); and `stopped`, why a run that started gave up
+ * before the last session (null when it did not). The sweep removes nothing unless every sealed session matches its
  * latest index line, since only then does the index name every blob sealed
  * content references; a break in the chain between lines does not stop it.
  * A sealed file is taken
@@ -857,23 +868,29 @@ export function applyRetention(root, {
   let contentUnverifiable = 0;
   let blobSweep = { skipped: true, reason: 'the run stopped before the sweep' };
   let outcome = 'ran';
+  let notRun = null;
+  let stopped = null;
   const withinBudget = budget(clock, budgetMs);
   const skip = reason => { blobSweep = { skipped: true, reason }; };
+  const notStarted = reason => {
+    notRun = reason;
+    skip(reason);
+  };
   const linked = logDirProblem(root);
   if (linked !== null) {
-    skip(linked);
-    return { contentRemoved, contentUnverifiable, blobSweep, lockLost: false };
+    notStarted(linked);
+    return { contentRemoved, contentUnverifiable, blobSweep, lockLost: false, notRun, stopped };
   }
   try {
     const cutoff = now - readConfig(root).contentRetentionDays * DAY_MS;
     outcome = withIndexLock(root, { now, isAlive }, held => {
       const index = readIndex(root);
-      if (index === null) return skip('the index could not be read');
+      if (index === null) return notStarted('the index could not be read');
       try {
         dropTornTail(root, index, held);
       } catch (error) {
         rethrowLockLost(error);
-        return skip(TORN_TAIL_KEPT);
+        return notStarted(TORN_TAIL_KEPT);
       }
       const sessions = listSessions(root);
       recoverInterrupted(root, sessions, index, held, gunzip);
@@ -899,7 +916,10 @@ export function applyRetention(root, {
           rethrowLockLost(error);
           // this session is left for a later run
         }
-        if (index.appendFailed) return skip('an index append failed');
+        if (index.appendFailed) {
+          stopped = APPEND_FAILED;
+          return skip(APPEND_FAILED);
+        }
       }
       const verified = readVerified(root);
       const before = serialisedVerified(verified);
@@ -925,9 +945,9 @@ export function applyRetention(root, {
   } catch {
     // nothing more is expired this run
   }
-  if (outcome === 'locked') skip('the index lock could not be taken');
+  if (outcome === 'locked') notStarted('the index lock could not be taken');
   if (outcome === 'lost') skip('the index lock was lost');
-  return { contentRemoved, contentUnverifiable, blobSweep, lockLost: outcome === 'lost' };
+  return { contentRemoved, contentUnverifiable, blobSweep, lockLost: outcome === 'lost', notRun, stopped };
 }
 
 /**

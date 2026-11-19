@@ -317,9 +317,13 @@ SUBCOMMANDS
   enable     Turn the log on for this repository on this machine. Once the
              session-log hook is installed, it records every tool call's
              input and output. Credentials are masked on a best-effort basis;
-             some may be missed. Content is kept for the retention period
-             (90 days unless \`config.json\` beside the log says otherwise);
-             structure is kept until purged.
+             some may be missed. Content is removed once a session's last
+             event is older than the retention period (90 days unless
+             \`config.json\` beside the log says otherwise), but only from a
+             session that has been sealed and still matches the index, and
+             only when a session starts while the log is enabled or
+             \`maintain\` is run; \`status\` counts the sessions past the
+             period and says why. Structure is kept until purged.
   disable    Turn it off. What the log holds is kept.
   status     Report what the log holds and whether it can be trusted: the
              sealed-session index, the learning ledger's chain, what could
@@ -336,8 +340,10 @@ SUBCOMMANDS
              only; writes nothing.
   maintain  Seal closed sessions, expire content past the retention period
              and remove unreferenced blobs: what the hook does at session
-             start within 150 ms, here run to the end for a log that has
-             outgrown that. Needs the log enabled.
+             start within 150 ms and for sessions up to 2 MiB, here with up
+             to five minutes for each step and for every session, for a log
+             that has outgrown that. It runs on a disabled log too, which no
+             session start maintains, so what was recorded can still expire.
   purge      List what would be removed. With --yes, remove this
              repository's log directory, and nothing else, which also
              disables the log.
@@ -352,9 +358,10 @@ FLAGS
   --json   status and report only: print the object on stdout and nothing
            else.
 
-Here 3 is also \`maintain\` on a log that is not enabled, and any write to or
-removal of a log directory that is a link or is not inside the data root.
-2 is also \`maintain\` when sealing could not run or its lock was lost.
+Here 3 is also any write to or removal of a log directory that is a link or
+is not inside the data root, by \`maintain\` as by the others. 2 is also
+\`maintain\` when sealing, retention or the blob sweep did not run or stopped
+before its end for a reason other than the time limit, which it names.
 
 ${EXIT_CODES}`;
 
