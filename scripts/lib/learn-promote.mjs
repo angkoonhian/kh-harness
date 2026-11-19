@@ -113,9 +113,10 @@ const isCommitted = (root, learning) => committedGates(root).some(g => g.id === 
  * machine. A gate only this machine holds is rewritten at `observe` and the
  * learning returns to `trial`, recorded as `demoted`; a committed gate is
  * suspended here, its local suspension written with the `suspended` entry
- * that accounts for it, and the learning is `suspended`, which is terminal:
- * nothing in this module lifts a suspension, and nothing here changes the
- * repository. A landed learning is always suspended, even on a checkout
+ * that accounts for it, and the learning is `suspended`: nothing in this
+ * module lifts a suspension, and nothing here changes the repository; only a
+ * revert (`learn-land.mjs`) ends it, taking the gate out of the repository
+ * and retiring the learning. A landed learning is always suspended, even on a checkout
  * that lacks its committed gate, since the repository still holds that
  * gate. `approvedBy` names the person who asked, null when the demotion rule
  * decided. Returns `{ status }`, or `{ error }`.
@@ -130,9 +131,10 @@ function demote(root, write, state, learning, approvedBy) {
 
 /** Retires a learning: its local gate goes and the ledger gets `retired`.
  * A local suspension stands only for a `suspended` learning, so a committed
- * gate of a retired one is in force here again: only the repository change
- * a later task lands removes it. Retirement is terminal: nothing in this
- * module revives a retired learning. */
+ * gate of a retired one is in force here again: retiring never touches the
+ * repository, and only reverting the learning while it is landed or
+ * suspended (`learn-land.mjs`) takes its gate out. Retirement is terminal:
+ * nothing revives a retired learning. */
 function retire(root, write, state, learning, { approvedBy, detail }) {
   const updated = { ...learning, status: 'retired', gate: { ...learning.gate, action: 'observe' } };
   return writeTransition(root, write, state, { updated, entries: [{ kind: 'retired', approvedBy, detail }] });
@@ -192,7 +194,8 @@ function markWrongUnguarded(root, ref, { interactive }) {
  * Demotes a learning promoted on this machine or landed, as the person at
  * the terminal asked: its gate goes back to `observe` and it returns to
  * `trial`, or, when its gate is committed, that gate is suspended on this
- * machine and it is `suspended`, which is terminal. Demotion weakens a
+ * machine and it is `suspended` until a revert takes the gate out of the
+ * repository and retires it. Demotion weakens a
  * gate, so it takes a person at a terminal, like approval: `options` is
  * `{ interactive }`. Returns `{ ok: true, id, status, repairedGates }`, or
  * `{ error }`.

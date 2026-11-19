@@ -21,7 +21,9 @@ const isWellFormedFiring = e => isString(e.gateId) && GATE_ID.test(e.gateId) && 
 
 // The kinds after which a learning's wrong marks count afresh: a promotion,
 // and a landing, which is the owner's approval of its gate for the
-// repository.
+// repository. A revert grants nothing new, so it does not restart the
+// count: the marks since the landing still stand against the approval that
+// a revert leaves on this machine.
 const RECOUNT_KINDS = new Set(['promoted', 'landed']);
 
 /** `{ sinceGrant, total }` per learning id with a `RECOUNT_KINDS` or

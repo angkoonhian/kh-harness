@@ -381,7 +381,7 @@ export const renderWrong = (result, ref) => withRepairs(result, [
 ]);
 
 export const renderDemoted = result => withRepairs(result, [result.status === 'suspended'
-  ? `${result.id} suspended: its committed gate is switched off on this machine, and a suspension is final.`
+  ? `${result.id} suspended: its committed gate is switched off on this machine, and stays so until a revert takes it out of the repository and retires the learning.`
   : `${result.id} demoted: back to trial, its gate at observe on this machine.`]);
 
 export const renderRetired = result => withRepairs(result, [

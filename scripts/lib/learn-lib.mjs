@@ -67,9 +67,11 @@ export function gateActionsFor(status) {
 }
 
 // The status each ledger kind leaves a learning in; a kind absent here, such
-// as `wrong`, changes no status. No kind leads out of `suspended` or
-// `retired`: both are terminal. A revert takes a learning's gate out of the
-// repository and not its approval, so it returns to `active-local`.
+// as `wrong`, changes no status. Nothing leads out of `retired`, which is
+// terminal. A revert takes a learning's gate out of the repository and not
+// its approval, so it returns to `active-local`; the one way out of
+// `suspended` is a revert, which `learn-land.mjs` follows at once with
+// `retired`, since the learning was judged wrong here.
 const STATUS_AFTER = Object.freeze({
   proposed: 'candidate',
   replayed: 'candidate',
@@ -371,6 +373,10 @@ function recordedState(ledger, id) {
   }
   return state;
 }
+
+/** The status-changing ledger entries for `id`, in ledger order: the
+ * evidence for where a step on the learning stopped. */
+export const statusEntriesFor = (ledger, id) => ledger.filter(e => e?.learningId === id && Object.hasOwn(STATUS_AFTER, e.kind));
 
 /** The status the ledger records for the learning `id` with this content:
  * the one its last status-changing entry for `id` leaves it in, or null when
