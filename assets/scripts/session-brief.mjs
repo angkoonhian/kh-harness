@@ -3,36 +3,22 @@
 // top of it into the session, so the next session starts from what the last
 // one wrote down rather than rediscovering it.
 //
-// Whole-branch review, F3 and F4 — the pair the review named as "the most
-// likely way this tool hurts a real user", because this capability has no
-// evidence gate (every repository gets it), both failures were silent, and
-// both were self-concealing: `detect` went on reporting `P4.sessionbrief
-// declared` while the brief stopped arriving, so the symptom a user actually
-// meets is not "my handoff broke" but "Claude keeps repeating dead ends I
-// wrote down" — the exact failure this capability exists to prevent.
+// This capability has no evidence gate: every repository gets it. A brief
+// that stops arriving is silent, and `detect` goes on reporting
+// `P4.sessionbrief declared`, so two things here are load-bearing:
 //
-//   F3. This bounded its output by LINES only, 60 of them, with no byte
-//       bound — while `harness-redact.mjs`, the shared module the other two
-//       hooks go through, has had one at exactly Claude Code's documented
-//       10,000-character cap since it was written, and its own comment cited
-//       THIS file's line bound as the model. Past that cap Claude Code
-//       replaces a hook's stdout with a file path and a 2,000-character
-//       preview, and does not ask Claude to read the file — so a handoff
-//       whose first 60 lines run long (the shipped template's "What didn't
-//       work" section explicitly invites pasting error text, and calls
-//       itself the most valuable section) simply stopped arriving. It uses
-//       `boundReport` now: one bound, three hooks.
+//   - The output is bounded by `boundReport`, in lines AND in bytes, to
+//     Claude Code's 10,000-character cap on a hook's output. Past that cap
+//     Claude Code replaces stdout with a file path and a short preview, and
+//     does not ask Claude to read the file; the shipped template's "What
+//     didn't work" section invites pasted error text, so a handoff whose
+//     first lines run long would otherwise simply not arrive.
 //
-//   F4. This read `join(process.cwd(), 'HANDOFF.md')` and nothing else,
-//       while `detect` credited `P4.handoff` for `docs/HANDOFF.md` too — so
-//       in such a repository every session opened with a sentence the same
-//       tool had already proved false, three lines above the proposal that
-//       installed this file. And a bare `process.cwd()` produced that same
-//       false sentence for any invocation whose cwd was not the project
-//       root, which its own comment documented as an assumption instead of
-//       removing. Both answers now come from `harness-redact.mjs`
-//       (`projectRoot`, `findHandoff`) — the same functions `detect` itself
-//       reads, so the two cannot disagree again.
+//   - The file is found by `findHandoff` under `projectRoot`, the same
+//     functions `detect` credits `P4.handoff` through, so the hook never
+//     tells the model that a handoff `detect` found does not exist, and an
+//     invocation whose working directory is not the project root still
+//     reads the right file.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 

@@ -104,7 +104,7 @@ const LINT_MAX_BUFFER = Number(process.env.HK_LINT_MAX_BUFFER) || 10 * 1024 * 10
  * quoting provably correct on both shells, this allowlist removes the
  * problem instead: only a path built entirely from these characters is ever
  * interpolated into the command string at all. Anything else is NEVER
- * appended — the lint script runs unmodified, and ruling 1's attribution
+ * appended — the lint script runs unmodified, and the attribution
  * filter (mentionsFile) still does its job, because that filter is already
  * required regardless of whether the path was appended. Appending is a
  * performance optimization only; correctness never depends on it.
@@ -118,8 +118,8 @@ const SAFE_RELATIVE_PATH = /^[A-Za-z0-9_./-]+$/;
 
 // `.ts/.tsx/.js/.jsx/.mjs/.cjs` are the extensions a package.json-owned
 // project's lint script plausibly covers; `.py` is the pyproject.toml
-// analogue. No sniffing for an actually-installed linter beyond that — see
-// task-3-brief.md's ruling on extension coverage.
+// analogue. There is no sniffing for an actually-installed linter beyond
+// that.
 const JS_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const PY_EXTENSIONS = new Set(['.py']);
 
@@ -259,16 +259,16 @@ function readPyLintScript(ownerDir) {
 }
 
 /**
- * The edited file is appended only to a PLAIN command (audit Tier 3,
- * finding 10). A script holding a pipeline, a chain, a substitution or a
- * newline is run unmodified: appended to `a | b` or `a && b` the path lands
- * on the LAST stage (a `tee` tail overwrote the edited file in a probe).
+ * The edited file is appended only to a PLAIN command. A script holding a
+ * pipeline, a chain, a substitution or a newline is run unmodified:
+ * appended to `a | b` or `a && b` the path lands on the LAST stage, where a
+ * `tee` tail would overwrite the edited file.
  * A `;` is deliberately NOT a separator here: it is far more often inside
  * a quoted `node -e` body than between shell commands, and the cost of
- * missing a `;`-chain is the pre-existing behaviour, not a new one.
+ * missing a `;`-chain is a path appended to its last command.
  * A bare `.` or `./` token anywhere in the command is dropped first, so
  * `eslint .` and `eslint . --ext .ts` lint the one file instead of the whole
- * project plus the one file (Tier 3 review, Minor 7). Attribution
+ * project plus the one file. Attribution
  * (`mentionsFile`) does not depend on any of this; appending is a cost
  * optimisation and the unmodified script still reports correctly.
  */
@@ -371,13 +371,11 @@ function hasChanged(before, after) {
 }
 
 /**
- * Ruling 2's two-layer redaction (fragment denylist + credential masking)
- * now lives in harness-redact.mjs, shared verbatim with verify-touched.mjs —
- * see that file's own comment for what each layer catches and why a shared
- * chokepoint exists at all. `dropCommandFragments` is called below with
+ * The two-layer redaction (fragment denylist + credential masking) lives in
+ * harness-redact.mjs, shared with verify-touched.mjs; see that file for what
+ * each layer catches. `dropCommandFragments` is called below with
  * `[lintScript, fullCommand]` and an exemption set built from the appended
- * path, exactly reproducing this file's previous (lintScript, fullCommand,
- * appendedPath)-shaped call.
+ * path.
  */
 
 /**
@@ -542,8 +540,6 @@ async function main() {
   if (!isJs && !isPy) return 0;
   if (assetProblem !== null) return assetNotice(payload.session_id);
 
-  // Shared with session-brief.mjs, which used a bare process.cwd() —
-  // whole-branch review, F4: three hooks, two conventions, one of them wrong.
   const root = projectRoot();
   const absPath = isAbsolute(filePath) ? filePath : join(root, filePath);
   // Containment BEFORE anything else touches the filesystem on this path's
@@ -590,9 +586,8 @@ async function main() {
   const before = statSnapshot(absPath);
 
   // The shared bounded runner (harness-redact.mjs): a timeout kills the
-  // whole process tree, not merely the shell — `spawnSync({ timeout })` used
-  // to leave the linter running, the orphan verify-touched.mjs had already
-  // fixed for itself (audit Tier 3, finding 10). An overflow keeps the first
+  // whole process tree, not merely the shell, which is all that
+  // `spawnSync({ timeout })` signals. An overflow keeps the first
   // LINT_MAX_BUFFER characters and lets the linter finish: the linter DID
   // run and DID produce output worth reporting.
   let result;

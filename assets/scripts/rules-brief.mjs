@@ -3,15 +3,14 @@
 // owner's docs/harness/RULES.md and the kit's docs/harness/LEARNED.md — back
 // in front of the model on EVERY prompt.
 //
-// Why a hook, and why per prompt. A rule stated once in CLAUDE.md is a
-// claim the model is told at session start; the 2026 studies the design
-// cites (docs/superpowers/specs/2026-11-02-intent-and-rules-design.md, §3)
-// measure compliance with told rules decaying as a session runs, and find
-// that longer instruction files do not help. Re-stating the rules at each
-// prompt is the one mechanism that counters the decay without a longer
-// file — and `additionalContext` on UserPromptSubmit is exactly the slot
-// Claude Code provides for it (verified against the hooks reference:
-// nested under `hookSpecificOutput`, or it is silently ignored).
+// Why a hook, and why per prompt. A rule stated once in CLAUDE.md is told
+// at session start, and compliance with a told rule decays as a session
+// runs; a longer instruction file does not help. Re-stating the rules at
+// each prompt counters the decay without a longer file, and
+// `additionalContext` on UserPromptSubmit is the slot Claude Code provides
+// for it: nested under `hookSpecificOutput`, or it is silently ignored. It
+// is a reminder, not enforcement: a rule that must hold needs an enforcer,
+// which is what each rule's `enforced-by` line names.
 //
 // What this hook is NOT: a guard. It injects context; it never blocks, never
 // writes, never runs anything. So, unlike lint-touched.mjs and
