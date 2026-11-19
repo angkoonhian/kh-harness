@@ -183,9 +183,10 @@ repository's.
 What it does: after each failed tool call it compares a signature of the
 call (the tool, its input and the first line of the error, hashed) with
 the previous failure's, per session and per agent. At exactly the third
-identical failure in a row it tells Claude, and the user, one fixed
-sentence: *The same call has failed 3 times in a row with the same error.
-Stop repeating it and change approach.* Nothing from the input or the
+identical failure with no different failure between them it tells Claude,
+and the user, one fixed sentence: *The same call has failed with the same
+error 3 times, with no different failure between them. Stop repeating it
+and change approach.* Nothing from the input or the
 error is printed, and only the signature is stored, in the per-user temp
 marker directory. It never blocks a call. It sees only failures, so a
 success between two identical failures does not reset the count.

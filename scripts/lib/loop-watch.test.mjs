@@ -43,6 +43,12 @@ import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'loop-watch.mjs');
 const FORBID_SPAWN = resolve(import.meta.dirname, 'session-log-forbid-spawn.cjs');
 const WARNING = 'The same call has failed with the same error 3 times, with no different failure between them. Stop repeating it and change approach.';
+
+test('the skill quotes the sentence the hook gives', () => {
+  const reference = readFileSync(resolve(import.meta.dirname, '..', '..', 'skills', 'harness-init', 'references', 'phase-2-sensors.md'), 'utf8');
+  assert.ok(reference.replace(/\s+/g, ' ').includes(`*${WARNING}*`));
+  assert.doesNotMatch(reference, /identical failure in a row/);
+});
 const WARNING_OUTPUT = JSON.stringify({
   systemMessage: WARNING,
   hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: WARNING },

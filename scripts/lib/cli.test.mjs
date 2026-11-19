@@ -202,7 +202,8 @@ test('the execution disclosure says what the loop-warning hook reads, keeps and 
   const entry = /PostToolUseFailure \(per failed call\) (.*?) (?=PreToolUse \(per tool call\))/.exec(disclosed)?.[1] ?? '';
   assert.match(entry, /the failed call's tool name, its input and the first line of its error/);
   assert.match(entry, /keeps only a hash of them/);
-  assert.match(entry, /three times in a row/);
+  assert.match(entry, /way three times with no different failure\s+between them/);
+  assert.doesNotMatch(entry, /in a row/, 'a success between two of the failures is not seen, so the count is not of failures in a row');
   assert.match(entry, /prints nothing of the call/);
   assert.match(entry, /executes nothing/);
 });

@@ -183,9 +183,10 @@ const LOOP_WATCH_STEP = 13;
 
 /**
  * The loop warning: a PostToolUseFailure hook that tells Claude when one call
- * has failed the same way three times in a row (see loop-watch.mjs). No
- * evidence gate, since any repository's session can loop on a failing call,
- * and no `matcher`, since a failure of any tool counts.
+ * has failed the same way three times with no different failure between
+ * them (see loop-watch.mjs). No evidence gate, since any repository's
+ * session can loop on a failing call, and no `matcher`, since a failure of
+ * any tool counts.
  */
 function loopWatchProposal({ kitVersion, check }) {
   const files = hookFiles(LOOP_WATCH_PATH, kitVersion);

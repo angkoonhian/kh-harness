@@ -956,7 +956,7 @@ const CHECKS = [
     // No repository evidence decides this: any session can loop on a failing
     // call, so the step applies under every profile and is always decidable.
     check: ({ harness, manifest, root, heldScript }) => unlessHeld(registeredHook(harness, 'PostToolUseFailure', LOOP_WATCH_PATH,
-      'install scripts/loop-watch.mjs and register a PostToolUseFailure hook that warns when one call fails the same way three times in a row',
+      'install scripts/loop-watch.mjs and register a PostToolUseFailure hook that warns when one call fails the same way three times with no different failure between them',
       { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }), LOOP_WATCH_PATH, heldScript),
   },
   {

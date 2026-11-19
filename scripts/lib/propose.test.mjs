@@ -1771,7 +1771,7 @@ test('P2.loopwatch is absent and decidable under every profile when no hook of o
     assert.equal(c.step, 13);
     assert.equal(c.phase, 2);
     assert.equal(c.via, 'apply');
-    assert.equal(c.proposal, 'install scripts/loop-watch.mjs and register a PostToolUseFailure hook that warns when one call fails the same way three times in a row');
+    assert.equal(c.proposal, 'install scripts/loop-watch.mjs and register a PostToolUseFailure hook that warns when one call fails the same way three times with no different failure between them');
   }
 });
 

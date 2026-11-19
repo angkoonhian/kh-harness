@@ -140,10 +140,11 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  keeps only a hash of them, per session, in
                                  a file of its own in the system's temporary
                                  directory. When one call has failed the same
-                                 way three times in a row it adds one fixed
-                                 sentence to the model's context, telling it
-                                 to change approach. It prints nothing of the
-                                 call and executes nothing.
+                                 way three times with no different failure
+                                 between them it adds one fixed sentence to
+                                 the model's context, telling it to change
+                                 approach. It prints nothing of the call and
+                                 executes nothing.
 
   PreToolUse (per tool call)     runs before every tool call and compares it
                                  with the learned gates in
