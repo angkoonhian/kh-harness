@@ -299,7 +299,7 @@ const flagsCredential = (words, last) => hidesSentinel(`${words} ${SENTINEL}`) |
 
 const isScalar = v => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
 
-/** An array's copy. A scalar after a credential flag is `'***'`, and the
+/** An array's copy. A scalar after a credential flag is `SCRUB_MARK`, and the
  * words before it plus that element, each masked on its own, stay the
  * context for the next element, so `Authorization: Bearer <token>` hides
  * the token too. */
@@ -325,7 +325,7 @@ function scrubArray(values, onString) {
 /**
  * A copy of a JSON value with every object key masked and every string leaf
  * masked and then passed to `onString`. A scalar under a credential-named
- * key, or after a credential flag in an array, becomes `'***'` whole. Built
+ * key, or after a credential flag in an array, becomes `SCRUB_MARK` whole. Built
  * with `Object.fromEntries`, so a `__proto__` key stays an ordinary property.
  */
 function scrubWith(value, onString) {
@@ -346,7 +346,7 @@ function scrubWith(value, onString) {
 
 /** A deep copy of the JSON value `value` with `maskText` applied to every
  * object key and every string leaf, and every scalar under a
- * credential-named key or after a credential flag replaced by `'***'`. */
+ * credential-named key or after a credential flag replaced by `SCRUB_MARK`. */
 export function scrubValue(value) {
   return scrubWith(value, s => s);
 }
