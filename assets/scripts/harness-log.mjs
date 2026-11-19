@@ -457,13 +457,6 @@ function scrubWith(value, onString, hidden = false) {
   return value;
 }
 
-/** A deep copy of the JSON value `value` with `maskText` applied to every
- * object key and every string leaf, and every scalar beneath a
- * credential-named key or after a credential flag replaced by `SCRUB_MARK`. */
-export function scrubValue(value) {
-  return scrubWith(value, s => s);
-}
-
 /** Whether `path` is a link; on win32 a junction is one. Nothing there, or
  * something that cannot be examined, is not. */
 function isLink(path) {
@@ -509,8 +502,11 @@ function placeOnce(path, data) {
   }
 }
 
-/** Stores already-scrubbed `text`; null when it could not be stored, or
- * the blob store is a link. */
+/** Stores already-scrubbed `text` gzipped at
+ * `<repoDataDir>/blobs/<sha256>.gz`, keyed by the SHA-256 of its UTF-8
+ * bytes, and returns that hash and the byte count. A blob already present
+ * is left untouched. Null when it could not be stored, or the blob store is
+ * a link; never throws. */
 function writeBlob(root, text) {
   const data = Buffer.from(text, 'utf8');
   const sha256 = sha256Hex(data);
@@ -522,16 +518,6 @@ function writeBlob(root, text) {
   } catch {
     return null;
   }
-}
-
-/**
- * Stores `maskText(text)` gzipped at `<repoDataDir>/blobs/<sha256>.gz`,
- * keyed by the SHA-256 of the masked text's UTF-8 bytes, and returns that
- * hash and the byte count. A blob already present is left untouched. Null
- * when the blob could not be stored; never throws.
- */
-export function storeBlob(root, text) {
-  return writeBlob(root, maskText(text));
 }
 
 /** A scrubbed string leaf, or the reference that replaces it when it is
@@ -561,7 +547,7 @@ const sessionPath = (root, name) => join(repoDataDir(root), SESSIONS_DIR, name);
  * was written; never throws.
  *
  * The event is first reduced to JSON values, then every key and string
- * leaf is masked as `scrubValue` masks them, and only then is a leaf over
+ * leaf is masked as `scrubWith` masks them, and only then is a leaf over
  * `inlineCapBytes` moved to a blob, so a credential is never split by the
  * cap before it can be recognised. `schema`, `ts` and `pid` are the
  * writer's, replacing any the event carries.

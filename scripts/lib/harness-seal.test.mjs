@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
-import { appendEvent, readEvents, repoDataDir, sessionFileName, storeBlob } from '../../assets/scripts/harness-log.mjs';
+import { appendEvent, readEvents, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 import {
   applyRetention, CLAIMED_SUFFIX, indexLineCount, SEAL_IDLE_MS, SEAL_TEMP_SUFFIX, sealClosedSessions, sessionsSealedSince, untrustedBecause, verifyIndex,
 } from '../../assets/scripts/harness-seal.mjs';
@@ -34,6 +34,14 @@ process.env.KH_DATA_DIR = tempDir('hk-seal-data-');
 const sessionFile = (root, sessionId) => join(repoDataDir(root), 'sessions', sessionFileName(sessionId));
 const blobFile = (root, sha256) => join(repoDataDir(root), 'blobs', `${sha256}.gz`);
 const sha256Of = text => createHash('sha256').update(text, 'utf8').digest('hex');
+
+/** Puts a blob holding `text` in the blob store, named as the hook names
+ * one, with no event referencing it; returns its hash. */
+function orphanBlob(root, text) {
+  mkdirSync(join(repoDataDir(root), 'blobs'), { recursive: true });
+  writeFileSync(blobFile(root, sha256Of(text)), gzipSync(text));
+  return sha256Of(text);
+}
 
 const writeConfig = (root, config) => {
   mkdirSync(repoDataDir(root), { recursive: true });
@@ -600,7 +608,7 @@ test('a blob no event references is removed once it is a day old', () => {
   writeConfig(root, { inlineCapBytes: 1024 });
   appendEvent(root, 'kept', { type: 'PostToolUse', output: 'k'.repeat(4096) });
   const kept = eventsOf(root, 'kept')[0].output.blob;
-  const orphan = storeBlob(root, 'z'.repeat(4096)).sha256;
+  const orphan = orphanBlob(root, 'z'.repeat(4096));
   writeFileSync(join(repoDataDir(root), 'blobs', `${orphan}.gz.123.0a1b2c3d4e5f.tmp`), '');
 
   assert.deepEqual(applyRetention(root, {}).blobSweep, SWEPT);
@@ -788,7 +796,7 @@ test('a second run within budget does not decompress a session verified by the f
 
 test('successive budget-limited runs converge and the sweep then removes an unreferenced blob', () => {
   const root = sealedRepo('hk-log-converge-', ['v-1', 'v-2', 'v-3', 'v-4', 'v-5']);
-  const orphan = storeBlob(root, 'z'.repeat(4096)).sha256;
+  const orphan = orphanBlob(root, 'z'.repeat(4096));
   touchAgo(blobFile(root, orphan), 2 * DAY_MS);
   let t = 0;
   const clock = () => (t += 10);
