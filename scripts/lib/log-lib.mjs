@@ -13,7 +13,8 @@ import {
   dataRoot, isEnabled, LINK_REFUSED, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
 } from '../../assets/scripts/harness-log.mjs';
 import { contentFieldsOf, SEALED_SUFFIX, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
-import { verifyLedger } from './ledger.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
+import { readLedger, verifyLedger } from './ledger.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { listSessions } from './recurrence.mjs';
 import { hookPathTokens } from './settings-merge.mjs';
@@ -24,8 +25,14 @@ export const SESSION_LOG_SCRIPT = '.claude/scripts/session-log.mjs';
 
 const SETTINGS_PATH = '.claude/settings.json';
 
-/** What no hook observes, whatever the log holds. */
-export const BLIND_SPOTS = Object.freeze(['user interrupts', 'cancelled tools', 'permission denials outside auto mode']);
+/** What no hook observes, whatever the log holds. An interrupt while a tool
+ * runs is not among them: the failure event carries it, and the hook
+ * records the call as interrupted. */
+export const BLIND_SPOTS = Object.freeze([
+  'an interrupt between tool calls (one while a tool runs is recorded, as an interrupted call)',
+  'cancelled tools',
+  'permission denials outside auto mode',
+]);
 
 const DAY_MS = 86_400_000;
 
@@ -88,20 +95,26 @@ export function recordEnabled(root, enabled) {
 }
 
 /**
- * Whether `.claude/settings.json` registers a hook that runs
- * `SESSION_LOG_SCRIPT`, on any event, in exec or shell form. `registered` is
- * null when the file is present but cannot be read, and `problem` says why.
+ * On how many of the events the logging hook records
+ * `.claude/settings.json` registers a hook that runs `SESSION_LOG_SCRIPT`,
+ * in exec or shell form: `{ registered, events, problem }`. `events` is
+ * `{ registered, logged }`, the count and the number of `LOGGED_EVENTS`;
+ * `registered` is true only when they are equal, since an event the hook is
+ * not registered on is not recorded. Both are null when the file is present
+ * but cannot be read, and `problem` says why. Which matcher each
+ * registration carries is `detect`'s to judge.
  */
 export function hookRegistration(root) {
+  const none = { registered: false, events: { registered: 0, logged: LOGGED_EVENTS.length }, problem: null };
   const read = readJsonFile(join(root, SETTINGS_PATH));
-  if (read.state === 'absent') return { registered: false, problem: null };
-  if (read.state === 'unreadable') return { registered: null, problem: `${SETTINGS_PATH} ${read.reason}` };
+  if (read.state === 'absent') return none;
+  if (read.state === 'unreadable') return { registered: null, events: null, problem: `${SETTINGS_PATH} ${read.reason}` };
   const hooks = isPlainObject(read.value) ? read.value.hooks : undefined;
-  if (!isPlainObject(hooks)) return { registered: false, problem: null };
+  if (!isPlainObject(hooks)) return none;
   const runsScript = entry => hookPathTokens(entry).includes(SESSION_LOG_SCRIPT);
-  const registered = Object.values(hooks).some(matchers => Array.isArray(matchers)
-    && matchers.some(m => Array.isArray(m?.hooks) && m.hooks.some(runsScript)));
-  return { registered, problem: null };
+  const count = LOGGED_EVENTS.filter(event => Array.isArray(hooks[event])
+    && hooks[event].some(m => Array.isArray(m?.hooks) && m.hooks.some(runsScript))).length;
+  return { registered: count === LOGGED_EVENTS.length, events: { registered: count, logged: LOGGED_EVENTS.length }, problem: null };
 }
 
 /** The bytes of every file under `dir`, each link counted as itself and
@@ -279,6 +292,7 @@ export function logStatus(root) {
   const cutoff = Date.now() - config.contentRetentionDays * DAY_MS;
   const read = readSessions(root, sessions ?? [], cutoff, id => index.unreadable || altered.has(id));
   const usage = exists ? diskUsage(location) : { bytes: 0, unreadable: 0 };
+  const ledger = verifyLedger(root);
   const whenListed = value => (listed ? value : null);
   return {
     enabled: isEnabled(root),
@@ -295,10 +309,12 @@ export function logStatus(root) {
     firstTs: read.firstTs,
     lastTs: read.lastTs,
     index,
-    ledger: verifyLedger(root),
+    ledger,
+    ledgerEntries: ledger.intact ? readLedger(root).length : null,
     unparseableLines: whenListed(read.unparseableLines),
     unreadableSessions: whenListed(read.unreadableSessions),
     hookRegistered: hook.registered,
+    hookEvents: hook.events,
     settingsProblem: hook.problem,
     retentionDays: config.contentRetentionDays,
     configUnreadable: config.configUnreadable === true,
@@ -319,10 +335,18 @@ export const formatBytes = n => {
   return `${value.toFixed(1)} ${units[unit]} (${n} bytes)`;
 };
 
-function hookLine(registered, problem) {
-  if (registered === true) return `the hook is registered in ${SETTINGS_PATH}`;
-  if (registered === false) return `the hook is not registered in ${SETTINGS_PATH}`;
-  return `${problem}: whether the hook is registered could not be told`;
+/** Where the hook is registered, as a clause: on all the logged events, on
+ * some, on none, or not known. */
+function hookClause(events, problem) {
+  if (events === null) return `${problem}: whether the hook is registered could not be told`;
+  if (events.registered === 0) return `the hook is not registered in ${SETTINGS_PATH}`;
+  const on = events.registered === events.logged ? `all ${events.logged}` : `${events.registered} of the ${events.logged}`;
+  return `the hook is registered on ${on} logged events in ${SETTINGS_PATH}`;
+}
+
+function ledgerLine(s) {
+  if (!s.ledger.intact) return `ledger: broken at line ${s.ledger.brokenAt}`;
+  return s.ledgerEntries === 0 ? 'ledger: no entry yet, so there is no chain to check' : `ledger: intact; the chain of its ${s.ledgerEntries} entries is unbroken`;
 }
 
 function indexLines(s) {
@@ -390,7 +414,7 @@ export function renderStatus(s) {
   const out = [];
   if (!s.exists) {
     out.push(`No log for this repository on this machine: ${s.location} does not exist.`);
-    out.push(...indent([hookLine(s.hookRegistered, s.settingsProblem)]));
+    out.push(...indent([hookClause(s.hookEvents, s.settingsProblem)]));
   } else {
     out.push('SESSION LOG');
     const size = s.unreadableEntries > 0 ? `${formatBytes(s.bytes)} at least; ${s.unreadableEntries} entries could not be read` : formatBytes(s.bytes);
@@ -402,12 +426,12 @@ export function renderStatus(s) {
       s.sessionsUnlistable
         ? `sessions: ${NOT_READ}`
         : `sessions: ${s.sessions}${range}; sealed: ${s.sealedSessions}, with events not yet sealed: ${s.unsealedSessions}`,
-      hookLine(s.hookRegistered, s.settingsProblem),
+      hookClause(s.hookEvents, s.settingsProblem),
     ]));
     out.push('', 'INTEGRITY');
     out.push(...indent([
       ...indexLines(s),
-      s.ledger.intact ? 'ledger: intact' : `ledger: broken at line ${s.ledger.brokenAt}`,
+      ledgerLine(s),
       `unparseable lines: ${countOf(s.unparseableLines)}`,
       `unreadable sessions: ${countOf(s.unreadableSessions)}`,
       ...(s.sessionsBeingSealed > 0 ? [`being sealed: ${s.sessionsBeingSealed} sessions have events in a claimed or temporary file, not read here`] : []),
@@ -428,7 +452,7 @@ export function renderStatus(s) {
   }
   out.push('', 'WHAT HOOKS CANNOT SEE');
   out.push(...indent(s.blindSpots));
-  out.push('  the transcripts that could be checked fill in the interrupts only');
+  out.push('  the transcripts that could be checked count interrupts of both kinds, and nothing else listed here');
   return out.join('\n');
 }
 
@@ -446,9 +470,12 @@ export function enableLog(root) {
 
 /** The disclosure `enable` prints, in its own output. */
 export function renderEnable({ root, location, hook, config }) {
-  let hookState = `${hook.problem}, so whether the hook is registered could not be told.`;
-  if (hook.registered === true) hookState = `The hook is registered in ${SETTINGS_PATH}: recording starts with its next event.`;
-  if (hook.registered === false) hookState = `The hook is not registered in ${SETTINGS_PATH} yet: nothing is recorded until \`apply\` installs it.`;
+  const clause = hookClause(hook.events, hook.problem);
+  const sentence = `${clause[0].toUpperCase()}${clause.slice(1)}`;
+  let hookState = `${sentence}.`;
+  if (hook.registered === true) hookState = `${sentence}: recording starts with the next event.`;
+  else if (hook.events?.registered > 0) hookState = `${sentence}: only those are recorded until \`apply\` registers the rest.`;
+  else if (hook.events !== null) hookState = `${sentence} yet: nothing is recorded until \`apply\` installs it.`;
   return [
     `The session log is enabled for ${root} on this machine.`,
     `  kept at: ${location}`,

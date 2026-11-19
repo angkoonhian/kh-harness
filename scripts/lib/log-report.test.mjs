@@ -363,6 +363,19 @@ test('the report says how many calls were interrupted and how many failures reco
   assert.doesNotMatch(text, /Request interrupted/);
 });
 
+test('a recurrence a sub-agent contributed to says its model is not recorded', () => {
+  const root = project();
+  log(root, 'a', harness(), failure());
+  log(root, 'b', harness(), failure({ agent_id: 'sub-1' }));
+  assert.equal(reportJson(root).groups[0].recurrences[0].subagent, true);
+  assert.match(reportText(root), /a contributing failure was a sub-agent's, whose model is not recorded; the model named is its session's/);
+
+  const plain = project();
+  log(plain, 'a', harness(), failure());
+  log(plain, 'b', harness(), failure());
+  assert.doesNotMatch(reportText(plain), /sub-agent/);
+});
+
 test('with no log it says nothing was read', () => {
   const root = project();
   const json = reportJson(root);

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 import { appendEvent, isEnabled, repoDataDir, setEnabled, storeBlob } from '../../assets/scripts/harness-log.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { EXIT_CODES, LOG_USAGE } from './cli.mjs';
 import {
   CANARY, DATA_ROOT, DAY_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeSession,
@@ -60,16 +61,36 @@ test('enable names the retention period the owner configured', () => {
   assert.match(r.stdout, /30 days/);
 });
 
-test('enable says when the hook is already registered', () => {
-  const root = project();
+/** Registers the logging hook on `events` in the project's settings. */
+function registerHook(root, events) {
+  const entry = [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_SCRIPT}`] }] }];
   mkdirSync(join(root, '.claude'), { recursive: true });
-  writeFileSync(join(root, '.claude/settings.json'), JSON.stringify({
-    hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_SCRIPT}`] }] }] },
-  }));
+  writeFileSync(join(root, '.claude/settings.json'), JSON.stringify({ hooks: Object.fromEntries(events.map(event => [event, entry])) }));
+}
+
+test('enable says recording starts only when the hook is registered on every logged event', () => {
+  const root = project();
+  registerHook(root, LOGGED_EVENTS);
   const r = runLog(root, 'enable');
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /hook is registered/);
-  assert.equal(statusJson(root).hookRegistered, true);
+  assert.match(r.stdout, new RegExp(`The hook is registered on all ${LOGGED_EVENTS.length} logged events in \\.claude/settings\\.json: recording starts with the next event\\.`));
+  const json = statusJson(root);
+  assert.equal(json.hookRegistered, true);
+  assert.deepEqual(json.hookEvents, { registered: LOGGED_EVENTS.length, logged: LOGGED_EVENTS.length });
+  assert.match(runLog(root, 'status').stdout, new RegExp(`the hook is registered on all ${LOGGED_EVENTS.length} logged events`));
+});
+
+test('a hook registered on some of the logged events is said to record only those', () => {
+  const root = project();
+  registerHook(root, ['PreToolUse', 'Stop', 'Notification']);
+  const r = runLog(root, 'enable');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`The hook is registered on 2 of the ${LOGGED_EVENTS.length} logged events in \\.claude/settings\\.json: only those are recorded until \`apply\` registers the rest\\.`));
+  assert.doesNotMatch(r.stdout, /recording starts with/);
+  const json = statusJson(root);
+  assert.equal(json.hookRegistered, false, 'not on every event');
+  assert.deepEqual(json.hookEvents, { registered: 2, logged: LOGGED_EVENTS.length });
+  assert.match(runLog(root, 'status').stdout, new RegExp(`the hook is registered on 2 of the ${LOGGED_EVENTS.length} logged events`));
 });
 
 test('an unreadable settings file is reported as unreadable, not as unregistered', () => {
@@ -385,6 +406,17 @@ test('status reports the ledger chain', () => {
   assert.match(runLog(root, 'status').stdout, /ledger: broken at line 1/);
 });
 
+test('status does not call a ledger that does not exist intact', () => {
+  const root = project();
+  writeSession(root, 's1');
+  const json = statusJson(root);
+  assert.deepEqual(json.ledger, { intact: true, brokenAt: null });
+  assert.equal(json.ledgerEntries, 0);
+  const text = runLog(root, 'status').stdout;
+  assert.match(text, /ledger: no entry yet, so there is no chain to check/);
+  assert.doesNotMatch(text, /ledger: intact/);
+});
+
 test('status reports unparseable lines and unreadable sessions', () => {
   const root = project();
   writeSession(root, 's1');
@@ -434,9 +466,15 @@ test('status names what hooks cannot see', () => {
   const root = project();
   writeSession(root, 's1');
   const json = statusJson(root);
-  assert.deepEqual(json.blindSpots, ['user interrupts', 'cancelled tools', 'permission denials outside auto mode']);
+  assert.deepEqual(json.blindSpots, [
+    'an interrupt between tool calls (one while a tool runs is recorded, as an interrupted call)',
+    'cancelled tools',
+    'permission denials outside auto mode',
+  ]);
   const text = runLog(root, 'status').stdout;
   for (const spot of json.blindSpots) assert.ok(text.includes(spot), spot);
+  assert.doesNotMatch(text, /^ {2}user interrupts$/m, 'an interrupt while a tool runs is recorded, so interrupts are not unseen as a whole');
+  assert.match(text, /the transcripts that could be checked count interrupts of both kinds, and nothing else listed here/);
   // With no data directory the blind spots still hold.
   assert.match(runLog(project(), 'status').stdout, /permission denials outside auto mode/);
 });
