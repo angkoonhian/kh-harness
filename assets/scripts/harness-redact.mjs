@@ -16,8 +16,9 @@
 //   1. REDACTION — `dropCommandFragments` (layer 1, a denylist of command
 //      fragments) and `maskCredentials`/`maskText` (layer 2, masking by
 //      `CREDENTIAL_SHAPES`, the credential table the sweep in
-//      `scripts/lib/detect-exposure.mjs` reads too). The only part the name
-//      covers.
+//      `scripts/lib/detect-exposure.mjs` reads too), with `stripUnsafe` and
+//      `escapeDelimiters` for repository text a brief injects into the
+//      model's context. The only part the name covers.
 //   2. OUTPUT BOUNDS — `MAX_REPORT_LINES`, `MAX_REPORT_BYTES` and
 //      `boundReport`, which keep a hook's output inside Claude Code's
 //      10,000-character cap so it actually ARRIVES (see F3 below).
@@ -295,6 +296,28 @@ export function stripAnsi(text) {
   return text.replace(ANSI_SEQUENCE, '');
 }
 
+// C0 and C1 controls except tab and newline, every format character (`Cf`:
+// zero-width, bidi embeddings, overrides and isolates, the byte-order mark,
+// the soft hyphen) and the whole tag block U+E0000–U+E007F, assigned or not.
+const UNSAFE_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\p{Cf}\u{e0000}-\u{e007f}]/gu;
+
+/**
+ * Removes what a reader cannot see from text bound for the model's context:
+ * whole ANSI sequences first, so no escape body is left behind, then every
+ * `UNSAFE_CHARACTER`. Text without either passes unchanged. Run it before
+ * `maskText`: an invisible character inside a token hides the token from the
+ * mask, and stripping it afterwards would reassemble the token.
+ */
+export function stripUnsafe(text) {
+  return stripAnsi(text).replace(UNSAFE_CHARACTER, '');
+}
+
+/** Escapes `<` and `>`, so repository text placed inside a delimited block
+ * can neither close that block nor open another. */
+export function escapeDelimiters(text) {
+  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 /** Masks one line that `stripAnsi` has already cleaned. */
 function maskLine(line) {
   let masked = line;
@@ -411,21 +434,26 @@ function sliceUtf8(str, maxBytes) {
  *     bound holds on what is actually WRITTEN rather than on an
  *     intermediate string nothing emits.
  *
+ * A non-empty `footer` follows everything else on its own line, truncation
+ * notices included, and its bytes are reserved from the budget, so a
+ * closing delimiter is never cut.
+ *
  * Contract, therefore: this returns at most `MAX_REPORT_BYTES - 1` bytes,
  * and `boundReport(...) + '\n'` is at most `MAX_REPORT_BYTES`.
  */
-export function boundReport(lines, header = '') {
+export function boundReport(lines, header = '', footer = '') {
   const shown = lines.slice(0, MAX_REPORT_LINES);
   let report = header + shown.join('\n');
   if (lines.length > MAX_REPORT_LINES) {
     report += `\n--- truncated: ${lines.length - MAX_REPORT_LINES} more line(s) ---`;
   }
-  const budget = MAX_REPORT_BYTES - 1; // the caller's trailing newline
+  const tail = footer === '' ? '' : '\n' + footer;
+  const budget = MAX_REPORT_BYTES - 1 - Buffer.byteLength(tail, 'utf8'); // 1: the caller's trailing newline
   if (Buffer.byteLength(report, 'utf8') > budget) {
     const notice = '\n--- truncated: output exceeded the byte limit ---';
     report = sliceUtf8(report, budget - Buffer.byteLength(notice, 'utf8')) + notice;
   }
-  return report;
+  return report + tail;
 }
 
 // --- The two facts every hook needs before it can do anything -------------
