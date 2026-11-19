@@ -12,17 +12,17 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
-import { GATES_PATH, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { GATES_PATH, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { integrityEvidence } from './integrity-evidence.mjs';
 import {
-  call, drafted, editLearning, git, HARNESS, kinds, localGates, localGatesPath, log, logReadMistakes, MISTAKE, mtimes, READ_GATE, trialRepo,
-  useId,
+  call, drafted, editLearning, git, HARNESS, kinds, localGates, localGatesPath, log, logFiring, logReadMistakes, MISTAKE, mtimes, READ_GATE,
+  trialRepo, useId,
 } from './learn-fixtures.mjs';
 import { landLearning, planLand, revertLearning } from './learn-land.mjs';
 import { listLearnings, runTrial } from './learn-lib.mjs';
-import { approveLearning, tick } from './learn-promote.mjs';
-import { readLedger } from './ledger.mjs';
+import { approveLearning, demoteLearning, markWrong, setPolicy, tick } from './learn-promote.mjs';
+import { appendLedger, readLedger } from './ledger.mjs';
 import { APPLY, DETECT, run, UNINSTALL } from './lifecycle-fixtures.mjs';
 import { MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { SUCCESS_EVENT } from './recurrence.mjs';
@@ -30,8 +30,9 @@ import { MIN_CLEAN_CALLS } from './replay.mjs';
 import { requireInteractive } from './tty.mjs';
 
 const AT_TERMINAL = requireInteractive({ stdin: { isTTY: true }, stdout: { isTTY: true }, env: {} });
+const NOT_AT_TERMINAL = requireInteractive({ stdin: { isTTY: true }, stdout: { isTTY: true }, env: { CLAUDECODE: '1' } });
 const HOOK = join(import.meta.dirname, '..', '..', 'assets', 'scripts', 'tool-gate.mjs');
-const YES = { yes: true };
+const YES = { yes: true, interactive: AT_TERMINAL };
 
 /** A repository on a feature branch whose Bash learning L1 the owner
  * promoted to `action` on this machine. */
@@ -126,12 +127,12 @@ test('land --yes on the default branch exits 3', () => {
   assert.deepEqual(kinds(root), before.ledger);
 
   writeFileSync(join(root, 'README.md'), '# app, edited\n');
-  const dirty = landLearning(root, 'L1', { yes: true, allowDefaultBranch: true });
+  const dirty = landLearning(root, 'L1', { ...YES, allowDefaultBranch: true });
   assert.equal(dirty.exitCode, 3);
   assert.match(dirty.error, /refusing to land with uncommitted changes to tracked files/);
   assert.equal(existsSync(join(root, GATES_PATH)), false);
 
-  assert.equal(landLearning(root, 'L1', { yes: true, allowDefaultBranch: true, allowDirty: true }).ok, true, 'both waivers, as apply takes them');
+  assert.equal(landLearning(root, 'L1', { ...YES, allowDefaultBranch: true, allowDirty: true }).ok, true, 'both waivers, as apply takes them');
 });
 
 test('a trial learning cannot be landed', () => {
@@ -393,4 +394,119 @@ test('the local gate keeps the approved action even when the committed gate is e
   assert.deepEqual(tick(root).repairedGates, ['L1']);
   assert.deepEqual(localGates(root).gates, [gate]);
   assert.ok(blocks(root));
+});
+
+/** Every file under `dir`, by relative path, with its content. */
+function snapshot(dir) {
+  return Object.fromEntries(Object.keys(mtimes(dir)).map(rel => [rel, readFileSync(join(dir, rel), 'utf8')]));
+}
+const NO_TERMINAL = what => ({ error: `${what} needs a person at an interactive terminal outside Claude Code; nothing was written`, exitCode: 3 });
+const WITHOUT_TERMINAL = [undefined, null, NOT_AT_TERMINAL, { ok: 'true' }, { ok: 1 }, [true]];
+
+test('landing without an interactive terminal is refused and writes nothing', () => {
+  const { root } = activeRepo();
+  const before = { status: repoStatus(root), files: snapshot(root), data: snapshot(repoDataDir(root)) };
+  for (const interactive of WITHOUT_TERMINAL) {
+    assert.deepEqual(landLearning(root, 'L1', { yes: true, interactive }), NO_TERMINAL('landing'), JSON.stringify(interactive));
+  }
+  assert.deepEqual(landLearning(root, 'L1', { yes: true }), NO_TERMINAL('landing'));
+  assert.equal(repoStatus(root), before.status);
+  assert.deepEqual(snapshot(root), before.files);
+  assert.deepEqual(snapshot(repoDataDir(root)), before.data);
+  assert.equal(statusOf(root), 'active-local');
+});
+
+test('reverting without an interactive terminal is refused and writes nothing', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  const before = { status: repoStatus(root), files: snapshot(root), data: snapshot(repoDataDir(root)) };
+  for (const interactive of WITHOUT_TERMINAL) {
+    assert.deepEqual(revertLearning(root, 'L1', { yes: true, interactive }), NO_TERMINAL('a revert'), JSON.stringify(interactive));
+  }
+  assert.equal(repoStatus(root), before.status);
+  assert.deepEqual(snapshot(root), before.files);
+  assert.deepEqual(snapshot(repoDataDir(root)), before.data);
+  assert.equal(statusOf(root), 'landed');
+});
+
+test('a dry run needs no terminal', () => {
+  const { root } = activeRepo();
+  const dry = landLearning(root, 'L1', { interactive: NOT_AT_TERMINAL });
+  assert.equal(dry.dryRun, true);
+  assert.deepEqual(dry.proposals, planLand(root, 'L1').proposals);
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  assert.equal(revertLearning(root, 'L1', {}).dryRun, true);
+});
+
+test('a policy-promoted learning can be landed by the owner at a terminal, and the ledger records the owner', () => {
+  const { root, learning } = trialRepo();
+  git(root, 'checkout', '-q', '-b', 'harness/learned');
+  const set = setPolicy(root, { minTrialFirings: 2, minTrialSessions: 2, maxAction: 'warn' }, { interactive: AT_TERMINAL });
+  assert.equal(set.ok, true, set.error);
+  for (const sessionId of ['fire-a', 'fire-b']) logFiring(root, sessionId, learning.gate, useId('fired'));
+  assert.deepEqual(tick(root).promoted, ['L1']);
+  assert.equal(readLedger(root).at(-1).approvedBy, `policy:${set.sha256}`);
+
+  assert.deepEqual(landLearning(root, 'L1', { yes: true }), NO_TERMINAL('landing'), 'the policy promotes here; the owner lands');
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  const landed = readLedger(root).at(-1);
+  assert.deepEqual([landed.kind, landed.approvedBy, landed.action], ['landed', 'owner', 'warn']);
+  assert.deepEqual(committedFile(root).gates, [{ ...learning.gate, action: 'warn' }]);
+  assert.equal(revertLearning(root, 'L1', YES).ok, true);
+  const reverted = readLedger(root).at(-1);
+  assert.deepEqual([reverted.kind, reverted.approvedBy, reverted.action], ['reverted', 'owner', 'warn']);
+  assert.deepEqual(localGates(root).gates, [{ ...learning.gate, action: 'warn' }]);
+});
+
+/** Records a firing of `gate` in `sessionId` and returns its reference. */
+function fired(root, sessionId, gate) {
+  const toolUseId = useId('fired');
+  logFiring(root, sessionId, gate, toolUseId);
+  return { sessionId, line: readEvents(root, sessionId).events.findIndex(e => e.type === 'gate_firing' && e.tool_use_id === toolUseId) + 1 };
+}
+
+test('two wrong marks on a landed learning suspend it on this machine and leave the repository untouched', () => {
+  const { root, gate } = activeRepo();
+  const before = fired(root, 'fire-before', gate);
+  assert.equal(markWrong(root, before, { interactive: AT_TERMINAL }).wrong, 1);
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  const repository = { status: repoStatus(root), files: snapshot(root) };
+
+  const first = markWrong(root, fired(root, 'fire-a', gate), { interactive: AT_TERMINAL });
+  assert.deepEqual([first.wrong, first.status], [1, 'landed'], 'marks count afresh from the landing');
+  const second = markWrong(root, fired(root, 'fire-b', gate), { interactive: AT_TERMINAL });
+  assert.deepEqual([second.wrong, second.status], [2, 'suspended']);
+  assert.deepEqual(localGates(root).gates, [{ id: 'L1', suspended: true }]);
+  assert.equal(blocks(root), false, 'the committed gate is suspended on this machine');
+  assert.equal(readLedger(root).at(-1).kind, 'suspended');
+  assert.equal(repoStatus(root), repository.status);
+  assert.deepEqual(snapshot(root), repository.files);
+});
+
+test('tick suspends a landed learning marked wrong twice', () => {
+  const { root, learning, gate } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  for (const sessionId of ['fire-a', 'fire-b']) {
+    // Marked as a stopped `markWrong` would leave it: recorded, not yet acted on.
+    const firing = fired(root, sessionId, gate);
+    appendLedger(root, { kind: 'wrong', learningId: 'L1', contentSha256: learning.sha256, evidence: learning.evidence, base: 'b', learned: 'l', approvedBy: 'owner', firing });
+  }
+  const files = snapshot(root);
+  assert.deepEqual(tick(root).suspended, ['L1']);
+  assert.equal(statusOf(root), 'suspended');
+  assert.deepEqual(snapshot(root), files);
+});
+
+test('demoteLearning at a terminal suspends a landed learning', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  const files = snapshot(root);
+  assert.deepEqual(demoteLearning(root, 'L1', { interactive: NOT_AT_TERMINAL }), { error: 'a demotion needs a person at an interactive terminal outside Claude Code; nothing was written' });
+  assert.deepEqual(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }), { ok: true, id: 'L1', status: 'suspended', repairedGates: [] });
+  assert.deepEqual(localGates(root).gates, [{ id: 'L1', suspended: true }]);
+  assert.equal(blocks(root), false);
+  assert.deepEqual(snapshot(root), files, 'a suspension never changes the repository');
+  assert.deepEqual(listLearnings(root).ledgerMismatch, []);
 });

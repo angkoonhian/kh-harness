@@ -19,17 +19,22 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const isString = v => typeof v === 'string';
 const isWellFormedFiring = e => isString(e.gateId) && GATE_ID.test(e.gateId) && GATE_ACTIONS.includes(e.action) && isString(e.tool);
 
-/** `{ sincePromotion, total }` per learning id with a `promoted` or `wrong`
- * entry: the wrong marks since its last promotion, or ever when it was never
- * promoted, and in all. */
+// The kinds after which a learning's wrong marks count afresh: a promotion,
+// and a landing, which is the owner's approval of its gate for the
+// repository.
+const RECOUNT_KINDS = new Set(['promoted', 'landed']);
+
+/** `{ sincePromotion, total }` per learning id with a `RECOUNT_KINDS` or
+ * `wrong` entry: the wrong marks since its last promotion or landing, or
+ * ever when it had neither, and in all. */
 function wrongMarksById(entries) {
   const marks = new Map();
   for (const entry of entries) {
     const id = entry?.learningId;
-    if (!isString(id) || !GATE_ID.test(id) || (entry.kind !== 'promoted' && entry.kind !== 'wrong')) continue;
+    if (!isString(id) || !GATE_ID.test(id) || (!RECOUNT_KINDS.has(entry.kind) && entry.kind !== 'wrong')) continue;
     if (!marks.has(id)) marks.set(id, { sincePromotion: 0, total: 0 });
     const m = marks.get(id);
-    if (entry.kind === 'promoted') {
+    if (RECOUNT_KINDS.has(entry.kind)) {
       m.sincePromotion = 0;
     } else {
       m.sincePromotion++;
@@ -40,7 +45,7 @@ function wrongMarksById(entries) {
 }
 
 /** How many times the learning `id` was marked wrong since its last
- * promotion, or ever when it was never promoted. */
+ * promotion or landing, or ever when it had neither. */
 export const wrongSincePromotion = (entries, id) => wrongMarksById(entries).get(id)?.sincePromotion ?? 0;
 
 const blank = () => ({ fired: Object.fromEntries(GATE_ACTIONS.map(a => [a, 0])), sessions: new Set(), rerouted: 0, gateSha256s: new Set() });

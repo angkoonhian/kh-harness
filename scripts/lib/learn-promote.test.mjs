@@ -428,7 +428,7 @@ test('demotion and retirement by hand need a person at a terminal', () => {
 
   assert.deepEqual(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }), { ok: true, id: 'L1', status: 'trial', repairedGates: [] });
   assert.equal(readLedger(root).at(-1).approvedBy, 'owner');
-  assert.deepEqual(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }), { error: 'L1 is trial; only a learning promoted on this machine is demoted' });
+  assert.deepEqual(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }), { error: 'L1 is trial; only a learning promoted on this machine or landed is demoted' });
   assert.deepEqual(retireLearning(root, 'L1', { interactive: AT_TERMINAL }), { ok: true, id: 'L1', status: 'retired', repairedGates: [] });
   assert.deepEqual(localGates(root).gates, []);
   assert.deepEqual(retireLearning(root, 'L1', { interactive: AT_TERMINAL }), { error: 'L1 is retired; a rejected or retired learning is not retired again' });

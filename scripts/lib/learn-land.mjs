@@ -9,6 +9,13 @@
 // returns the learning to `active-local`: it takes the rule out of the
 // repository and leaves the approval on this machine standing.
 //
+// A gate in the repository binds other people's agents, so landing and
+// reverting take a person at an interactive terminal, as approval does: a
+// policy promotes only on this machine. The landing is the owner's approval
+// of the gate for the repository, so `landed` and `reverted` record
+// `approvedBy: 'owner'` whoever promoted the learning here. Only the write
+// needs the terminal: `planLand` and a dry run show the diff to anyone.
+//
 // Every repository write goes through `apply`'s path: proposals that
 // `renderDiff` shows and `applyProposals` writes, inside the write allowlist
 // and containment; a dry run unless `yes`; the same default-branch and
@@ -45,6 +52,12 @@
 // reports; a file written but not yet recorded in the manifest no longer
 // matches it, and the next run names it.
 //
+// The repair runs only when a `learn` command or `tick` does. So after a
+// branch switch to a checkout without the committed gate, or once an
+// uncommitted land is discarded, the learning stays `landed` and its gate is
+// enforced nowhere until the next `learn` command or `tick` writes its local
+// gate back.
+//
 // No exported function throws. A refusal carries `exitCode: 3` and a
 // failure `exitCode: 2`, the CLI contract's codes.
 import { lstatSync, readFileSync } from 'node:fs';
@@ -60,6 +73,7 @@ import {
   committedGates, holdLocalGate, ID_ERROR, isId, learningIn, planTransition, readFailure, readState, refuse, repairedStep,
   unrecordedReason, writeTransition,
 } from './learn-lib.mjs';
+import { isInteractive, needsTerminal } from './learn-promote.mjs';
 import { removeLearnedEntry, upsertLearnedEntry } from './learned-registry.mjs';
 import { classify, emptyManifest, MANIFEST_PATH, readManifestResult, writeManifest } from './manifest.mjs';
 import { TOOL_GATE_STEP } from './propose.mjs';
@@ -311,12 +325,16 @@ function gateRefusalsFor(root, manifestResult, { allowDefaultBranch, allowDirty 
   return writeGateRefusals({ root, git: gitInfo(root), manifestResult, allowDefaultBranch: allowDefaultBranch === true, allowDirty: allowDirty === true, verb });
 }
 
+/** The ledger entry for a land or a revert: the owner decided it at the
+ * terminal, and it carries the approved action on. */
+const stepEntry = (kind, held) => ({ kind, approvedBy: 'owner', action: held.action });
+
 /** Records the step's ledger entry and the learning's new state once the
  * repository is written, through `writeTransition`; `{ error, exitCode }`
  * when that stops, saying the repository change stands. */
 function recordStep(root, write, { learning, held, status, kind, identity }) {
   const updated = { ...learning, status };
-  const entries = [{ kind, approvedBy: held.approvedBy, action: held.action }];
+  const entries = [stepEntry(kind, held)];
   let written;
   try {
     written = writeTransition(root, write, readState(root), { updated, entries, identity });
@@ -345,12 +363,14 @@ export function planLand(root, id) {
  * Lands the learning `id`, which must be `active-local` as the ledger
  * records it, with an approver: its entry and its gate, at the action that
  * approval recorded, go into the repository, the manifest records `{ id,
- * gateSha256 }`, the ledger gets `landed` carrying the approval on, and the
- * learning's local gate goes, since the committed one is then in force.
- * `options` is `{ yes, allowDirty, allowDefaultBranch }`. Without `yes`,
- * writes nothing and returns `{ dryRun: true, proposals, diffs, refusals }`,
- * `refusals` what `yes` would meet. With it, returns `{ ok: true, id,
- * status, action, written, repairedGates }`, or `{ error, exitCode }`.
+ * gateSha256 }`, the ledger gets `landed` with `approvedBy: 'owner'` and
+ * that action, and the learning's local gate goes, since the committed one
+ * is then in force. `options` is `{ yes, interactive, allowDirty,
+ * allowDefaultBranch }`. Without `yes`, writes nothing and returns `{
+ * dryRun: true, proposals, diffs, refusals }`, `refusals` what `yes` would
+ * meet. With it, `interactive` must be what `requireInteractive` returned
+ * for a person at a terminal, or nothing is written; returns `{ ok: true,
+ * id, status, action, written, repairedGates }`, or `{ error, exitCode }`.
  */
 export function landLearning(root, id, options) {
   try {
@@ -369,6 +389,7 @@ function landUnguarded(root, id, options) {
     const planned = landing(root, readState(root), base.manifest, id);
     return planned.error ? planned : preview(root, planned.proposals, refusals);
   }
+  if (!isInteractive(options.interactive)) return { ...refuse(root, needsTerminal('landing')), exitCode: REFUSED };
   if (refusals.length > 0) return { ...refuse(root, refusals.join(' ')), exitCode: REFUSED, refusals };
 
   return repairedStep(root, write => {
@@ -380,7 +401,7 @@ function landUnguarded(root, id, options) {
     const { learning, held, record } = planned;
     const identity = harnessIdentity(root);
     const updated = { ...learning, status: 'landed' };
-    const ready = planTransition(state, { updated, entries: [{ kind: 'landed', approvedBy: held.approvedBy, action: held.action }], identity });
+    const ready = planTransition(state, { updated, entries: [stepEntry('landed', held)], identity });
     if (ready.error) return refused(ready.error);
 
     const learnings = [...(manifest.manifest.learnings ?? []).filter(l => l.id !== id), record];
@@ -395,7 +416,7 @@ function landUnguarded(root, id, options) {
 /**
  * Reverts the landed learning `id`: exactly its gate and its entry leave
  * the repository and its record the manifest, the ledger gets `reverted`
- * carrying the approval on, and the learning is `active-local` again with
+ * with `approvedBy: 'owner'` and the approved action, and the learning is `active-local` again with
  * its local gate at the approved action, written back before the committed
  * one leaves. `options` and the results are as `landLearning`'s; success
  * is `{ ok: true, id, status, action, written, repairedGates }`.
@@ -417,6 +438,7 @@ function revertUnguarded(root, id, options) {
     const planned = reverting(root, readState(root), base.manifest, id);
     return planned.error ? planned : preview(root, planned.proposals, refusals);
   }
+  if (!isInteractive(options.interactive)) return { ...refuse(root, needsTerminal('a revert')), exitCode: REFUSED };
   if (refusals.length > 0) return { ...refuse(root, refusals.join(' ')), exitCode: REFUSED, refusals };
 
   return repairedStep(root, write => {
@@ -428,7 +450,7 @@ function revertUnguarded(root, id, options) {
     const { learning, held } = planned;
     const identity = harnessIdentity(root);
     const updated = { ...learning, status: 'active-local' };
-    const ready = planTransition(state, { updated, entries: [{ kind: 'reverted', approvedBy: held.approvedBy, action: held.action }], identity });
+    const ready = planTransition(state, { updated, entries: [stepEntry('reverted', held)], identity });
     if (ready.error) return refused(ready.error);
 
     holdLocalGate(root, write, state, id);

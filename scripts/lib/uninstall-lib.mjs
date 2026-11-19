@@ -472,6 +472,19 @@ function holdsOnlyRecordedLearnings(root, manifest, relPath) {
  *   the reason to record against the entry that will be kept instead.
  */
 function contentRefusal(root, manifest, relPath) {
+  const own = ownContentRefusal(root, manifest, relPath);
+  if (own !== null) return own;
+  // The two learned files are decided together, so a committed gate is never
+  // left with no registry entry: the registry stays while the gate file
+  // stays, and the gate file stays while the registry is kept for holding a
+  // learning the manifest does not record.
+  if (relPath === LEARNED_PATH && fs.existsSync(join(root, GATES_PATH)) && ownContentRefusal(root, manifest, GATES_PATH) !== null) return 'gate-file-kept';
+  if (relPath === GATES_PATH && fs.existsSync(join(root, LEARNED_PATH)) && ownContentRefusal(root, manifest, LEARNED_PATH) === 'unrecorded-learning') return 'unrecorded-learning';
+  return null;
+}
+
+/** `contentRefusal` for the file alone, without its learned partner. */
+function ownContentRefusal(root, manifest, relPath) {
   const state = classify(root, manifest, relPath);
   if (state !== 'ours-unmodified') return state;
   // CRITICAL finding, second half: `classify` says the hash matches what the

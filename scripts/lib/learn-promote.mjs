@@ -35,9 +35,12 @@ import { checkedPolicy, policyAllows, readPolicy, removePolicy, writePolicy } fr
 // machine may carry.
 const PROMOTED_ACTIONS = gateActionsFor('active-local');
 
-// A promoted learning marked wrong this many times since its last promotion
-// goes back to `observe`.
+// A promoted or landed learning marked wrong this many times since its last
+// promotion or landing goes back to `observe` on this machine.
 const WRONG_MARKS_TO_DEMOTE = 2;
+
+// The statuses whose gate warns or blocks, and so may be demoted.
+const DEMOTABLE = new Set(['active-local', 'landed']);
 
 const LAST_TICK_FILE = 'last-tick.json';
 
@@ -51,8 +54,8 @@ const codeOf = error => (isString(error?.code) ? error.code : 'unknown');
 /** True only for what `requireInteractive` returns for a person at an
  * interactive terminal; anything else, a missing value among them, is a
  * refusal. */
-const isInteractive = value => isPlainObject(value) && value.ok === true;
-const needsTerminal = what => `${what} needs a person at an interactive terminal outside Claude Code; nothing was written`;
+export const isInteractive = value => isPlainObject(value) && value.ok === true;
+export const needsTerminal = what => `${what} needs a person at an interactive terminal outside Claude Code; nothing was written`;
 
 /**
  * Promotes a learning on trial to `warn` or `block` on this machine, as the
@@ -106,17 +109,19 @@ function promote(root, write, state, learning, { action, approvedBy, detail }) {
 const isCommitted = (root, learning) => committedGates(root).some(g => g.id === learning.id && gateSha256(g) === learning.sha256);
 
 /**
- * Takes a promoted learning's gate back to `observe` on this machine. A
- * gate only this machine holds is rewritten at `observe` and the learning
- * returns to `trial`, recorded as `demoted`; a committed gate is suspended
- * here, its local suspension written with the `suspended` entry that
- * accounts for it, and the learning is `suspended`, which is terminal:
- * nothing in this module lifts a suspension. `approvedBy` names the person
- * who asked, null when the demotion rule decided. Returns `{ status }`, or
- * `{ error }`.
+ * Takes a promoted or landed learning's gate back to `observe` on this
+ * machine. A gate only this machine holds is rewritten at `observe` and the
+ * learning returns to `trial`, recorded as `demoted`; a committed gate is
+ * suspended here, its local suspension written with the `suspended` entry
+ * that accounts for it, and the learning is `suspended`, which is terminal:
+ * nothing in this module lifts a suspension, and nothing here changes the
+ * repository. A landed learning is always suspended, even on a checkout
+ * that lacks its committed gate, since the repository still holds that
+ * gate. `approvedBy` names the person who asked, null when the demotion rule
+ * decided. Returns `{ status }`, or `{ error }`.
  */
 function demote(root, write, state, learning, approvedBy) {
-  const committed = isCommitted(root, learning);
+  const committed = learning.status === 'landed' || isCommitted(root, learning);
   const status = committed ? 'suspended' : 'trial';
   const updated = { ...learning, status, gate: { ...learning.gate, action: 'observe' } };
   const written = writeTransition(root, write, state, { updated, entries: [{ kind: committed ? 'suspended' : 'demoted', approvedBy }] });
@@ -142,10 +147,11 @@ const isFiringRef = ref => isPlainObject(ref) && safeSessionId(ref.sessionId) ==
  * `gate_firing` of a learning's gate as the ledger records it; `options` is
  * `{ interactive }`, what `requireInteractive` returned. The ledger gets a
  * `wrong` entry carrying the reference, and a firing is marked once. The
- * mark that brings a promoted learning to two since its promotion demotes
- * it, as `demoteLearning` does but by the rule. Returns `{ ok: true, id,
- * wrong, status, repairedGates }`, `wrong` the marks since the last
- * promotion and `status` the learning's after the mark, or `{ error }`.
+ * mark that brings a promoted or landed learning to two since its last
+ * promotion or landing demotes it, as `demoteLearning` does but by the
+ * rule. Returns `{ ok: true, id, wrong, status, repairedGates }`, `wrong`
+ * the marks since then and `status` the learning's after the mark, or
+ * `{ error }`.
  */
 export function markWrong(root, firingRef, options) {
   try {
@@ -175,7 +181,7 @@ function markWrongUnguarded(root, ref, { interactive }) {
     write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'wrong', approvedBy: 'owner', firing: { sessionId, line } })));
     const marked = readState(root);
     const wrong = wrongSincePromotion(marked.view.entries, learning.id);
-    if (wrong < WRONG_MARKS_TO_DEMOTE || learning.status !== 'active-local') return { ok: true, id: learning.id, wrong, status: learning.status };
+    if (wrong < WRONG_MARKS_TO_DEMOTE || !DEMOTABLE.has(learning.status)) return { ok: true, id: learning.id, wrong, status: learning.status };
     const demoted = demote(root, write, marked, learning, null);
     if (demoted.error) return { error: `${learning.id}: the mark was recorded, and the demotion it calls for was not; tick retries it (${demoted.error})` };
     return { ok: true, id: learning.id, wrong, status: demoted.status };
@@ -183,8 +189,8 @@ function markWrongUnguarded(root, ref, { interactive }) {
 }
 
 /**
- * Demotes a learning promoted on this machine, as the person at the
- * terminal asked: its gate goes back to `observe` and it returns to
+ * Demotes a learning promoted on this machine or landed, as the person at
+ * the terminal asked: its gate goes back to `observe` and it returns to
  * `trial`, or, when its gate is committed, that gate is suspended on this
  * machine and it is `suspended`, which is terminal. Demotion weakens a
  * gate, so it takes a person at a terminal, like approval: `options` is
@@ -194,7 +200,7 @@ function markWrongUnguarded(root, ref, { interactive }) {
 export function demoteLearning(root, id, options) {
   try {
     return byHand(root, id, optionsOf(options), 'a demotion', (write, state, learning) => {
-      if (learning.status !== 'active-local') return { error: `${id} is ${learning.status}; only a learning promoted on this machine is demoted` };
+      if (!DEMOTABLE.has(learning.status)) return { error: `${id} is ${learning.status}; only a learning promoted on this machine or landed is demoted` };
       return demote(root, write, state, learning, 'owner');
     });
   } catch (error) {
@@ -325,9 +331,10 @@ export function recordedPolicySha256(entries) {
  * repair, which removes every local gate the ledger does not grant, the
  * ones nobody approved among them (`unapprovedRemoved`); retirement of each
  * learning on trial every path of whose `cites` is gone (one citing nothing
- * is never retired this way); demotion of each promoted learning marked
- * wrong twice since its promotion, suspending a committed gate
- * (`suspended`) and otherwise returning it to `trial` (`demoted`); and,
+ * is never retired this way); demotion of each promoted or landed learning
+ * marked wrong twice since its last promotion or landing, suspending a
+ * committed gate on this machine (`suspended`) and otherwise returning it to
+ * `trial` (`demoted`); and,
  * under a readable policy the owner set, promotion as
  * `promoteUnderPolicy` decides; a policy file whose hash the ledger did not
  * record as the one in force promotes nothing, and `policyUnrecorded` and a
@@ -409,7 +416,7 @@ function applyRules(root, write, policy, result) {
 
   const marked = readState(root);
   for (const learning of recordedIn(marked)) {
-    if (learning.status !== 'active-local' || wrongSincePromotion(marked.view.entries, learning.id) < WRONG_MARKS_TO_DEMOTE) continue;
+    if (!DEMOTABLE.has(learning.status) || wrongSincePromotion(marked.view.entries, learning.id) < WRONG_MARKS_TO_DEMOTE) continue;
     apply(learning, (state, l) => demote(root, write, state, l, null), done => (done.status === 'suspended' ? result.suspended : result.demoted).push(learning.id));
   }
 
