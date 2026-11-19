@@ -10,7 +10,7 @@ import { lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 
 import {
-  dataRoot, gunzipBounded, isEnabled, maxLogFileBytes, parsedObject, readBounded, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
+  dataRoot, gunzipBounded, isEnabled, LINK_REFUSED, maxLogFileBytes, parsedObject, readBounded, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
 } from '../../assets/scripts/harness-log.mjs';
 import { CLAIMED_SUFFIX, contentFieldsOf, SEAL_TEMP_SUFFIX, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { verifyLedger } from './ledger.mjs';
@@ -76,6 +76,17 @@ export function assertDataDirSafe(root, { absentOk = false } = {}) {
   const check = checkDataDir(root);
   if (check.state === 'ok' || (absentOk && check.state === 'absent')) return;
   throw new DataDirRefused(`refusing to write to ${check.dir}: ${check.state === 'absent' ? 'it no longer exists' : check.reason}`);
+}
+
+/** Records whether the log is enabled. Throws `DataDirRefused`, writing
+ * nothing, when the data directory or the record itself is a link. */
+export function recordEnabled(root, enabled) {
+  try {
+    setEnabled(root, enabled);
+  } catch (error) {
+    if (error?.code === LINK_REFUSED) throw new DataDirRefused(`refusing to write to ${repoDataDir(root)}: ${error.message}`);
+    throw error;
+  }
 }
 
 /**
@@ -423,7 +434,7 @@ export const logCommand = (root, ...args) => `node scripts/log.mjs ${/\s/.test(r
  * not safe to write. */
 export function enableLog(root) {
   assertDataDirSafe(root, { absentOk: true });
-  setEnabled(root, true);
+  recordEnabled(root, true);
   return { root, location: repoDataDir(root), hook: hookRegistration(root), config: readConfig(root) };
 }
 
@@ -454,7 +465,7 @@ export function renderEnable({ root, location, hook, config }) {
 export function disableLog(root) {
   if (checkDataDir(root).state === 'absent') return false;
   assertDataDirSafe(root);
-  setEnabled(root, false);
+  recordEnabled(root, false);
   return true;
 }
 

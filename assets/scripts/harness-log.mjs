@@ -172,10 +172,33 @@ export function isEnabled(root) {
   return read.ok && read.value !== null && typeof read.value === 'object' && read.value.enabled === true;
 }
 
+/** The `code` of the error `setEnabled` throws for a link. */
+export const LINK_REFUSED = 'EKHLINK';
+
+/**
+ * Records whether the log is enabled for this repository on this machine,
+ * creating the log directory for its owner alone when there is none. The
+ * record goes to a temporary sibling and is renamed into place: a hook
+ * reading meanwhile finds the old record or the new one, never an empty
+ * file, which reads as disabled; and a record hard-linked to another file is
+ * replaced, not written through. Throws an error with code `LINK_REFUSED`,
+ * writing nothing, when the log directory or the record is a symbolic link,
+ * and otherwise what the file system throws.
+ */
 export function setEnabled(root, enabled) {
   const dir = repoDataDir(root);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, ENABLED_FILE), JSON.stringify({ enabled: enabled === true }) + '\n', 'utf8');
+  const path = join(dir, ENABLED_FILE);
+  const linked = [dir, path].find(isLink);
+  if (linked !== undefined) throw Object.assign(new Error(`${linked} is a link`), { code: LINK_REFUSED });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(temp, JSON.stringify({ enabled: enabled === true }) + '\n', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
 }
 
 const isPositiveInteger = v => Number.isSafeInteger(v) && v > 0;
