@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { readIfPresent, existsAny } from './scan.mjs';
 import { readJsonFile } from './read-json.mjs';
+import { git, isNotRepository } from './git-info.mjs';
 import { commandDenyRules } from './propose.mjs';
 // THIS IMPORT DIRECTION IS DELIBERATE. DO NOT "FIX" IT BY COPYING THE
 // FUNCTION BACK INTO scripts/lib/.
@@ -396,30 +396,48 @@ function projectDocs(files) {
  */
 const REMOTE_CREDENTIAL = /^https?:\/\/[^/@\s]+@/i;
 
-/** Remote URLs may embed credentials. We record only whether one is present. */
-function remotes(root) {
-  try {
-    const out = execFileSync('git', ['-C', root, 'remote', '-v'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const seen = new Map();
-    for (const line of out.split('\n')) {
-      const m = line.match(/^(\S+)\s+(\S+)/);
-      if (!m) continue;
-      const [, name, url] = m;
-      if (!seen.has(name)) seen.set(name, { name, hasCredential: REMOTE_CREDENTIAL.test(url) });
-    }
-    return [...seen.values()];
-  } catch { return []; }
+/** What is said, in the committed report, of a git that could not list the
+ * remotes. Never git's own message, which can name an absolute path. */
+function remotesFailure(err) {
+  if (err?.code === 'ENOENT') return 'git is not installed or not on PATH';
+  if (err?.code === 'ETIMEDOUT') return 'git did not answer in time';
+  return 'git failed';
 }
 
-export function detectHarness(root, files) {
+/**
+ * `{ list, error }`: the repository's remotes, each by name and whether its
+ * URL embeds a credential, which is all that is recorded of a URL; and why
+ * git could not list them, or null. A directory that is not a repository has
+ * none and no error. A git that could not answer is not a repository
+ * without remotes.
+ */
+function remotes(root, env) {
+  let out;
+  try {
+    out = git(root, ['remote', '-v'], env === undefined ? {} : { env });
+  } catch (err) {
+    return { list: [], error: isNotRepository(err) ? null : remotesFailure(err) };
+  }
+  const seen = new Map();
+  for (const line of out.split('\n')) {
+    const m = line.match(/^(\S+)\s+(\S+)/);
+    if (!m) continue;
+    const [, name, url] = m;
+    if (!seen.has(name)) seen.set(name, { name, hasCredential: REMOTE_CREDENTIAL.test(url) });
+  }
+  return { list: [...seen.values()], error: null };
+}
+
+/** `env` is overridable only so a test can take git away; production
+ * callers never pass it. */
+export function detectHarness(root, files, { env } = {}) {
   const claudeMd = readIfPresent(root, 'CLAUDE.md');
   const agentsMd = readIfPresent(root, 'AGENTS.md');
   const instructionsPath = claudeMd != null ? 'CLAUDE.md' : (agentsMd != null ? 'AGENTS.md' : null);
   const denyInEffect = denyRulesInEffect(root);
   const allDocs = projectDocs(files);
   const registrations = hookRegistrations(root, files);
+  const remote = remotes(root, env);
 
   const harness = {
     instructions: { path: instructionsPath, lines: lineCount(claudeMd ?? agentsMd) },
@@ -474,7 +492,8 @@ export function detectHarness(root, files) {
     handoff: findHandoff(root),
     bootstrap: existsAny(root, BOOTSTRAP_CANDIDATES),
     gitattributes: files.includes('.gitattributes'),
-    remotes: remotes(root),
+    remotes: remote.list,
+    remotesError: remote.error,
   };
   // Phase 3 (intent and rules). Computed HERE, once, and carried on the
   // harness object — the same way `architecture`, `handoff` and `bootstrap`

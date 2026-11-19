@@ -1,6 +1,10 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { git } from './git-info.mjs';
+
+// Listing a very large tree's untracked files can take git far longer than
+// any other question the kit asks it.
+const LISTING_TIMEOUT_MS = 60_000;
 
 const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
 
@@ -40,9 +44,7 @@ const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', 
  */
 function gitPaths(root, args) {
   try {
-    return execFileSync('git', ['-C', root, ...args, '-z'], {
-      encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-    }).split('\0').filter(Boolean);
+    return git(root, [...args, '-z'], { maxBuffer: 64 * 1024 * 1024, timeout: LISTING_TIMEOUT_MS }).split('\0').filter(Boolean);
   } catch {
     return null;
   }
