@@ -76,7 +76,9 @@ export function readManifest(root) {
  * sibling and renamed into place, so a reader, or a run killed at any point,
  * finds the previous file or the new one and never part of one. The kit's
  * one way of rewriting a file in a repository: the manifest, the owner's
- * settings file and `detect`'s report.
+ * settings file and `detect`'s report. A file in the data directory is
+ * written by `writeFileAtomic` (atomic-write.mjs) instead, which never
+ * writes through a link and keeps none of what is kept here.
  *
  * What a write in place would have kept is kept: the file's permission
  * bits, and a link at `path`, whose target is what is replaced. A target the
@@ -175,8 +177,8 @@ export function contentMatches(bytes, expected) {
   return bytes.includes(0x0d) && sha256(normalizeLineEndings(bytes)) === expected;
 }
 
-// A path made only of these is printed as it is.
-const PLAIN_PATH = /^[A-Za-z0-9._/-]{1,200}$/;
+/** A path made only of these is printed as it is. */
+export const PLAIN_PATH = /^[A-Za-z0-9._/-]{1,200}$/;
 const DISPLAY_MAX = 200;
 
 /**

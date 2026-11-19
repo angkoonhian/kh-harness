@@ -1,7 +1,7 @@
 // scripts/lib/atomic-write.test.mjs
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -37,17 +37,19 @@ test('a failed write leaves the file as it was, removes its temporary file and t
   assert.equal(readFileSync(join(path, 'inside.txt'), 'utf8'), 'kept');
 });
 
-test('with clearStale, the temporary files a killed run left for this path are removed, and nothing else', () => {
+test('a link at the path is replaced by the file, and what it pointed at is not written', t => {
   const dir = tempDir();
+  const elsewhere = join(dir, 'elsewhere.json');
   const path = join(dir, 'record.json');
-  const stale = ['record.json.4321.0a1b2c3d4e5f.tmp', 'record.json.7.ffffffffffff.tmp'];
-  const others = ['record.json.bak', 'other.json.4321.0a1b2c3d4e5f.tmp', 'record.json.tmp', 'xrecord.json.1.0a1b2c3d4e5f.tmp'];
-  for (const name of [...stale, ...others]) writeFileSync(join(dir, name), 'x');
-
-  writeFileAtomic(path, 'kept\n');
-  assert.deepEqual(readdirSync(dir).sort(), ['record.json', ...stale, ...others].sort(), 'by default a sibling may be another writer\'s, so none is touched');
-
-  writeFileAtomic(path, 'new\n', { clearStale: true });
-  assert.deepEqual(readdirSync(dir).sort(), ['record.json', ...others].sort());
+  writeFileSync(elsewhere, 'theirs\n');
+  try {
+    symlinkSync(elsewhere, path, 'file');
+  } catch (error) {
+    t.skip(`this account cannot create a file link (${error.code})`);
+    return;
+  }
+  writeFileAtomic(path, 'new\n');
+  assert.equal(lstatSync(path).isSymbolicLink(), false);
   assert.equal(readFileSync(path, 'utf8'), 'new\n');
+  assert.equal(readFileSync(elsewhere, 'utf8'), 'theirs\n');
 });
