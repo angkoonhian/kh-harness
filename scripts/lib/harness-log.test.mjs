@@ -24,6 +24,7 @@ import {
   readEvents,
   repoDataDir,
   repoKey,
+  SCRUB_MARK,
   scrubValue,
   sessionFileName,
   setEnabled,
@@ -460,6 +461,11 @@ test('each event carries schema, ts and pid, and the writer owns them', () => {
   assert.equal(e.pid, process.pid);
   assert.ok(Date.parse(e.ts) >= before - 1000 && Date.parse(e.ts) <= Date.now() + 1000, e.ts);
   assert.equal(e.type, 'PreToolUse');
+});
+
+test('SCRUB_MARK is what both the mask and a credential-named key leave behind', () => {
+  assert.equal(SCRUB_MARK, '***');
+  assert.deepEqual(scrubValue({ note: `key ${githubToken()}`, [PASSWORD]: 'plain' }), { note: `key ${SCRUB_MARK}`, [PASSWORD]: SCRUB_MARK });
 });
 
 test('scrubValue masks every string leaf of a deep copy and leaves the input alone', () => {

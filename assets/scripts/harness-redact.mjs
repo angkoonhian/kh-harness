@@ -324,6 +324,9 @@ export function escapeDelimiters(text) {
   return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** What the mask writes in place of every value it hides. */
+export const SCRUB_MARK = '***';
+
 // A private-key header and everything after it on its line. Not a floor, so
 // it applies whichever floors the mask uses.
 const PEM_TO_END_OF_LINE = new RegExp(PEM_HEADER.source + '.*', 'g');
@@ -334,15 +337,15 @@ const sweepFloors = ({ floors = 'mask' } = {}) => floors === 'sweep';
 
 /** Masks one line that `stripAnsi` has already cleaned. */
 function maskLine(line, sweep) {
-  let masked = line.replace(PEM_TO_END_OF_LINE, '***');
+  let masked = line.replace(PEM_TO_END_OF_LINE, SCRUB_MARK);
   for (const { kind, pattern, maskPattern = pattern } of CREDENTIAL_SHAPES) {
     const re = sweep ? pattern : maskPattern;
     masked = kind === 'token'
-      ? masked.replace(re, '***')
+      ? masked.replace(re, SCRUB_MARK)
       : masked.replace(re, (...args) => {
         const match = args[0];
         const { value } = args.at(-1);
-        return match.slice(0, match.length - value.length) + '***';
+        return match.slice(0, match.length - value.length) + SCRUB_MARK;
       });
   }
   return masked;
@@ -380,7 +383,7 @@ export function maskText(text, options) {
     const line = parts[i];
     if (inKey) {
       inKey = !PEM_FOOTER.test(line);
-      parts[i] = line.match(/^[ \t]*/)[0] + '***';
+      parts[i] = line.match(/^[ \t]*/)[0] + SCRUB_MARK;
       continue;
     }
     parts[i] = maskLine(line, sweep);
