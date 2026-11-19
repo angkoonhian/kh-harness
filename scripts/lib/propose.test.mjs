@@ -1502,7 +1502,7 @@ import { applyProposals } from './apply-lib.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { readManifest, writeManifest } from './manifest.mjs';
 import { versionStamp } from './render.mjs';
-import { BRIEF_PATH } from './propose.mjs';
+import { BRIEF_PATH, LINT_TOUCHED_PATH } from './propose.mjs';
 
 function detectedAt(d, kitVersion) {
   const { files } = listFiles(d);
@@ -1513,9 +1513,10 @@ function detectedAt(d, kitVersion) {
   return { checks, manifest, kitVersion, harness, root: d, stack, files };
 }
 
-function installedAt(kitVersion) {
+function installedAt(kitVersion, extraFiles = {}) {
   const d = root();
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app' }));
+  for (const [rel, contents] of Object.entries(extraFiles)) writeFileSync(join(d, rel), contents);
   const ctx = detectedAt(d, kitVersion);
   const result = applyProposals({ root: d, proposals: buildProposals(ctx), manifest: ctx.manifest, kitVersion });
   assert.deepEqual(result.failed, []);
@@ -1580,4 +1581,63 @@ test('P0.kitskew is n/a when there is no manifest', () => {
   const d = root();
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app' }));
   assert.equal(kitskew(detectedAt(d, '0.2.0').checks).state, 'n/a');
+});
+
+const TS_FILES = { 'tsconfig.json': '{}', 'index.ts': 'export const ok = true;\n' };
+
+test('an installed sensor is updated with the shared asset after its lint script is gone', () => {
+  const d = installedAt('0.1.9', { ...TS_FILES, 'package.json': JSON.stringify({ name: 'app', scripts: { lint: 'eslint .' } }) });
+  assert.ok(readManifest(d).files.some(f => f.path === LINT_TOUCHED_PATH), 'fixture sanity: the sensor was installed');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app' }));
+
+  const ctx = detectedAt(d, '0.2.0');
+  const paths = buildProposals(ctx).filter(p => p.checkId === 'P0.kitskew').map(p => p.path);
+  assert.ok(paths.includes(LINT_TOUCHED_PATH), `the script that imports the shared asset must be updated with it: ${JSON.stringify(paths)}`);
+  assert.ok(paths.includes(REDACT_PATH), JSON.stringify(paths));
+});
+
+test('a user-edited hook script holds back the shared asset it imports, and the evidence names both', () => {
+  const d = installedAt('0.1.9');
+  writeFileSync(join(d, BRIEF_PATH), readF(join(d, BRIEF_PATH), 'utf8') + '// my own tweak\n');
+
+  const ctx = detectedAt(d, '0.2.0');
+  const skew = kitskew(ctx.checks);
+  assert.ok(skew.evidence.some(e => e.startsWith('held back: ') && e.includes(REDACT_PATH) && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+  assert.ok(skew.evidence.some(e => e.startsWith('kept: ') && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+  const paths = buildProposals(ctx).map(p => p.path);
+  assert.equal(paths.includes(REDACT_PATH), false, `the shared asset must not change under a script that is not updated with it: ${JSON.stringify(paths)}`);
+  assert.equal(paths.includes(BRIEF_PATH), false);
+});
+
+test('with no edited dependent the shared asset updates as before', () => {
+  const d = installedAt('0.1.9');
+  const redact = buildProposals(detectedAt(d, '0.2.0')).find(p => p.path === REDACT_PATH);
+  assert.equal(redact?.checkId, 'P0.kitskew');
+  assert.match(redact.reason, /installed kit 0\.1\.9, current kit 0\.2\.0/);
+});
+
+test('a recorded kit file without the stamp is reported as kept and never updated', () => {
+  const d = installedAt('0.2.0');
+  // A user's own file under a manifest entry forged to its real hash.
+  const theirs = '# My own handoff\n';
+  writeFileSync(join(d, 'HANDOFF.md'), theirs);
+  const m = readManifest(d);
+  m.files.find(f => f.path === 'HANDOFF.md').sha256 = sha(theirs);
+  writeManifest(d, m);
+
+  const ctx = detectedAt(d, '0.2.0');
+  const skew = kitskew(ctx.checks);
+  assert.equal(skew.state, 'declared');
+  assert.ok(skew.evidence.some(e => e.startsWith('kept: HANDOFF.md') && e.includes('does not carry the kh-harness stamp')), JSON.stringify(skew.evidence));
+  assert.equal(buildProposals(ctx).find(p => p.path === 'HANDOFF.md'), undefined);
+});
+
+test('with the kit version unchanged, an update says the repository\'s detected facts changed', () => {
+  const d = installedAt('0.2.0', { ...TS_FILES, 'package-lock.json': '{}', 'package.json': JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }) });
+  assert.ok(readManifest(d).files.some(f => f.path === 'scripts/bootstrap.sh'), 'fixture sanity: the bootstrap script was installed');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { build: 'tsc', test: 'vitest' } }));
+
+  const update = buildProposals(detectedAt(d, '0.2.0')).find(p => p.path === 'scripts/bootstrap.sh');
+  assert.equal(update?.checkId, 'P0.kitskew');
+  assert.match(update.reason, /\(kit 0\.2\.0; this repository's detected facts changed since it was written\)$/);
 });

@@ -9,12 +9,15 @@ import { matcherCovers, normalizeMatcher } from './settings-merge.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote, fixtureExposureNote } from './detect-exposure.mjs';
-// Task 8b: the only three facts gap-model.mjs needs from propose.mjs — the
-// exact resolved script path EACH hook generator registers, so a check can
-// ask "is OURS here" instead of "is anything here". Importing the constant,
-// not re-deriving it, is the same discipline as every other shared-evidence
-// module in this file (bootstrap-install.mjs, sensor-evidence.mjs, ...):
-// one source of truth, so the check and the generator cannot drift apart.
+// What gap-model.mjs takes from propose.mjs: the exact resolved script path
+// each hook generator registers and the sensor's matcher, so a check can ask
+// "is OURS here" instead of "is anything here"; the generator table, so a
+// proposal's `via` follows from whether a generator exists; and `kitSkew`,
+// so P0.kitskew judges installed files against what the generators write.
+// Importing them, not re-deriving them, is the same discipline as every
+// other shared-evidence module in this file (bootstrap-install.mjs,
+// sensor-evidence.mjs, ...): one source of truth, so the check and the
+// generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, SENSOR_MATCHER, GENERATORS, kitSkew } from './propose.mjs';
@@ -1020,6 +1023,7 @@ const CHECKS = [
       const evidence = [
         skew.versions,
         ...skew.updates.map(p => `out of date: ${p.path}`),
+        ...skew.heldBack.map(h => `held back: ${h.path} (out of date, but ${h.dependent} imports it and is not being updated with it)`),
         ...skew.kept.map(k => `kept: ${k.path} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
         ...skew.unproduced.map(path => `left alone: ${path} (this kit no longer generates it for this repository)`),
         ...(skew.current.length ? [`${skew.current.length} kit-owned file${skew.current.length === 1 ? '' : 's'} match what this kit generates`] : []),
