@@ -30,7 +30,7 @@ import { join } from 'node:path';
 import { readIfPresent } from './scan.mjs';
 import { parseRules, findLearned, findRules } from '../../assets/scripts/harness-redact.mjs';
 import { runsKitScript } from './hook-evidence.mjs';
-import { SESSION_LOG_PATH } from './propose.mjs';
+import { SESSION_LOG_PATH, toolGateDenyRules } from './propose.mjs';
 
 /** Enforcers that need no pointer: `none` is a claim, `review` is a human. */
 const POINTERLESS = new Set(['none', 'review']);
@@ -39,7 +39,12 @@ const SETTINGS_POINTER = /^settings:(permissions\.deny|hooks\.([A-Za-z]+))$/;
 
 /**
  * Does `pointer` name something that exists? Three shapes:
- *   settings:permissions.deny     — iff the repository has any deny rule in effect
+ *   settings:permissions.deny     — iff a deny rule in effect is not one the
+ *                                   kit installs with its gate hook: those
+ *                                   are on every install and deny nothing
+ *                                   the owner's rule names. A rule `detect`
+ *                                   redacts to null is a command rule of the
+ *                                   owner's, and counts
  *   settings:hooks.<Event>        — iff a hook other than the logging hook is
  *                                   registered on that event: the logging
  *                                   hook is on every logged event and
@@ -53,7 +58,10 @@ const SETTINGS_POINTER = /^settings:(permissions\.deny|hooks\.([A-Za-z]+))$/;
 function pointerResolves(root, harness, pointer) {
   const m = pointer.match(SETTINGS_POINTER);
   if (m) {
-    if (m[1] === 'permissions.deny') return (harness?.claudeDir?.denyRules ?? 0) > 0;
+    if (m[1] === 'permissions.deny') {
+      const kitRules = new Set(toolGateDenyRules());
+      return (harness?.claudeDir?.denyRuleList ?? []).some(rule => !kitRules.has(rule));
+    }
     const registrations = harness?.claudeDir?.hookRegistrations?.[m[2]] ?? [];
     return registrations.some(r => !runsKitScript(r, SESSION_LOG_PATH, undefined));
   }

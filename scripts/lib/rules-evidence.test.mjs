@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rulesRegistryEvidence, ruleShapedLines, RULE_SHAPED } from './rules-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
-import { SESSION_LOG_PATH, VERIFY_TOUCHED_PATH } from './propose.mjs';
+import { SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, toolGateDenyRules } from './propose.mjs';
 import { execEntry } from './hook-evidence.mjs';
 import { hookEntrySha256 } from './settings-merge.mjs';
 
@@ -28,7 +28,7 @@ const bare = {
 };
 const withHooks = {
   instructions: { path: 'CLAUDE.md', lines: 10 },
-  claudeDir: { denyRules: 2, hookEvents: { Stop: ['.claude/scripts/verify-touched.mjs'] }, hookRegistrations: { Stop: [{ script: '.claude/scripts/verify-touched.mjs', matcher: null }] }, rules: [] },
+  claudeDir: { denyRules: 2, denyRuleList: ['Edit(secrets/**)', 'Edit(*-lock.json)'], hookEvents: { Stop: ['.claude/scripts/verify-touched.mjs'] }, hookRegistrations: { Stop: [{ script: '.claude/scripts/verify-touched.mjs', matcher: null }] }, rules: [] },
 };
 
 const REGISTRY = [
@@ -105,11 +105,20 @@ test('it resolves when the Stop gate is also registered', () => {
     'an unresolved entry that is not the logging hook may be what enforces the rule');
 });
 
-test('settings:permissions.deny resolves iff denyRules > 0', () => {
+/** A harness whose deny rules in effect are `denyRuleList`, as `detect`
+ * reads them: a rule that is not a path-taking permission is null. */
+const denying = denyRuleList => ({ ...bare, claudeDir: { ...bare.claudeDir, denyRules: denyRuleList.length, denyRuleList } });
+
+test('settings:permissions.deny resolves on a deny rule of the owner\'s, and not on the rules the kit installs with its gate hook', () => {
   const d = repo();
   write(d, RULES_PATH, '## R5 — r\n- enforced-by: deny\n- pointer: settings:permissions.deny\n');
-  assert.deepEqual(rulesRegistryEvidence(d, withHooks).missingPointers, []);
-  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'R5', pointer: 'settings:permissions.deny' }]);
+  const dead = [{ id: 'R5', pointer: 'settings:permissions.deny' }];
+  const pointers = list => rulesRegistryEvidence(d, denying(list)).missingPointers;
+  assert.deepEqual(pointers([]), dead);
+  assert.deepEqual(pointers(toolGateDenyRules()), dead, 'every install holds these, whatever the owner denies');
+  assert.deepEqual(pointers([...toolGateDenyRules(), 'Edit(secrets/**)']), []);
+  assert.deepEqual(pointers([...toolGateDenyRules(), null]), [], 'a rule detect does not show, a command rule of the owner\'s, counts as theirs');
+  assert.deepEqual(pointers(['Edit(*-lock.json)']), [], 'a protected-path rule denies what the owner approved it for');
 });
 
 test('an absolute or .. pointer is reported as missing, never resolved', () => {
