@@ -546,6 +546,45 @@ test('a secret three levels deep under a credential-named key is masked', () => 
   assert.ok(!raw.includes(secretValue('d')) && !raw.includes(secretValue('e')));
 });
 
+test('a credential-named key hides every scalar beneath it, through arrays and objects', () => {
+  const root = tempDir('hk-log-keyed-deep-');
+  const event = {
+    [PASSWORD]: [secretValue('in-array')],
+    ['api' + '_key']: { current: secretValue('in-object'), previous: [secretValue('nested'), 7, true, null] },
+    note: ['kept', { also: 'kept' }],
+  };
+  assert.deepEqual(scrubValue(event), {
+    [PASSWORD]: ['***'],
+    ['api' + '_key']: { current: '***', previous: ['***', '***', '***', null] },
+    note: ['kept', { also: 'kept' }],
+  });
+  appendEvent(root, 's1', event);
+  const raw = rawSession(root, 's1');
+  for (const n of ['in-array', 'in-object', 'nested']) assert.ok(!raw.includes(secretValue(n)), n);
+});
+
+test('a private key held one line per array element is masked whole', () => {
+  const root = tempDir('hk-log-pem-lines-');
+  const body = ['MIIEowIBAAKCAQEA' + 'x'.repeat(48), 'y'.repeat(64), 'z'.repeat(24) + '=='];
+  const lines = ['before', '-----BEGIN RSA ' + 'PRIVATE KEY-----', ...body, '-----END RSA ' + 'PRIVATE KEY-----', 'after'];
+  assert.deepEqual(scrubValue(lines), ['before', '***', '***', '***', '***', '***', 'after']);
+  assert.deepEqual(scrubValue({ patch: [{ lines }] }), { patch: [{ lines: ['before', '***', '***', '***', '***', '***', 'after'] }] });
+  appendEvent(root, 's1', { tool_response: { lines } });
+  const raw = rawSession(root, 's1');
+  for (const line of body) assert.ok(!raw.includes(line), 'no body line is stored');
+});
+
+test('a string element holding several lines keeps them when its run is masked as one text', () => {
+  const token = githubToken();
+  assert.deepEqual(scrubValue(['one\ntwo', `three ${token}\r\nfour`, 5, 'six\n']), ['one\ntwo', 'three ***\r\nfour', 5, 'six\n']);
+});
+
+test('a run whose elements cannot be told apart after masking is hidden whole', () => {
+  // An operating-system-command escape opened in one element and closed in
+  // the next takes the line break between them with it.
+  assert.deepEqual(scrubValue(['a \u001b]0;title', 'still title\u0007 b', 'c']), ['***', '***', '***']);
+});
+
 test('a credential-named key hides its value whatever the value starts with', () => {
   const root = tempDir('hk-log-keyed-start-');
   const starts = ['=', '>', ',', ';', '\n', '=>', ' ', githubToken() + ' '];
