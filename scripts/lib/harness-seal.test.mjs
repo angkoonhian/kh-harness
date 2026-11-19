@@ -15,6 +15,7 @@ import { appendEvent, readEvents, repoDataDir, sessionFileName, storeBlob } from
 import {
   applyRetention, CLAIMED_SUFFIX, SEAL_IDLE_MS, SEAL_TEMP_SUFFIX, sealClosedSessions, verifyIndex,
 } from '../../assets/scripts/harness-seal.mjs';
+import { FAILURE_EVENT, failureSignature } from './recurrence.mjs';
 
 const HARNESS_SEAL_URL = new URL('../../assets/scripts/harness-seal.mjs', import.meta.url).href;
 
@@ -387,11 +388,35 @@ test('retention removes every free-text field the hook writes and keeps the rest
   seal(root);
   assert.equal(applyRetention(root, { now: Date.now() + 91 * DAY_MS }).contentRemoved, 1);
   const [failure, denied, stopFailure, end] = eventsOf(root, 'texts');
-  assert.deepEqual([failure.tool, failure.status, failure.contentExpired], ['Bash', 'error', true]);
-  for (const f of ['firstErrorLine', 'input', 'output']) assert.equal(Object.hasOwn(failure, f), false, f);
+  assert.deepEqual([failure.tool, failure.status, failure.firstErrorLine, failure.contentExpired], ['Bash', 'error', 'Exit code 1', true]);
+  for (const f of ['input', 'output']) assert.equal(Object.hasOwn(failure, f), false, f);
   assert.deepEqual([denied.tool, Object.hasOwn(denied, 'reason')], ['Bash', false]);
   assert.deepEqual([Object.hasOwn(stopFailure, 'error'), Object.hasOwn(stopFailure, 'errorDetails')], [false, false]);
   assert.equal(end.reason, 'other', 'a session end reason is one of a fixed set, not free text');
+});
+
+test('an expired failure still yields the same failure signature', () => {
+  const root = tempDir('hk-log-retention-signature-');
+  const failure = {
+    type: FAILURE_EVENT, tool: 'Bash', inputHash: 'a'.repeat(64), status: 'error', durationMs: 4187, outputBytes: 2048,
+    firstErrorLine: "Error: Cannot find module 'express'", input: { command: 'npm start' }, output: 'x'.repeat(2048),
+  };
+  appendEvent(root, 'failed', failure);
+  // As recurrence reads a failure, which names the tool `tool_name`.
+  appendEvent(root, 'failed', { ...failure, tool_name: failure.tool });
+  seal(root);
+  const before = eventsOf(root, 'failed');
+  assert.equal(applyRetention(root, { now: Date.now() + 91 * DAY_MS }).contentRemoved, 1);
+  const after = eventsOf(root, 'failed');
+  const kept = ['type', 'tool', 'inputHash', 'status', 'durationMs', 'outputBytes', 'firstErrorLine', 'ts', 'pid', 'schema'];
+  for (const [i, event] of after.entries()) {
+    assert.equal(event.contentExpired, true);
+    assert.equal(Object.hasOwn(event, 'input') || Object.hasOwn(event, 'output'), false);
+    for (const field of kept) assert.equal(JSON.stringify(event[field]), JSON.stringify(before[i][field]), field);
+  }
+  const signature = failureSignature(before[1], root);
+  assert.match(signature, /^[0-9a-f]{16}$/);
+  assert.equal(failureSignature(after[1], root), signature);
 });
 
 test('content that cannot be verified is left in place and counted', () => {
