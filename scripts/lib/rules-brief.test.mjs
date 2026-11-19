@@ -109,9 +109,9 @@ test('a credential-shaped value in a rule line is masked before it reaches stdou
 // model too; and an undelimited block is indistinguishable from the prompt.
 test('control and bidirectional-format characters never reach the injected context', () => {
   const d = repo();
-  registry(d, `## R1 — Never ‮evom‬ the ledger\u0007 file​\n- enforced-by: none\n`);
+  registry(d, `## R1 — Never \u202eevom\u202c the ledger\u0007 file\u200b\n- enforced-by: none\n`);
   const text = injected(run(d));
-  for (const ch of ['‮', '‬', '\u0007', '​']) assert.equal(text.includes(ch), false, `U+${ch.codePointAt(0).toString(16)} must be stripped`);
+  for (const ch of ['\u202e', '\u202c', '\u0007', '\u200b']) assert.equal(text.includes(ch), false, `U+${ch.codePointAt(0).toString(16)} must be stripped`);
   assert.match(text, /Never evom the ledger file/, 'the visible text survives');
 });
 
@@ -160,6 +160,36 @@ test('a rule that mentions the word Bearer in prose is not mangled', () => {
   registry(d, '## R1 — Never send a Bearer token over plain http\n- enforced-by: review\n');
   const text = injected(run(d));
   assert.match(text, /^- R1: Never send a Bearer token over plain http \[enforced-by: review\]$/m);
+});
+
+test('a rule that says "Use Bearer authentication everywhere" is injected unchanged', () => {
+  const d = repo();
+  registry(d, '## R1 — Use Bearer authentication everywhere\n- enforced-by: review\n');
+  const text = injected(run(d));
+  assert.match(text, /^- R1: Use Bearer authentication everywhere \[enforced-by: review\]$/m);
+});
+
+test('a rule containing a real-length bearer token is still masked', () => {
+  const d = repo();
+  // Assembled at runtime so this file never holds a credential-shaped literal.
+  const token = 'abc' + 'Z9'.repeat(15);
+  registry(d, `## R1 — Stop sending Bearer ${token} to staging\n- enforced-by: none\n`);
+  const out = run(d);
+  assert.equal(out.includes(token), false, 'the token must never reach stdout');
+  assert.match(injected(out), /^- R1: Stop sending Bearer \*\*\* to staging \[enforced-by: none\]$/m);
+});
+
+test('when no rule fits, only the notice is emitted, counting every rule', () => {
+  const d = repo();
+  const long = Array.from({ length: 3 }, (_, i) => `## R${i} — ${'word '.repeat(400).trim()}\n- enforced-by: none\n`).join('');
+  registry(d, long);
+  const text = injected(run(d));
+  assert.equal(text, [
+    `<project-rules source="${RULES_PATH}">`,
+    `Project rules (${RULES_PATH}):`,
+    `… 3 more rule(s) in ${RULES_PATH}`,
+    '</project-rules>',
+  ].join('\n'));
 });
 
 test('an over-long first rule is skipped and the rules after it are still injected', () => {

@@ -195,7 +195,10 @@ export function dropCommandFragments(lines, commands, exemptions = new Set()) {
  * replaces `pattern` for the mask only, with a lower floor or a looser body:
  * a mask that hides too much costs a diagnostic, one that hides too little
  * leaks a secret into the model's context. The sweep uses `pattern` alone,
- * because a finding it reports must be worth reading.
+ * because a finding it reports must be worth reading. A caller masking prose
+ * the model is told to follow can ask for the sweep's floors instead (see
+ * `maskText`), so a word after `Bearer` is not starred while a real token,
+ * which exceeds every sweep floor, still is.
  *
  * `severity` is the severity of the sweep's finding for a token shape. A
  * keyed shape's finding is a credential line, whose severity the sweep sets
@@ -264,10 +267,11 @@ export const CREDENTIAL_SHAPES = Object.freeze([
   shape('bearer', 'token', /(?=[A-Za-z0-9._~+/-]{20})(?<=(?<![A-Za-z0-9])Bearer\s+)[A-Za-z0-9._~+/-]{20,}=*/gi,
     /(?=[A-Za-z0-9._~+/-]{8})(?<=(?<![A-Za-z0-9])(?:Bearer|Basic)\s+)[A-Za-z0-9._~+/-]{8,}=*/gi),
   // The sweep reads the header alone, so nothing else on its line can make it
-  // a placeholder. The mask stars from the header to the end of the line; a
-  // key's body lines carry no marker of their own, and `maskText` masks them
-  // by tracking the block.
-  shape('pem-private-key', 'token', new RegExp(PEM_HEADER.source, 'g'), new RegExp(PEM_HEADER.source + '.*', 'g')),
+  // a placeholder. The mask stars from the header to the end of the line,
+  // whichever floors it uses (see `PEM_TO_END_OF_LINE`); a key's body lines
+  // carry no marker of their own, and `maskText` masks them by tracking the
+  // block.
+  shape('pem-private-key', 'token', new RegExp(PEM_HEADER.source, 'g')),
   // `scheme://user:secret@host`. The user name, which may be empty as in
   // `redis://:secret@host`, is kept; a URL with no password is not matched.
   shape('url-userinfo', 'keyed', /:\/\/[^/\s:@]*:(?<value>[^@\s/]+)(?=@)/g),
@@ -298,8 +302,10 @@ export function stripAnsi(text) {
 
 // C0 and C1 controls except tab and newline, every format character (`Cf`:
 // zero-width, bidi embeddings, overrides and isolates, the byte-order mark,
-// the soft hyphen) and the whole tag block U+E0000–U+E007F, assigned or not.
-const UNSAFE_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\p{Cf}\u{e0000}-\u{e007f}]/gu;
+// the soft hyphen), the whole tag block U+E0000–U+E007F, assigned or not, the
+// variation selectors U+FE00–U+FE0F and U+E0100–U+E01EF, and the Hangul
+// fillers U+115F, U+1160, U+3164 and U+FFA0, which render as blank space.
+const UNSAFE_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\p{Cf}\u115f\u1160\u3164\uffa0\ufe00-\ufe0f\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
 
 /**
  * Removes what a reader cannot see from text bound for the model's context:
@@ -318,13 +324,22 @@ export function escapeDelimiters(text) {
   return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// A private-key header and everything after it on its line. Not a floor, so
+// it applies whichever floors the mask uses.
+const PEM_TO_END_OF_LINE = new RegExp(PEM_HEADER.source + '.*', 'g');
+
+/** Options every mask entry point takes. `floors: 'mask'` (the default) uses
+ * each shape's `maskPattern`, `'sweep'` its stricter `pattern`. */
+const sweepFloors = ({ floors = 'mask' } = {}) => floors === 'sweep';
+
 /** Masks one line that `stripAnsi` has already cleaned. */
-function maskLine(line) {
-  let masked = line;
+function maskLine(line, sweep) {
+  let masked = line.replace(PEM_TO_END_OF_LINE, '***');
   for (const { kind, pattern, maskPattern = pattern } of CREDENTIAL_SHAPES) {
+    const re = sweep ? pattern : maskPattern;
     masked = kind === 'token'
-      ? masked.replace(maskPattern, '***')
-      : masked.replace(maskPattern, (...args) => {
+      ? masked.replace(re, '***')
+      : masked.replace(re, (...args) => {
         const match = args[0];
         const { value } = args.at(-1);
         return match.slice(0, match.length - value.length) + '***';
@@ -337,10 +352,11 @@ function maskLine(line) {
  * Masks one line of output: the line and every key survive, only values are
  * replaced. ANSI sequences are removed first, so a coloured secret is masked
  * and the result carries no colour. A PEM key's body lines are masked only
- * by `maskText`, which sees the lines around them.
+ * by `maskText`, which sees the lines around them. `options` as for
+ * `maskText`.
  */
-export function maskCredentials(line) {
-  return maskLine(stripAnsi(line));
+export function maskCredentials(line, options) {
+  return maskLine(stripAnsi(line), sweepFloors(options));
 }
 
 /**
@@ -350,8 +366,14 @@ export function maskCredentials(line) {
  * kept, and so is the line count; the indentation is kept because a
  * caller may group lines by it (eslint's stylish blocks). A header with no
  * footer masks to the end of the text.
+ *
+ * `options.floors` is `'mask'` (the default) or `'sweep'`. Use `'sweep'` only
+ * for prose the model is told to follow, where a short word starred after
+ * `Bearer` garbles an instruction: it leaves a value below the sweep's
+ * floors in place. Any other value means `'mask'`.
  */
-export function maskText(text) {
+export function maskText(text, options) {
+  const sweep = sweepFloors(options);
   const parts = stripAnsi(text).split(/(\r?\n)/);
   let inKey = false;
   for (let i = 0; i < parts.length; i += 2) {
@@ -361,7 +383,7 @@ export function maskText(text) {
       parts[i] = line.match(/^[ \t]*/)[0] + '***';
       continue;
     }
-    parts[i] = maskLine(line);
+    parts[i] = maskLine(line, sweep);
     const header = PEM_HEADER.exec(line);
     inKey = header !== null && !PEM_FOOTER.test(line.slice(header.index));
   }
