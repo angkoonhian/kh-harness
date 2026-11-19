@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { isEnabled } from '../assets/scripts/harness-log.mjs';
 import { LOG_USAGE, parseArgv, wantsHelp, warnUnknown } from './lib/cli.mjs';
 import {
-  DataDirRefused, disableLog, enableLog, logCommand, logStatus, renderDisable, renderEnable, renderStatus,
+  assertDataDirSafe, DataDirRefused, disableLog, enableLog, logCommand, logStatus, renderDisable, renderEnable, renderStatus,
 } from './lib/log-lib.mjs';
 import { maintainLog, renderMaintain } from './lib/log-maintain.mjs';
 import { purgeLog, purgeTarget, renderPurgePlan } from './lib/log-purge.mjs';
@@ -58,6 +58,7 @@ const SUBCOMMANDS = {
   },
   maintain(root) {
     if (!isEnabled(root)) fail(3, `the log is not enabled for ${root} on this machine; nothing was done. Enable it first: ${logCommand(root, 'enable')}`);
+    assertDataDirSafe(root);
     const result = maintainLog(root);
     say(renderMaintain(result));
     if (result.lockLost || result.sealingNotRun !== null) process.exit(2);

@@ -4,15 +4,31 @@
 // temporary KH_DATA_DIR `log-fixtures.mjs` sets.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 import { repoDataDir, setEnabled, storeBlob } from '../../assets/scripts/harness-log.mjs';
 import { SEAL_IDLE_MS } from '../../assets/scripts/harness-seal.mjs';
 import {
-  CANARY, DAY_MS, MINUTE_MS, project, runLog, sealAll, sealedFile, sessionFile, statusJson, touchAgo, writeSession,
+  CANARY, DATA_ROOT, DAY_MS, MINUTE_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeSession,
 } from './log-fixtures.mjs';
+
+test('maintain refuses a data directory that is a link, and writes nothing through it', () => {
+  const root = project();
+  const elsewhere = tempDir('hk-log-elsewhere-');
+  mkdirSync(join(elsewhere, 'sessions'));
+  writeFileSync(join(elsewhere, 'enabled.json'), JSON.stringify({ enabled: true }));
+  writeFileSync(join(elsewhere, 'sessions', 's-foreign.jsonl'), '{"type":"Stop"}\n');
+  touchAgo(join(elsewhere, 'sessions', 's-foreign.jsonl'), SEAL_IDLE_MS + MINUTE_MS);
+  mkdirSync(DATA_ROOT, { recursive: true });
+  symlinkSync(elsewhere, repoDataDir(root), 'junction');
+  const before = snapshot(elsewhere);
+  const r = runLog(root, 'maintain');
+  assert.equal(r.status, 3, r.stdout);
+  assert.match(r.stderr, /link/);
+  assert.deepEqual(snapshot(elsewhere), before);
+});
 
 test('maintain seals and sweeps what the hook would, and says what it did', () => {
   const root = project();

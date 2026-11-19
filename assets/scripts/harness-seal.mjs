@@ -33,7 +33,7 @@ import { appendFileSync, closeSync, openSync, readdirSync, readFileSync, renameS
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
-import { BLOBS_DIR, parsedObject, readConfig, repoDataDir, sessionFileName, SESSIONS_DIR } from './harness-log.mjs';
+import { BLOBS_DIR, logDirProblem, parsedObject, readConfig, repoDataDir, sessionFileName, SESSIONS_DIR } from './harness-log.mjs';
 import { canonicalJson, safeSessionId } from './harness-redact.mjs';
 
 /** Appended to a session's file name (`sessionFileName`): the file its
@@ -554,7 +554,9 @@ function budget(clock, budgetMs) {
  *
  * Runs under an exclusive lock and does nothing while another process holds
  * it; `lockLost` says the run stopped because its lock was broken under it,
- * and `notRun` says why sealing did not start at all (null when it did).
+ * and `notRun` says why sealing did not start at all (null when it did): the
+ * lock, an unreadable index, or a log directory, sessions directory or blob
+ * store that is a link, through which nothing is written.
  * Stops before the next session once `budgetMs` of `clock` time has passed;
  * the rest are sealed on a later call. `now` is milliseconds since the
  * epoch; `isAlive(pid)` says whether a lock's owner still runs. Never
@@ -567,6 +569,8 @@ export function sealClosedSessions(root, {
   let outcome = 'ran';
   let notRun = null;
   const withinBudget = budget(clock, budgetMs);
+  const linked = logDirProblem(root);
+  if (linked !== null) return { sealed, lockLost: false, notRun: linked };
   try {
     outcome = withIndexLock(root, { now, isAlive }, held => {
       const index = readIndex(root);
@@ -670,9 +674,15 @@ function referencedBlobs(root, sessions, index) {
   return referenced;
 }
 
-/** Removes every file in the blob store that no session references and that
- * is over a day old by `now`; the age floor spares a blob whose event has
- * not been appended yet. */
+// What the kit itself puts in the blob store: a blob, named by its content's
+// hash, and the temporary sibling a blob is written through.
+const BLOB_NAME = /^([0-9a-f]{64})\.gz$/;
+const BLOB_TEMP_NAME = /^[0-9a-f]{64}\.gz\.\d+\.[0-9a-f]{12}\.tmp$/;
+
+/** Removes every blob in the blob store that no session references, and
+ * every blob write's leftover, once it is over a day old by `now`; the age
+ * floor spares a blob whose event has not been appended yet. A file under
+ * any other name is not the kit's and is left alone. */
 function removeUnreferencedBlobs(root, sessions, index, now, held) {
   const referenced = referencedBlobs(root, sessions, index);
   const dir = join(repoDataDir(root), BLOBS_DIR);
@@ -683,8 +693,8 @@ function removeUnreferencedBlobs(root, sessions, index, now, held) {
     return;
   }
   for (const name of names) {
-    const m = /^([0-9a-f]{64})\.gz$/.exec(name);
-    if (m !== null && referenced.has(m[1])) continue;
+    const blob = BLOB_NAME.exec(name);
+    if (blob === null ? !BLOB_TEMP_NAME.test(name) : referenced.has(blob[1])) continue;
     try {
       if (now - statSync(join(dir, name)).mtimeMs <= DAY_MS) continue;
       held();
@@ -771,7 +781,8 @@ export function untrustedBecause(check) {
  * budget converge.
  *
  * Runs under the index lock and does nothing while another process holds
- * it. A session with events being sealed is left for a later run, as is
+ * it, or when the log directory, its sessions directory or its blob store is
+ * a link. A session with events being sealed is left for a later run, as is
  * everything once `budgetMs` of `clock` time has passed. `isAlive(pid)`
  * says whether a lock's owner still runs; `gunzip` decompresses sealed
  * files. Never throws.
@@ -785,6 +796,11 @@ export function applyRetention(root, {
   let outcome = 'ran';
   const withinBudget = budget(clock, budgetMs);
   const skip = reason => { blobSweep = { skipped: true, reason }; };
+  const linked = logDirProblem(root);
+  if (linked !== null) {
+    skip(linked);
+    return { contentRemoved, contentUnverifiable, blobSweep, lockLost: false };
+  }
   try {
     const cutoff = now - readConfig(root).contentRetentionDays * DAY_MS;
     outcome = withIndexLock(root, { now, isAlive }, held => {
