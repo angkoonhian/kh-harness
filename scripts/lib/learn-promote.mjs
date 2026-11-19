@@ -19,7 +19,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
-import { harnessIdentity, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { harnessIdentity, LAST_TICK_FILE, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import { FIRING_EVENT, gateStats, wrongSinceGrant } from './gate-stats.mjs';
@@ -41,8 +41,6 @@ const WRONG_MARKS_TO_DEMOTE = 2;
 
 // The statuses whose gate warns or blocks, and so may be demoted.
 const DEMOTABLE = new Set(['active-local', 'landed']);
-
-const LAST_TICK_FILE = 'last-tick.json';
 
 const SHA256 = /^[0-9a-f]{64}$/;
 

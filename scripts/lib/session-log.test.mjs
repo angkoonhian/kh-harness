@@ -507,8 +507,126 @@ test('with the log disabled a session start seals nothing', () => {
   assert.equal(existsSync(join(repoDataDir(root), 'index.jsonl')), false);
 });
 
+// Pinned against the hooks reference, https://code.claude.com/docs/en/hooks,
+// read on 2026-11-19, "SessionStart decision control" and "JSON output": a
+// SessionStart hook adds context for Claude with `additionalContext` inside
+// `hookSpecificOutput`, beside `hookEventName: "SessionStart"`; its stdout is
+// read as JSON only when it is one JSON object with nothing around it but
+// whitespace, and exit 0 is the code for JSON output.
+const NOTICE_TEXT = 'kh-harness: <n> sealed sessions since the last learn tick. The harness-learn skill can review them.';
+const noticeOutput = n => JSON.stringify({
+  hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: NOTICE_TEXT.replace('<n>', String(n)) },
+});
+
+function assertNotice(result, n) {
+  assert.equal(result.status, 0, `exit status; stderr: ${result.stderr}`);
+  assert.equal(result.stdout, noticeOutput(n));
+  assert.equal(result.stderr, '');
+}
+
+const setAutodraft = (root, autodraft) => writeFileSync(join(repoDataDir(root), 'config.json'), JSON.stringify({ autodraft }));
+const writeLastTick = (root, ts) => writeFileSync(join(repoDataDir(root), 'last-tick.json'), JSON.stringify({ ts }));
+const sessionStart = sessionId => ({ session_id: sessionId, hook_event_name: 'SessionStart', source: 'startup' });
+
+/** Records one finished tool call in each of `sessionIds` and leaves each
+ * idle long enough for the next session start to seal it. */
+function closedSessions(root, ...sessionIds) {
+  for (const id of sessionIds) {
+    assertSilentSuccess(runHook(root, toolPayload('PostToolUse', id, { tool_response: 'ok' })));
+    idle(root, id);
+  }
+}
+
+test('with autodraft off the session-start handler prints nothing', () => {
+  for (const config of [undefined, false]) {
+    const root = enabledProject();
+    if (config !== undefined) setAutodraft(root, config);
+    closedSessions(root, 'quiet-1', 'quiet-2');
+    assertSilentSuccess(runHook(root, sessionStart('quiet-3')));
+    assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-quiet-1.jsonl.gz', 's-quiet-2.jsonl.gz', 's-quiet-3.jsonl']);
+  }
+});
+
+test('the notice contains only the count', () => {
+  const root = enabledProject();
+  setAutodraft(root, true);
+  closedSessions(root, 'count-1', 'count-2');
+  const result = runHook(root, sessionStart('count-3'));
+  assertNotice(result, 2);
+  const { additionalContext } = JSON.parse(result.stdout).hookSpecificOutput;
+  assert.equal(additionalContext.replace(/\b2\b/, '<n>'), NOTICE_TEXT);
+});
+
+test('the notice counts only the sessions sealed since the last learn tick', () => {
+  const root = enabledProject();
+  setAutodraft(root, true);
+  closedSessions(root, 'tick-1');
+  assertNotice(runHook(root, sessionStart('tick-2')), 1);
+  const tickMs = Date.now();
+  writeLastTick(root, new Date(tickMs).toISOString());
+  while (Date.now() <= tickMs) {
+    // the next events must carry a time after the tick's
+  }
+  idle(root, 'tick-2');
+  closedSessions(root, 'tick-3');
+  assertNotice(runHook(root, sessionStart('tick-4')), 1);
+  assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-tick-1.jsonl.gz', 's-tick-2.jsonl.gz', 's-tick-3.jsonl.gz', 's-tick-4.jsonl']);
+});
+
+test('no session sealed since the last learn tick, or a last tick that cannot be read, prints nothing', () => {
+  for (const tick of [new Date(Date.now() + 3_600_000).toISOString(), 'not a time', null]) {
+    const root = enabledProject();
+    setAutodraft(root, true);
+    closedSessions(root, 'later-1');
+    if (tick === null) writeFileSync(join(repoDataDir(root), 'last-tick.json'), '{ not json');
+    else writeLastTick(root, tick);
+    assertSilentSuccess(runHook(root, sessionStart('later-2')));
+    assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-later-1.jsonl.gz', 's-later-2.jsonl']);
+  }
+});
+
+test('with no session sealed, autodraft on prints nothing', () => {
+  const root = enabledProject();
+  setAutodraft(root, true);
+  assertSilentSuccess(runHook(root, sessionStart('first-1')));
+});
+
+test('with the log disabled, autodraft on prints nothing', () => {
+  const root = enabledProject();
+  setAutodraft(root, true);
+  closedSessions(root, 'offdraft-1');
+  setEnabled(root, false);
+  assertSilentSuccess(runHook(root, sessionStart('offdraft-2')));
+  assert.deepEqual(readdirSync(sessionsDir(root)), ['s-offdraft-1.jsonl']);
+});
+
+test('with autodraft on, every event but a session start stays silent', () => {
+  const root = enabledProject();
+  setAutodraft(root, true);
+  closedSessions(root, 'others-1');
+  assertNotice(runHook(root, sessionStart('others-2')), 1);
+  for (const payload of [
+    { session_id: 'others-2', hook_event_name: 'UserPromptSubmit', prompt: 'go' },
+    toolPayload('PreToolUse', 'others-2'),
+    toolPayload('PostToolUse', 'others-2', { tool_response: 'x' }),
+    toolPayload('PostToolUseFailure', 'others-2', { error: 'Exit code 1' }),
+    { session_id: 'others-2', hook_event_name: 'PreCompact', trigger: 'auto' },
+    { session_id: 'others-2', hook_event_name: 'PostModelSwitch', from_model: 'a', to_model: 'b', source: 'auto' },
+    { session_id: 'others-2', hook_event_name: 'SessionEnd', reason: 'other' },
+  ]) assertSilentSuccess(runHook(root, payload));
+});
+
+test('the notice is written without spawning a child process', () => {
+  const root = enabledProject();
+  setAutodraft(root, true);
+  closedSessions(root, 'trapdraft-1');
+  const trap = join(tempDir('hk-slog-trap-'), 'calls');
+  assertNotice(runHook(root, sessionStart('trapdraft-2'), { nodeArgs: ['--require', FORBID_SPAWN], env: { KH_SPAWN_TRAP: trap } }), 1);
+  assert.equal(existsSync(trap), false);
+});
+
 const ASSETS = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts');
-const HOOK_MODULES = ['session-log.mjs', 'harness-log.mjs', 'harness-redact.mjs'];
+const HOOK_MODULES =['session-log.mjs', 'harness-log.mjs', 'harness-redact.mjs'];
 
 /** A copy of the hook and its siblings as they are installed. With
  * `sealLoads` set, the sealing module is copied too and appends a line to
@@ -558,6 +676,13 @@ test('a session start with the sealing module missing records the event and does
   assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-nomod-1.jsonl', 's-nomod-2.jsonl']);
   assert.deepEqual(events(root, 'nomod-2').map(e => e.type), ['SessionStart', 'harness']);
   assert.equal(existsSync(join(repoDataDir(root), 'index.jsonl')), false);
+});
+
+test('with autodraft on and the sealing module missing, a session start prints nothing', () => {
+  const root = enabledProject();
+  setAutodraft(root, true);
+  closedSessions(root, 'nomoddraft-1');
+  assertSilentSuccess(runInstalled(installedHook(), root, sessionStart('nomoddraft-2')));
 });
 
 // Measured on the development machine (win32, Node 24) on 2026-11-19, on a

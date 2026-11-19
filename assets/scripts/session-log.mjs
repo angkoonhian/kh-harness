@@ -5,25 +5,33 @@
 // in this machine's session log, once the log is enabled for the repository.
 //
 // It must never change what Claude Code does: whatever happens it exits 0
-// and writes nothing to stdout or stderr. On several of the logged events
+// and writes nothing to stderr. On several of the logged events
 // (SessionStart, UserPromptSubmit, PreCompact and PostModelSwitch) plain
-// stdout reaches the model or the compaction summary, so the hook writes no
-// stdout on any event. It runs on every tool call, so it spawns no child
-// process, and with the log disabled, the default, it reads only the event
-// name and the session id. Scrubbing, the inline cap and the envelope fields
-// are `appendEvent`'s, so the hook hands it raw payload fields.
+// stdout reaches the model or the compaction summary, so the hook writes
+// stdout only for the one notice below. It runs on every tool call, so it
+// spawns no child process, and with the log disabled, the default, it reads
+// only the event name and the session id. Scrubbing, the inline cap and the
+// envelope fields are `appendEvent`'s, so the hook hands it raw payload
+// fields.
 //
 // A session start also seals the repository's other sessions and expires
-// old content, within a time budget.
+// old content, within a time budget. With `autodraft` set in the log's
+// configuration, it then tells the model, as SessionStart
+// `additionalContext`, how many sessions were sealed since the last
+// `learn tick`, when that is any; the notice is fixed text and that count,
+// and nothing read from the log.
 //
 // Only what the payload reports as having happened is recorded. The agent's
 // own text (`last_assistant_message`, a compaction summary) is a claim, not
 // an observation, and is never copied.
 import { createHash } from 'node:crypto';
-import { realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { appendEvent, canonicalJson, harnessIdentity, isEnabled } from './harness-log.mjs';
+import {
+  appendEvent, canonicalJson, harnessIdentity, isEnabled, LAST_TICK_FILE, parsedObject, readConfig, repoDataDir,
+} from './harness-log.mjs';
 import { markerPath, projectRoot, readJSONMarker, safeSessionId, stripAnsi, writeJSONMarker } from './harness-redact.mjs';
 
 const IDENTITY_FIELDS = ['session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
@@ -184,33 +192,67 @@ function recordHarness(root, sessionId, payload) {
 // expiring old content; what is left over is done on a later session start.
 const MAINTENANCE_BUDGET_MS = 150;
 
-/** Seals the other sessions and expires old content. The module is loaded
- * here, not at the top, so no other event parses it; a module that cannot
- * be loaded means nothing is done. */
-async function maintain(root, currentSessionId) {
+/** Seals the other sessions and expires old content, through the sealing
+ * module `seal`. */
+function maintain(seal, root, currentSessionId) {
   const started = performance.now();
-  let seal;
-  try {
-    seal = await import('./harness-seal.mjs');
-  } catch {
-    return;
-  }
   seal.sealClosedSessions(root, { currentSessionId, budgetMs: MAINTENANCE_BUDGET_MS });
   seal.applyRetention(root, { budgetMs: MAINTENANCE_BUDGET_MS - (performance.now() - started) });
 }
 
+/** The time `learn tick` last ran, in milliseconds since the epoch: null
+ * when it never has, undefined when its record cannot be read. */
+function lastTickMs(root) {
+  let text;
+  try {
+    text = readFileSync(join(repoDataDir(root), LAST_TICK_FILE), 'utf8');
+  } catch (error) {
+    return error?.code === 'ENOENT' ? null : undefined;
+  }
+  const ts = parsedObject(text)?.ts;
+  const ms = typeof ts === 'string' ? Date.parse(ts) : NaN;
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+/** The notice for the model, or null: a fixed sentence holding only the
+ * count, since it reaches the model's context. */
+function learnNotice(seal, root) {
+  if (!readConfig(root).autodraft) return null;
+  const since = lastTickMs(root);
+  if (since === undefined) return null;
+  const count = seal.sessionsSealedSince(root, since);
+  if (count === 0) return null;
+  return `kh-harness: ${count} sealed sessions since the last learn tick. The harness-learn skill can review them.`;
+}
+
+/** Maintenance at a session start, then the notice or null. The sealing
+ * module is loaded here, not at the top, so no other event parses it; a
+ * module that cannot be loaded means nothing is done. */
+async function sessionStart(root, currentSessionId) {
+  let seal;
+  try {
+    seal = await import('./harness-seal.mjs');
+  } catch {
+    return null;
+  }
+  maintain(seal, root, currentSessionId);
+  return learnNotice(seal, root);
+}
+
+/** Records the payload; returns the context the model is to be given, or
+ * null. */
 async function record(payload) {
-  if (!isPlainObject(payload) || !isLoggedEvent(payload.hook_event_name)) return;
+  if (!isPlainObject(payload) || !isLoggedEvent(payload.hook_event_name)) return null;
   const sessionId = safeSessionId(payload.session_id);
-  if (sessionId === null) return;
+  if (sessionId === null) return null;
   const root = projectRoot();
-  if (!isEnabled(root)) return;
+  if (!isEnabled(root)) return null;
   const event = toLogEvent(payload);
   const { written } = appendEvent(root, sessionId, event);
-  if (!written) return;
+  if (!written) return null;
   if (HARNESS_EVENTS.has(event.type)) recordHarness(root, sessionId, payload);
   if (EXTERNAL_TOOL_EVENTS.has(event.type) && fetchesOutsideContent(event.tool)) recordExternal(root, sessionId, payload, event.tool);
-  if (event.type === 'SessionStart') await maintain(root, sessionId);
+  return event.type === 'SessionStart' ? sessionStart(root, sessionId) : null;
 }
 
 async function readStdin() {
@@ -226,7 +268,9 @@ async function main() {
   } catch {
     return;
   }
-  await record(payload);
+  const context = await record(payload);
+  if (context === null) return;
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
 }
 
 /** True when this file is the process's entry point rather than an import.
