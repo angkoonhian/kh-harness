@@ -64,9 +64,10 @@ const LEARNING_FIELDS = {
 
 // A policy entry names no learning and carries no evidence: only the hash of
 // the policy the owner set, so a policy file nobody recorded promotes
-// nothing.
+// nothing, or null when the owner withdrew the policy, so restoring an old
+// file brings none back.
 const POLICY_FIELDS = {
-  policySha256: isSha256,
+  policySha256: v => v === null || isSha256(v),
   approvedBy: v => v === 'owner',
 };
 

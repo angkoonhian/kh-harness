@@ -177,7 +177,9 @@ test('a policy entry names the policy the owner set and no learning', () => {
   appendLedger(root, entry());
   appendLedger(root, policy);
   appendLedger(root, { ...policy, detail: 'set at the terminal' });
-  const [, first, second] = readLedger(root);
+  appendLedger(root, { ...policy, policySha256: null });
+  const [, first, second, withdrawn] = readLedger(root);
+  assert.equal(withdrawn.policySha256, null, 'a withdrawal is recorded as no hash');
   assert.deepEqual(Object.keys(first).sort(), ['approvedBy', 'base', 'kind', 'learned', 'policySha256', 'prev', 'ts']);
   assert.equal(first.policySha256, 'e'.repeat(64));
   assert.equal(second.detail, 'set at the terminal');
@@ -195,7 +197,7 @@ test('a policy entry names the policy the owner set and no learning', () => {
     assert.throws(() => appendLedger(root, { ...policy, ...over }), field, JSON.stringify(over));
   }
   assert.throws(() => appendLedger(root, entry({ policySha256: 'e'.repeat(64) })), /policySha256/, 'a learning entry carries no policy hash');
-  assert.equal(readLedger(root).length, 3);
+  assert.equal(readLedger(root).length, 4);
 
   const raw = lines(root);
   writeFileSync(ledgerPath(root), [raw[0], raw[1], JSON.stringify({ ...JSON.parse(raw[2]), approvedBy: null })].join('\n') + '\n', 'utf8');

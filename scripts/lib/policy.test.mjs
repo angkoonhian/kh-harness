@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
-import { checkedPolicy, policyAllows, readPolicy, writePolicy } from './policy.mjs';
+import { checkedPolicy, policyAllows, readPolicy, removePolicy, writePolicy } from './policy.mjs';
 
 const made = [];
 const tempDir = prefix => {
@@ -160,4 +160,13 @@ test('a checked policy carries the hash that writing and reading it give', () =>
   assert.equal(checked.sha256, readPolicy(root).sha256);
   assert.deepEqual(checkedPolicy({ ...POLICY, maxAction: 'observe' }), { reason: "maxAction must be 'warn' or 'block'" });
   assert.deepEqual(checkedPolicy(null), { reason: 'the policy is not a JSON object' });
+});
+
+test('removing the policy leaves none, and removing none is no error', () => {
+  const root = tempDir('hk-policy-repo-');
+  writePolicy(root, POLICY);
+  removePolicy(root);
+  assert.deepEqual(readPolicy(root), { state: 'absent' });
+  removePolicy(root);
+  assert.deepEqual(readPolicy(root), { state: 'absent' });
 });
