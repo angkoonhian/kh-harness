@@ -40,27 +40,27 @@
 // usable session id, an unusable agent id, and any internal failure are all
 // nothing to do.
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, fstatSync, readSync, writeSync } from 'node:fs';
+import { closeSync, constants, fstatSync, readSync, writeFileSync, writeSync } from 'node:fs';
 
 // The shared asset beside this hook can be older than the hook: `apply`
 // leaves a hand-edited copy in place, and a static import of a name that
 // copy lacks would fail at link time with exit 1 on every failed call. Its
-// shape is probed instead, and a stale or missing one gets one line naming
-// the fix, shown to the person, with exit 0. The asset cannot hold this
-// text: it is the file that may be missing.
+// shape is probed instead. A failure payload beside a stale or missing one
+// gets one line naming the fix, shown to the person, with exit 0: once per
+// session when the copy still has the marker helpers, on every failure when
+// it does not. The asset cannot hold this text: it is the file that may be
+// missing.
 const NEEDED = ['markerPath', 'openMarker', 'projectRoot', 'safeSessionId', 'stripAnsi'];
+const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
-const assetProblem = problem => {
-  process.stdout.write(JSON.stringify({ systemMessage: `kh-harness loop-watch: .claude/scripts/harness-redact.mjs ${problem}, so repeated failures are not counted — ${REMEDY}` }) + '\n');
-  process.exit(0);
-};
-let asset;
+let asset = {};
+let assetProblem = null;
 try {
   asset = await import('./harness-redact.mjs');
+  if (NEEDED.some(name => !(name in asset))) assetProblem = 'is older than this hook and lacks what it needs';
 } catch {
-  assetProblem('is missing or cannot be loaded');
+  assetProblem = 'is missing or cannot be loaded';
 }
-if (NEEDED.some(name => !(name in asset))) assetProblem('is older than this hook and lacks what it needs');
 const { markerPath, openMarker, projectRoot, safeSessionId, stripAnsi } = asset;
 
 const WARN_AT = 3;
@@ -157,6 +157,25 @@ function runEndingAt(fd, record) {
   }
 }
 
+/** Whether `sentence` is to be told in the session `rawSessionId` names:
+ * true the first time, through a marker created exclusively, and every time
+ * when the shared copy lacks the marker helpers or no marker can be made.
+ * tool-gate.mjs keeps its own copy: the only module both hooks could share
+ * is harness-redact.mjs, the copy this notice is about. */
+function firstTelling(rawSessionId, sentence) {
+  if (MARKING.some(name => !(name in asset))) return true;
+  const sessionId = safeSessionId(rawSessionId);
+  const tag = createHash('sha256').update(sentence, 'utf8').digest('hex').slice(0, 16);
+  const path = sessionId === null ? null : markerPath(projectRoot(), sessionId, `loop-watch-notice-${tag}`);
+  if (path === null) return true;
+  try {
+    writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch (error) {
+    return error?.code !== 'EEXIST';
+  }
+}
+
 async function main() {
   let payload;
   try {
@@ -167,6 +186,11 @@ async function main() {
   if (!payload || typeof payload !== 'object') return;
   const { tool_name: toolName, tool_input: toolInput, error } = payload;
   if (typeof toolName !== 'string' || typeof error !== 'string') return;
+  if (assetProblem !== null) {
+    const sentence = `kh-harness loop-watch: .claude/scripts/harness-redact.mjs ${assetProblem}, so repeated failures are not counted — ${REMEDY}`;
+    if (firstTelling(payload.session_id, sentence)) process.stdout.write(JSON.stringify({ systemMessage: sentence }) + '\n');
+    return;
+  }
   const sessionId = safeSessionId(payload.session_id);
   const agent = agentKey(payload.agent_id);
   if (sessionId === null || agent === null) return;

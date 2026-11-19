@@ -90,8 +90,8 @@ function countOf(root, session, agent) {
   return count;
 }
 
-function runHook(root, stdin, { nodeArgs = [], env = {} } = {}) {
-  const result = spawnSync(process.execPath, [...nodeArgs, HOOK], {
+function runHook(root, stdin, { nodeArgs = [], env = {}, script = HOOK } = {}) {
+  const result = spawnSync(process.execPath, [...nodeArgs, script], {
     input: typeof stdin === 'string' ? stdin : JSON.stringify(stdin),
     encoding: 'utf8',
     env: { ...process.env, CLAUDE_PROJECT_DIR: root, ...env },
@@ -313,22 +313,32 @@ function installedCopy(asset) {
   return join(dir, 'loop-watch.mjs');
 }
 
-test('an older or missing harness-redact.mjs gives the person one line and exits 0', () => {
+const ASSET_REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+const assetNotice = problem => JSON.stringify({ systemMessage: `kh-harness loop-watch: .claude/scripts/harness-redact.mjs ${problem}, so repeated failures are not counted — ${ASSET_REMEDY}` }) + '\n';
+const OLDER = assetNotice('is older than this hook and lacks what it needs');
+const MISSING = assetNotice('is missing or cannot be loaded');
+const REAL_ASSET = pathToFileURL(resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'harness-redact.mjs')).href;
+
+test('an older harness-redact.mjs is named once per session, and unparseable stdin still says nothing', () => {
   const root = tempDir('hk-loop-');
-  const real = pathToFileURL(resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'harness-redact.mjs')).href;
-  const remedy = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
-  // Every name the hook needs but `openMarker`.
-  const older = installedCopy(`export { markerPath, projectRoot, safeSessionId, stripAnsi } from '${real}';\n`);
-  const missing = installedCopy(null);
-  for (const [script, problem] of [[older, 'is older than this hook and lacks what it needs'], [missing, 'is missing or cannot be loaded']]) {
-    const r = spawnSync(process.execPath, [script], { input: JSON.stringify(failure('stale-1')), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root } });
-    assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.stderr, '', 'no stack trace');
-    assert.deepEqual(JSON.parse(r.stdout), { systemMessage: `kh-harness loop-watch: .claude/scripts/harness-redact.mjs ${problem}, so repeated failures are not counted — ${remedy}` });
+  // Every name the hook needs but `openMarker`: the marker helpers remain.
+  const older = installedCopy(`export { markerPath, projectRoot, safeSessionId, stripAnsi } from '${REAL_ASSET}';\n`);
+  const outputs = Array.from({ length: 3 }, () => runHook(root, failure('stale-1'), { script: older }));
+  assert.deepEqual(outputs, [OLDER, '', ''], 'told on the first failure of the session only');
+  assert.equal(runHook(root, failure('stale-2'), { script: older }), OLDER, 'a new session is told');
+  for (const stdin of ['', 'not json', '[1,2]', JSON.stringify(failure('stale-3', { tool_name: undefined }))]) {
+    assert.equal(runHook(root, stdin, { script: older }), '', `nothing to do for ${JSON.stringify(stdin)}`);
+  }
+});
+
+test('a harness-redact.mjs too old to have the marker helpers, or none at all, is named on every failure', () => {
+  const root = tempDir('hk-loop-');
+  for (const [script, notice] of [[installedCopy(`export { stripAnsi } from '${REAL_ASSET}';\n`), OLDER], [installedCopy(null), MISSING]]) {
+    assert.deepEqual(Array.from({ length: 3 }, () => runHook(root, failure('stale-4'), { script })), [notice, notice, notice]);
+    assert.equal(runHook(root, 'not json', { script }), '', 'unparseable stdin is nothing to do');
   }
   const whole = installedCopy(readFileSync(resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'harness-redact.mjs'), 'utf8'));
-  const r = spawnSync(process.execPath, [whole], { input: JSON.stringify(failure('stale-2')), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root } });
-  assert.deepEqual([r.status, r.stdout, r.stderr], [0, '', ''], 'fixture sanity: the copy works beside the current asset');
+  assert.equal(runHook(root, failure('stale-5'), { script: whole }), '', 'fixture sanity: the copy works beside the current asset');
 });
 
 test('ten hook processes for the same failure at once warn exactly once', async () => {
