@@ -12,33 +12,45 @@
 // The hook is registered only on the failure event, so a success between two
 // identical failures is not seen and does not reset the count.
 //
-// Parallel tool calls run overlapping instances of this hook, so the
-// read-increment-write happens under a lock file beside the marker, and the
-// new state is written to a temporary file and renamed over the marker. A
-// lock not taken within LOCK_WAIT_MS means nothing is counted this time: a
-// missed count is better than a wrong warning.
+// Parallel tool calls run overlapping instances of this hook, and a run may
+// be descheduled for longer than any wait it could afford, so no run reads a
+// count and writes it back, and none waits for another. Each appends one
+// record, its signature and a nonce of its own, to the marker in a single
+// write to a file opened for appending, then reads the marker back and finds
+// its own record. Its count is the run of identical signatures that ends at
+// that record, which no later append can change: every failure is counted,
+// and of any number of overlapping runs exactly one sees itself as the
+// third.
+//
+// Each record begins with its newline, so it never joins a line the file
+// already held, and a line that is not a whole record ends a run rather than
+// extending it. The marker grows by one record per failure of the session's
+// agent; only its tail is read.
 //
 // The warning is one fixed sentence, emitted exactly at the third identical
-// failure and not again for the same run, decided only from the state this
-// process wrote under the lock. Nothing from the tool input or the error is
-// printed, and only the signature is stored. A marker that cannot be written
-// means no warning, since the count it would report cannot be trusted.
+// failure and not again for the same run. Nothing from the tool input or the
+// error is printed, and only the signature is stored. A record that cannot
+// be written or found again means no warning, since the count it would
+// report cannot be trusted.
 //
 // Runs on every failed tool call, so it never spawns a child process. Always
 // exits 0: unparseable stdin, a payload without a tool name, an error or a
 // usable session id, an unusable agent id, and any internal failure are all
 // nothing to do.
-import { createHash } from 'node:crypto';
-import { closeSync, openSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { markerPath, projectRoot, readJSONMarker, safeSessionId, stripAnsi } from './harness-redact.mjs';
+import { createHash, randomBytes } from 'node:crypto';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, writeSync } from 'node:fs';
+import { markerPath, projectRoot, safeSessionId, stripAnsi } from './harness-redact.mjs';
 
 const WARN_AT = 3;
 const WARNING = 'The same call has failed 3 times in a row with the same error. Stop repeating it and change approach.';
 
-const LOCK_WAIT_MS = 200;
-const LOCK_RETRY_MS = 5;
-// Older than any hold of this lock can last, so its holder has died.
-const LOCK_STALE_MS = 10_000;
+const NONCE_BYTES = 16;
+const RECORD = /^[0-9a-f]{64} [0-9a-f]{32}$/;
+// The bytes read from the end of the marker at first, doubled until they
+// hold this run's record and the WARN_AT records before it, or the whole
+// file: forty records, so more is read only when dozens of runs appended
+// after this one.
+const TAIL_BYTES = 4096;
 
 // A hard ceiling on how long reading stdin may block; see lint-touched.mjs's
 // STDIN_TIMEOUT_MS for why the read is asynchronous.
@@ -89,53 +101,44 @@ function signatureOf(toolName, toolInput, error) {
 
 /** `main` for the main agent, `agent-<id>` for a sub-agent, or null when
  * the payload's `agent_id` is not safe to put in a path. Neither form can
- * hold a `.`, which separates it from the session id and the lock and
- * temporary suffixes in the marker's file name. */
+ * hold a `.`, which separates it from the session id in the marker's file
+ * name. */
 function agentKey(agentId) {
   if (agentId === undefined) return 'main';
   const safe = safeSessionId(agentId);
   return safe === null ? null : `agent-${safe}`;
 }
 
-const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
-/** Creates `lockPath` exclusively, waiting up to LOCK_WAIT_MS and removing a
- * stale lock once; true when this process holds it. */
-function takeLock(lockPath) {
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      closeSync(openSync(lockPath, 'wx'));
-      return true;
-    } catch (err) {
-      if (err?.code !== 'EEXIST') return false;
-    }
-    try {
-      if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-        rmSync(lockPath, { force: true });
-        continue;
-      }
-    } catch {
-      // released between the open and the stat: try again
-    }
-    if (Date.now() >= deadline) return false;
-    pause(LOCK_RETRY_MS);
-  }
+/** Opens the marker to append to and read, creating it, never through a link
+ * planted at its path: O_NOFOLLOW where the platform defines it (POSIX);
+ * elsewhere an lstat first. Null when a link is there. */
+function openMarker(path) {
+  const flags = constants.O_RDWR | constants.O_APPEND | constants.O_CREAT;
+  if (constants.O_NOFOLLOW !== undefined) return openSync(path, flags | constants.O_NOFOLLOW);
+  let st = null;
+  try { st = lstatSync(path); } catch { /* absent: the open creates it */ }
+  return st?.isSymbolicLink() ? null : openSync(path, flags);
 }
 
-/** Replaces the marker by rename, so a reader sees the old state or the new
- * one, whole; true when the new state is in place. `tmpPath` is free to
- * reuse because only the lock holder writes it, and `wx` never follows a
- * link planted there. */
-function replaceMarker(path, tmpPath, state) {
-  try {
-    rmSync(tmpPath, { force: true });
-    writeFileSync(tmpPath, JSON.stringify(state), { encoding: 'utf8', flag: 'wx' });
-    renameSync(tmpPath, path);
-    return true;
-  } catch {
-    try { rmSync(tmpPath, { force: true }); } catch { /* the failed write is what matters */ }
-    return false;
+/** How many identical signatures end at `record` in the marker open as `fd`,
+ * counted up to WARN_AT + 1, or 0 when `record` is not there. */
+function runEndingAt(fd, record) {
+  const signature = record.slice(0, record.indexOf(' '));
+  const size = fstatSync(fd).size;
+  for (let span = TAIL_BYTES; ; span *= 2) {
+    const start = Math.max(0, size - span);
+    const tail = Buffer.alloc(size - start);
+    const read = readSync(fd, tail, 0, tail.length, start);
+    const lines = tail.subarray(0, read).toString('latin1').split('\n');
+    // A tail that starts inside the file may start inside a line.
+    if (start > 0) lines.shift();
+    const at = lines.indexOf(record);
+    if (at !== -1 && (at >= WARN_AT || start === 0)) {
+      let count = 1;
+      while (count <= WARN_AT && at - count >= 0 && RECORD.test(lines[at - count]) && lines[at - count].startsWith(`${signature} `)) count++;
+      return count;
+    }
+    if (start === 0) return 0;
   }
 }
 
@@ -154,20 +157,16 @@ async function main() {
   if (sessionId === null || agent === null) return;
   const base = markerPath(projectRoot(), sessionId, 'loop-watch');
   if (base === null) return;
-  const path = `${base}.${agent}`;
-  const lockPath = `${path}.lock`;
-
-  const signature = signatureOf(toolName, toolInput, error);
-  if (!takeLock(lockPath)) return;
+  const record = `${signatureOf(toolName, toolInput, error)} ${randomBytes(NONCE_BYTES).toString('hex')}`;
+  const fd = openMarker(`${base}.${agent}`);
+  if (fd === null) return;
   let count;
   try {
-    const last = readJSONMarker(path, {});
-    const previous = last.signature === signature && Number.isSafeInteger(last.count) && last.count > 0 ? last.count : 0;
-    count = previous + 1;
-    if (!replaceMarker(path, `${path}.tmp`, { signature, count })) return;
+    const line = Buffer.from(`\n${record}`, 'latin1');
+    if (writeSync(fd, line) !== line.length) return;
+    count = runEndingAt(fd, record);
   } finally {
-    // A lock left behind goes stale and is removed by a later run.
-    try { rmSync(lockPath, { force: true }); } catch { /* the state is already written */ }
+    closeSync(fd);
   }
   if (count !== WARN_AT) return;
   process.stdout.write(JSON.stringify({
