@@ -19,11 +19,16 @@
 //     say it discards it;
 //   - an exit-0 hook's stderr is never shown to Claude, and plain stdout is
 //     added as context only on UserPromptSubmit, UserPromptExpansion,
-//     SessionStart and PostModelSwitch — so the warning goes out as JSON.
+//     SessionStart and PostModelSwitch — so the warning goes out as JSON;
+//   - common input fields: "When a subagent calls a tool, tool events ...
+//     fire the same configured hooks as in the main conversation, and the
+//     input carries the `agent_id` and `agent_type` common input fields that
+//     identify the subagent"; `agent_id` is the "Unique identifier for the
+//     subagent or in-process teammate the hook fires in".
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -71,6 +76,9 @@ after(() => {
 sandboxMarkerDir();
 
 const failure = (session, o = {}) => ({ ...PAYLOAD_EXAMPLE, session_id: session, ...o });
+/** The marker for one agent of one session, as the hook names it. */
+const markerOf = (root, session, agent = 'main') => `${markerPath(root, session, 'loop-watch')}.${agent}`;
+const countOf = (root, session, agent) => JSON.parse(readFileSync(markerOf(root, session, agent), 'utf8')).count;
 
 function runHook(root, stdin, { nodeArgs = [], env = {} } = {}) {
   const result = spawnSync(process.execPath, [...nodeArgs, HOOK], {
@@ -117,7 +125,7 @@ test('the warning text contains nothing from the tool output', () => {
   for (const fragment of ['zebra', 'quokka', '7731', 'marmoset', 'lantern', '0042', 'deploy', 'Exit code', 'Bash']) {
     assert.equal(out.includes(fragment), false, `the warning must not carry ${fragment}`);
   }
-  const marker = readFileSync(markerPath(root, 'nothing-1', 'loop-watch'), 'utf8');
+  const marker = readFileSync(markerOf(root, 'nothing-1'), 'utf8');
   assert.deepEqual(Object.keys(JSON.parse(marker)).sort(), ['count', 'signature']);
   for (const fragment of ['zebra', 'marmoset', 'deploy', 'Exit code']) {
     assert.equal(marker.includes(fragment), false, `the marker must not store ${fragment}`);
@@ -164,30 +172,94 @@ test('unparseable stdin, a non-object payload, a payload without a tool name, an
     failure('missing-3', { error: { message: 'not a string' } }),
     failure(undefined),
     failure('../escape'),
+    failure('missing-4', { agent_id: '../escape' }),
+    failure('missing-5', { agent_id: 42 }),
   ]) {
     for (let i = 0; i < 3; i++) assert.equal(runHook(root, payload), '', JSON.stringify(payload));
   }
 });
 
-test('a marker that cannot be written means no warning', (t) => {
+test('a marker that cannot be written means no warning', () => {
   const root = tempDir('hk-loop-');
-  const payload = failure('readonly-1');
+  const payload = failure('unwritable-1');
   assert.equal(runHook(root, payload), '');
   assert.equal(runHook(root, payload), '');
-  const path = markerPath(root, 'readonly-1', 'loop-watch');
-  chmodSync(path, 0o444);
-  try {
-    try {
-      writeFileSync(path, readFileSync(path, 'utf8'));
-      t.skip('this account can write a read-only file, so no marker write can be made to fail here');
-      return;
-    } catch {
-      // the write the hook will attempt fails too
-    }
-    assert.equal(runHook(root, payload), '', 'a count that could not be recorded is not reported');
-  } finally {
-    chmodSync(path, 0o644);
+  // A directory where the hook writes its temporary file makes the write
+  // fail on every platform and for every account.
+  const path = markerOf(root, 'unwritable-1');
+  mkdirSync(`${path}.tmp`);
+  assert.equal(runHook(root, payload), '', 'a count that could not be recorded is not reported');
+  assert.equal(countOf(root, 'unwritable-1'), 2, 'the marker keeps the last state that was written');
+  assert.equal(existsSync(`${path}.lock`), false, 'the lock is released after a failed write');
+  rmSync(`${path}.tmp`, { recursive: true });
+  assert.equal(runHook(root, payload), WARNING_OUTPUT, 'the next recorded third failure warns');
+});
+
+test('ten hook processes for the same failure at once warn exactly once', async () => {
+  const root = tempDir('hk-loop-');
+  const input = JSON.stringify(failure('parallel-1'));
+  const runs = Array.from({ length: 10 }, () => new Promise((resolveRun, rejectRun) => {
+    const child = spawn(process.execPath, [HOOK], { env: { ...process.env, CLAUDE_PROJECT_DIR: root } });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+    child.on('error', rejectRun);
+    child.on('close', status => resolveRun({ status, stdout, stderr }));
+    child.stdin.end(input);
+  }));
+  const results = await Promise.all(runs);
+  for (const r of results) {
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, '');
   }
+  assert.equal(results.filter(r => r.stdout === WARNING_OUTPUT).length, 1, 'exactly one warning');
+  assert.equal(results.filter(r => r.stdout === '').length, 9);
+  assert.equal(countOf(root, 'parallel-1'), 10, 'every run was counted');
+});
+
+test('a sub-agent\'s different failure does not reset the main agent\'s run', () => {
+  const root = tempDir('hk-loop-');
+  const subAgent = failure('agents-1', { agent_id: 'a1b2c3', agent_type: 'Explore', error: 'Exit code 7\nsomething else' });
+  assert.equal(runHook(root, failure('agents-1')), '');
+  assert.equal(runHook(root, failure('agents-1')), '');
+  assert.equal(runHook(root, subAgent), '');
+  assert.equal(runHook(root, failure('agents-1')), WARNING_OUTPUT, 'the main agent\'s third identical failure warns');
+  assert.equal(countOf(root, 'agents-1', 'agent-a1b2c3'), 1, 'the sub-agent keeps its own count');
+
+  const sameAsMain = failure('agents-1', { agent_id: 'd4e5f6' });
+  assert.equal(runHook(root, sameAsMain), '');
+  assert.equal(runHook(root, sameAsMain), '');
+  assert.equal(countOf(root, 'agents-1'), 3, 'a sub-agent\'s identical failure does not advance the main agent\'s run');
+  assert.equal(runHook(root, sameAsMain), WARNING_OUTPUT, 'and its own third warns');
+});
+
+test('a held lock makes the hook do nothing and exit 0', () => {
+  const root = tempDir('hk-loop-');
+  const payload = failure('locked-1');
+  assert.equal(runHook(root, payload), '');
+  assert.equal(runHook(root, payload), '');
+  const lock = `${markerOf(root, 'locked-1')}.lock`;
+  writeFileSync(lock, '');
+  assert.equal(runHook(root, payload), '', 'no warning while another run holds the lock');
+  assert.equal(countOf(root, 'locked-1'), 2, 'nothing was counted');
+  assert.equal(existsSync(lock), true, 'a lock another run holds is left alone');
+  rmSync(lock);
+  assert.equal(runHook(root, payload), WARNING_OUTPUT);
+});
+
+test('a stale lock is removed', () => {
+  const root = tempDir('hk-loop-');
+  const payload = failure('stale-1');
+  assert.equal(runHook(root, payload), '');
+  assert.equal(runHook(root, payload), '');
+  const lock = `${markerOf(root, 'stale-1')}.lock`;
+  writeFileSync(lock, '');
+  const old = new Date(Date.now() - 11_000);
+  utimesSync(lock, old, old);
+  assert.equal(runHook(root, payload), WARNING_OUTPUT, 'a lock older than 10 seconds does not block the count');
+  assert.equal(existsSync(lock), false);
+  assert.equal(countOf(root, 'stale-1'), 3);
 });
 
 test('the hook never spawns a child process', () => {
