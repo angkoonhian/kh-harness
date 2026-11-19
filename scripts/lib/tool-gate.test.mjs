@@ -245,12 +245,55 @@ test('a weaker or different local gate with a committed id is ignored, and the p
   assert.deepEqual(runHook(root, call('weaker-2', 'rm -rf build')), { systemMessage: IGNORED(1), ...blocked });
 });
 
-test('gates are tried in ascending order of their number and only the first that matches acts', () => {
+test('a lower-numbered observe gate does not switch off a block gate that matches the same call', () => {
+  const root = project();
+  writeCommitted(root, gateFile([
+    gate('L1', { match: { kind: 'literal', value: 'git' } }),
+    gate('L2', { action: 'block', match: { kind: 'literal', value: 'push --force' }, message: 'Never force-push.' }),
+  ]));
+  assert.deepEqual(runHook(root, call('shadow-1', 'git push --force')), denial('kh-harness gate L2: Never force-push.'));
+  assert.deepEqual(firings(root, 'shadow-1').map(f => [f.gateId, f.action, f.tool_use_id]),
+    [['L1', 'observe', PAYLOAD_EXAMPLE.tool_use_id], ['L2', 'block', PAYLOAD_EXAMPLE.tool_use_id]],
+    'every gate that matched records its own firing');
+});
+
+test('every gate is tried: a block denies whatever its number, and each matching gate above observe is told', () => {
   const root = project();
   writeCommitted(root, gateFile([gate('L10', { action: 'block', message: 'ten' }), gate('L9', { action: 'warn', message: 'nine' })]));
-  writeLocal(root, gateFile([gate('L3', { tool: 'Read', field: 'file_path', message: 'three' })]));
-  assert.deepEqual(runHook(root, call('order-1', 'rm -rf build')), context('kh-harness gate L9: nine'), 'L9 comes before L10');
-  assert.deepEqual(firings(root, 'order-1').map(f => f.gateId), ['L9'], 'one firing per call');
+  writeLocal(root, gateFile([
+    gate('L3', { tool: 'Read', field: 'file_path', message: 'three' }),
+    gate('L4', { message: 'four' }),
+    gate('L12', { action: 'block', message: 'twelve' }),
+  ]));
+  assert.deepEqual(runHook(root, call('order-1', 'rm -rf build')),
+    denial('kh-harness gate L10: ten\nkh-harness gate L12: twelve\nkh-harness gate L9: nine'),
+    'the blocks first, then the warnings, each by number; an observe gate tells nothing');
+  assert.deepEqual(firings(root, 'order-1').map(f => [f.gateId, f.action]),
+    [['L4', 'observe'], ['L9', 'warn'], ['L10', 'block'], ['L12', 'block']], 'one firing per matching gate, by number');
+});
+
+test('with no block among them, several matching warn gates are all told and the call is left to the permission flow', () => {
+  const root = project();
+  writeCommitted(root, gateFile([gate('L2', { action: 'warn', message: 'two' }), gate('L1', { action: 'warn', message: 'one' }), gate('L3')]));
+  const output = runHook(root, call('warns-1', 'rm -rf build'));
+  assert.deepEqual(output, context('kh-harness gate L1: one\nkh-harness gate L2: two'));
+  assert.deepEqual(firings(root, 'warns-1').map(f => [f.gateId, f.action]), [['L1', 'warn'], ['L2', 'warn'], ['L3', 'observe']]);
+});
+
+test('the text of many matching gates stays under the bound and says how many are not shown', () => {
+  const root = project();
+  const long = n => `${String(n).padStart(3, '0')} ${'m'.repeat(GATE_LIMITS.messageMax - 4)}`;
+  const gates = Array.from({ length: 40 }, (_, i) => gate(`L${i + 1}`, { action: i === 39 ? 'block' : 'warn', message: long(i + 1) }));
+  writeCommitted(root, gateFile(gates));
+  const reason = runHook(root, call('many-1', 'rm -rf build')).hookSpecificOutput.permissionDecisionReason;
+  const lines = reason.split('\n');
+  assert.ok(reason.length <= 4000, `${reason.length} characters`);
+  assert.equal(lines[0], `kh-harness gate L40: ${long(40)}`, 'the block is first');
+  assert.equal(lines[1], `kh-harness gate L1: ${long(1)}`);
+  const shown = lines.length - 1;
+  assert.equal(lines.at(-1), `kh-harness: ${40 - shown} more matching gates are not shown.`);
+  assert.ok(shown >= 10 && shown < 40);
+  assert.equal(firings(root, 'many-1').length, 40, 'every matching gate is recorded, shown or not');
 });
 
 test('a missing gate file is silent', () => {
@@ -332,7 +375,7 @@ test('the hook never spawns a child process', () => {
   writeLocal(root, gateFile([gate('L1'), gate('L2', { action: 'warn', match: { kind: 'literal', value: 'build' } })]));
   const trap = join(tempDir('hk-gate-trap-'), 'calls');
   const options = { nodeArgs: ['--require', FORBID_SPAWN], env: { KH_SPAWN_TRAP: trap } };
-  assert.deepEqual(runHook(root, call('nospawn-1', 'rm -rf build'), options), { systemMessage: NOT_PARSED });
+  assert.deepEqual(runHook(root, call('nospawn-1', 'rm -rf dist'), options), { systemMessage: NOT_PARSED });
   assert.deepEqual(runHook(root, call('nospawn-1', 'make build'), options), context('kh-harness gate L2: Move files to the trash folder instead of deleting them.'));
   assert.equal(existsSync(trap), false);
   assert.deepEqual(firings(root, 'nospawn-1').map(f => f.gateId), ['L1', 'L2']);
