@@ -19,7 +19,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
-import { harnessIdentity, LAST_TICK_FILE, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { GATES_PATH, harnessIdentity, LAST_TICK_FILE, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { indexLineCount } from '../../assets/scripts/harness-seal.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
@@ -215,13 +215,21 @@ export function demoteLearning(root, id, options) {
  * the terminal asked: its local gate goes, as `retire` says, and it no
  * longer stands for its signature. Retirement is terminal, and it takes a
  * gate out of force, so it takes a person at a terminal: `options` is
- * `{ interactive }`. Returns `{ ok: true, id, status, repairedGates }`, or
- * `{ error }`.
+ * `{ interactive }`. A landed or suspended learning whose gate is still in
+ * the committed file is refused: retiring touches no file, so its gate
+ * would stay in the repository binding everyone, and a revert is what takes
+ * it out. Returns `{ ok: true, id, status, repairedGates }`, or `{ error }`.
  */
 export function retireLearning(root, id, options) {
   try {
     return byHand(root, id, optionsOf(options), 'a retirement', (write, state, learning) => {
       if (SETTLED.has(learning.status)) return { error: `${id} is ${learning.status}; a rejected or retired learning is not retired again` };
+      if (learning.status === 'suspended' && isCommitted(root, learning)) {
+        return { error: `${id}: its gate is still in ${GATES_PATH}, binding everyone who has the repository; reverting ${id} takes it out of the repository and retires it` };
+      }
+      if (learning.status === 'landed' && isCommitted(root, learning)) {
+        return { error: `${id}: its gate is still in ${GATES_PATH}, binding everyone who has the repository; reverting ${id} takes it out of the repository, and it can be retired after that` };
+      }
       const written = retire(root, write, state, learning, { approvedBy: 'owner' });
       return written.error === undefined ? { status: 'retired' } : written;
     });

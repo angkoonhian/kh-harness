@@ -10,10 +10,14 @@
 // repository and leaves the approval on this machine standing. A landed
 // learning judged wrong and suspended on this machine can be reverted too:
 // its gate leaves the repository, where it still binds everyone else, and
-// the learning ends `retired`, its local gate not restored. A revert runs
-// while any trace of the learning is left in the repository (its gate at the
-// recorded hash, its registry entry, or its manifest record), removes
-// whatever is left, and is refused only when nothing is.
+// the learning ends `retired`, its local gate not restored. A revert removes
+// whatever trace of the learning is left in the repository (its gate at the
+// recorded hash, its registry entry, its manifest record). A landed or
+// suspended learning with no trace in this checkout, as after an
+// uncommitted land was discarded, is still reverted, on this machine only:
+// no file is written, and the dry run says so. A learning that has since
+// moved on, retired or demoted, is reverted only to remove a trace it left;
+// a trace under its id at another hash is refused, never removed.
 //
 // A gate in the repository binds other people's agents, so landing and
 // reverting take a person at an interactive terminal, as approval does: a
@@ -40,11 +44,12 @@
 //           3. ledger `landed`, then the learning file, then the local gate
 //              set without the learning's entry  (writeTransition)
 //   revert  1. a landed learning's gate written back into the local gate set
-//           2. gates.json, then LEARNED.md
+//           2. gates.json, then LEARNED.md, when either holds a trace
 //           3. the manifest: the files' hashes, the learning's record kept
-//           4. ledger `reverted` (and `retired`, for a suspended learning),
-//              then the learning file  (writeTransition)
-//           5. the manifest without the learning's record
+//           4. ledger `reverted` (and `retired`, for a suspended learning or
+//              one retired with its gate still committed), then the
+//              learning file  (writeTransition)
+//           5. the manifest without the learning's record, when it had one
 //
 // So a committed gate never stands without its registry entry: a land stops
 // with at most an entry approving a gate not yet written, and a revert with
@@ -54,28 +59,42 @@
 // in `learn-lib.mjs` keeps a landed learning's local gate while the
 // committed file does not hold it as approved.
 //
-// A stop anywhere is finished by the same command run again. A land stopped
-// before its ledger entry finds every file already as it would write it. A
-// revert keeps the manifest record until its ledger entries are written, so
-// until then a trace is always left for the next revert to find; and a
-// revert whose ledger entries are written in part or whole, its learning
-// file or the record not yet, is recognised from the ledger's last entries
-// for the learning (`revertStage`), which the next revert completes. A file
-// written but not yet recorded in the manifest no longer matches it, and the
-// next run names it.
+// A stop anywhere is finished by the same command run again:
+//
+//   - A file written and not yet recorded in the manifest (a process killed
+//     between the two) is recognised when it is exactly what this step makes
+//     from the file the manifest records, or from no file where it records
+//     none (`ownedFile`); the step then goes on from the recorded file and
+//     records the one on disk. Any other difference is a hand edit, refused.
+//   - A land stopped before its ledger entry finds every file already as it
+//     would write it; one stopped between its `landed` entry and the
+//     learning file is recognised from the ledger (`landStage`), and a
+//     revert of it says that the land run again finishes it.
+//   - A revert keeps the manifest record until its ledger entries are
+//     written, so until then a trace is always left for the next revert to
+//     find. One whose ledger entries are written in part or whole, its
+//     learning file not yet, is recognised from the ledger's last entries
+//     for the learning (`revertStage`). A record left once every entry is
+//     written is removed by the next revert whatever the learning's status
+//     has become since, the ledger holding a `reverted` for its content
+//     after its last `landed`.
+//   - Retiring a landed or suspended learning whose gate is still committed
+//     is refused (`learn-promote.mjs`), since retiring writes no file; one
+//     retired so before that refusal is reverted, recorded `reverted` and
+//     `retired` again, and its gate taken out.
 //
 // The repair runs only when a `learn` command or `tick` does. So after a
 // branch switch to a checkout without the committed gate, or once an
 // uncommitted land is discarded, the learning stays `landed` and its gate is
 // enforced nowhere until the next `learn` command or `tick` writes its local
-// gate back.
+// gate back; a revert then returns it to `active-local` on this machine.
 //
 // No exported function throws. A refusal carries `exitCode: 3` and a
 // failure `exitCode: 2`, the CLI contract's codes.
 import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { GATE_LIMITS, gateSha256 } from '../../assets/scripts/harness-gates.mjs';
+import { GATE_LIMITS, gateSha256, parseGates } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH, harnessIdentity } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules } from '../../assets/scripts/harness-redact.mjs';
 import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
@@ -87,8 +106,8 @@ import {
 } from './learn-lib.mjs';
 import { isInteractive, needsTerminal } from './learn-promote.mjs';
 import { ACTION_KINDS } from './ledger.mjs';
-import { removeLearnedEntry, upsertLearnedEntry } from './learned-registry.mjs';
-import { classify, emptyManifest, MANIFEST_PATH, readManifestResult, writeManifest } from './manifest.mjs';
+import { removeLearnedEntry, renderLearnedEntry, upsertLearnedEntry } from './learned-registry.mjs';
+import { classify, emptyManifest, MANIFEST_PATH, readManifestResult, sha256, writeManifest } from './manifest.mjs';
 import { TOOL_GATE_STEP } from './propose.mjs';
 import { render, STAMP_MARKER } from './render.mjs';
 
@@ -126,24 +145,6 @@ const failed = error => ({ error, exitCode: FAILED });
  * could not act. */
 const withCode = result => (result.error !== undefined && result.exitCode === undefined ? { ...result, exitCode: FAILED } : result);
 
-/**
- * `{ text }`, the kit-owned file `rel` as LF text for a change to build on,
- * or `{ text: null }` when it is absent and unrecorded; `{ error }` naming
- * it when the kit may not write it: one the manifest records whose bytes no
- * longer match, or one present that the manifest does not record.
- */
-function ownedText(root, manifest, rel) {
-  const state = classify(root, manifest, rel);
-  if (state === 'ours-modified') {
-    return { error: `${rel} no longer matches what kh-harness last wrote (a hand edit, a deletion, or a write that stopped before the manifest recorded it), so kh-harness no longer updates it; restore it from git and run again` };
-  }
-  if (state === 'theirs') {
-    if (!isPresent(join(root, rel))) return { text: null };
-    return { error: `${rel} exists and the manifest does not record kh-harness writing it, so kh-harness does not write it; move it aside and run again` };
-  }
-  return { text: readFileSync(join(root, rel), 'utf8').replace(/\r\n/g, '\n') };
-}
-
 /** `{ gates }`, the committed file's gates, none for a file not yet
  * written, or `{ error }` when the gate hook would not load every entry it
  * holds: a rewrite would drop what it does not load. */
@@ -171,6 +172,110 @@ function gateFileText(gates) {
   if (Buffer.byteLength(text, 'utf8') > GATE_FILE_MAX_BYTES) return { error: `${GATES_PATH} would be larger than ${GATE_FILE_MAX_BYTES} bytes, which the gate hook does not load` };
   return { text };
 }
+
+const modifiedRefusal = rel => `${rel} no longer matches what kh-harness last wrote (a hand edit, a deletion, or a write that stopped before the manifest recorded it), so kh-harness no longer updates it; restore it from git and run again`;
+const unrecordedRefusal = rel => `${rel} exists and the manifest does not record kh-harness writing it, so kh-harness does not write it; move it aside and run again`;
+
+/**
+ * The kit-owned file `rel` for a step to build on: `{ text, adopt }`, `text`
+ * the LF text the manifest records, null when the file is absent and
+ * unrecorded, and `adopt`, when not null, the manifest entry the step must
+ * record for the file as it is on disk; or `{ error }` naming the file when
+ * the kit may not write it.
+ *
+ * A file on disk the manifest does not match may be this very step's own
+ * write, left by a run stopped between writing it and writing the manifest.
+ * `step.forward(text)` is the file this step makes from the recorded `text`
+ * (null for no file), and `step.candidates(current)` the texts the recorded
+ * file may have been, given the file on disk. When one of them is the
+ * recorded file, by the manifest's hash, or is no file where the manifest
+ * records none, and the step makes exactly the file on disk from it, the
+ * step goes on from it. Any other difference is refused, so a hand edit is
+ * never built on.
+ */
+function ownedFile(root, manifest, rel, step) {
+  const state = classify(root, manifest, rel);
+  const abs = join(root, rel);
+  if (state === 'ours-unmodified') return { text: readFileSync(abs, 'utf8').replace(/\r\n/g, '\n'), adopt: null };
+  if (state === 'theirs' && !isPresent(abs)) return { text: null, adopt: null };
+  const refusal = { error: state === 'ours-modified' ? modifiedRefusal(rel) : unrecordedRefusal(rel) };
+  let raw;
+  try {
+    raw = readFileSync(abs);
+  } catch {
+    return refusal;
+  }
+  const current = raw.toString('utf8');
+  const recordedSha256 = (manifest.files ?? []).find(f => f.path === rel)?.sha256;
+  for (const candidate of step.candidates(current)) {
+    const isRecorded = candidate === null ? state === 'theirs' : state === 'ours-modified' && sha256(candidate) === recordedSha256;
+    if (isRecorded && step.forward(candidate) === current) return { text: candidate, adopt: { path: rel, sha256: sha256(raw) } };
+  }
+  return refusal;
+}
+
+/** The gates a gate file's text holds, none for no file. */
+const gatesIn = text => (text === null ? [] : parseGates(text).gates);
+
+/** The gates to build on in the gate file `file` (`ownedFile`'s shape): the
+ * file's own, read as the gate hook reads it from disk, or the recorded
+ * text's, for a file adopted from a stopped run; `{ error }` when the hook
+ * would not load every entry the file on disk holds. */
+const baseGates = (root, file) => (file.adopt !== null ? { gates: gatesIn(file.text) } : committedEntries(root, file.text));
+
+/** The manifest with `adopted` (`ownedFile`'s `adopt`s) recorded. */
+function withAdopted(manifest, adopted) {
+  const files = [...(manifest.files ?? [])];
+  for (const { path, sha256: hash } of adopted) {
+    const at = files.findIndex(f => f.path === path);
+    if (at === -1) files.push({ path, sha256: hash, step: TOOL_GATE_STEP, writtenAt: new Date().toISOString() });
+    else files[at] = { ...files[at], sha256: hash };
+  }
+  return { ...manifest, files };
+}
+
+const templateText = () => render(readFileSync(LEARNED_TEMPLATE, 'utf8'), { kitVersion: KIT_VERSION });
+const textOr = result => (typeof result?.text === 'string' ? result.text : null);
+
+/** What a land does to the registry, as `ownedFile` takes it: it adds
+ * `entry`. Before a stopped land's write, the registry was the file on disk
+ * without the entry, or, when the entry went at the end, that without the
+ * blank line before it; or no file at all. */
+const registryLand = entry => ({
+  forward: text => textOr(upsertLearnedEntry(text ?? templateText(), entry)),
+  candidates: current => {
+    const removed = removeLearnedEntry(current, entry.id);
+    if (removed.error || !removed.removed) return [null];
+    return [null, removed.text, removed.text.endsWith('\n\n') ? removed.text.slice(0, -1) : removed.text];
+  },
+});
+
+/** What a revert does to the registry: it removes `entry`'s section. Before
+ * a stopped revert's write, the section stood before one of the file's
+ * level-2 headings, or at its end. */
+const registryRevert = entry => ({
+  forward: text => (text === null ? null : textOr(removeLearnedEntry(text, entry.id))),
+  candidates: current => {
+    const section = textOr(renderLearnedEntry(entry));
+    if (section === null) return [];
+    const starts = [...current.matchAll(/^## /gm)].map(m => m.index);
+    return [...starts.map(at => current.slice(0, at) + section + '\n' + current.slice(at)), current + section, current + '\n' + section];
+  },
+});
+
+/** What a land does to the gate file: it holds `gate`. Before a stopped
+ * land's write, it held the same gates without it, or there was no file. */
+const gateFileLand = gate => ({
+  forward: text => textOr(gateFileText([...gatesIn(text).filter(g => g.id !== gate.id), gate])),
+  candidates: current => [null, textOr(gateFileText(gatesIn(current).filter(g => g.id !== gate.id)))],
+});
+
+/** What a revert does to the gate file: it drops `gate`. Before a stopped
+ * revert's write, it held the same gates and `gate`. */
+const gateFileRevert = gate => ({
+  forward: text => (text === null ? null : textOr(gateFileText(gatesIn(text).filter(g => g.id !== gate.id)))),
+  candidates: current => [textOr(gateFileText([...gatesIn(current).filter(g => g.id !== gate.id), gate]))],
+});
 
 const fileProposal = (path, contents, reason) => ({ kind: 'file', path, contents, step: TOOL_GATE_STEP, checkId: CHECK_ID, reason });
 
@@ -214,25 +319,34 @@ function landStage(state, learning) {
   return refused(`${learning.id} is ${learning.status}; ${LAND_REFUSAL}`);
 }
 
-const REVERT_REFUSAL = 'only a landed learning, or one suspended on this machine, is reverted';
+const REVERT_REFUSAL = 'only a landed or suspended learning, or one whose landing is still in this repository, is reverted';
 
 /**
- * Where reverting `learning` stands: `{ updated, entries, action, fresh,
- * complete, holdsLocal }`, or `{ error, exitCode }`.
+ * Where reverting `learning` stands: `{ updated, entries, action,
+ * holdsLocal, alone }`, or `{ error, exitCode }`. `traced` is whether any
+ * trace of it is left in this checkout: its gate at its content hash, its
+ * registry entry, or its manifest record.
  *
  * A learning the ledger vouches for as `landed` is reverted afresh to
  * `active-local`, recorded `reverted` (`holdsLocal`: its local gate is
  * written back first); one vouched for as `suspended`, judged wrong here,
- * to `retired`, recorded `reverted` and then `retired`. Both are `fresh`.
+ * to `retired`, recorded `reverted` and then `retired`. Either goes ahead
+ * with no trace left (`alone`), as after a land that was never committed
+ * and was discarded: nothing in this checkout is written, and the change is
+ * to this machine only.
  *
- * Otherwise the ledger's last entries for it say how far a revert got. Its
+ * Otherwise the ledger's last entries for it say how far a revert got: its
  * `reverted` written and the learning file not yet, or a suspended
- * learning's `reverted` written and `retired` not yet: the rest of the
- * entries and the learning file are written. Every entry and the learning
- * file written (`complete`): only what is left in the repository, the
- * manifest record at least, is removed.
+ * learning's `reverted` written and `retired` not yet, and the rest is
+ * written. A learning that is neither landed nor suspended any more, with a
+ * trace left, has the trace removed: with no new entry when a `reverted`
+ * for its content follows its last `landed`, whatever status it reached
+ * since; and recorded `reverted` then `retired` when it was retired
+ * without one, so it stays retired. A land stopped before its learning file
+ * is refused, naming the land that finishes it.
  */
-function revertStage(state, learning) {
+function revertStage(state, learning, traced) {
+  const { id, status } = learning;
   const unrecorded = unrecordedReason(learning, state.view);
   const action = approvedAction(state, learning);
   const toActive = { ...learning, status: 'active-local', gate: { ...learning.gate, action } };
@@ -240,17 +354,23 @@ function revertStage(state, learning) {
   const reverted = ownerEntry('reverted', action);
   const retired = { kind: 'retired', approvedBy: 'owner' };
   const ends = kinds => state.view.intact && ledgerEndsWith(state, learning, kinds);
-  const stage = (updated, entries, more = {}) => ({ updated, entries, action: updated.gate.action, fresh: false, complete: false, holdsLocal: false, ...more });
+  const stage = (updated, entries, more = {}) => ({ updated, entries, action: updated.gate.action, holdsLocal: false, alone: false, ...more });
+  const own = statusEntriesFor(state.view.entries, id).filter(e => e.contentSha256 === learning.sha256);
+  const lastLanded = own.findLastIndex(e => e.kind === 'landed');
+  const revertedSinceLanding = lastLanded !== -1 && own.slice(lastLanded + 1).some(e => e.kind === 'reverted');
 
-  if (unrecorded === null && learning.status === 'landed') return stage(toActive, [reverted], { fresh: true, holdsLocal: true });
-  if (unrecorded === null && learning.status === 'suspended') return stage(toRetired, [reverted, retired], { fresh: true });
-  if (learning.status === 'landed' && ends(['landed', 'reverted'])) return stage(toActive, []);
-  if (learning.status === 'suspended' && ends(['suspended', 'reverted'])) return stage(toRetired, [retired]);
-  if (learning.status === 'suspended' && ends(['suspended', 'reverted', 'retired'])) return stage(toRetired, []);
+  if (unrecorded === null && status === 'landed') return stage(toActive, [reverted], { holdsLocal: true, alone: !traced });
+  if (unrecorded === null && status === 'suspended') return stage(toRetired, [reverted, retired], { alone: !traced });
+  if (status === 'landed' && ends(['landed', 'reverted'])) return stage(toActive, []);
+  if (status === 'suspended' && ends(['suspended', 'reverted'])) return stage(toRetired, [retired]);
+  if (status === 'suspended' && ends(['suspended', 'reverted', 'retired'])) return stage(toRetired, []);
+  if (status === 'active-local' && ends(['landed'])) {
+    return refused(`${id}: a land of it stopped before its learning file was written; running land for ${id} again finishes it`);
+  }
   if (unrecorded !== null) return refused(unrecorded);
-  if (learning.status === 'active-local' && ends(['landed', 'reverted'])) return stage(learning, [], { complete: true });
-  if (learning.status === 'retired' && ends(['suspended', 'reverted', 'retired'])) return stage(learning, [], { complete: true });
-  return refused(`${learning.id} is ${learning.status}; ${REVERT_REFUSAL}`);
+  if (traced && revertedSinceLanding) return stage(learning, []);
+  if (traced && status === 'retired' && lastLanded !== -1) return stage(learning, [reverted, retired]);
+  return refused(`${id} is ${status}; ${REVERT_REFUSAL}`);
 }
 
 /** `{ manifest }` to build on: the one on disk, an empty one when there is
@@ -264,11 +384,20 @@ function manifestToBuildOn(root) {
   return { manifest: result.manifest ?? emptyManifest(KIT_VERSION), result };
 }
 
+/** The registry entry the repository holds for `learning`, approving the
+ * gate whose content hash is `approvedSha256`. */
+const learnedEntry = (learning, approvedSha256) => ({
+  id: learning.id, title: learning.title, why: learning.why, enforcedBy: 'hook', pointer: GATES_PATH,
+  evidenceSummary: { ...learning.evidence, external: learning.external || learning.evidence.external },
+  approvedSha256,
+});
+
 /**
  * What landing `id` writes, from `state` and `manifest`: `{ learning,
- * proposals, record, transition }`, the proposals in write order and
- * `transition` the learning's change as `writeTransition` takes it, or `{
- * error, exitCode }`.
+ * proposals, record, transition, adopted }`, the proposals in write order,
+ * `transition` the learning's change as `writeTransition` takes it and
+ * `adopted` the files a stopped run of this land left for the manifest to
+ * record (`ownedFile`), or `{ error, exitCode }`.
  */
 function landing(root, state, manifest, id) {
   const found = learningIn(state, id);
@@ -277,35 +406,30 @@ function landing(root, state, manifest, id) {
   const transition = landStage(state, learning);
   if (transition.error) return transition;
   const gate = committedGateOf(learning, transition.action);
-  const sha256 = gateSha256(gate);
+  const approvedSha256 = gateSha256(gate);
+  const entry = learnedEntry(learning, approvedSha256);
 
-  const learned = ownedText(root, manifest, LEARNED_PATH);
+  const learned = ownedFile(root, manifest, LEARNED_PATH, registryLand(entry));
   if (learned.error) return refused(learned.error);
-  const gates = ownedText(root, manifest, GATES_PATH);
+  const gates = ownedFile(root, manifest, GATES_PATH, gateFileLand(gate));
   if (gates.error) return refused(gates.error);
-  const committed = committedEntries(root, gates.text);
+  const committed = baseGates(root, gates);
   if (committed.error) return refused(committed.error);
 
   const existing = committed.gates.find(g => g.id === id);
-  if (existing !== undefined && (gateSha256(existing) !== sha256 || existing.action !== gate.action)) {
+  if (existing !== undefined && (gateSha256(existing) !== approvedSha256 || existing.action !== gate.action)) {
     return refused(`${GATES_PATH} already holds another gate ${id}, so ${id} is not landed over it`);
   }
   const file = gateFileText(existing === undefined ? [...committed.gates, gate] : committed.gates);
   if (file.error) return refused(file.error);
-
-  const entry = {
-    id, title: learning.title, why: learning.why, enforcedBy: 'hook', pointer: GATES_PATH,
-    evidenceSummary: { ...learning.evidence, external: learning.external || learning.evidence.external },
-    approvedSha256: sha256,
-  };
-  const base = learned.text ?? render(readFileSync(LEARNED_TEMPLATE, 'utf8'), { kitVersion: KIT_VERSION });
-  const upserted = upsertLearnedEntry(base, entry);
+  const upserted = upsertLearnedEntry(learned.text ?? templateText(), entry);
   if (upserted.error) return refused(upserted.error);
 
   return {
     learning,
-    record: { id, gateSha256: sha256 },
+    record: { id, gateSha256: approvedSha256 },
     transition,
+    adopted: [learned.adopt, gates.adopt].filter(a => a !== null),
     proposals: [
       fileProposal(LEARNED_PATH, upserted.text, `land learning ${id}: its entry, approving the gate's content`),
       fileProposal(GATES_PATH, file.text, `land learning ${id}: its gate, at ${gate.action} as approved`),
@@ -315,28 +439,25 @@ function landing(root, state, manifest, id) {
 
 /**
  * What reverting `id` writes, from `state` and `manifest`: `{ learning,
- * proposals, transition, record }`, as `landing` returns them, `record`
- * whether the manifest still records the learning, or `{ error, exitCode }`.
- *
- * A revert runs while any trace of the learning is left in the repository
- * (its gate at its content hash, its registry entry, or its manifest
- * record) and removes whatever is left; with none, it is refused, unless a
- * revert stopped after removing all of it still has ledger entries or the
- * learning file to write (`revertStage`). A gate, entry or record under its
- * id that is not this learning's is refused, never removed.
+ * proposals, transition, adopted, record, notes }`, as `landing` returns
+ * them, `record` whether the manifest still records the learning and
+ * `notes` what the dry run says besides the diffs, or `{ error, exitCode }`.
+ * Whatever trace of the learning is left (its gate at its content hash, its
+ * registry entry, its manifest record) is removed; whether the revert goes
+ * ahead is `revertStage`'s to say. A gate, entry or record under its id
+ * that is not this learning's is refused, never removed.
  */
 function reverting(root, state, manifest, id) {
   const found = learningIn(state, id);
   if (found.error) return refused(found.error);
   const { learning } = found;
-  const transition = revertStage(state, learning);
-  if (transition.error) return transition;
+  const gateOf = committedGateOf(learning, approvedAction(state, learning));
 
-  const gates = ownedText(root, manifest, GATES_PATH);
+  const gates = ownedFile(root, manifest, GATES_PATH, gateFileRevert(gateOf));
   if (gates.error) return refused(gates.error);
-  const learned = ownedText(root, manifest, LEARNED_PATH);
+  const learned = ownedFile(root, manifest, LEARNED_PATH, registryRevert(learnedEntry(learning, learning.sha256)));
   if (learned.error) return refused(learned.error);
-  const committed = committedEntries(root, gates.text);
+  const committed = baseGates(root, gates);
   if (committed.error) return refused(committed.error);
 
   const gate = committed.gates.find(g => g.id === id);
@@ -352,12 +473,13 @@ function reverting(root, state, manifest, id) {
     return refused(`${MANIFEST_PATH} records another learning ${id}, which is not this learning's to remove`);
   }
 
-  if (gate === undefined && rule === undefined && record === undefined) {
-    if (transition.fresh) {
-      return refused(`${id} has no gate, registry entry or manifest record in this repository, so there is nothing to revert here; run the revert on a checkout that holds them`);
-    }
-    if (transition.complete) return refused(`${id} is ${learning.status}; ${REVERT_REFUSAL}`);
-  }
+  const transition = revertStage(state, learning, gate !== undefined || rule !== undefined || record !== undefined);
+  if (transition.error) return transition;
+  const notes = transition.alone ? [
+    `nothing in this checkout holds ${id}, so reverting it writes no file and changes it on this machine only: `
+      + (transition.updated.status === 'retired' ? 'it is retired' : `it is active-local again, its local gate at ${transition.action}`)
+      + '; if another branch holds the landing, the gate is still committed there',
+  ] : [];
 
   const proposals = [];
   if (gate !== undefined) {
@@ -370,16 +492,18 @@ function reverting(root, state, manifest, id) {
     if (removed.error) return refused(removed.error);
     proposals.push(fileProposal(LEARNED_PATH, removed.text, `revert learning ${id}: remove its entry`));
   }
-  return { learning, proposals, transition, record: record !== undefined };
+  return { learning, proposals, transition, adopted: [gates.adopt, learned.adopt].filter(a => a !== null), record: record !== undefined, notes };
 }
 
-/** The dry run: each proposal with its diff against the repository, and
- * what `yes` would refuse. Writes nothing. */
-const preview = (root, proposals, refusals) => ({
+/** The dry run: each proposal with its diff against the repository, what
+ * `yes` would refuse, and `notes`, what else the step would do. Writes
+ * nothing. */
+const preview = (root, proposals, refusals, notes) => ({
   dryRun: true,
   proposals,
   diffs: proposals.map(p => ({ path: p.path, reason: p.reason, diff: renderDiff(root, p) })),
   refusals,
+  notes,
 });
 
 /**
@@ -464,8 +588,8 @@ export function planLand(root, id) {
  * that action, and the learning's local gate goes, since the committed one
  * is then in force. `options` is `{ yes, interactive, allowDirty,
  * allowDefaultBranch }`. Without `yes`, writes nothing and returns `{
- * dryRun: true, proposals, diffs, refusals }`, `refusals` what `yes` would
- * meet. With it, `interactive` must be what `requireInteractive` returned
+ * dryRun: true, proposals, diffs, refusals, notes }`, `refusals` what `yes`
+ * would meet and `notes` what else the step would do. With it, `interactive` must be what `requireInteractive` returned
  * for a person at a terminal, or nothing is written; returns `{ ok: true,
  * id, status, action, written, repairedGates }`, or `{ error, exitCode }`.
  */
@@ -484,7 +608,7 @@ function landUnguarded(root, id, options) {
   const refusals = gateRefusalsFor(root, base.result, options, 'land');
   if (options.yes !== true) {
     const planned = landing(root, readState(root), base.manifest, id);
-    return planned.error ? planned : preview(root, planned.proposals, refusals);
+    return planned.error ? planned : preview(root, planned.proposals, refusals, []);
   }
   if (!isInteractive(options.interactive)) return { ...refuse(root, needsTerminal('landing')), exitCode: REFUSED };
   if (refusals.length > 0) return { ...refuse(root, refusals.join(' ')), exitCode: REFUSED, refusals };
@@ -501,7 +625,7 @@ function landUnguarded(root, id, options) {
     if (ready.error) return refused(ready.error);
 
     const learnings = [...(manifest.manifest.learnings ?? []).filter(l => l.id !== id), record];
-    const repository = writeRepository(root, write, manifest.manifest, planned.proposals, learnings);
+    const repository = writeRepository(root, write, withAdopted(manifest.manifest, planned.adopted), planned.proposals, learnings);
     if (repository.error) return repository;
     const recorded = recordStep(root, write, transition, identity);
     if (recorded.error) return recorded;
@@ -516,8 +640,11 @@ function landUnguarded(root, id, options) {
  * action written back before the committed one leaves, and the ledger gets
  * `reverted` with `approvedBy: 'owner'` and that action. A learning
  * suspended on this machine ends `retired` with no local gate, the ledger
- * getting `reverted` and then `retired`, both the owner's. A revert that
- * stopped partway is finished, as `revertStage` recognises it. `options`
+ * getting `reverted` and then `retired`, both the owner's. Either with no
+ * trace in this checkout writes no file, and its dry run's `notes` say so.
+ * A learning that moved on since its landing has the trace it left
+ * removed. A revert that stopped partway is finished, as `revertStage`
+ * recognises it. `options`
  * and the results are as `landLearning`'s; success is `{ ok: true, id,
  * status, action, written, repairedGates }`, `action` the one its gate now
  * carries.
@@ -537,7 +664,7 @@ function revertUnguarded(root, id, options) {
   const refusals = gateRefusalsFor(root, base.result, options, 'revert');
   if (options.yes !== true) {
     const planned = reverting(root, readState(root), base.manifest, id);
-    return planned.error ? planned : preview(root, planned.proposals, refusals);
+    return planned.error ? planned : preview(root, planned.proposals, refusals, planned.notes);
   }
   if (!isInteractive(options.interactive)) return { ...refuse(root, needsTerminal('a revert')), exitCode: REFUSED };
   if (refusals.length > 0) return { ...refuse(root, refusals.join(' ')), exitCode: REFUSED, refusals };
@@ -555,19 +682,26 @@ function revertUnguarded(root, id, options) {
 
     if (transition.holdsLocal) holdLocalGate(root, write, state, id);
     // The record stays until the ledger entries are written: it is the trace
-    // the next revert finishes from if this one stops before them.
-    const repository = writeRepository(root, write, manifest.manifest, planned.proposals, manifest.manifest.learnings);
-    if (repository.error) return repository;
+    // the next revert finishes from if this one stops before them. With no
+    // file to change, nothing in the repository is written here at all.
+    let current = manifest.manifest;
+    let written = [];
+    if (planned.proposals.length > 0) {
+      const repository = writeRepository(root, write, withAdopted(current, planned.adopted), planned.proposals, current.learnings);
+      if (repository.error) return repository;
+      current = repository.manifest;
+      written = repository.written;
+    }
     const recorded = recordStep(root, write, transition, identity);
     if (recorded.error) return recorded;
     if (planned.record) {
-      const next = { ...repository.manifest, learnings: repository.manifest.learnings.filter(l => l.id !== id) };
+      const next = { ...current, learnings: current.learnings.filter(l => l.id !== id) };
       try {
         write(() => writeManifest(root, next));
       } catch (error) {
         return failed(`${id}: its revert is recorded, and ${MANIFEST_PATH} could not drop its record (${codeOf(error)}); run the same command again to finish it`);
       }
     }
-    return { ok: true, id, status: transition.updated.status, action: transition.action, written: repository.written };
+    return { ok: true, id, status: transition.updated.status, action: transition.action, written };
   });
 }

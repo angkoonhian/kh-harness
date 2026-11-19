@@ -735,6 +735,10 @@ test("a suspension stands only for a suspended learning's committed gate as the 
   assert.ok(denied(hookOn(changed.root, MISTAKE)), 'the changed committed gate is in force');
 
   const retired = suspendedRepo();
+  assert.deepEqual(retireLearning(retired.root, 'L1', { interactive: AT_TERMINAL }), {
+    error: `L1: its gate is still in ${GATES_PATH}, binding everyone who has the repository; reverting L1 takes it out of the repository and retires it`,
+  }, 'retiring would leave the committed gate in the repository');
+  commitFile(retired.root, GATES_PATH, JSON.stringify({ schema: 1, gates: [] }));
   assert.equal(retireLearning(retired.root, 'L1', { interactive: AT_TERMINAL }).status, 'retired');
   assert.deepEqual(localGates(retired.root).gates, [], 'a retired learning keeps no suspension');
 
