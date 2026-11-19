@@ -147,21 +147,42 @@ export function writeGateRefusals({ root, git, manifestResult, allowDefaultBranc
 // as one that could not be had.
 const COMMIT_READ_TIMEOUT_MS = 10_000;
 
+/**
+ * The environment a git call reading a commit runs in: this process's,
+ * with git's messages in the C locale, so the wording it is matched on does
+ * not depend on the owner's language, and without the variables that would
+ * point git at a repository, work tree or index other than the one at
+ * `root`.
+ */
+function commitReadEnv() {
+  const env = { ...process.env, LC_ALL: 'C' };
+  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[name];
+  return env;
+}
+
 /** Why a git call reading a commit failed, as a sentence: the call timing
- * out, git missing, or the first line git printed. */
+ * out, git stopped by a signal, git missing, or the first line git printed.
+ * Output past the read's bound is the caller's to word (`ENOBUFS`). */
 function gitFailure(err, what) {
-  if (err?.code === 'ETIMEDOUT' || (err?.signal ?? null) !== null) return `git did not answer within ${COMMIT_READ_TIMEOUT_MS / 1000} seconds`;
+  if (err?.code === 'ETIMEDOUT') return `git did not answer within ${COMMIT_READ_TIMEOUT_MS / 1000} seconds`;
+  if ((err?.signal ?? null) !== null) return `git was stopped by ${err.signal}`;
   if (err?.code === 'ENOENT') return 'git is not installed or not on PATH';
   const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
   if (/not a git repository/i.test(stderr)) return 'it is not a git repository';
   return stderr || `git could not ${what}`;
 }
 
+// The tree entry modes of a regular file, executable or not. A symbolic
+// link (120000) is a blob too, but its content is a path, not the file.
+const REGULAR_FILE_MODES = new Set(['100644', '100755']);
+
 /**
- * The file `rel` as the commit HEAD names holds it: `{ text }`, `{ absent:
- * true }` when that commit has no such file, or `{ unknown }`, a sentence
- * saying truly why it could not be read: not a git repository, a branch
- * with no commit yet, git missing, failing or not answering in time.
+ * The file `rel` as the commit HEAD names holds it, read up to `maxBytes`:
+ * `{ text }`, `{ absent: true }` when that commit has no such file, `{
+ * tooLarge: true }` when it holds more than `maxBytes` bytes, or `{ unknown
+ * }`, a sentence saying truly why it could not be read: not a git
+ * repository, a branch with no commit yet, something other than a regular
+ * file at `rel`, git missing, failing, stopped or not answering in time.
  *
  * The working tree and the index are not consulted, so a removal not yet
  * committed does not hide what the commit holds; nor is anything resolved
@@ -169,11 +190,12 @@ function gitFailure(err, what) {
  * `ls-tree` after `--` and read by its object id. Every call runs git with
  * `--no-replace-objects`, so no `refs/replace/` object the repository holds
  * changes what the commit is read as; with its arguments as an array, never
- * through a shell; and under a timeout.
+ * through a shell; under a timeout; and in `commitReadEnv`.
  */
-export function committedText(root, rel) {
-  const git = args => execFileSync('git', ['--no-replace-objects', '-C', root, ...args], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: COMMIT_READ_TIMEOUT_MS,
+export function committedText(root, rel, maxBytes) {
+  const env = commitReadEnv();
+  const git = (args, options = {}) => execFileSync('git', ['--no-replace-objects', '-C', root, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: COMMIT_READ_TIMEOUT_MS, env, ...options,
   });
   try {
     git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
@@ -190,12 +212,19 @@ export function committedText(root, rel) {
   }
   if (listing === '') return { absent: true };
   const entry = /^(\d+) (\w+) ([0-9a-f]+)\t/.exec(listing);
-  if (entry === null || entry[2] !== 'blob') return { unknown: `the commit holds something other than a file at ${rel}` };
+  if (entry === null || entry[2] !== 'blob' || !REGULAR_FILE_MODES.has(entry[1])) {
+    return { unknown: `the commit holds something other than a regular file at ${rel}` };
+  }
+  let text;
   try {
-    return { text: git(['cat-file', 'blob', entry[3]]) };
+    // One byte past the bound is read, so a file of exactly `maxBytes` is
+    // told from a larger one.
+    text = git(['cat-file', 'blob', entry[3]], { maxBuffer: maxBytes + 1 });
   } catch (err) {
+    if (err?.code === 'ENOBUFS') return { tooLarge: true };
     return { unknown: gitFailure(err, 'read the committed file') };
   }
+  return Buffer.byteLength(text, 'utf8') > maxBytes ? { tooLarge: true } : { text };
 }
 
 // A hand-rolled O(n·m) LCS diff is fine for the kit's own small template and
