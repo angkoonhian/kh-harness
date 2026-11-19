@@ -6,7 +6,7 @@
 // learning, both from this one computation. Reads only.
 import { GATE_ACTIONS, GATE_ID } from '../../assets/scripts/harness-gates.mjs';
 import { readEvents } from '../../assets/scripts/harness-log.mjs';
-import { FAILURE_EVENT, sessionIds, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
+import { FAILURE_EVENT, listSessions, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
 
 export const FIRING_EVENT = 'gate_firing';
 
@@ -54,7 +54,8 @@ const blank = () => ({ fired: Object.fromEntries(GATE_ACTIONS.map(a => [a, 0])),
 
 /**
  * What the session log and `ledgerEntries` record of each gate:
- * `{ gates, sessionsRead, sessionsUnreadable, firingsMalformed }`, `gates`
+ * `{ gates, sessionsRead, sessionsUnreadable, sessionsBeingSealed,
+ * firingsMalformed }`, `gates`
  * mapping each gate id to `{ fired, firings, sessions, rerouted,
  * gateSha256s, wrong }`, and `places` too when `places` is true. `fired`
  * counts its firings per action and `firings` all of them; `sessions` is
@@ -78,15 +79,16 @@ const blank = () => ({ fired: Object.fromEntries(GATE_ACTIONS.map(a => [a, 0])),
  * not that next call; a later `block` firing of the tool on another call is
  * that call, denied. An `observe` firing told nobody anything, so it is
  * never counted. `sessionsUnreadable` counts the sessions that could not be
- * read in full, whose counts are what did parse. Throws when the sessions
- * directory cannot be listed.
+ * read in full, whose counts are what did parse, and `sessionsBeingSealed`
+ * those with events in a claimed or temporary file, whose firings there are
+ * not counted. Throws when the sessions directory cannot be listed.
  */
 export function gateStats(root, ledgerEntries, contents = null, { places = false } = {}) {
   const byGate = new Map(contents === null ? [] : [...contents.keys()].map(id => [id, blank()]));
-  const ids = sessionIds(root);
+  const sessions = listSessions(root);
   let sessionsUnreadable = 0;
   let firingsMalformed = 0;
-  for (const sessionId of ids) {
+  for (const { id: sessionId } of sessions) {
     const { events, unreadable } = readEvents(root, sessionId);
     if (unreadable) sessionsUnreadable++;
     let awaiting = [];
@@ -123,5 +125,5 @@ export function gateStats(root, ledgerEntries, contents = null, { places = false
     wrong: marks === null ? null : (marks.get(id) ?? { sinceGrant: 0, total: 0 }),
     ...(places ? { places: g.places } : {}),
   }]));
-  return { gates, sessionsRead: ids.length, sessionsUnreadable, firingsMalformed };
+  return { gates, sessionsRead: sessions.length, sessionsUnreadable, sessionsBeingSealed: sessions.filter(session => session.beingSealed).length, firingsMalformed };
 }

@@ -12,10 +12,10 @@ import { isAbsolute, join, relative } from 'node:path';
 import {
   dataRoot, gunzipBounded, isEnabled, LINK_REFUSED, maxLogFileBytes, parsedObject, readBounded, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
 } from '../../assets/scripts/harness-log.mjs';
-import { CLAIMED_SUFFIX, contentFieldsOf, SEAL_TEMP_SUFFIX, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
+import { contentFieldsOf, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { verifyLedger } from './ledger.mjs';
 import { readJsonFile } from './read-json.mjs';
-import { sessionIds } from './recurrence.mjs';
+import { listSessions } from './recurrence.mjs';
 import { hookPathTokens } from './settings-merge.mjs';
 import { summariseTranscripts } from './transcript-reader.mjs';
 
@@ -28,8 +28,6 @@ const SETTINGS_PATH = '.claude/settings.json';
 export const BLIND_SPOTS = Object.freeze(['user interrupts', 'cancelled tools', 'permission denials outside auto mode']);
 
 const DAY_MS = 86_400_000;
-const PLAIN_SUFFIX = '.jsonl';
-const SEALED_SUFFIX = '.jsonl.gz';
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const timeOf = v => (typeof v === 'string' ? Date.parse(v) : Number.NaN);
@@ -138,35 +136,6 @@ export function diskUsage(dir) {
 
 export const sessionsDir = root => join(repoDataDir(root), SESSIONS_DIR);
 
-/** The names in the sessions directory; none when it is absent or cannot
- * be listed. */
-export function sessionNames(root) {
-  try {
-    return readdirSync(sessionsDir(root));
-  } catch {
-    return [];
-  }
-}
-
-/** The session id a file name in the sessions directory names with
- * `suffix`, or null. */
-export function idWithSuffix(name, suffix) {
-  if (!name.startsWith('s-') || !name.endsWith(suffix)) return null;
-  const id = name.slice(2, -suffix.length);
-  return sessionFileName(id) === `s-${id}${PLAIN_SUFFIX}` ? id : null;
-}
-
-const idsWithSuffix = (names, suffixes) => {
-  const ids = new Set();
-  for (const name of names) {
-    for (const suffix of suffixes) {
-      const id = idWithSuffix(name, suffix);
-      if (id !== null) ids.add(id);
-    }
-  }
-  return [...ids].sort();
-};
-
 /** Only a transcript path that is absolute and names a regular file is
  * read: the path comes from the log, which anyone with this user's access
  * can edit, and a device or pipe would block the read. */
@@ -180,18 +149,21 @@ function isReadableTranscript(path) {
 }
 
 /** What reading every session's events finds: its date range, the lines and
- * sessions that could not be read, and each session's transcript path. */
+ * sessions that could not be read, the sessions larger than is read, and
+ * each session's transcript path. */
 function readSessions(root, ids) {
   let first = Number.NaN;
   let last = Number.NaN;
   let unparseableLines = 0;
   let unreadableSessions = 0;
   let withoutTranscript = 0;
+  const overLimit = [];
   const transcriptPaths = new Set();
   for (const id of ids) {
-    const { events, unparseable, unreadable } = readEvents(root, id);
+    const { events, unparseable, unreadable, overLimit: tooLarge } = readEvents(root, id);
     unparseableLines += unparseable;
     if (unreadable) unreadableSessions++;
+    if (tooLarge) overLimit.push(id);
     let hasTranscript = false;
     for (const event of events) {
       const at = timeOf(event.ts);
@@ -207,7 +179,7 @@ function readSessions(root, ids) {
     if (!hasTranscript) withoutTranscript++;
   }
   const iso = t => (Number.isNaN(t) ? null : new Date(t).toISOString());
-  return { firstTs: iso(first), lastTs: iso(last), unparseableLines, unreadableSessions, withoutTranscript, transcriptPaths: [...transcriptPaths] };
+  return { firstTs: iso(first), lastTs: iso(last), unparseableLines, unreadableSessions, overLimit, withoutTranscript, transcriptPaths: [...transcriptPaths] };
 }
 
 /** Coverage from the transcripts the sessions name. Strings read from a
@@ -278,16 +250,16 @@ export function logStatus(root) {
   const exists = checkDataDir(root).state !== 'absent';
   const config = readConfig(root);
   const hook = hookRegistration(root);
-  let ids = null;
+  let sessions = null;
   try {
-    ids = sessionIds(root);
+    sessions = listSessions(root);
   } catch {
     // reported as not read
   }
-  const listed = ids !== null;
-  const names = listed ? sessionNames(root) : [];
-  const sealedIds = idsWithSuffix(names, [SEALED_SUFFIX]);
-  const read = readSessions(root, ids ?? []);
+  const listed = sessions !== null;
+  const ids = listed ? sessions.map(session => session.id) : [];
+  const sealedIds = listed ? sessions.filter(session => session.sealed).map(session => session.id) : [];
+  const read = readSessions(root, ids);
   const index = verifyIndex(root);
   const untrusted = untrustedBecause(index);
   const usage = exists ? diskUsage(location) : { bytes: 0, unreadable: 0 };
@@ -299,11 +271,12 @@ export function logStatus(root) {
     location,
     bytes: usage.bytes,
     unreadableEntries: usage.unreadable,
-    sessions: whenListed(ids?.length),
+    sessions: whenListed(ids.length),
     sessionsUnlistable: !listed,
     sealedSessions: whenListed(sealedIds.length),
-    unsealedSessions: whenListed(idsWithSuffix(names, [PLAIN_SUFFIX]).length),
-    sessionsBeingSealed: whenListed(idsWithSuffix(names, [`${PLAIN_SUFFIX}${CLAIMED_SUFFIX}`, `${PLAIN_SUFFIX}${SEAL_TEMP_SUFFIX}`]).length),
+    unsealedSessions: whenListed(sessions?.filter(session => session.unsealed).length),
+    sessionsBeingSealed: whenListed(sessions?.filter(session => session.beingSealed).length),
+    sessionsOverLimit: whenListed(read.overLimit),
     firstTs: read.firstTs,
     lastTs: read.lastTs,
     index,
@@ -407,6 +380,7 @@ export function renderStatus(s) {
       `unparseable lines: ${countOf(s.unparseableLines)}`,
       `unreadable sessions: ${countOf(s.unreadableSessions)}`,
       ...(s.sessionsBeingSealed > 0 ? [`being sealed: ${s.sessionsBeingSealed} sessions have events in a claimed or temporary file, not read here`] : []),
+      ...(s.sessionsOverLimit?.length > 0 ? [`sessions larger than this command reads, counted as unreadable and not sealed or expired: ${s.sessionsOverLimit.join(', ')}`] : []),
     ]));
     out.push('', 'RETENTION');
     out.push(...indent([

@@ -5,10 +5,11 @@
 // Plain code computes it; no model is involved. Each recurrence is a
 // candidate for a mechanical check, never a verdict.
 import { createHash } from 'node:crypto';
-import { readdirSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 
-import { readEvents, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
+import { readEvents } from '../../assets/scripts/harness-log.mjs';
+import { CLAIMED_SUFFIX, listSessionFiles, PLAIN_SUFFIX, SEAL_TEMP_SUFFIX, SEALED_SUFFIX } from '../../assets/scripts/harness-seal.mjs';
 
 export const FAILURE_EVENT = 'PostToolUseFailure';
 export const SUCCESS_EVENT = 'PostToolUse';
@@ -89,25 +90,29 @@ export function failureSignature(event, root) {
   return createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16);
 }
 
-/** Every session id with a file in the repository's sessions directory,
- * plain or compressed, once each and sorted; a missing directory holds none.
- * Throws when the directory exists and cannot be listed. */
-export function sessionIds(root) {
-  const dir = join(repoDataDir(root), 'sessions');
-  let names;
-  try {
-    names = readdirSync(dir);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return [];
-    throw error;
-  }
-  const ids = new Set();
-  for (const name of names) {
-    const m = /^s-(.+)\.jsonl(?:\.gz)?$/.exec(name);
-    if (m !== null && sessionFileName(m[1]) === `s-${m[1]}.jsonl`) ids.add(m[1]);
-  }
-  return [...ids].sort();
+/**
+ * Every session with a file in the repository's sessions directory, sorted
+ * by id: `{ id, sealed, unsealed, beingSealed }`. `sealed` and `unsealed`
+ * say which of the two files `readEvents` reads it has; `beingSealed` says
+ * it has a claimed or temporary file, whose events no reader sees until a
+ * maintenance run finishes sealing them. A session whose only file is one
+ * of those is listed all the same, so no report leaves it out unsaid. A
+ * missing directory holds none. Throws when the directory exists and cannot
+ * be listed. The kit's reports all list sessions through this.
+ */
+export function listSessions(root) {
+  return [...listSessionFiles(root)]
+    .map(([id, kinds]) => ({
+      id,
+      sealed: kinds.has(SEALED_SUFFIX),
+      unsealed: kinds.has(PLAIN_SUFFIX),
+      beingSealed: kinds.has(CLAIMED_SUFFIX) || kinds.has(SEAL_TEMP_SUFFIX),
+    }))
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
 }
+
+/** The id of every session `listSessions` lists, in its order. */
+export const sessionIds = root => listSessions(root).map(session => session.id);
 
 /**
  * The `{ base, model }` a `harness` event attributes later failures to, or
@@ -130,10 +135,13 @@ function identityOf(event) {
  * whose latest one does not identify a harness and model, is never
  * evidence of recurrence: it is left out of every group and counted in
  * `failuresUnattributed`. Returns `{ recurrences, sessionsRead,
- * sessionsUnreadable, linesUnparseable, failuresUnattributed }`: every
- * session listed is read and counted in `sessionsRead`, and one with a file
- * that could not be read is also counted in `sessionsUnreadable` while what
- * it did yield is still used.
+ * sessionsUnreadable, sessionsBeingSealed, sessionsOverLimit,
+ * linesUnparseable, failuresUnattributed }`: every session listed is read
+ * and counted in `sessionsRead`, and one with a file that could not be read
+ * is also counted in `sessionsUnreadable` while what it did yield is still
+ * used. `sessionsBeingSealed` counts the sessions with events in a claimed
+ * or temporary file, which were not read, and `sessionsOverLimit` names the
+ * ones with a file larger than is read, which are among the unreadable.
  *
  * Recurrences come most sessions first, then most occurrences, then by
  * signature. An example reference names the first occurrence in each of the
@@ -143,14 +151,16 @@ function identityOf(event) {
  */
 export function findRecurrences(root, { minSessions = 2 } = {}) {
   if (!Number.isSafeInteger(minSessions) || minSessions < 1) throw new RangeError('minSessions must be a positive integer');
-  const ids = sessionIds(root);
+  const sessions = listSessions(root);
   const groups = new Map();
   let sessionsUnreadable = 0;
+  const sessionsOverLimit = [];
   let linesUnparseable = 0;
   let failuresUnattributed = 0;
-  for (const sessionId of ids) {
-    const { events, unparseable, unreadable } = readEvents(root, sessionId);
+  for (const { id: sessionId } of sessions) {
+    const { events, unparseable, unreadable, overLimit } = readEvents(root, sessionId);
     if (unreadable) sessionsUnreadable++;
+    if (overLimit) sessionsOverLimit.push(sessionId);
     linesUnparseable += unparseable;
     const external = events.some(e => e.type === EXTERNAL_EVENT);
     let identity = null;
@@ -189,5 +199,13 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
       exampleEventRefs: [...sessions].slice(0, MAX_EXAMPLE_REFS).map(([sessionId, line]) => ({ sessionId, line })),
     }))
     .sort((a, b) => b.sessions.length - a.sessions.length || b.count - a.count || (a.signature < b.signature ? -1 : a.signature > b.signature ? 1 : 0));
-  return { recurrences, sessionsRead: ids.length, sessionsUnreadable, linesUnparseable, failuresUnattributed };
+  return {
+    recurrences,
+    sessionsRead: sessions.length,
+    sessionsUnreadable,
+    sessionsBeingSealed: sessions.filter(session => session.beingSealed).length,
+    sessionsOverLimit,
+    linesUnparseable,
+    failuresUnattributed,
+  };
 }

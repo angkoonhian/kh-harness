@@ -6,9 +6,10 @@
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { BLOBS_DIR, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { BLOBS_DIR, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 import { applyRetention, SEAL_IDLE_MS, sealClosedSessions } from '../../assets/scripts/harness-seal.mjs';
-import { idWithSuffix, sessionNames, sessionsDir } from './log-lib.mjs';
+import { sessionsDir } from './log-lib.mjs';
+import { listSessions } from './recurrence.mjs';
 
 // The index lock is breakable once it is 10 minutes old, so each of the two
 // locked steps stops well inside that; what is left is done by a later run.
@@ -23,14 +24,21 @@ function blobNames(root) {
 }
 
 /** Sessions still holding unsealed events after a run: those appended to
- * within the idle threshold, which sealing leaves by design, and the rest. */
+ * within the idle threshold, which sealing leaves by design, and the rest.
+ * None when the sessions directory cannot be listed. */
 function unsealedAfter(root, now) {
   let recent = 0;
   let other = 0;
-  for (const name of sessionNames(root)) {
-    if (idWithSuffix(name, '.jsonl') === null) continue;
+  let sessions = [];
+  try {
+    sessions = listSessions(root);
+  } catch {
+    // `status` says the directory cannot be listed
+  }
+  for (const { id, unsealed } of sessions) {
+    if (!unsealed) continue;
     try {
-      if (now - statSync(join(sessionsDir(root), name)).mtimeMs < SEAL_IDLE_MS) recent++;
+      if (now - statSync(join(sessionsDir(root), sessionFileName(id))).mtimeMs < SEAL_IDLE_MS) recent++;
       else other++;
     } catch {
       // sealed since it was listed

@@ -4,14 +4,14 @@
 // writes the real `~/.claude/kh-harness`.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 import { appendEvent, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
-import { failureSignature, FAILURE_EVENT, findRecurrences, normaliseError, SUCCESS_EVENT } from './recurrence.mjs';
+import { failureSignature, FAILURE_EVENT, findRecurrences, listSessions, normaliseError, sessionIds, SUCCESS_EVENT } from './recurrence.mjs';
 
 const made = [];
 const tempDir = prefix => {
@@ -269,9 +269,48 @@ test('a repository with no log has read nothing', () => {
     recurrences: [],
     sessionsRead: 0,
     sessionsUnreadable: 0,
+    sessionsBeingSealed: 0,
+    sessionsOverLimit: [],
     linesUnparseable: 0,
     failuresUnattributed: 0,
   });
+});
+
+test('a session whose only file is a claimed or temporary one is listed and counted, not silently left out', () => {
+  const root = tempDir('hk-rec-repo-');
+  for (const id of ['one', 'two', 'three']) log(root, id, HARNESS, failure(id));
+  const three = join(sessionsDir(root), sessionFileName('three'));
+  renameSync(three, `${three}.sealing`);
+  writeFileSync(join(sessionsDir(root), 's-four.jsonl.gz.tmp'), gzipSync('{"type":"Stop"}\n'));
+  writeFileSync(join(sessionsDir(root), 's-two.jsonl.sealing'), '{"type":"Stop"}\n');
+
+  assert.deepEqual(sessionIds(root), ['four', 'one', 'three', 'two']);
+  assert.deepEqual(listSessions(root), [
+    { id: 'four', sealed: false, unsealed: false, beingSealed: true },
+    { id: 'one', sealed: false, unsealed: true, beingSealed: false },
+    { id: 'three', sealed: false, unsealed: false, beingSealed: true },
+    { id: 'two', sealed: false, unsealed: true, beingSealed: true },
+  ]);
+  const result = findRecurrences(root);
+  assert.equal(result.sessionsRead, 4);
+  assert.equal(result.sessionsBeingSealed, 3, 'each holds events this read did not see');
+  assert.deepEqual(result.recurrences.map(r => r.sessions), [['one', 'two']]);
+});
+
+test('a session over the read limit is named, and counted as unreadable', () => {
+  const root = tempDir('hk-rec-repo-');
+  log(root, 'one', HARNESS, failure('one'));
+  log(root, 'two', HARNESS, failure('two'));
+  log(root, 'big', HARNESS, failure('big'), { type: 'Stop', pad: 'x'.repeat(4000) });
+  process.env.KH_LOG_MAX_FILE_BYTES = '2000';
+  try {
+    const result = findRecurrences(root);
+    assert.deepEqual(result.sessionsOverLimit, ['big']);
+    assert.equal(result.sessionsUnreadable, 1);
+    assert.deepEqual(result.recurrences.map(r => r.sessions), [['one', 'two']]);
+  } finally {
+    delete process.env.KH_LOG_MAX_FILE_BYTES;
+  }
 });
 
 const ROOT = process.platform === 'win32' ? 'C:\\work\\repo' : '/work/repo';

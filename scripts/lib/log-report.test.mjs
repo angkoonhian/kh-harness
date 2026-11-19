@@ -6,7 +6,7 @@
 // real `~/.claude`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { appendEvent, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
@@ -289,6 +289,29 @@ test('the report counts what it could not read', () => {
   const text = reportText(root);
   assert.match(text, /sessions read: 5; of them unreadable, in whole or part: 1; unparseable lines: 1/);
   assert.match(text, /failures left out, because no harness and model was recorded before them: 2/);
+});
+
+test('the report accounts for a session whose events are in a claimed file, and names one over the read limit', () => {
+  const root = project();
+  for (const id of ['a', 'b', 'c']) log(root, id, harness(), failure());
+  log(root, 'big', harness(), { type: 'Stop', pad: 'x'.repeat(6000) });
+  renameSync(sessionFile(root, 'c'), `${sessionFile(root, 'c')}.sealing`);
+  process.env.KH_LOG_MAX_FILE_BYTES = '4000';
+  let json;
+  let text;
+  try {
+    json = reportJson(root);
+    text = reportText(root);
+  } finally {
+    delete process.env.KH_LOG_MAX_FILE_BYTES;
+  }
+  assert.deepEqual([json.sessionsRead, json.sessionsUnreadable, json.sessionsBeingSealed], [4, 1, 1]);
+  assert.deepEqual(json.sessionsOverLimit, ['big']);
+  assert.equal(json.gates.sessionsBeingSealed, 1);
+  assert.match(text, /sessions read: 4; of them unreadable, in whole or part: 1; unparseable lines: 0/);
+  assert.match(text, /sessions with events in a claimed or temporary file, which are not read until a maintenance run finishes sealing them: 1/);
+  assert.match(text, /sessions larger than this command reads, counted as unreadable: big/);
+  assert.match(text, /in 2 sessions, 2 times/, 'the recurrence is still found in the sessions that were read');
 });
 
 test('with no log it says nothing was read', () => {

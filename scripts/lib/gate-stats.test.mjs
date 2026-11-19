@@ -3,6 +3,10 @@
 // Every test runs against the temporary KH_DATA_DIR learn-fixtures.mjs sets.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { renameSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 
 import { gateStats } from './gate-stats.mjs';
 import { logFiring, trialRepo } from './learn-fixtures.mjs';
@@ -24,4 +28,17 @@ test('where each firing is, is collected only when asked for, and the counts are
     { sessionId: 'fire-b', line: 1, action: 'block' },
   ]);
   assert.ok(places.every(p => typeof p.ts === 'string'));
+});
+
+test('a session whose events are in a claimed file is counted as read and as being sealed, and its firings are not counted', () => {
+  const { root, learning } = trialRepo();
+  logFiring(root, 'fire-a', learning.gate, 'a-1');
+  logFiring(root, 'fire-b', learning.gate, 'b-1');
+  const listedBefore = gateStats(root, readLedger(root)).sessionsRead;
+  const plain = join(repoDataDir(root), 'sessions', sessionFileName('fire-b'));
+  renameSync(plain, `${plain}.sealing`);
+  const stats = gateStats(root, readLedger(root));
+  assert.equal(stats.sessionsRead, listedBefore, 'it is still among the sessions listed');
+  assert.equal(stats.sessionsBeingSealed, 1);
+  assert.equal(stats.gates.get('L1').firings, 1);
 });

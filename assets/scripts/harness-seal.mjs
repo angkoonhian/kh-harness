@@ -123,12 +123,13 @@ const LOCK_MAX_AGE_MS = 10 * 60_000;
 // A lock holds its owner's pid and token; anything larger is not one.
 const LOCK_MAX_BYTES = 4096;
 
-// The suffixes after a session's file name that name its plain file and its
-// sealed one; `CLAIMED_SUFFIX` and `SEAL_TEMP_SUFFIX` name the other two.
-const PLAIN = '';
-const SEALED = '.gz';
+/** The suffixes after a session's file name that name its plain file and
+ * its sealed one; `CLAIMED_SUFFIX` and `SEAL_TEMP_SUFFIX` name the other
+ * two files a session can have. */
+export const PLAIN_SUFFIX = '';
+export const SEALED_SUFFIX = '.gz';
 const SESSION_ENTRY = new RegExp(
-  `^s-([^.]+)\\.jsonl(${[SEALED, CLAIMED_SUFFIX, SEAL_TEMP_SUFFIX].map(s => s.replace(/\./g, '\\.')).join('|')})?$`);
+  `^s-([^.]+)\\.jsonl(${[SEALED_SUFFIX, CLAIMED_SUFFIX, SEAL_TEMP_SUFFIX].map(s => s.replace(/\./g, '\\.')).join('|')})?$`);
 
 const isSha256 = v => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 const isTimestampOrNull = v => v === null || (typeof v === 'string' && !Number.isNaN(Date.parse(v)));
@@ -233,23 +234,40 @@ function appendIndexLine(root, index, record, held) {
   recordLatest(index, full, sha256Hex(bytes));
 }
 
-/** Each session found in the sessions directory, by id in sorted order, with
- * the set of its files present, named by their suffixes. */
-function listSessions(root) {
+/**
+ * Each session with a file in the sessions directory, in the order of its
+ * files' names, with the set of its files present, named by their suffixes.
+ * This is the one reading of a session file's name: every reader of the log
+ * lists sessions through it, so none misses a session that another counts.
+ * A directory that does not exist holds none; one that cannot be listed
+ * throws.
+ */
+export function listSessionFiles(root) {
   let names;
   try {
     names = readdirSync(join(repoDataDir(root), SESSIONS_DIR));
-  } catch {
-    return new Map();
+  } catch (error) {
+    if (error?.code === 'ENOENT') return new Map();
+    throw error;
   }
   const sessions = new Map();
   for (const name of names.sort()) {
     const m = SESSION_ENTRY.exec(name);
     if (m === null || safeSessionId(m[1]) !== m[1]) continue;
     if (!sessions.has(m[1])) sessions.set(m[1], new Set());
-    sessions.get(m[1]).add(m[2] ?? PLAIN);
+    sessions.get(m[1]).add(m[2] ?? PLAIN_SUFFIX);
   }
   return sessions;
+}
+
+/** `listSessionFiles`, with no session when the directory cannot be listed:
+ * sealing and retention then have nothing to do. */
+function listSessions(root) {
+  try {
+    return listSessionFiles(root);
+  } catch {
+    return new Map();
+  }
 }
 
 const sessionFile = (root, sessionId, kind) => `${join(repoDataDir(root), SESSIONS_DIR, sessionFileName(sessionId))}${kind}`;
@@ -359,14 +377,14 @@ function recoverInterrupted(root, sessions, index, held, gunzip = gunzipBounded)
     if (!kinds.has(SEAL_TEMP_SUFFIX)) continue;
     const temp = sessionFile(root, sessionId, SEAL_TEMP_SUFFIX);
     try {
-      const sealed = readCompressed(sessionFile(root, sessionId, SEALED), gunzip);
+      const sealed = readCompressed(sessionFile(root, sessionId, SEALED_SUFFIX), gunzip);
       if (isPending(root, sessionId, index, sealed, gunzip)) {
         held();
         rmSync(sessionFile(root, sessionId, CLAIMED_SUFFIX), { force: true });
         kinds.delete(CLAIMED_SUFFIX);
         held();
-        renameSync(temp, sessionFile(root, sessionId, SEALED));
-        kinds.add(SEALED);
+        renameSync(temp, sessionFile(root, sessionId, SEALED_SUFFIX));
+        kinds.add(SEALED_SUFFIX);
         kinds.delete(SEAL_TEMP_SUFFIX);
       } else if (!tempMatchesIndex(root, sessionId, index.latest.get(sessionId), gunzip) || matchesIndex(sealed, index.latest.get(sessionId))) {
         held();
@@ -398,9 +416,9 @@ function joined(sealed, claimed) {
  * is, unclaimed, since sealing reads both whole.
  */
 function sealSession(root, sessionId, kinds, index, now, held, maxBytes) {
-  if (kinds.has(SEAL_TEMP_SUFFIX) || !(kinds.has(PLAIN) || kinds.has(CLAIMED_SUFFIX))) return false;
-  const plainPath = sessionFile(root, sessionId, PLAIN);
-  const sealedPath = sessionFile(root, sessionId, SEALED);
+  if (kinds.has(SEAL_TEMP_SUFFIX) || !(kinds.has(PLAIN_SUFFIX) || kinds.has(CLAIMED_SUFFIX))) return false;
+  const plainPath = sessionFile(root, sessionId, PLAIN_SUFFIX);
+  const sealedPath = sessionFile(root, sessionId, SEALED_SUFFIX);
   const claimedPath = sessionFile(root, sessionId, CLAIMED_SUFFIX);
   const tempPath = sessionFile(root, sessionId, SEAL_TEMP_SUFFIX);
   const unsealed = statSync(kinds.has(CLAIMED_SUFFIX) ? claimedPath : plainPath);
@@ -411,7 +429,7 @@ function sealSession(root, sessionId, kinds, index, now, held, maxBytes) {
   if (!kinds.has(CLAIMED_SUFFIX)) {
     held();
     renameSync(plainPath, claimedPath);
-    kinds.delete(PLAIN);
+    kinds.delete(PLAIN_SUFFIX);
     kinds.add(CLAIMED_SUFFIX);
   }
   const claimed = readBounded(claimedPath, maxLogFileBytes());
@@ -430,7 +448,7 @@ function sealSession(root, sessionId, kinds, index, now, held, maxBytes) {
   kinds.delete(CLAIMED_SUFFIX);
   held();
   renameSync(tempPath, sealedPath);
-  kinds.add(SEALED);
+  kinds.add(SEALED_SUFFIX);
   return true;
 }
 
@@ -676,7 +694,7 @@ function withoutContent(bytes) {
  * `contentExpired: true`, so the session is not read again until a later
  * seal adds events to it. */
 function expireSession(root, sessionId, index, held, gunzip) {
-  const sealedPath = sessionFile(root, sessionId, SEALED);
+  const sealedPath = sessionFile(root, sessionId, SEALED_SUFFIX);
   const tempPath = sessionFile(root, sessionId, SEAL_TEMP_SUFFIX);
   let sealed;
   try {
@@ -707,7 +725,7 @@ function referencedBlobs(root, sessions, index) {
   const referenced = new Set();
   for (const [sessionId, kinds] of sessions) {
     for (const sha256 of index.latest.get(sessionId)?.blobs ?? []) referenced.add(sha256);
-    for (const kind of [PLAIN, CLAIMED_SUFFIX]) {
+    for (const kind of [PLAIN_SUFFIX, CLAIMED_SUFFIX]) {
       if (kinds.has(kind)) blobsIn(readBounded(sessionFile(root, sessionId, kind), maxLogFileBytes()), referenced);
     }
   }
@@ -858,18 +876,18 @@ export function applyRetention(root, {
       const sessions = listSessions(root);
       recoverInterrupted(root, sessions, index, held, gunzip);
       for (const [sessionId, kinds] of sessions) {
-        if (!kinds.has(SEALED) || kinds.has(CLAIMED_SUFFIX) || kinds.has(SEAL_TEMP_SUFFIX)) continue;
+        if (!kinds.has(SEALED_SUFFIX) || kinds.has(CLAIMED_SUFFIX) || kinds.has(SEAL_TEMP_SUFFIX)) continue;
         const latest = index.latest.get(sessionId);
         if (latest === undefined) {
           try {
-            if (statSync(sessionFile(root, sessionId, SEALED)).mtimeMs < cutoff) contentUnverifiable++;
+            if (statSync(sessionFile(root, sessionId, SEALED_SUFFIX)).mtimeMs < cutoff) contentUnverifiable++;
           } catch {
             // gone since it was listed
           }
           continue;
         }
         if (latest.contentExpired === true || latest.lastTs === null || !(Date.parse(latest.lastTs) < cutoff)) continue;
-        if ((statSync(sessionFile(root, sessionId, SEALED), { throwIfNoEntry: false })?.size ?? 0) > maxSessionBytes) continue;
+        if ((statSync(sessionFile(root, sessionId, SEALED_SUFFIX), { throwIfNoEntry: false })?.size ?? 0) > maxSessionBytes) continue;
         if (!withinBudget()) return skip('the time budget was spent');
         try {
           const expired = expireSession(root, sessionId, index, held, gunzip);
@@ -938,10 +956,10 @@ function checkIndex(root, { withinBudget = () => true, gunzip = gunzipBounded, v
     const latest = index.latest.get(sessionId);
     const kinds = sessions.get(sessionId) ?? new Set();
     if (latest === undefined) {
-      if (kinds.has(SEALED)) sessionsAltered.push(sessionId);
+      if (kinds.has(SEALED_SUFFIX)) sessionsAltered.push(sessionId);
       continue;
     }
-    const sealedPath = sessionFile(root, sessionId, SEALED);
+    const sealedPath = sessionFile(root, sessionId, SEALED_SUFFIX);
     let st = null;
     try {
       st = statSync(sealedPath);
@@ -965,7 +983,7 @@ function checkIndex(root, { withinBudget = () => true, gunzip = gunzipBounded, v
     }
     verified?.delete(sessionId);
     if (readable && isPending(root, sessionId, index, sealed, gunzip)) sessionsPending.push(sessionId);
-    else if (kinds.has(SEALED)) sessionsAltered.push(sessionId);
+    else if (kinds.has(SEALED_SUFFIX)) sessionsAltered.push(sessionId);
     else sessionsMissing.push(sessionId);
   }
   const intact = brokenAt === null && sessionsMissing.length === 0 && sessionsAltered.length === 0;
