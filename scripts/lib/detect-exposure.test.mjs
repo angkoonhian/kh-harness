@@ -887,3 +887,38 @@ test('DOGFOOD: kh-harness passes its own P0.security check', () => {
   const security = checks.find(c => c.id === 'P0.security');
   assert.equal(security.state, 'verified', `P0.security must read verified on this repository: ${JSON.stringify(security.evidence)}`);
 });
+
+// --- A quoted value is source code only when its quote closes a literal -----
+
+test('a quoted secret that begins with an operator or a closer is still a finding', () => {
+  const pw = glue('', 'pass', 'word');
+  for (const first of ['.', '+', ',', ')', ';', '}', ']']) {
+    for (const line of [`${pw}: "${first}Zk39fj2kd9Qw7xL2"`, `${pw} = '${first}Zk39fj2kd9Qw7xL2'`, `{ "${pw}": "${first}Zk39fj2kd9Qw7xL2" }`]) {
+      const d = repo();
+      write(d, 'config.yml', line + '\n');
+      assert.deepEqual(run(d).map(e => [e.kind, e.valueKind]), [['credentials-in-doc', 'literal']], line);
+    }
+  }
+});
+
+test('a key that ends a string literal is not a credential, whatever joins the literal to what follows', () => {
+  const pw = glue('', 'pass', 'word');
+  const lines = [
+    `print("${pw}: " % userPassword)`,
+    `const msg = "${pw}: " & userPassword & "!";`,
+    `label = "${pw}: " if masked else "pin: "`,
+    `log.info('${pw}=' + value + '; retrying in a moment')`,
+    `const a = "x" + "${pw}: " + reason + " (see the documentation)";`,
+    `printf("say \\"${pw}: " + reason + " and nothing more")`,
+  ];
+  const d = repo();
+  write(d, 'src/log.py', lines.join('\n') + '\n');
+  assert.deepEqual(run(d), []);
+});
+
+test('an apostrophe in the words before a key does not make a quoted secret read as source code', () => {
+  const pw = glue('', 'pass', 'word');
+  const d = repo();
+  write(d, 'notes.md', `don't forget, the ${pw}: 'Zk39fj2kd9Qw7xL2'\n`);
+  assert.deepEqual(run(d).map(e => [e.kind, e.valueKind]), [['credentials-in-doc', 'literal']]);
+});
