@@ -204,6 +204,23 @@ test('with a broken ledger every learned local gate is removed, and tick promote
   assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T12:00:00.000Z', indexLines: 0 });
 });
 
+test('an append to the ledger that stopped partway switches no gate off, and the next step that records drops the torn line', () => {
+  const { root, gate } = promotedRepo('block');
+  const ledger = join(repoDataDir(root), 'ledger.jsonl');
+  writeFileSync(ledger, '{"kind":"wrong","learningId":"L1","conte', { flag: 'a' });
+  assert.equal(listLearnings(root).ledgerIntact, true);
+  assert.deepEqual(listLearnings(root).gatesToRepair, []);
+  const ticked = tick(root);
+  assert.equal(ticked.ledgerIntact, true);
+  assert.deepEqual(ticked.repairedGates, []);
+  assert.deepEqual(localGates(root).gates, [gate], 'the approved gate is still in force');
+  assert.ok(denied(hookOn(root, MISTAKE)));
+  assert.ok(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).ok);
+  assert.ok(readFileSync(ledger, 'utf8').endsWith('\n'));
+  assert.deepEqual(kinds(root).at(-1), 'L1:demoted');
+  assert.equal(verifyLedger(root).intact, true);
+});
+
 test('tick records how many lines the seal index held, and records none when the index cannot be read', () => {
   const root = loggedRepo();
   assert.deepEqual(sealClosedSessions(root, { now: Date.now() + SEAL_IDLE_MS + 60_000 }).sealed.length, 4);

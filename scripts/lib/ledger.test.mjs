@@ -12,7 +12,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
-import { appendLedger, isApprover, LEDGER_KINDS, LEDGER_LOCK_STALE_MS, readLedger, verifyLedger } from './ledger.mjs';
+import { LOCK_STALE_MS } from './file-lock.mjs';
+import { appendLedger, isApprover, LEDGER_KINDS, readLedger, readLedgerView, verifyLedger } from './ledger.mjs';
 
 const made = [];
 const tempDir = prefix => {
@@ -100,15 +101,57 @@ test('a removed first line is a break at line 1', () => {
   assert.deepEqual(verifyLedger(root), { intact: false, brokenAt: 1 });
 });
 
-test('an append after a torn last line keeps its own line and the break stays at the torn one', () => {
+test('an unterminated last line is no entry: readers pass over it and the next append drops it', () => {
   const root = tempDir('hk-ledger-repo-');
   appendLedger(root, entry());
-  writeFileSync(ledgerPath(root), lines(root)[0] + '\n{"kind":"pro', 'utf8');
-  appendLedger(root, entry({ kind: 'replayed' }));
+  const first = lines(root)[0];
+  for (const tail of ['{"kind":"pro', JSON.stringify({ ...JSON.parse(first), kind: 'replayed', prev: sha256Hex(first) })]) {
+    writeFileSync(ledgerPath(root), first + '\n' + tail, 'utf8');
+    assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null }, 'a step that never finished its line recorded nothing');
+    assert.deepEqual(readLedger(root).map(e => e.kind), ['proposed']);
+    assert.deepEqual(readLedgerView(root).entries.map(e => e.kind), ['proposed']);
+    appendLedger(root, entry({ kind: 'trial' }));
+    const raw = lines(root);
+    assert.deepEqual(raw.map(l => JSON.parse(l).kind), ['proposed', 'trial']);
+    assert.equal(JSON.parse(raw[1]).prev, sha256Hex(first), 'the new line chains to the last whole one');
+    assert.equal(readFileSync(ledgerPath(root), 'utf8'), raw.join('\n') + '\n', 'nothing of the torn line is left');
+    assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
+    writeFileSync(ledgerPath(root), first + '\n', 'utf8');
+  }
+});
+
+test('a ledger that is only an unterminated line is empty, and the first append starts the chain', () => {
+  const root = tempDir('hk-ledger-repo-');
+  appendLedger(root, entry());
+  writeFileSync(ledgerPath(root), '{"kind":"pro', 'utf8');
+  assert.deepEqual(readLedgerView(root), { intact: true, entries: [] });
+  appendLedger(root, entry());
+  assert.equal(readLedger(root).length, 1);
+  assert.equal(readLedger(root)[0].prev, null);
+});
+
+test('readLedgerView gives the entries of an intact chain and none of a broken one, from one read', () => {
+  const root = tempDir('hk-ledger-repo-');
+  assert.deepEqual(readLedgerView(root), { intact: true, entries: [] });
+  for (const kind of ['proposed', 'replayed', 'trial']) appendLedger(root, entry({ kind }));
+  assert.deepEqual(readLedgerView(root), { intact: true, entries: readLedger(root) });
   const raw = lines(root);
-  assert.equal(raw.length, 3);
-  assert.equal(JSON.parse(raw[2]).prev, sha256Hex('{"kind":"pro'));
-  assert.deepEqual(verifyLedger(root), { intact: false, brokenAt: 2 });
+  writeFileSync(ledgerPath(root), [raw[0], raw[2]].join('\n') + '\n', 'utf8');
+  assert.deepEqual(readLedgerView(root), { intact: false, entries: [] });
+});
+
+test('a learning entry may carry the hash of the learning\'s prose, and nothing else in its place', () => {
+  const root = tempDir('hk-ledger-repo-');
+  appendLedger(root, entry({ proseSha256: 'e'.repeat(64) }));
+  appendLedger(root, entry({ kind: 'replayed' }));
+  assert.deepEqual(readLedger(root).map(e => e.proseSha256), ['e'.repeat(64), undefined]);
+  assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
+  assert.throws(() => appendLedger(root, entry({ proseSha256: 'not a hash' })), /proseSha256/);
+  assert.throws(() => appendLedger(root, entry({ proseSha256: null })), /proseSha256/);
+  assert.throws(
+    () => appendLedger(root, { kind: 'policy', policySha256: 'a'.repeat(64), base: 'b', learned: 'l', approvedBy: 'owner', proseSha256: 'e'.repeat(64) }),
+    /unknown field "proseSha256"/,
+  );
 });
 
 test('an unknown kind is refused', () => {
@@ -266,17 +309,16 @@ test('a lock whose writer is alive is never broken, however old', () => {
 });
 
 test('an unreadable lock is broken only after the stale threshold', () => {
-  assert.equal(LEDGER_LOCK_STALE_MS, 30_000);
   const root = tempDir('hk-ledger-repo-');
   appendLedger(root, entry());
   writeFileSync(lockOf(root), '{"pid":');
   const { mtimeMs } = statSync(lockOf(root));
   assert.throws(
-    () => appendLedger(root, entry({ kind: 'replayed' }), { now: steppingClock(mtimeMs + LEDGER_LOCK_STALE_MS - 10_000) }),
+    () => appendLedger(root, entry({ kind: 'replayed' }), { now: steppingClock(mtimeMs + LOCK_STALE_MS - 10_000) }),
     /ledger is locked/,
   );
   assert.equal(readFileSync(lockOf(root), 'utf8'), '{"pid":');
-  appendLedger(root, entry({ kind: 'replayed' }), { now: () => mtimeMs + LEDGER_LOCK_STALE_MS + 1000 });
+  appendLedger(root, entry({ kind: 'replayed' }), { now: () => mtimeMs + LOCK_STALE_MS + 1000 });
   assert.ok(!existsSync(lockOf(root)));
   assert.deepEqual(readLedger(root).map(e => e.kind), ['proposed', 'replayed']);
   assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });

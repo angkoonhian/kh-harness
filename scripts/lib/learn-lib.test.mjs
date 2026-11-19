@@ -14,7 +14,7 @@ import {
   call, draftFor, drafted, editLearning, FIX, FIX_GATE, git, kinds, learningFile, localGates, localGatesPath, log, logClean, logFiring, loggedRepo,
   logMistakes, logReadMistakes, mistake, mtimes, read, READ_GATE, repo, signatureOf, success, trialRepo, WATCH_GATE, writeLocalGates,
 } from './learn-fixtures.mjs';
-import { draftLearning, gateActionsFor, learningStats, listLearnings, recordedStatus, runTrial } from './learn-lib.mjs';
+import { draftLearning, gateActionsFor, learningStats, listLearnings, runTrial } from './learn-lib.mjs';
 import { retireLearning } from './learn-promote.mjs';
 import { appendLedger, readLedger, verifyLedger } from './ledger.mjs';
 import { findRecurrences } from './recurrence.mjs';
@@ -34,28 +34,6 @@ test('a learning gate warns or blocks only once promoted, on this machine or in 
   for (const status of ['candidate', 'rejected', 'trial', 'suspended', 'retired']) assert.deepEqual(gateActionsFor(status), ['observe']);
   for (const status of ['active-local', 'landed']) assert.deepEqual(gateActionsFor(status), ['warn', 'block']);
   for (const status of ['reverted', 'unknown', 'constructor']) assert.deepEqual(gateActionsFor(status), []);
-});
-
-test('the recorded status is the last status-changing ledger entry for that id, and only under the learning\'s content', () => {
-  const sha = 'a'.repeat(64);
-  const other = 'b'.repeat(64);
-  const entry = (kind, over = {}) => ({ kind, learningId: 'L1', contentSha256: sha, ...over });
-  assert.equal(recordedStatus([], 'L1', sha), null);
-  assert.equal(recordedStatus([entry('proposed')], 'L1', sha), 'candidate');
-  assert.equal(recordedStatus([entry('proposed'), entry('replayed'), entry('trial'), entry('wrong')], 'L1', sha), 'trial');
-  const promoted = entry('promoted', { action: 'warn', approvedBy: 'owner' });
-  assert.equal(recordedStatus([entry('trial'), promoted], 'L1', sha), 'active-local');
-  assert.equal(recordedStatus([entry('trial'), promoted, entry('demoted')], 'L1', sha), 'trial');
-  assert.equal(recordedStatus([entry('trial'), entry('suspended')], 'L1', sha), 'suspended');
-  assert.equal(recordedStatus([entry('trial'), entry('retired')], 'L1', sha), 'retired');
-  const landed = entry('landed', { action: 'warn', approvedBy: 'owner' });
-  assert.equal(recordedStatus([entry('trial'), promoted, landed], 'L1', sha), 'landed');
-  assert.equal(recordedStatus([entry('trial'), promoted, landed, entry('reverted', { action: 'warn', approvedBy: 'owner' })], 'L1', sha), 'active-local',
-    'a revert takes the gate out of the repository, not the approval');
-  assert.equal(recordedStatus([entry('proposed'), entry('rejected', { contentSha256: other })], 'L1', sha), null,
-    'an older entry under the matching hash does not win over a newer one under another');
-  assert.equal(recordedStatus([entry('proposed'), entry('rejected', { contentSha256: other })], 'L1', other), 'rejected');
-  assert.equal(recordedStatus([entry('rejected', { learningId: 'L2' })], 'L1', sha), null);
 });
 
 test('a draft for an unknown signature is refused', () => {

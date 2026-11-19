@@ -40,7 +40,7 @@ import { writeFileAtomic } from './atomic-write.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { LOCKED, withFileLock } from './file-lock.mjs';
 import { gateStats } from './gate-stats.mjs';
-import { ACTION_KINDS, appendLedger, isApprover, readLedger, verifyLedger } from './ledger.mjs';
+import { ACTION_KINDS, appendLedger, isApprover, readLedgerView } from './ledger.mjs';
 import { findRecurrences } from './recurrence.mjs';
 import { replayGate } from './replay.mjs';
 import { readIfPresent } from './scan.mjs';
@@ -384,27 +384,11 @@ function recordedState(ledger, id) {
  * evidence for where a step on the learning stopped. */
 export const statusEntriesFor = (ledger, id) => ledger.filter(e => e?.learningId === id && Object.hasOwn(STATUS_AFTER, e.kind));
 
-/** The status the ledger records for the learning `id` with this content:
- * the one its last status-changing entry for `id` leaves it in, or null when
- * there is none or that entry names other content. A learning's file says
- * what its status is; only this says what it may be trusted to be. */
-export function recordedStatus(ledgerEntries, id, contentSha256) {
-  const state = recordedState(ledgerEntries, id);
-  return state !== null && state.contentSha256 === contentSha256 ? state.status : null;
-}
-
 /** The actions a recorded state lets a learning's gate carry: the one its
  * entry granted, when its status allows that action, and above `observe`
  * only when the entry names who approved it. */
 const recordedActions = state =>
   gateActionsFor(state.status).includes(state.action) && (state.action === 'observe' || state.approvedBy !== null) ? [state.action] : [];
-
-/** `{ intact, entries }`: the ledger's entries when its chain is intact,
- * else none. */
-function readLedgerView(root) {
-  if (!verifyLedger(root).intact) return { intact: false, entries: [] };
-  return { intact: true, entries: readLedger(root) };
-}
 
 /** Why the ledger does not vouch for `learning` as its file holds it, or
  * null when it does: its last status-changing entry must name the

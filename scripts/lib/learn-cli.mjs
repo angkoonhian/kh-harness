@@ -21,7 +21,7 @@ import { readEvents } from '../../assets/scripts/harness-log.mjs';
 import { REROUTED_MEANS } from './gate-stats.mjs';
 import { failureKinds, ID_ERROR, isId, learningIn, learningStats, readState, rejectedFor, standingFor, unrecordedReason } from './learn-lib.mjs';
 import { recordedPolicySha256 } from './learn-promote.mjs';
-import { isApprover, readLedger, verifyLedger } from './ledger.mjs';
+import { isApprover, readLedgerView } from './ledger.mjs';
 import { buildLogReport, NOT_CLAIMED, NOT_READ, noLogLine, readCountLines, recurrenceSection } from './log-report.mjs';
 import { readPolicy } from './policy.mjs';
 import { failureSignature, findRecurrences, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
@@ -608,8 +608,7 @@ export const renderPolicyCleared = result => withRepairs(result, [
  * they are the same, which is when `tick` promotes under it. Reads only. */
 export function policyView(root) {
   const file = readPolicy(root);
-  const ledgerIntact = verifyLedger(root).intact;
-  const entries = ledgerIntact ? readLedger(root) : [];
+  const { intact: ledgerIntact, entries } = readLedgerView(root);
   const recordedSha256 = recordedPolicySha256(entries);
   let recorded = 'unknown';
   if (ledgerIntact) recorded = !entries.some(e => e?.kind === 'policy') ? 'never-set' : recordedSha256 === null ? 'withdrawn' : 'set';
