@@ -13,7 +13,7 @@ import { readJsonFile } from './read-json.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
-import { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, RULES_BRIEF_PATH, GENERATOR_SCRIPT_PATHS, protectedDenyRules } from './propose.mjs';
+import { REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, GENERATOR_SCRIPT_PATHS, protectedDenyRules } from './propose.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
@@ -123,8 +123,7 @@ function producibleSettings(root) {
  *                         this needs a forged hash, and anyone who can
  *                         forge the manifest can delete the file outright.
  *                         Stated, not hidden.
- *   `.claude/scripts/*.mjs` (lint-touched, verify-touched, session-brief,
- *                         harness-redact)
+ *   `.claude/scripts/*.mjs` (every hook script, and harness-redact)
  *                         NOT covered, and deliberately not: these are OUR
  *                         code, copied verbatim, and their value is the
  *                         behaviour we wrote rather than anything the user
@@ -139,15 +138,14 @@ function producibleSettings(root) {
 const GENERATOR_PRODUCIBLE_EXACT = new Set([
   'HANDOFF.md',
   BOOTSTRAP_PATH,
-  LINT_TOUCHED_PATH,
-  VERIFY_TOUCHED_PATH,
+  // Every hook script a generator installs, so a new one is removable
+  // without an edit here.
+  ...GENERATOR_SCRIPT_PATHS,
   REDACT_PATH,
-  BRIEF_PATH,
-  // Phase 3: the rules-registry scaffold and the re-injection hook. The
-  // registry is the third artefact whose designed workflow is the user
-  // writing into our file (see `templateFor` and `hasUserAuthoredBody`).
+  // Phase 3: the rules-registry scaffold. The registry is the third artefact
+  // whose designed workflow is the user writing into our file (see
+  // `templateFor` and `hasUserAuthoredBody`).
   RULES_PATH,
-  RULES_BRIEF_PATH,
   // Written into by a person, like the registry.
   FAILURES_PATH,
 ]);

@@ -33,6 +33,7 @@ const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
 // hook paths, so gap-model.mjs's `registeredHook` can ask "is OURS here"
 // against the same constant the generator registers — one source of truth.
 const RULES_BRIEF_PATH = '.claude/scripts/rules-brief.mjs';
+const LOOP_WATCH_PATH = '.claude/scripts/loop-watch.mjs';
 
 /**
  * Task 9b, finding 2: a settings-hook proposal's own `reason` used to be a
@@ -257,6 +258,24 @@ function stopgateProposal({ kitVersion, stack, check }) {
     // this is review finding 5's fix, applied identically here.
     requiresFiles: files.map(f => f.path),
     reason,
+  }];
+}
+
+const LOOP_WATCH_STEP = 13;
+
+/**
+ * The loop warning: a PostToolUseFailure hook that tells Claude when one call
+ * has failed the same way three times in a row (see loop-watch.mjs). No
+ * evidence gate, since any repository's session can loop on a failing call,
+ * and no `matcher`, since a failure of any tool counts.
+ */
+function loopWatchProposal({ kitVersion, check }) {
+  const files = hookFiles(LOOP_WATCH_PATH, kitVersion);
+  return [...files, {
+    kind: 'settings-hook', event: 'PostToolUseFailure', step: LOOP_WATCH_STEP,
+    entry: execEntry(LOOP_WATCH_PATH),
+    requiresFiles: files.map(f => f.path),
+    reason: hookRegistrationReason('PostToolUseFailure', check),
   }];
 }
 
@@ -563,14 +582,16 @@ function reinjectProposal({ kitVersion, harness, check }) {
 /**
  * Every script a generator registers as a hook, with the kit asset it copies
  * and the runbook step its stamp names. uninstall reverts a hook patch only
- * when the entry runs one of these, so a hook script a generator registers
- * must be listed here or its registration can never be removed.
+ * when the entry runs one of these, and deletes only the scripts listed
+ * here, so a hook script a generator registers must be listed here or
+ * neither its registration nor its file can ever be removed.
  */
 const HOOK_SCRIPTS = Object.freeze({
   [LINT_TOUCHED_PATH]: { asset: 'scripts/lint-touched.mjs', step: 9, reason: 'no PostToolUse hook registered' },
   [VERIFY_TOUCHED_PATH]: { asset: 'scripts/verify-touched.mjs', step: 10, reason: 'no Stop hook registered' },
   [BRIEF_PATH]: { asset: 'scripts/session-brief.mjs', step: 16, reason: 'no SessionStart brief hook registered' },
   [RULES_BRIEF_PATH]: { asset: 'scripts/rules-brief.mjs', step: REINJECT_STEP, reason: 'no UserPromptSubmit re-injection hook registered' },
+  [LOOP_WATCH_PATH]: { asset: 'scripts/loop-watch.mjs', step: LOOP_WATCH_STEP, reason: 'no PostToolUseFailure loop-warning hook registered' },
 });
 const GENERATOR_SCRIPT_PATHS = Object.freeze(Object.keys(HOOK_SCRIPTS));
 
@@ -735,6 +756,7 @@ const GENERATORS = {
   'P2.protected': protectedPathProposal,
   'P2.sensor': sensorProposal,
   'P2.stopgate': stopgateProposal,
+  'P2.loopwatch': loopWatchProposal,
   'P1.bootstrap': bootstrapProposal,
   'P1.pathrules': pathRuleProposal,
   'P3.rules': rulesScaffoldProposal,
@@ -862,4 +884,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // generator (a pyproject-only Python repo: `detect` advertised a proposal,
 // `apply` produced nothing) without any test failing, because nothing
 // checked the two against each other.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS };

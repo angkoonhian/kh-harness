@@ -492,21 +492,11 @@ test('C2: a secret anywhere in settings.json reaches no part of a dry run\'s out
 
 test('C3: a manifest that cannot be written exits 2 with a readable message, never a stack trace', () => {
   const d = mkdtempSync(join(tmpdir(), 'hk-life-'));
-  // No `test`/`typecheck` script here (deliberately): Task 4's P2.stopgate
-  // generator would otherwise find evidence for a Stop-gate proposal and,
-  // sorting before P4.handoff by step number (10 < 16), hit the
-  // `.claude`-is-a-file write failure FIRST — before HANDOFF.md is ever
-  // attempted — which is exactly the ordering this fixture must NOT have
-  // (see the lockfile comment immediately below, which already documents
-  // the same hazard for P2.protected).
+  // Proposals are applied in check order and the batch stops at the first
+  // failed write. The rules scaffold (P3.rules) is written outside .claude/
+  // and comes before every check that writes beneath it, so it is the
+  // partial work this test expects to see reported.
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: {} }));
-  // No lockfile here (deliberately, unlike the other fixtures in this file):
-  // Task 2's P2.protected check would find evidence for a deny-rule
-  // proposal and, sorting before P4.handoff by step number, hit the
-  // `.claude`-is-a-file write failure FIRST — stopping the batch before
-  // HANDOFF.md below is ever attempted. This test is about the
-  // manifest-write failure path, not about which proposal happens to sort
-  // first, so the fixture carries no protected path to propose over.
   writeFileSync(join(d, 'tsconfig.json'), '{}');
   // `.claude` as a plain file. Every write beneath it fails, including the
   // `mkdirSync` inside writeManifest — the one write in the tool that must
@@ -532,8 +522,10 @@ test('C3: a manifest that cannot be written exits 2 with a readable message, nev
 
   // The proposal that landed before the failure is on disk and untracked;
   // saying so is the difference between a recoverable repository and a trap.
-  assert.equal(existsSync(join(d, 'HANDOFF.md')), true);
-  assert.match(out, /HANDOFF\.md/, 'must name what is on disk but untracked');
+  // The rules scaffold is written outside .claude/ and comes before the
+  // loop warning, whose script is the first write beneath .claude/.
+  assert.equal(existsSync(join(d, 'docs/harness/RULES.md')), true);
+  assert.match(out, /docs\/harness\/RULES\.md/, 'must name what is on disk but untracked');
 });
 
 test('C3b: with a lockfile present (the common real case), the settings-deny write fails FIRST and nothing is written at all — still exits 2 cleanly', () => {

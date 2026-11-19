@@ -20,7 +20,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, SENSOR_MATCHER, GENERATORS, kitSkew } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SENSOR_MATCHER, GENERATORS, kitSkew } from './propose.mjs';
 import { MANIFEST_PATH } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
@@ -916,6 +916,15 @@ const CHECKS = [
         question: 'A stop gate applies here, but the root package declares neither a typecheck nor a test script — what command verifies this repository?',
       };
     },
+  },
+  {
+    id: 'P2.loopwatch', step: 13, phase: 2,
+    lookedFor: ['a PostToolUseFailure hook in .claude/settings.json'],
+    // No repository evidence decides this: any session can loop on a failing
+    // call, so the step applies under every profile and is always decidable.
+    check: ({ harness, manifest, root }) => registeredHook(harness, 'PostToolUseFailure', LOOP_WATCH_PATH,
+      'install scripts/loop-watch.mjs and register a PostToolUseFailure hook that warns when one call fails the same way three times in a row',
+      { manifest, root }),
   },
   {
     id: 'P2.protected', step: 11, phase: 2,
