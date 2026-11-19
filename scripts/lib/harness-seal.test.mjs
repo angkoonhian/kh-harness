@@ -608,27 +608,42 @@ test('an edited sealed file beside a matching temporary file is reported altered
   assert.deepEqual(verifyIndex(root).sessionsAltered, ['p-1']);
 });
 
+/** The temporary files in the sessions directory. */
+const tempFiles = root => readdirSync(join(repoDataDir(root), 'sessions')).filter(n => n.endsWith(SEAL_TEMP_SUFFIX));
+
 test('a run whose lock is replaced part-way stops before its next write', () => {
   const root = tempDir('hk-log-lock-lost-');
   for (const id of ['l-1', 'l-2', 'l-3']) {
     writeSession(root, id);
     touchAgo(sessionFile(root, id), SEAL_IDLE_MS + MINUTE_MS);
   }
+  // A claim an interrupted run left, so the first write sealing `l-2` makes
+  // is its temporary file.
+  renameSync(sessionFile(root, 'l-2'), claimedFile(root, 'l-2'));
   const lock = dataFile(root, 'index.jsonl.lock');
   const usurper = JSON.stringify({ pid: process.pid, token: 'usurper' });
+  const theirs = gzipSync('the new holder\'s content\n');
   // Called once to start the budget and once before each session: the third
-  // call comes after the first session is sealed.
+  // call comes after the first session is finished, and the new holder then
+  // takes the lock and starts its own temporary file for `l-2`.
   let calls = 0;
   const clock = () => {
-    if (++calls === 3) writeFileSync(lock, usurper);
+    if (++calls === 3) {
+      writeFileSync(lock, usurper);
+      writeFileSync(tempFile(root, 'l-2'), theirs);
+    }
     return 0;
   };
   assert.deepEqual(sealClosedSessions(root, { clock }), { sealed: ['l-1'], lockLost: true });
   assert.equal(indexLines(root).length, 1);
-  assert.equal(existsSync(sessionFile(root, 'l-2')), true, 'the next session was not claimed');
+  assert.deepEqual(readFileSync(tempFile(root, 'l-2')), theirs, 'the new holder\'s temporary file is untouched');
+  assert.deepEqual(tempFiles(root), ['s-l-2.jsonl.gz.tmp'], 'no temporary file of this run is left');
+  assert.equal(existsSync(claimedFile(root, 'l-2')), true, 'the claim is kept for a later run');
+  assert.equal(existsSync(sessionFile(root, 'l-3')), true, 'the next session was not claimed');
   assert.equal(readFileSync(lock, 'utf8'), usurper, 'the new holder\'s lock is left in place');
 
   rmSync(lock);
+  rmSync(tempFile(root, 'l-2'));
   seal(root);
   calls = 0;
   const retention = applyRetention(root, { now: Date.now() + 91 * DAY_MS, clock });
@@ -637,8 +652,31 @@ test('a run whose lock is replaced part-way stops before its next write', () => 
     ['l-1', false], ['l-2', false], ['l-3', false], ['l-1', true],
   ], 'the first session was expired before the lock was replaced, and nothing after');
   assert.equal(eventsOf(root, 'l-2')[0].input.command, 'c0');
+  assert.deepEqual(readFileSync(tempFile(root, 'l-2')), theirs, 'the new holder\'s temporary file is untouched');
+  assert.deepEqual(tempFiles(root), ['s-l-2.jsonl.gz.tmp'], 'no temporary file of this run is left');
   rmSync(lock);
+  rmSync(tempFile(root, 'l-2'));
   assert.deepEqual(verifyIndex(root), INTACT);
+});
+
+test('an unchanged cache is not rewritten', () => {
+  const root = sealedRepo('hk-log-cache-unchanged-', ['n-1', 'n-2']);
+  applyRetention(root, {});
+  const cache = dataFile(root, 'verified.json');
+  touchAgo(cache, DAY_MS);
+  const before = statSync(cache).mtimeMs;
+  assert.deepEqual(applyRetention(root, {}).blobSweep, SWEPT);
+  assert.equal(statSync(cache).mtimeMs, before);
+});
+
+test('writing the cache removes a temporary file a crashed run left', () => {
+  const root = sealedRepo('hk-log-cache-leftover-', ['t-1']);
+  writeFileSync(dataFile(root, 'verified.json.4242.abcdef.tmp'), '{"half');
+  writeFileSync(dataFile(root, 'verified.json.bak'), 'not ours to remove');
+  applyRetention(root, {});
+  const names = readdirSync(repoDataDir(root));
+  assert.equal(names.includes('verified.json.4242.abcdef.tmp'), false);
+  assert.deepEqual(names.filter(n => n.startsWith('verified.json')).sort(), ['verified.json', 'verified.json.bak']);
 });
 
 test('an event of a type the classification does not know loses its input, output and prompt', () => {
