@@ -40,6 +40,7 @@ const richHarness = {
   intent: { path: 'docs/INTENT.md', found: ['Purpose', 'Users', 'How it works', 'Success', 'Failure', 'Non-goals', 'Open questions'], missing: [], lastReviewed: null },
   rulesRegistry: { path: 'docs/harness/RULES.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [] },
   ruleShapedLines: [],
+  failures: { path: 'docs/harness/FAILURES.md', readable: true, kinds: 0, malformedSignatures: 0, log: { read: false, why: 'disabled' } },
 };
 const fullStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'test', 'typecheck'] }] };
 
