@@ -43,16 +43,19 @@ export const SEAL_TEMP_SUFFIX = '.gz.tmp';
 export const SEAL_IDLE_MS = 10 * 60_000;
 
 /**
- * The fields, by event type, that carry text from the payload rather than
+ * The fields, by event type, that carry a payload body rather than
  * structure: what retention removes. Every other field the hook writes is
- * an identifier, a path, a name from a fixed set, a hash, a size, a time or
- * a flag, and is kept.
+ * an identifier, a path, a name from a fixed set, a hash, a size, a time, a
+ * flag or a failure's first error line, and is kept. The first error line
+ * is masked and cut to 300 characters when written, and with the tool and
+ * the input hash it is a failure's signature, which recurrence detection
+ * and replay need for as long as structure is kept.
  */
 export const CONTENT_FIELDS = Object.freeze({
   UserPromptSubmit: Object.freeze(['prompt']),
   PermissionDenied: Object.freeze(['reason']),
   PostToolUse: Object.freeze(['input', 'output']),
-  PostToolUseFailure: Object.freeze(['input', 'output', 'firstErrorLine']),
+  PostToolUseFailure: Object.freeze(['input', 'output']),
   StopFailure: Object.freeze(['error', 'errorDetails']),
 });
 

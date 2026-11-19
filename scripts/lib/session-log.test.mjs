@@ -440,7 +440,8 @@ test('the hook never spawns a child process', () => {
 
 // Every field each handler writes that is kept when content expires, beside
 // the identity fields: an identifier, a path, a name from a fixed set, a
-// hash, a size or a flag. A field that is neither here nor in
+// hash, a size, a flag, or a failure's first error line, which with the
+// tool and input hash is its recurrence signature. A field that is neither here nor in
 // `CONTENT_FIELDS` fails the test below until it is classified.
 const IDENTITY = ['type', 'session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
 const TOOL = ['tool', 'inputHash', 'inputBytes'];
@@ -451,7 +452,7 @@ const KEPT_FIELDS = {
   PermissionRequest: TOOL,
   PermissionDenied: TOOL,
   PostToolUse: [...TOOL, 'status', 'outputBytes', 'durationMs'],
-  PostToolUseFailure: [...TOOL, 'status', 'outputBytes', 'durationMs'],
+  PostToolUseFailure: [...TOOL, 'status', 'outputBytes', 'durationMs', 'firstErrorLine'],
   SubagentStart: ['agentType'],
   SubagentStop: ['agentType', 'stopHookActive'],
   Stop: ['stopHookActive'],
