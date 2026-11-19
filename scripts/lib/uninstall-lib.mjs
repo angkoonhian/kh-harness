@@ -8,7 +8,7 @@
 // enough.
 import * as fs from 'node:fs';
 import { join } from 'node:path';
-import { assertAllowed, assertContained, isAllowedDirectory, isCanonicalJson, serializeSettings, settingsReformattedNote } from './apply-lib.mjs';
+import { assertAllowed, assertContained, isAllowedDirectory, isCanonicalJson, serializeSettings, SETTINGS_PATH } from './apply-lib.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { classify, MANIFEST_PATH, replaceFile, writeManifest } from './manifest.mjs';
 import { revertPatches } from './settings-merge.mjs';
@@ -20,8 +20,6 @@ import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { GATES_PATH, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules } from '../../assets/scripts/harness-redact.mjs';
-
-const SETTINGS = '.claude/settings.json';
 
 /**
  * This machine's session log for the repository: its directory, the bytes of
@@ -578,7 +576,7 @@ export function planUninstall({ root, manifest }) {
   // The same revert `runUninstall` performs, done here read-only, so the
   // prediction of the settings file's final content, below, asks the
   // question the real run answers.
-  const validated = validateSettings(join(root, SETTINGS));
+  const validated = validateSettings(join(root, SETTINGS_PATH));
   const patches = manifest?.settingsPatches ?? [];
   let simulatedSettings = validated.valid ? validated.object : null;
   if (validated.reason === 'settings-missing') {
@@ -607,13 +605,13 @@ export function planUninstall({ root, manifest }) {
   const predictedManifestGone = keep.length === 0 && keepPatches.length === 0;
 
   const accountedFor = new Set(remove.map(r => r.path));
-  if (removeSettingsFile) accountedFor.add(SETTINGS);
+  if (removeSettingsFile) accountedFor.add(SETTINGS_PATH);
   if (predictedManifestGone) accountedFor.add(MANIFEST_PATH);
   const removeDirs = sweepRemovableDirs(root, manifest?.dirsCreated ?? [], accountedFor);
 
   return {
     remove, keep, gone, revert, keepPatches, gonePatches,
-    removeSettingsFile: removeSettingsFile ? SETTINGS : null,
+    removeSettingsFile: removeSettingsFile ? SETTINGS_PATH : null,
     removeDirs,
     leftInPlace: fs.existsSync(join(root, DETECT_REPORT_PATH)) ? [DETECT_REPORT_PATH] : [],
     sessionLog: sessionLogUsage(root),
@@ -674,7 +672,7 @@ export function runUninstall({ root, manifest, plan }) {
   //    the plan, and a patch the plan never saw must still be accounted for.
   const manifestPatches = manifest?.settingsPatches ?? [];
   if (manifestPatches.length > 0) {
-    const validated = validateSettings(join(root, SETTINGS));
+    const validated = validateSettings(join(root, SETTINGS_PATH));
 
     if (validated.valid) {
       const r = revertPatches(validated.object, manifestPatches, producibleSettings(root));
@@ -686,7 +684,7 @@ export function runUninstall({ root, manifest, plan }) {
       // nothing has no business rewriting the owner's settings.json.
       if (r.reverted.length > 0) {
         try {
-          replaceFile(join(root, SETTINGS), serializeSettings(r.settings, validated.raw));
+          replaceFile(join(root, SETTINGS_PATH), serializeSettings(r.settings, validated.raw));
           // Asked of the file as it was before this run, not of the revert.
           settingsReformatted = !isCanonicalJson(validated.raw);
         } catch {
@@ -717,13 +715,13 @@ export function runUninstall({ root, manifest, plan }) {
   // unparseable file is left alone.
   let settingsRemoved = false;
   if (manifest?.settingsCreated) {
-    const settingsPath = join(root, SETTINGS);
+    const settingsPath = join(root, SETTINGS_PATH);
     const current = validateSettings(settingsPath);
     if (current.valid && Object.keys(current.object).length === 0) {
       try {
         fs.rmSync(settingsPath);
         settingsRemoved = true;
-        removed.push(SETTINGS);
+        removed.push(SETTINGS_PATH);
       } catch {
         // Left in place; the manifest keeps `settingsCreated` for a later run.
       }

@@ -188,7 +188,7 @@ test('every step the gap model checks has a row in the SKILL.md phase table and 
   const stack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
   const harness = {
     instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-    claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookEvents: {}, hookRegistrations: {}, agents: [], skills: [], commands: [], rules: [] },
+    claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookRegistrations: {}, agents: [], skills: [], commands: [], rules: [] },
     otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
   };
   const checks = buildGaps({ stack, harness, exposures: [], profile: selectProfile(stack), git: { branch: 'main', isRepo: true }, files: [] });

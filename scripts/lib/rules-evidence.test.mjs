@@ -24,11 +24,11 @@ function write(d, rel, text) {
 }
 const bare = {
   instructions: { path: null, lines: 0 },
-  claudeDir: { denyRules: 0, hookEvents: {}, hookRegistrations: {}, rules: [] },
+  claudeDir: { denyRules: 0, hookRegistrations: {}, rules: [] },
 };
 const withHooks = {
   instructions: { path: 'CLAUDE.md', lines: 10 },
-  claudeDir: { denyRules: 2, denyRuleList: ['Edit(secrets/**)', 'Edit(*-lock.json)'], hookEvents: { Stop: ['.claude/scripts/verify-touched.mjs'] }, hookRegistrations: { Stop: [{ script: '.claude/scripts/verify-touched.mjs', matcher: null }] }, rules: [] },
+  claudeDir: { denyRules: 2, denyRuleList: ['Edit(secrets/**)', 'Edit(*-lock.json)'], hookRegistrations: { Stop: [{ script: '.claude/scripts/verify-touched.mjs', matcher: null }] }, rules: [] },
 };
 
 const REGISTRY = [
@@ -262,7 +262,7 @@ test('ruleShapedLines covers .claude/rules files and omits files with no hits', 
   write(d, 'CLAUDE.md', 'Nothing imperative here.\n');
   write(d, '.claude/rules/api.md', '---\npaths: ["apps/api/**"]\n---\nNever return a raw error.\n');
   write(d, '.claude/rules/web.md', 'Plain notes.\n');
-  const h = { instructions: { path: 'CLAUDE.md', lines: 1 }, claudeDir: { denyRules: 0, hookEvents: {}, rules: ['.claude/rules/api.md', '.claude/rules/web.md'] } };
+  const h = { instructions: { path: 'CLAUDE.md', lines: 1 }, claudeDir: { denyRules: 0, rules: ['.claude/rules/api.md', '.claude/rules/web.md'] } };
   assert.deepEqual(ruleShapedLines(d, h), [{ file: '.claude/rules/api.md', lines: [4] }]);
 });
 

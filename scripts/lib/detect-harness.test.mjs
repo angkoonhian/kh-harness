@@ -153,7 +153,7 @@ test('denyRules is 0 for malformed JSON, and detectHarness does not throw', () =
 
 // --- denyRuleList: Task 8b's gap-model.mjs needs the actual rule STRINGS
 // (not just a count) to tell "our own derived rules are present" from
-// "something is present". Safely filtered the same way `hookEvents` is:
+// "something is present". Safely filtered the same way a hook command is:
 // `harness` is serialised wholesale into docs/harness/detect.json on every
 // run, and a `Bash(...)` deny rule can embed a literal credential as its
 // argument (see apply-lib.mjs's own comment on `renderSettingsDenyDiff`).
@@ -194,25 +194,28 @@ test('denyRuleList is [] when there is no settings file, and does not throw on m
   assert.deepEqual(run(d).claudeDir.denyRuleList, []);
 });
 
-// --- hookEvents: the registry, not the filenames ---
+// --- hookRegistrations: the registry, not the filenames ---
 //
 // .claude/settings.json is an exact record of what is wired up. A hook's
 // script may live anywhere in the repository, so the file list under
 // .claude/scripts/ cannot answer whether an event is covered.
 
-test('hookEvents records a SessionStart hook whose script lives outside .claude/scripts/', () => {
+/** The script of each hook registered on `event`, in registration order. */
+const scriptsOn = (h, event) => (h.claudeDir.hookRegistrations[event] ?? []).map(r => r.script);
+
+test('a SessionStart hook whose script lives outside .claude/scripts/ is recorded by its script', () => {
   const d = repo();
   write(d, '.claude/settings.json', JSON.stringify({
     hooks: { SessionStart: [{ matcher: 'startup|resume|compact', hooks: [{ type: 'command', command: 'node docs/agent-context/inject.js' }] }] },
   }));
   write(d, 'docs/agent-context/inject.js', '//');
   const h = run(d);
-  assert.deepEqual(h.claudeDir.hookEvents.SessionStart, ['docs/agent-context/inject.js']);
+  assert.deepEqual(scriptsOn(h, 'SessionStart'), ['docs/agent-context/inject.js']);
   // The file list is inventory only; it must not be what decides coverage.
   assert.deepEqual(h.claudeDir.hooks, []);
 });
 
-test('hookEvents groups several events and several hooks per event', () => {
+test('the registry groups several events and several hooks per event', () => {
   const d = repo();
   write(d, 'bin/fmt.sh', '#');
   write(d, 'bin/lint.sh', '#');
@@ -227,18 +230,17 @@ test('hookEvents groups several events and several hooks per event', () => {
       Stop: [{ hooks: [{ type: 'command', command: 'make verify' }] }],
     },
   }));
-  const ev = run(d).claudeDir.hookEvents;
-  assert.deepEqual(ev.PostToolUse, ['bin/fmt.sh', 'bin/lint.sh']);
-  assert.deepEqual(ev.Stop, [null]);
+  const h = run(d);
+  assert.deepEqual(scriptsOn(h, 'PostToolUse'), ['bin/fmt.sh', 'bin/lint.sh']);
+  assert.deepEqual(scriptsOn(h, 'Stop'), [null]);
 });
 
 // --- Tier 2 final review, Important 1: the matcher reaches detection ----------
 //
-// `hookEvents` is a flat list of script paths with the matcher discarded, so
-// our lint-touched.mjs registered under `Bash` read as a per-edit sensor in
-// place. `hookRegistrations` keeps the matcher beside the resolved script —
-// still never the command string — and is what `registeredHook` decides
-// from.
+// The matcher decides when a hook fires: our lint-touched.mjs registered
+// under `Bash` is not a per-edit sensor. `hookRegistrations` keeps the
+// matcher beside the resolved script, never the command string, and is what
+// `registeredHook` decides from.
 test('hookRegistrations records each hook\'s resolved script with its normalised matcher, never the command', () => {
   const d = repo();
   write(d, 'bin/fmt.sh', '#');
@@ -274,31 +276,31 @@ test('hookRegistrations resolves an exec-form entry\'s script from args, with ${
   assert.deepEqual(regs.Stop, [{ script: null, matcher: null }], 'a path the scan cannot see is never named');
 });
 
-test('hookEvents also reads .claude/settings.local.json', () => {
+test('the registry also reads .claude/settings.local.json', () => {
   const d = repo();
   write(d, 'a.mjs', '//');
   write(d, 'b.mjs', '//');
   write(d, '.claude/settings.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node a.mjs' }] }] } }));
   write(d, '.claude/settings.local.json', JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'node b.mjs' }] }] } }));
-  const ev = run(d).claudeDir.hookEvents;
-  assert.deepEqual(ev.Stop, ['a.mjs']);
-  assert.deepEqual(ev.PostToolUse, ['b.mjs']);
+  const h = run(d);
+  assert.deepEqual(scriptsOn(h, 'Stop'), ['a.mjs']);
+  assert.deepEqual(scriptsOn(h, 'PostToolUse'), ['b.mjs']);
 });
 
-test('hookEvents is empty for a missing, malformed or hook-less settings file', () => {
+test('the registry is empty for a missing, malformed or hook-less settings file', () => {
   const none = repo();
   write(none, 'README.md', '# x');
-  assert.deepEqual(run(none).claudeDir.hookEvents, {});
+  assert.deepEqual(run(none).claudeDir.hookRegistrations, {});
 
   const bad = repo();
   write(bad, '.claude/settings.json', '{ this is not json');
   assert.doesNotThrow(() => run(bad));
-  assert.deepEqual(run(bad).claudeDir.hookEvents, {});
+  assert.deepEqual(run(bad).claudeDir.hookRegistrations, {});
 
   const shapeless = repo();
   write(shapeless, '.claude/settings.json', JSON.stringify({ hooks: { Stop: 'not-an-array', SessionStart: [{ hooks: [{ type: 'command' }] }] } }));
   assert.doesNotThrow(() => run(shapeless));
-  assert.deepEqual(run(shapeless).claudeDir.hookEvents, {});
+  assert.deepEqual(run(shapeless).claudeDir.hookRegistrations, {});
 });
 
 // --- Remote credential detection, at the producer ---
@@ -491,7 +493,7 @@ test('projectDocs still includes a REAL .txt doc (NOTES.txt) alongside an exclud
 // always-probe list precisely because it holds machine-local secrets. Masking
 // against a pattern list would leave the guarantee dependent on that list
 // being complete; I1 in this same wave showed it was not.
-test('hookEvents records the resolved script, never the command or its arguments', () => {
+test('the registry records the resolved script, never the command or its arguments', () => {
   const d = repo();
   const UNKNOWN = 'wobbegong-marker-7391-quenelle';   // matches no token pattern
   const KNOWN = 'glpat-' + 'Q'.repeat(20);            // matches one
@@ -503,8 +505,9 @@ test('hookEvents records the resolved script, never the command or its arguments
     },
   }));
   const h = run(d);
-  assert.deepEqual(h.claudeDir.hookEvents.SessionStart, ['tools/inject.js'], 'the script, with the argument list gone');
-  assert.deepEqual(h.claudeDir.hookEvents.Stop, [null], 'no path in the command, so nothing is named');
+  assert.deepEqual(scriptsOn(h, 'SessionStart'), ['tools/inject.js'], 'the script, with the argument list gone');
+  assert.deepEqual(scriptsOn(h, 'Stop'), [null], 'no path in the command, so nothing is named');
+  assert.equal('hookEvents' in h.claudeDir, false, 'the registry is reported once, as hookRegistrations');
 
   const serialised = JSON.stringify(h);
   assert.equal(serialised.includes(UNKNOWN), false, 'an unrecognised secret must not survive');
@@ -512,8 +515,7 @@ test('hookEvents records the resolved script, never the command or its arguments
   assert.equal(serialised.includes('example.invalid'), false, 'nor anything else from the command');
 });
 
-// --- Whole-branch review, F8: the deny-rule pair read ONE settings file
-// --- while `hookEvents`, three fields away, read both ----------------------
+// --- The deny rules are read from both settings files, as the hooks are ------
 
 test('F8: a deny rule that lives only in settings.local.json is seen, exactly as a hook there already was', () => {
   const d = repo();
@@ -524,10 +526,10 @@ test('F8: a deny rule that lives only in settings.local.json is seen, exactly as
   const h = detectHarness(d, listFiles(d).files);
   assert.equal(h.claudeDir.settings, 'absent', 'fixture sanity: there is no settings.json at all');
   assert.equal(h.claudeDir.localSettings, 'ok');
-  // The asymmetry F8 measured: hookEvents saw the local file, the deny pair
-  // did not, so P2.protected reported `absent` with EMPTY evidence and apply
-  // wrote the identical rule a second time into the other file.
-  assert.ok(h.claudeDir.hookEvents.SessionStart, 'fixture sanity: hookEvents always read this file');
+  // Read from one file only, P2.protected reported `absent` with empty
+  // evidence and apply wrote the identical rule a second time into the
+  // other file.
+  assert.ok(h.claudeDir.hookRegistrations.SessionStart, 'fixture sanity: the hooks are read from this file');
   assert.equal(h.claudeDir.denyRules, 1, 'a rule in settings.local.json is in effect and must be counted');
   assert.deepEqual(h.claudeDir.denyRuleList, ['Edit(*-lock.json)']);
 });

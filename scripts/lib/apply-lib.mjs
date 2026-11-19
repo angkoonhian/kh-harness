@@ -17,10 +17,8 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { defaultBranches } from './git-info.mjs';
 import { classify, contentMatches, emptyManifest, MANIFEST_PATH, replaceFile, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
-import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
+import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook, SETTINGS_PATH } from './settings-merge.mjs';
 import { readJsonFile, stripBom, UTF8_BOM } from './read-json.mjs';
-
-const SETTINGS_PATH = '.claude/settings.json';
 
 /**
  * Paths the dirty-tree gate must not hold against the user: the tool's own

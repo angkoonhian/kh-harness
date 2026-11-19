@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // scripts/detect.mjs
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { listFiles } from './lib/scan.mjs';
 import { detectStack } from './lib/detect-stack.mjs';
@@ -11,11 +11,9 @@ import { buildGaps } from './lib/gap-model.mjs';
 import { buildReport, renderSummary, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { verifyCommands } from './lib/verify.mjs';
 import { gitInfo } from './lib/git-info.mjs';
-import { readManifest, replaceFile } from './lib/manifest.mjs';
+import { KIT_VERSION, readManifest, replaceFile } from './lib/manifest.mjs';
 import { parseArgv, refuseExtraArguments, warnUnknown, wantsHelp, DETECT_USAGE } from './lib/cli.mjs';
 import { assertAllowed, assertContained } from './lib/apply-lib.mjs';
-
-const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
 const KNOWN_FLAGS = new Set(['--verify', '--json']);
 

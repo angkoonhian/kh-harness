@@ -1114,7 +1114,7 @@ test('SECRET: P2.scripts has no registered generator — forcing state absent an
 // not a false failure.
 const harnessFixture = (overrides = {}) => ({
   instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookEvents: {}, agents: [], skills: [], commands: [], rules: [] },
+  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], agents: [], skills: [], commands: [], rules: [] },
   otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
   ...overrides,
 });
@@ -1232,7 +1232,7 @@ test('STAMP INVARIANT: every file a generator can produce carries the Generated 
   const files = ['package.json', 'package-lock.json', 'packages/api/package.json', 'prisma/migrations/0001_init/migration.sql'];
   const harness = {
     instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-    claudeDir: { settings: false, localSettings: false, denyRules: 0, denyRuleList: [], hooks: [], hookEvents: {}, agents: [], skills: [], commands: [], rules: [] },
+    claudeDir: { settings: false, localSettings: false, denyRules: 0, denyRuleList: [], hooks: [], agents: [], skills: [], commands: [], rules: [] },
     otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
   };
   const profile = selectProfile(stack);
@@ -1721,7 +1721,7 @@ test('with the kit version unchanged, an update says the repository\'s detected 
 const loopwatchCheck = (o = {}) => check({ id: 'P2.loopwatch', step: 13, phase: 2, proposal: 'register the hook', ...o });
 const loopwatchHarness = hookRegistrations => ({
   instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookEvents: {}, hookRegistrations, agents: [], skills: [], commands: [], rules: [] },
+  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookRegistrations, agents: [], skills: [], commands: [], rules: [] },
   otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
 });
 const PROFILE_STACKS = {

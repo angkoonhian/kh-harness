@@ -26,15 +26,14 @@ const bareStack = { languages: ['typescript'], packageManager: 'npm', isWorkspac
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: [] }], ci: [] };
 const bareHarness = {
   instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookEvents: {}, hookRegistrations: {}, agents: [], skills: [], commands: [], rules: [] },
+  claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookRegistrations: {}, agents: [], skills: [], commands: [], rules: [] },
   otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
 };
 const richHarness = {
   instructions: { path: 'CLAUDE.md', lines: 153 }, agentsMd: null, reconPresent: true,
   claudeDir: { settings: true, localSettings: true, denyRules: toolGateDenyRules().length, denyRuleList: toolGateDenyRules(), hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs', '.claude/scripts/loop-watch.mjs', '.claude/scripts/tool-gate.mjs', SESSION_LOG_PATH],
-    // hookEvents entries are RESOLVED SCRIPT PATHS, never command strings.
-    hookEvents: withSessionLog({ PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'], UserPromptSubmit: ['.claude/scripts/rules-brief.mjs'], PostToolUseFailure: ['.claude/scripts/loop-watch.mjs'], PreToolUse: ['.claude/scripts/tool-gate.mjs'] }, SESSION_LOG_PATH),
-    // The same registrations with their matchers — what registeredHook decides from.
+    // Each registration is a resolved script path with its matcher, never a
+    // command string: what registeredHook decides from.
     hookRegistrations: withSessionLog({
       PostToolUse: [{ script: '.claude/scripts/lint-touched.mjs', matcher: 'Edit|Write' }],
       Stop: [{ script: '.claude/scripts/verify-touched.mjs', matcher: null }],
@@ -564,7 +563,6 @@ function sensorRegisteredUnder(matcher) {
     ...bareHarness,
     claudeDir: {
       ...bareHarness.claudeDir,
-      hookEvents: { PostToolUse: [LINT_TOUCHED_PATH] },
       hookRegistrations: { PostToolUse: [{ script: LINT_TOUCHED_PATH, matcher }] },
     },
   };
@@ -588,7 +586,7 @@ test('P2.sensor is declared under a reordered or wider matcher', () => {
 test('P4.sessionbrief is declared under a narrower source matcher — narrowing an event we need no matcher for is the user\'s choice', () => {
   const h = {
     ...bareHarness, handoff: 'HANDOFF.md',
-    claudeDir: { ...bareHarness.claudeDir, hookEvents: { SessionStart: [BRIEF_PATH] }, hookRegistrations: { SessionStart: [{ script: BRIEF_PATH, matcher: 'resume|startup' }] } },
+    claudeDir: { ...bareHarness.claudeDir, hookRegistrations: { SessionStart: [{ script: BRIEF_PATH, matcher: 'resume|startup' }] } },
   };
   assert.equal(byId(gaps(bareStack, h), 'P4.sessionbrief').state, 'declared');
 });
@@ -1184,10 +1182,10 @@ test('F1 end-to-end: a repo documented in .rst is not proposed an architecture d
 
 // Registrations are derived from the path list with no matcher (every
 // tool), as detectHarness would record an entry registered without one.
-const withHooks = (hookEvents, hooks = []) => ({ ...bareHarness,
+const withHooks = (scriptsByEvent, hooks = []) => ({ ...bareHarness,
   claudeDir: {
-    ...bareHarness.claudeDir, hooks, hookEvents,
-    hookRegistrations: Object.fromEntries(Object.entries(hookEvents).map(([e, scripts]) => [e, scripts.map(script => ({ script, matcher: null }))])),
+    ...bareHarness.claudeDir, hooks,
+    hookRegistrations: Object.fromEntries(Object.entries(scriptsByEvent).map(([e, scripts]) => [e, scripts.map(script => ({ script, matcher: null }))])),
   } });
 
 const OUR_HOOK_PATH = { PostToolUse: LINT_TOUCHED_PATH, Stop: VERIFY_TOUCHED_PATH, SessionStart: BRIEF_PATH };
@@ -1360,7 +1358,7 @@ test('P4.sessionbrief is not declared via an install record of another kit hook 
 test('P4.sessionbrief is declared via the manifest + existsSync when .claude/ is gitignored (Task 8b finding 1)', () => {
   const d = tmpRepo();
   writeFile(d, '.claude/scripts/session-brief.mjs', '//');
-  // hookEvents.SessionStart is [null] here precisely because `files` does
+  // The SessionStart registration's script is null here precisely because `files` does
   // not include the gitignored script — the exact shape `commandScript`
   // (detect-harness.mjs) produces for a repository that gitignores
   // `.claude/`, reproduced directly rather than via a real git repo.
@@ -1628,8 +1626,8 @@ test('countProposals counts each proposal under the one who closes it', () => {
 
 // --- TWO-PATH AGREEMENT (coordinator ruling) ---
 //
-// gap-model.mjs identifies "our hook" via the REDACTED hookEvents
-// representation — a resolved script path, never the raw command (see
+// gap-model.mjs identifies "our hook" via the redacted registry, a
+// resolved script path and never the raw command (see
 // registeredHook's own comment for why: `harness` is serialised wholesale
 // into docs/harness/detect.json on every run, and stashing raw settings
 // there to reuse apply-lib.mjs's `hasEquivalentHook` directly would undo
@@ -1862,11 +1860,11 @@ test('P3.reinject: proposes when the registry has a rule and no hook of ours is 
 });
 
 test('P3.reinject: declared when OUR path is registered on UserPromptSubmit; a foreign hook is disclosed, not credited', () => {
-  const ours = p3Harness({ rulesRegistry: filledRegistry, claudeDir: { ...bareHarness.claudeDir, hookEvents: { UserPromptSubmit: [RULES_BRIEF_PATH] }, hookRegistrations: { UserPromptSubmit: [{ script: RULES_BRIEF_PATH, matcher: null }] } } });
+  const ours = p3Harness({ rulesRegistry: filledRegistry, claudeDir: { ...bareHarness.claudeDir, hookRegistrations: { UserPromptSubmit: [{ script: RULES_BRIEF_PATH, matcher: null }] } } });
   const c = byId(gaps(bareStack, ours), 'P3.reinject');
   assert.equal(c.state, 'declared');
   assert.deepEqual(c.evidence, [`UserPromptSubmit hook: ${RULES_BRIEF_PATH}`]);
-  const theirs = p3Harness({ rulesRegistry: filledRegistry, claudeDir: { ...bareHarness.claudeDir, hookEvents: { UserPromptSubmit: ['their/inject.mjs'] }, hookRegistrations: { UserPromptSubmit: [{ script: 'their/inject.mjs', matcher: null }] } } });
+  const theirs = p3Harness({ rulesRegistry: filledRegistry, claudeDir: { ...bareHarness.claudeDir, hookRegistrations: { UserPromptSubmit: [{ script: 'their/inject.mjs', matcher: null }] } } });
   const c2 = byId(gaps(bareStack, theirs), 'P3.reinject');
   assert.equal(c2.state, 'absent');
   assert.ok(c2.proposal);

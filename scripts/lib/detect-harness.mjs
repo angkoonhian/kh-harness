@@ -42,7 +42,7 @@ import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
 import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
 import { failuresEvidence } from './failures-evidence.mjs';
-import { normalizeMatcher, hookPathTokens, matcherEntrySha256 } from './settings-merge.mjs';
+import { normalizeMatcher, hookPathTokens, matcherEntrySha256, SETTINGS_PATH } from './settings-merge.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
   'scripts/bootstrap.sh', 'scripts/bootstrap.ps1', 'scripts/setup.sh', 'scripts/setup.ps1',
@@ -64,7 +64,8 @@ function lineCount(text) {
 // Project-scoped settings only. `~/.claude/settings.json` is deliberately not
 // read: it is machine state, not repository state — the same reasoning that
 // makes P2.langserver honestly `n/a`.
-const SETTINGS_FILES = ['.claude/settings.json', '.claude/settings.local.json'];
+const LOCAL_SETTINGS_PATH = '.claude/settings.local.json';
+const SETTINGS_FILES = [SETTINGS_PATH, LOCAL_SETTINGS_PATH];
 
 /**
  * A settings file through the shared JSON reader: `absent`, `unreadable`
@@ -239,8 +240,7 @@ function commandScript(entry, files) {
  *
  * Each registered hook contributes ONE entry: its resolved script path (or
  * `null` when none resolves) and its normalised matcher. The command string
- * itself is never recorded — see commandScript below. `hookEvents` is the
- * same registry reduced to paths.
+ * itself is never recorded — see commandScript above.
  *
  * Each entry also carries `entrySha256`, the hash of the settings element
  * that holds it, computed as a hook patch records it: an entry whose script
@@ -273,18 +273,6 @@ function hookRegistrations(root, files) {
         }
       }
     }
-  }
-  return out;
-}
-
-/** The registry as script paths per event, derived from `hookRegistrations`.
- * Resolved paths first, in a stable order; one trailing null if
- * any hook on the event could not be resolved to a path. */
-function hookEvents(registrations) {
-  const out = {};
-  for (const [event, regs] of Object.entries(registrations)) {
-    const uniq = [...new Set(regs.map(r => r.script))];
-    out[event] = [...uniq.filter(p => p !== null).sort(), ...(uniq.includes(null) ? [null] : [])];
   }
   return out;
 }
@@ -431,7 +419,6 @@ export function detectHarness(root, files) {
   const instructionsPath = claudeMd != null ? 'CLAUDE.md' : (agentsMd != null ? 'AGENTS.md' : null);
   const denyInEffect = denyRulesInEffect(root);
   const allDocs = projectDocs(files);
-  // One parse of both settings files for every hook field below.
   const registrations = hookRegistrations(root, files);
 
   const harness = {
@@ -448,25 +435,24 @@ export function detectHarness(root, files) {
       // as their siblings, so they cannot disagree with them. Each is
       // `absent`, `unreadable` or `ok`: a file that is there but cannot be
       // used must never read as a file that is not there.
-      settings: readSettings(root, '.claude/settings.json').state,
-      localSettings: readSettings(root, '.claude/settings.local.json').state,
+      settings: readSettings(root, SETTINGS_PATH).state,
+      localSettings: readSettings(root, LOCAL_SETTINGS_PATH).state,
       // Whole-branch review, F8: both of these come from the SAME read of
       // BOTH settings files now — see `denyRulesInEffect`. They are the
       // length and the contents of one list.
       denyRules: denyInEffect.length,
       denyRuleList: denyInEffect.map(redactDenyRule),
       // File inventory, scan-visible only, and deliberately left that way:
-      // NOTHING decides a capability's state from any of the four below (the
-      // hook events are credited from `hookEvents`, by this object's own
-      // design, and `rules` — the one inventory field a check DOES read —
-      // is the disk read immediately after). Widening these to a disk read
+      // NOTHING decides a capability's state from `hooks`, `agents`, `skills`
+      // or `commands` (a hook is credited from `hookRegistrations`, and
+      // `rules`, the one inventory field a check does read, is the disk read
+      // after them). Widening these to a disk read
       // would buy no decision and would print the names of files a user
       // deliberately kept out of git into `docs/harness/detect.json`, which
       // IS committed. See `registeredHook`'s own comment on that discipline.
       // Checked while fixing F2, and left alone on purpose.
       hooks: under(files, '.claude/scripts/'),
       hookRegistrations: registrations,
-      hookEvents: hookEvents(registrations),
       agents: under(files, '.claude/agents/', '.md'),
       skills: under(files, '.claude/skills/', '.md'),
       commands: under(files, '.claude/commands/', '.md'),
@@ -494,9 +480,9 @@ export function detectHarness(root, files) {
   // harness object — the same way `architecture`, `handoff` and `bootstrap`
   // are — so gap-model.mjs's three P3 checks stay pure functions of this
   // object and need no filesystem of their own. `rulesRegistryEvidence`
-  // reads `claudeDir.denyRules`/`hookEvents` to resolve `settings:` pointers,
-  // which is why it runs after the object above is complete rather than
-  // inline in it.
+  // reads `claudeDir.denyRuleList` and `claudeDir.hookRegistrations` to
+  // resolve `settings:` pointers, which is why it runs after the object
+  // above is complete rather than inline in it.
   harness.intent = intentEvidence(root);
   harness.rulesRegistry = rulesRegistryEvidence(root, harness);
   harness.ruleShapedLines = ruleShapedLines(root, harness);
