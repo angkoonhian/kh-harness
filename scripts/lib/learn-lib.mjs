@@ -26,7 +26,7 @@ import { maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { LOCKED, withFileLock } from './file-lock.mjs';
-import { appendLedger, readLedger } from './ledger.mjs';
+import { appendLedger, readLedger, verifyLedger } from './ledger.mjs';
 import { FAILURE_EVENT, findRecurrences, sessionIds, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
 import { replayGate } from './replay.mjs';
 import { readIfPresent } from './scan.mjs';
@@ -48,7 +48,8 @@ export function gateActionsFor(status) {
 }
 
 // The status each ledger kind leaves a learning in; a kind absent here, such
-// as `wrong`, changes no status.
+// as `wrong`, changes no status. The ledger, not a learning's file, is the
+// authority for its status: the file is not covered by any hash.
 const STATUS_AFTER = Object.freeze({ proposed: 'candidate', replayed: 'candidate', trial: 'trial', rejected: 'rejected' });
 
 // A learning in one of these no longer stands for its signature, so a new
@@ -268,57 +269,126 @@ function readLocalGates(root) {
   }
 }
 
-const keepsLocalGate = learning => LOCAL_GATE_STATUSES.has(learning.status);
+/** The status, and who approved it, that the last status-changing ledger
+ * entry for `id` with `contentSha256` records, or null when there is none. */
+function recordedState(ledger, id, contentSha256) {
+  let state = null;
+  for (const entry of ledger) {
+    if (entry?.learningId !== id || entry.contentSha256 !== contentSha256 || !Object.hasOwn(STATUS_AFTER, entry.kind)) continue;
+    state = { status: STATUS_AFTER[entry.kind], approvedBy: entry.approvedBy ?? null };
+  }
+  return state;
+}
+
+/** The status the ledger records for the learning `id` with this content:
+ * the one its last status-changing entry for `id` and `contentSha256` leaves
+ * it in, or null when no such entry exists. A learning's file says what its
+ * status is; only this says what it may be trusted to be. */
+export function recordedStatus(ledgerEntries, id, contentSha256) {
+  return recordedState(ledgerEntries, id, contentSha256)?.status ?? null;
+}
+
+/** The actions a recorded state lets a learning's gate carry: those its
+ * status allows, and above `observe` only when the entry that granted the
+ * status names who approved it. */
+const recordedActions = state => gateActionsFor(state.status).filter(action => action === 'observe' || state.approvedBy !== null);
+
+/** `{ intact, entries }`: the ledger's entries when its chain is intact,
+ * else none. */
+function readLedgerView(root) {
+  if (!verifyLedger(root).intact) return { intact: false, entries: [] };
+  return { intact: true, entries: readLedger(root) };
+}
+
+/** Each readable learning whose file status the ledger records, by id, with
+ * its recorded state; a learning missing from it is a ledger mismatch. */
+function recordedLearnings(learnings, view) {
+  const recorded = new Map();
+  if (!view.intact) return recorded;
+  for (const learning of learnings) {
+    const state = recordedState(view.entries, learning.id, learning.sha256);
+    if (state !== null && state.status === learning.status) recorded.set(learning.id, state);
+  }
+  return recorded;
+}
+
+/** Why the ledger does not vouch for `learning`, or null when it does. */
+function unrecordedReason(learning, view, recorded) {
+  if (!view.intact) return `${learning.id}: the ledger cannot be read or its chain is broken, so it does not record this learning's status`;
+  if (!recorded.has(learning.id)) return `${learning.id}: the ledger does not record the status ${learning.status} for this learning`;
+  return null;
+}
 
 /**
- * The local gate entries as `learnings` require them, and the ids whose
- * entries that changes. A gate entry stays only when its learning keeps a
- * local gate, its content hash is the learning's, its action is one the
- * learning's status allows, and no earlier entry has its id; a learning
- * that keeps a local gate and has no entry left gets its own gate. A
- * suspension, an entry with no id, and a gate whose learning file cannot be
- * read are kept as they are.
+ * The local gate entries as the learnings the ledger vouches for require
+ * them: `{ gates, changed, modified }`, where `changed` are the ids to
+ * report and `modified` whether `gates` differs from the entries given.
+ * `recorded` maps the id of each learning whose status the ledger records
+ * to that recorded state.
+ *
+ * A gate entry stays only when its learning is recorded in a status that
+ * keeps a local gate, its content hash is the learning's, its action is one
+ * the recorded state allows, and no earlier entry has its id. A recorded
+ * learning in such a status with no entry left gets its own gate, at an
+ * action its state allows. A gate whose learning file cannot be read stays
+ * only at `observe`, and is reported either way. A suspension and an entry
+ * with no id stay as they are.
  */
-function repairedGates(gates, learnings, unreadable) {
+function repairedGates(gates, learnings, unreadable, recorded) {
   const byId = new Map(learnings.map(l => [l.id, l]));
   const unknown = new Set(unreadable);
   const kept = [];
   const present = new Set();
   const changed = new Set();
+  let modified = false;
   for (const entry of gates) {
     const id = entryId(entry);
-    if (!isGateEntry(entry) || unknown.has(id)) {
+    if (!isGateEntry(entry)) {
       kept.push(entry);
       if (id !== null) present.add(id);
       continue;
     }
+    if (unknown.has(id)) {
+      changed.add(id);
+      if (entry.action === 'observe' && !present.has(id)) {
+        kept.push(entry);
+        present.add(id);
+      } else {
+        modified = true;
+      }
+      continue;
+    }
     const learning = byId.get(id);
-    const sound = learning !== undefined && keepsLocalGate(learning) && !present.has(id)
-      && gateSha256(entry) === learning.sha256 && gateActionsFor(learning.status).includes(entry.action);
+    const state = recorded.get(id);
+    const sound = learning !== undefined && state !== undefined && LOCAL_GATE_STATUSES.has(state.status) && !present.has(id)
+      && gateSha256(entry) === learning.sha256 && recordedActions(state).includes(entry.action);
     if (sound) {
       kept.push(entry);
       present.add(id);
     } else {
       changed.add(id);
+      modified = true;
     }
   }
   for (const learning of learnings) {
-    if (!keepsLocalGate(learning) || present.has(learning.id)) continue;
+    const state = recorded.get(learning.id);
+    if (state === undefined || !LOCAL_GATE_STATUSES.has(state.status) || present.has(learning.id)) continue;
+    if (!recordedActions(state).includes(learning.gate.action)) continue;
     kept.push(learning.gate);
     changed.add(learning.id);
+    modified = true;
   }
-  return { gates: kept, changed: [...changed].sort(byIdNumber) };
+  return { gates: kept, changed: [...changed].sort(byIdNumber), modified };
 }
 
-/** The ids of the readable learnings whose status is not the one their last
- * status-changing ledger entry left them in, a learning with no such entry
- * among them. */
-function ledgerMismatches(learnings, ledger) {
-  const last = new Map();
-  for (const entry of ledger) {
-    if (Object.hasOwn(STATUS_AFTER, entry?.kind)) last.set(entry.learningId, STATUS_AFTER[entry.kind]);
-  }
-  return learnings.filter(l => last.get(l.id) !== l.status).map(l => l.id);
+/** The ids the ledger and the learning files disagree about: each readable
+ * learning whose status the ledger does not record, and each id the ledger
+ * names that has no learning file. */
+function ledgerMismatches(learnings, unreadable, view, recorded) {
+  const files = new Set([...learnings.map(l => l.id), ...unreadable]);
+  const unrecorded = learnings.filter(l => !recorded.has(l.id)).map(l => l.id);
+  const orphaned = new Set(view.entries.map(e => e?.learningId).filter(id => isId(id) && !files.has(id)));
+  return [...unrecorded, ...orphaned].sort(byIdNumber);
 }
 
 const gateFileIds = file => file.gates.map(entryId).filter(isId);
@@ -362,17 +432,12 @@ function readCounter(root) {
 /** `{ id, number }`, one more than the highest number the id counter, a
  * learning file, the ledger, or the committed or local gate file holds; or
  * `{ error }`. Called under the lock, before the counter is advanced. */
-function nextId(root, learningIds) {
+function nextId(root, learningIds, ledgerEntries) {
   const counter = readCounter(root);
   if (counter === null) return { error: 'the learning id counter cannot be read, so no id that was never used can be assigned' };
   const committed = committedGateIds(root);
   if (committed.error) return committed;
-  let ledgerIds;
-  try {
-    ledgerIds = readLedger(root).map(e => e?.learningId).filter(isId);
-  } catch {
-    return { error: 'the ledger cannot be read, so no id that was never used can be assigned' };
-  }
+  const ledgerIds = ledgerEntries.map(e => e?.learningId).filter(isId);
   const local = readLocalGates(root);
   const used = [...learningIds, ...committed.ids, ...ledgerIds, ...(local.file ? gateFileIds(local.file) : [])].map(idNumber);
   const highest = Math.max(counter, ...used);
@@ -432,9 +497,13 @@ function draftUnguarded(root, draft) {
   return withLearningsLock(root, write => {
     const { learnings, unreadable } = readLearnings(root);
     if (unreadable.length > 0) return { error: `learning ${unreadable[0]} does not read back as a learning, and may cover this signature; mend or remove its file first` };
-    const standing = learnings.find(l => l.signature === signature && !SETTLED.has(l.status));
+    const view = readLedgerView(root);
+    if (!view.intact) return { error: 'the ledger cannot be read or its chain is broken, so no learning can be told settled and no id never used can be assigned' };
+    const recorded = recordedLearnings(learnings, view);
+    // Settled only when the file says so and the ledger records it.
+    const standing = learnings.find(l => l.signature === signature && !(SETTLED.has(l.status) && recorded.has(l.id)));
     if (standing !== undefined) return { error: `signature: learning ${standing.id} already covers this signature` };
-    const next = nextId(root, learnings.map(l => l.id));
+    const next = nextId(root, learnings.map(l => l.id), view.entries);
     if (next.error) return next;
     const gate = { ...drafted.gate, id: next.id, action: 'observe' };
     const learning = {
@@ -469,8 +538,9 @@ function draftUnguarded(root, draft) {
  * `replayed` carries the verdict and reason in its detail. A learning once
  * marked external stays so.
  *
- * Under the same lock the local gate set is brought into line with the
- * learnings, as `listLearnings` reports under `gatesToRepair`; the ids it
+ * A learning whose status the ledger does not record is refused. Under the
+ * same lock the local gate set is brought into line with the learnings the
+ * ledger vouches for, as `listLearnings` reports under `gatesToRepair`; the ids it
  * changed, beyond adding this learning's gate on a pass, are
  * `repairedGates`. A local
  * gate file that is not a gate file is left as it is, which refuses a pass
@@ -492,6 +562,9 @@ function runTrialUnguarded(root, id) {
   if (read.unreadable) return { error: `${id}: the learning file does not read back as a learning` };
   const { learning } = read;
   if (learning.status !== 'candidate') return { error: `${id} is ${learning.status}; only a candidate is replayed` };
+  const view = readLedgerView(root);
+  const unrecorded = unrecordedReason(learning, view, recordedLearnings([learning], view));
+  if (unrecorded !== null) return { error: unrecorded };
   const { signature, harness } = learning;
   const recurrence = currentRecurrence(root, r => r.signature === signature && r.base === harness.base && r.model === harness.model);
   if (recurrence === undefined) return { error: `${id}: its signature is no longer a current recurrence under the harness and model it was drafted for` };
@@ -511,16 +584,24 @@ function runTrialUnguarded(root, id) {
       evidence: evidenceOf(recurrence),
       replay,
     };
+    const view = readLedgerView(root);
+    const { learnings, unreadable } = readLearnings(root);
+    const recorded = recordedLearnings(learnings, view);
+    const unrecorded = unrecordedReason(current, view, recorded);
+    if (unrecorded !== null) return { error: unrecorded };
     const local = readLocalGates(root);
     if (local.unreadable && status === 'trial') return { error: 'the local gate file is not a gate file; nothing was written' };
-    const { learnings, unreadable } = readLearnings(root);
     let repaired = [];
     let gates = null;
     if (local.file) {
-      repaired = repairedGates(local.file.gates, learnings, unreadable).changed;
-      const after = repairedGates(local.file.gates, learnings.map(l => (l.id === id ? updated : l)), unreadable);
-      if (after.gates.filter(isGateEntry).length > GATE_LIMITS.gatesMax) return { error: `the local gate set would hold more than ${GATE_LIMITS.gatesMax} gates; nothing was written` };
-      if (after.changed.length > 0) gates = after.gates;
+      repaired = repairedGates(local.file.gates, learnings, unreadable, recorded).changed;
+      // As the set will stand once this step's ledger entries are written.
+      const recordedAfter = new Map(recorded).set(id, { status, approvedBy: null });
+      const after = repairedGates(local.file.gates, learnings.map(l => (l.id === id ? updated : l)), unreadable, recordedAfter);
+      if (status === 'trial' && after.gates.filter(isGateEntry).length > GATE_LIMITS.gatesMax) {
+        return { error: `the local gate set would hold more than ${GATE_LIMITS.gatesMax} gates; nothing was written` };
+      }
+      if (after.modified) gates = after.gates;
     }
     // Both entries precede the writes, so they name the harness in force
     // before this step: the learned set without this learning's gate.
@@ -535,29 +616,26 @@ function runTrialUnguarded(root, id) {
 
 /**
  * Every learning on this machine for the repository, in id order:
- * `{ learnings, gatesToRepair, ledgerMismatch, unreadable }`.
+ * `{ learnings, gatesToRepair, ledgerMismatch, ledgerIntact, unreadable }`.
+ * The ledger, not a learning's file, is the authority for its status.
  * `gatesToRepair` are the ids whose local gate entries the next `runTrial`
- * removes, replaces or restores: a gate whose learning is missing or does
- * not keep a local gate, whose content differs from its learning's, whose
- * action its learning's status does not allow, or whose id appears twice,
- * and a learning that keeps a local gate and has none; null when the local
- * gate file cannot be read. `ledgerMismatch` are the ids whose status is not
- * the one their last status-changing ledger entry records, null when the
- * ledger cannot be read; `unreadable` the ids whose learning file does not
- * read back as a learning. `{ error }` when the learnings cannot be listed.
+ * removes, replaces or restores, as `repairedGates` decides, and every gate
+ * whose learning file cannot be read; null when the local gate file cannot
+ * be read. `ledgerMismatch` are the ids of the learnings whose file status
+ * the ledger does not record (all of them when `ledgerIntact` is false,
+ * since the ledger then records nothing) and the ids the ledger names with
+ * no learning file; `unreadable` the ids whose learning file does not read
+ * back as a learning. `{ error }` when the learnings cannot be listed.
  */
 export function listLearnings(root) {
   try {
     const { learnings, unreadable } = readLearnings(root);
     const local = readLocalGates(root);
-    const gatesToRepair = local.file ? repairedGates(local.file.gates, learnings, unreadable).changed : null;
-    let ledgerMismatch;
-    try {
-      ledgerMismatch = ledgerMismatches(learnings, readLedger(root));
-    } catch {
-      ledgerMismatch = null;
-    }
-    return { learnings, gatesToRepair, ledgerMismatch, unreadable };
+    const view = readLedgerView(root);
+    const recorded = recordedLearnings(learnings, view);
+    const gatesToRepair = local.file ? repairedGates(local.file.gates, learnings, unreadable, recorded).changed : null;
+    const ledgerMismatch = ledgerMismatches(learnings, unreadable, view, recorded);
+    return { learnings, gatesToRepair, ledgerMismatch, ledgerIntact: view.intact, unreadable };
   } catch (error) {
     return readFailure(error);
   }
@@ -572,8 +650,8 @@ export function listLearnings(root) {
  * call carries no tool use id is never counted as rerouted, since the fired
  * call cannot then be told from the next. `sessionsUnreadable` counts the
  * sessions that could not be read in full, whose counts are what did parse.
- * Returns `{ error }` for an id that names no learning, or when the log or
- * the ledger cannot be read.
+ * Returns `{ error }` for an id that names no learning, for a learning whose
+ * status the ledger does not record, or when the log cannot be read.
  */
 export function learningStats(root, id) {
   try {
@@ -588,6 +666,9 @@ function learningStatsUnguarded(root, id) {
   const read = readLearning(root, id);
   if (read.missing) return { error: `${id}: no such learning` };
   if (read.unreadable) return { error: `${id}: the learning file does not read back as a learning` };
+  const view = readLedgerView(root);
+  const unrecorded = unrecordedReason(read.learning, view, recordedLearnings([read.learning], view));
+  if (unrecorded !== null) return { error: unrecorded };
   const { sha256 } = read.learning;
   let firings = 0;
   let rerouted = 0;
@@ -609,12 +690,6 @@ function learningStatsUnguarded(root, id) {
       }
     }
   }
-  let ledger;
-  try {
-    ledger = readLedger(root);
-  } catch {
-    return { error: 'the ledger cannot be read, so the wrong marks cannot be counted' };
-  }
-  const wrong = ledger.filter(e => e?.kind === 'wrong' && e.learningId === id).length;
+  const wrong = view.entries.filter(e => e?.kind === 'wrong' && e.learningId === id).length;
   return { firings, sessions: sessions.size, rerouted, wrong, sessionsUnreadable };
 }
