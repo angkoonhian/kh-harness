@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 
 import { readEvents } from '../../assets/scripts/harness-log.mjs';
 import { REROUTED_MEANS } from './gate-stats.mjs';
-import { ID_ERROR, isId, learningIn, learningStats, readState, standingFor, unrecordedReason } from './learn-lib.mjs';
+import { ID_ERROR, isId, learningIn, learningStats, readState, rejectedFor, standingFor, unrecordedReason } from './learn-lib.mjs';
 import { recordedPolicySha256 } from './learn-promote.mjs';
 import { isApprover, readLedger, verifyLedger } from './ledger.mjs';
 import { buildLogReport, NOT_CLAIMED, NOT_READ, noLogLine, readCountLines, recurrenceSection } from './log-report.mjs';
@@ -31,7 +31,7 @@ import { failureSignature, findRecurrences, SUCCESS_EVENT, TOOL_FIELD } from './
 const SPECS = Object.freeze({
   candidates: { args: [], flags: ['--json'] },
   evidence: { args: ['<signature>'], flags: ['--json'] },
-  draft: { args: [], flags: ['--from'], required: ['--from'] },
+  draft: { args: [], flags: ['--from', '--redraft'], required: ['--from'] },
   replay: { args: ['<id>'], flags: [] },
   list: { args: [], flags: ['--json'] },
   show: { args: ['<id>'], flags: ['--json'] },
@@ -54,8 +54,9 @@ export const TERMINAL_ONLY = Object.freeze(['approve', 'wrong', 'demote', 'retir
 /** The subcommands that write to this machine's data directory. */
 export const WRITES = new Set(['draft', 'replay', 'tick', ...TERMINAL_ONLY]);
 
-const VALUE_FLAGS = new Set(LEARN_SUBCOMMANDS.flatMap(name => SPECS[name].flags).filter(f => f !== '--json'));
-const BOOLEAN_FLAGS = new Set(['--json', '--help']);
+// The flags that take no value; every other flag a subcommand owns takes one.
+const BOOLEAN_FLAGS = new Set(['--json', '--help', '--redraft']);
+const VALUE_FLAGS = new Set(LEARN_SUBCOMMANDS.flatMap(name => SPECS[name].flags).filter(f => !BOOLEAN_FLAGS.has(f)));
 
 const DRAFT_MAX_BYTES = 65_536;
 
@@ -109,8 +110,8 @@ export function helpName(positionals) {
 
 /**
  * What the command line asks for: `{ target, name, args, values, json,
- * ignored }`, `ignored` the flags given that this subcommand does not own,
- * or `{ error }`.
+ * redraft, ignored }`, `ignored` the flags given that this subcommand does
+ * not own, or `{ error }`.
  */
 export function resolveCommand({ positionals, values, flags, problems }) {
   const target = positionals[0];
@@ -125,10 +126,12 @@ export function resolveCommand({ positionals, values, flags, problems }) {
   if (problems.length > 0) return { error: problems.join('; ') };
   const missing = (spec.required ?? []).filter(f => !values.has(f));
   if (missing.length > 0) return { error: `${name} needs ${missing.map(f => `${f} <value>`).join(' ')}` };
-  const given = [...values.keys(), ...[...flags].filter(f => f === '--json')];
+  const given = [...values.keys(), ...[...flags].filter(f => BOOLEAN_FLAGS.has(f) && f !== '--help')];
+  const owned = flag => flags.has(flag) && spec.flags.includes(flag);
   return {
     target, name, args: rest, values,
-    json: flags.has('--json') && spec.flags.includes('--json'),
+    json: owned('--json'),
+    redraft: owned('--redraft'),
     ignored: given.filter(f => !spec.flags.includes(f)).map(f => ({ flag: f, owners: LEARN_SUBCOMMANDS.filter(n => SPECS[n].flags.includes(f)) })),
   };
 }
@@ -200,7 +203,9 @@ const withRepairs = (result, lines) => {
 
 /**
  * `log report`'s view of the log, its groups narrowed to the recurrences no
- * learning stands for, with whether the ledger could be read and which
+ * learning stands for and the replay never rejected a learning for; in
+ * `rejectedGroups`, those it did, each with the `rejected` ids, which only a
+ * redraft may draft again; with whether the ledger could be read and which
  * learning files do not read back, since either can hide a learning that
  * stands.
  */
@@ -208,10 +213,24 @@ export function candidatesView(root) {
   const report = buildLogReport(root);
   const state = readState(root);
   const unclaimed = r => standingFor(state, r.signature) === null;
-  const groups = report.groups === null ? null
-    : report.groups.map(g => ({ ...g, recurrences: g.recurrences.filter(unclaimed) })).filter(g => g.recurrences.length > 0);
+  const narrowed = keep => (report.groups === null ? null
+    : report.groups.map(g => ({ ...g, recurrences: keep(g.recurrences) })).filter(g => g.recurrences.length > 0));
+  const groups = narrowed(rs => rs.filter(r => unclaimed(r) && rejectedFor(state, r.signature).length === 0));
+  const rejectedGroups = narrowed(rs => rs.filter(unclaimed)
+    .map(r => ({ ...r, rejected: rejectedFor(state, r.signature) })).filter(r => r.rejected.length > 0));
   const { gates, ledger, notClaimed, ...read } = report;
-  return { ...read, groups, ledgerIntact: state.view.intact, learningsUnreadable: state.unreadable };
+  return { ...read, groups, rejectedGroups, ledgerIntact: state.view.intact, learningsUnreadable: state.unreadable };
+}
+
+const REJECTED_HEADING = 'RECURRENCES DRAFTED BEFORE, WHOSE REPLAY REJECTED THE DRAFT (a new draft is made only with --redraft)';
+
+/** The recurrences a rejected learning cites, as `recurrenceSection` shows
+ * them, each followed by the ids the replay rejected. */
+function rejectedSection(view) {
+  const out = recurrenceSection({ ...view, groups: view.rejectedGroups }, REJECTED_HEADING);
+  if (view.rejectedGroups.length === 0) return out;
+  const rejected = view.rejectedGroups.flatMap(g => g.recurrences).map(r => `  ${r.signature}: rejected ${ids(r.rejected)}`);
+  return [...out, '  learnings the replay rejected, by signature:', ...indent(rejected)];
 }
 
 export function renderCandidates(view) {
@@ -226,6 +245,8 @@ export function renderCandidates(view) {
     ...indent([...readCountLines(view), ...notes]),
     '',
     ...recurrenceSection(view, 'RECURRENCES NO LEARNING STANDS FOR (each may be drafted)'),
+    '',
+    ...rejectedSection(view),
     '',
     NOT_CLAIMED,
   ].join('\n');
@@ -412,8 +433,9 @@ export function renderList(view) {
 
 /**
  * One learning as `show` and `approve` print it, read afresh: its gate and
- * hash, whether the ledger vouches for it and why not, its replay and its
- * stats; or `{ error }`. Reads only.
+ * hash, whether the ledger vouches for it and why not, what its `proposed`
+ * entry says of the draft (that it was a redraft), its replay and its stats;
+ * or `{ error }`. Reads only.
  */
 export function showView(root, id) {
   if (!isId(id)) return { error: ID_ERROR };
@@ -423,8 +445,10 @@ export function showView(root, id) {
   const { learning } = found;
   const unvouched = unrecordedReason(learning, state.view);
   const stats = learningStats(root, id);
+  const proposed = state.view.entries.find(e => e?.learningId === id && e.kind === 'proposed');
   return {
     id, status: learning.status, vouched: unvouched === null, unvouchedBecause: unvouched,
+    drafted: typeof proposed?.detail === 'string' ? proposed.detail : null,
     title: learning.title, why: learning.why, signature: learning.signature, failureId: learning.failureId,
     external: learning.external, evidence: learning.evidence,
     gate: learning.gate, gateSha256: learning.sha256, replay: learning.replay,
@@ -449,6 +473,7 @@ export function renderShow(view) {
       `title: ${visible(view.title)}`,
       `why: ${visible(view.why)}`,
       `signature: ${view.signature}; failure kind: ${view.failureId === null ? 'none' : visible(view.failureId)}`,
+      ...(view.drafted === null ? [] : [`drafted, as the ledger records: ${showCodePoints(view.drafted)}`]),
       `evidence: in ${plain(e.sessions)} sessions, from ${time(e.firstTs)} to ${time(e.lastTs)}${view.external ? '; a contributing session read outside content (web or MCP)' : ''}`,
       `gateSha256: ${view.gateSha256}`,
       'gate, as JSON with every code point outside printable ASCII written as \\u{...}:',

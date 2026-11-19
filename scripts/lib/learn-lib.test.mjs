@@ -15,8 +15,13 @@ import {
   logMistakes, logReadMistakes, mistake, mtimes, read, READ_GATE, repo, signatureOf, success, trialRepo, WATCH_GATE, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { draftLearning, gateActionsFor, learningStats, listLearnings, recordedStatus, runTrial } from './learn-lib.mjs';
+import { retireLearning } from './learn-promote.mjs';
 import { appendLedger, readLedger, verifyLedger } from './ledger.mjs';
 import { findRecurrences } from './recurrence.mjs';
+import { requireInteractive } from './tty.mjs';
+
+// What `requireInteractive` returns at a person's terminal.
+const AT_TERMINAL = requireInteractive({ stdin: { isTTY: true }, stdout: { isTTY: true }, env: {} });
 
 /** Holds the lock file at `path` as a live writer other than this one. */
 function holdLock(path) {
@@ -152,6 +157,48 @@ test('a second draft for a signature is refused while the first is live', () => 
   assert.deepEqual(kinds(root), ['L1:proposed']);
 });
 
+/** A repository whose Bash recurrence had L1 drafted and rejected by its
+ * replay. */
+function rejectedRepo() {
+  const root = loggedRepo();
+  assert.equal(runTrial(root, drafted(root, { gate: FIX_GATE }).id).status, 'rejected');
+  return root;
+}
+
+test('a second draft for a signature whose learning the replay rejected is refused and writes nothing', () => {
+  const root = rejectedRepo();
+  const before = mtimes(repoDataDir(root));
+  const ledgerBefore = readLedger(root);
+  assert.deepEqual(draftLearning(root, draftFor(root)),
+    { error: 'signature: the replay rejected L1 for this signature; a new draft for it is made only as a redraft (--redraft)' });
+  assert.deepEqual(mtimes(repoDataDir(root)), before);
+  assert.deepEqual(readLedger(root), ledgerBefore);
+  assert.equal(existsSync(learningFile(root, 'L2')), false);
+});
+
+test('with redraft the second draft is accepted, and its proposed entry says it is a redraft', () => {
+  const root = rejectedRepo();
+  const result = draftLearning(root, draftFor(root), { redraft: true });
+  assert.equal(result.learning?.id, 'L2', result.error);
+  const proposed = readLedger(root).filter(e => e.kind === 'proposed');
+  assert.deepEqual(proposed.map(e => [e.learningId, e.detail]), [['L1', undefined], ['L2', 'a redraft; the replay had rejected L1 for this signature']]);
+  assert.equal(runTrial(root, 'L2').status, 'trial');
+});
+
+test('redraft changes nothing for a signature no learning was rejected for', () => {
+  const root = loggedRepo();
+  assert.equal(draftLearning(root, draftFor(root), { redraft: true }).learning?.id, 'L1');
+  assert.equal(readLedger(root).find(e => e.kind === 'proposed').detail, undefined);
+});
+
+test('a retired learning leaves its signature draftable without redraft; a live candidate still covers it', () => {
+  const { root, learning } = trialRepo();
+  assert.equal(retireLearning(root, learning.id, { interactive: AT_TERMINAL }).status, 'retired');
+  assert.equal(draftLearning(root, draftFor(root)).learning?.id, 'L2', 'retired is settled, and no replay rejected it');
+  assert.deepEqual(draftLearning(root, draftFor(root), { redraft: true }), { error: 'signature: learning L2 already covers this signature' },
+    'redraft does not get past a live candidate');
+});
+
 test('a passing draft becomes an observe gate in the local set and nothing in the repository changes', () => {
   const root = loggedRepo();
   const before = git(root, 'status', '--porcelain', '--untracked-files=all');
@@ -246,7 +293,7 @@ test('an id that is malformed or names no learning is refused', () => {
 test('ids are never reused after a rejection', () => {
   const root = loggedRepo();
   const rejected = () => {
-    const learning = drafted(root, { gate: FIX_GATE });
+    const learning = drafted(root, { gate: FIX_GATE }, { redraft: true });
     assert.equal(runTrial(root, learning.id).status, 'rejected');
     return learning.id;
   };
@@ -257,7 +304,7 @@ test('ids are never reused after a rejection', () => {
   assert.equal(rejected(), 'L3', 'a removed learning keeps its number');
   rmSync(learningFile(root, 'L3'));
   rmSync(join(repoDataDir(root), 'learning-ids.json'));
-  assert.equal(drafted(root).id, 'L4', 'the ledger keeps the number when the counter is lost');
+  assert.equal(drafted(root, undefined, { redraft: true }).id, 'L4', 'the ledger keeps the number when the counter is lost');
 });
 
 test('ids start above the highest id in the committed gate file', () => {
@@ -546,7 +593,7 @@ test('nothing in this module writes inside the repository', () => {
 
   const failing = drafted(root, { gate: FIX_GATE });
   assert.equal(runTrial(root, failing.id).status, 'rejected');
-  const passing = drafted(root);
+  const passing = drafted(root, undefined, { redraft: true });
   assert.equal(runTrial(root, passing.id).status, 'candidate', 'not checkable without clean history');
   writeLocalGates(root, [{ ...WATCH_GATE, id: 'L41', action: 'observe' }]);
   logClean(root);
@@ -572,7 +619,7 @@ test('a deleted learning file does not let a second draft for its signature thro
   const rejected = loggedRepo();
   assert.equal(runTrial(rejected, drafted(rejected, { gate: FIX_GATE }).id).status, 'rejected');
   rmSync(learningFile(rejected, 'L1'));
-  assert.equal(drafted(rejected).id, 'L2', 'a rejected learning does not stand for its signature, file or none');
+  assert.equal(draftLearning(rejected, draftFor(rejected), { redraft: true }).learning?.id, 'L2', 'a rejected learning does not stand for its signature, file or none');
 });
 
 test('a local entry with no usable id is dropped and reported by its place in the file', () => {

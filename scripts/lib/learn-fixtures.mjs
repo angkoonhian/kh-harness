@@ -129,8 +129,10 @@ export const writeLocalGates = (root, gates) => {
 };
 export const kinds = root => readLedger(root).map(e => `${e.learningId}:${e.kind}`);
 
-export function drafted(root, over) {
-  const result = draftLearning(root, draftFor(root, over));
+/** The learning `draftLearning` stores for `draftFor(root, over)`, given
+ * `options`; fails the test when it refuses. */
+export function drafted(root, over, options) {
+  const result = draftLearning(root, draftFor(root, over), options);
   assert.ok(result.learning, result.error);
   return result.learning;
 }

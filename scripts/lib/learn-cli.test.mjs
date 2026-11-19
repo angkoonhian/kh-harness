@@ -19,13 +19,13 @@ import { applyRetention, SEAL_IDLE_MS, sealClosedSessions } from '../../assets/s
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { EXIT_CODES, LEARN_USAGE, learnHelp } from './cli.mjs';
 import {
-  draftFor, drafted, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, repo, signatureOf, tempDir, trialRepo, useId,
-  writeLocalGates,
+  draftFor, drafted, FIX_GATE, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, repo, signatureOf, tempDir, trialRepo,
+  useId, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { DATA_MARKERS, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, TERMINAL_ONLY } from './learn-cli.mjs';
 import { FAILURE_EVENT, SUCCESS_EVENT } from './recurrence.mjs';
-import { listLearnings } from './learn-lib.mjs';
-import { approveLearning, setPolicy } from './learn-promote.mjs';
+import { listLearnings, runTrial } from './learn-lib.mjs';
+import { approveLearning, retireLearning, setPolicy } from './learn-promote.mjs';
 import { appendLedger } from './ledger.mjs';
 import { buildLogReport, NOT_CLAIMED, REROUTED_MEANS } from './log-report.mjs';
 import { learnCommandDenyRules } from './propose.mjs';
@@ -111,6 +111,70 @@ test('candidates lists recurrences that have no learning', () => {
   assert.equal(text.includes(bash), false, text);
   assert.ok(text.trimEnd().endsWith(NOT_CLAIMED), 'it ends with what log report says it does not claim');
   assert.ok(ok(runLearn(repo(), 'candidates')).trimEnd().endsWith(NOT_CLAIMED), 'with no log too');
+});
+
+/** A repository whose Bash recurrence had L1 rejected by its replay, beside
+ * a Read recurrence no learning was drafted for. */
+function rejectedRepo() {
+  const root = loggedRepo();
+  logReadMistakes(root);
+  assert.equal(runTrial(root, drafted(root, { gate: FIX_GATE }).id).status, 'rejected');
+  return root;
+}
+
+const signaturesIn = groups => groups.flatMap(g => g.recurrences.map(r => r.signature));
+
+test('candidates lists a recurrence the replay rejected a learning for apart, with its ids, in text and JSON', () => {
+  const root = rejectedRepo();
+  const bash = signatureOf(root, 'Bash');
+  const read = signatureOf(root, 'Read');
+  const view = json(root, 'candidates');
+  assert.deepEqual(signaturesIn(view.groups), [read]);
+  assert.deepEqual(view.rejectedGroups.flatMap(g => g.recurrences.map(r => [r.signature, r.rejected])), [[bash, ['L1']]]);
+
+  const text = ok(runLearn(root, 'candidates'));
+  const draftable = text.indexOf('RECURRENCES NO LEARNING STANDS FOR (each may be drafted)');
+  const apart = text.indexOf('RECURRENCES DRAFTED BEFORE, WHOSE REPLAY REJECTED THE DRAFT (a new draft is made only with --redraft)');
+  assert.ok(draftable !== -1 && apart > draftable, text);
+  assert.equal(text.slice(draftable, apart).includes(bash), false, 'not under the heading that says it may be drafted');
+  assert.ok(text.slice(apart).includes(`${bash}  Bash: in 2 sessions`), text);
+  assert.ok(text.slice(apart).includes(`    ${bash}: rejected L1`), text);
+});
+
+test('a retired learning puts its recurrence back among the draftable; a live candidate keeps it out of both lists', () => {
+  const { root, learning } = trialRepo();
+  const bash = signatureOf(root);
+  assert.equal(retireLearning(root, learning.id, { interactive: AT_TERMINAL }).status, 'retired');
+  assert.deepEqual(signaturesIn(json(root, 'candidates').groups), [bash], 'retired: draftable as before');
+  drafted(root);
+  const view = json(root, 'candidates');
+  assert.deepEqual([signaturesIn(view.groups), signaturesIn(view.rejectedGroups)], [[], []], 'a live candidate stands for it');
+});
+
+test('draft of a recurrence the replay rejected is one line and exit 2 naming the rejected id, and --redraft drafts it as a redraft', () => {
+  const root = rejectedRepo();
+  const path = draftFile(JSON.stringify(draftFor(root)));
+  const before = snapshot(repoDataDir(root));
+  const refused = runLearn(root, 'draft', '--from', path);
+  assert.equal(refused.status, 2);
+  assert.equal(refused.stderr.trim().split('\n').length, 1, refused.stderr);
+  assert.match(refused.stderr, /the replay rejected L1 for this signature; a new draft for it is made only as a redraft \(--redraft\)/);
+  assert.equal(refused.stdout, '');
+  assert.deepEqual(snapshot(repoDataDir(root)), before, 'a refused draft writes nothing');
+
+  const text = ok(runLearn(root, 'draft', '--from', path, '--redraft'));
+  assert.match(text, /draft: stored as L2, a candidate/);
+  assert.match(ok(runLearn(root, 'show', 'L2')), /drafted, as the ledger records: a redraft; the replay had rejected L1 for this signature/);
+  assert.equal(json(root, 'show', 'L2').drafted, 'a redraft; the replay had rejected L1 for this signature');
+  assert.equal(json(root, 'show', 'L1').drafted, null);
+  assert.doesNotMatch(ok(runLearn(root, 'show', 'L1')), /drafted, as the ledger records/);
+});
+
+test('--redraft belongs to draft alone', () => {
+  const root = loggedRepo();
+  const r = runLearn(root, 'list', '--redraft');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /--redraft applies only to draft; ignored\./);
 });
 
 test('candidates says when the ledger cannot vouch for what stands', () => {

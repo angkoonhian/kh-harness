@@ -86,7 +86,8 @@ const STATUS_AFTER = Object.freeze({
 });
 
 // A learning in one of these no longer stands for its signature, so a new
-// draft for the signature may be made.
+// draft for the signature may be made: after a rejection, only as a
+// redraft.
 export const SETTLED = new Set(['rejected', 'retired']);
 
 // The statuses whose gate lives in the local gate set. A `landed` learning's
@@ -670,6 +671,16 @@ export function standingFor(state, signature) {
   return null;
 }
 
+/**
+ * The ids of the learnings whose ledger entries name `signature` and whose
+ * last recorded status is `rejected`, in id order: a draft for the
+ * signature after any of them is a redraft.
+ */
+export function rejectedFor(state, signature) {
+  const ids = new Set(state.view.entries.filter(e => e?.evidence?.signature === signature).map(e => e.learningId).filter(isId));
+  return [...ids].filter(id => recordedState(state.view.entries, id)?.status === 'rejected').sort(idOrder);
+}
+
 function readCounter(root) {
   let text;
   try {
@@ -784,18 +795,20 @@ export function writeTransition(root, write, state, { updated, entries, identity
  * draft. At most one learning that is neither rejected nor retired stands
  * for a signature, by its file or, once the file is gone, by the ledger; a
  * learning file that does not read back may be one, so it refuses every
- * draft until it is mended or removed. Returns `{ learning, repairedGates }`,
- * or `{ error }`.
+ * draft until it is mended or removed. A signature the replay has rejected
+ * a learning for is drafted again only with `redraft`, and its `proposed`
+ * entry then names the learnings rejected. Returns `{ learning,
+ * repairedGates }`, or `{ error }`.
  */
-export function draftLearning(root, draft) {
+export function draftLearning(root, draft, { redraft = false } = {}) {
   try {
-    return draftUnguarded(root, draft);
+    return draftUnguarded(root, draft, redraft === true);
   } catch (error) {
     return readFailure(error);
   }
 }
 
-function draftUnguarded(root, draft) {
+function draftUnguarded(root, draft, redraft) {
   if (!isPlainObject(draft)) return refuse(root, 'draft: must be an object');
   if (Object.keys(draft).some(k => !DRAFT_KEYS.has(k))) return refuse(root, 'draft: may have only the keys signature, title, why and gate');
   const { signature } = draft;
@@ -817,6 +830,10 @@ function draftUnguarded(root, draft) {
     if (!state.view.intact) return { error: 'the ledger cannot be read or its chain is broken, so no learning can be told settled and no id never used can be assigned' };
     const standing = standingFor(state, signature);
     if (standing !== null) return { error: `signature: learning ${standing} already covers this signature` };
+    const rejected = rejectedFor(state, signature);
+    if (rejected.length > 0 && !redraft) {
+      return { error: `signature: the replay rejected ${rejected.join(', ')} for this signature; a new draft for it is made only as a redraft (--redraft)` };
+    }
     const next = nextId(root, state);
     if (next.error) return next;
     const gate = { ...drafted.gate, id: next.id, action: 'observe' };
@@ -835,7 +852,8 @@ function draftUnguarded(root, draft) {
       replay: null,
     };
     write(() => writeJson(join(repoDataDir(root), ID_COUNTER_FILE), { highest: next.number }));
-    write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'proposed' })));
+    const detail = rejected.length > 0 ? `a redraft; the replay had rejected ${rejected.join(', ')} for this signature` : undefined;
+    write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'proposed', detail })));
     write(() => writeJson(learningPath(root, learning.id), learning));
     return { learning };
   });

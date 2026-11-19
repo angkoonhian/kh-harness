@@ -61,7 +61,7 @@ const SUBCOMMANDS = {
   'draft'(root, command) {
     const read = readDraft(command.values.get('--from'));
     if (read.error !== undefined) fail(2, read.error);
-    const drafted = draftLearning(root, read.draft);
+    const drafted = draftLearning(root, read.draft, { redraft: command.redraft });
     if (drafted.error !== undefined) fail(2, failureLine('draft', drafted));
     const trial = runTrial(root, drafted.learning.id);
     say(renderDraft(drafted, trial));
