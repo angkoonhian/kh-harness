@@ -303,9 +303,13 @@ export function stripAnsi(text) {
 // C0 and C1 controls except tab and newline, every format character (`Cf`:
 // zero-width, bidi embeddings, overrides and isolates, the byte-order mark,
 // the soft hyphen), the whole tag block U+E0000–U+E007F, assigned or not, the
-// variation selectors U+FE00–U+FE0F and U+E0100–U+E01EF, and the Hangul
-// fillers U+115F, U+1160, U+3164 and U+FFA0, which render as blank space.
-const UNSAFE_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\p{Cf}\u115f\u1160\u3164\uffa0\ufe00-\ufe0f\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
+// variation selectors U+FE00–U+FE0F and U+E0100–U+E01EF, the Hangul
+// fillers U+115F, U+1160, U+3164 and U+FFA0, which render as blank space,
+// and the line and paragraph separators U+2028 and U+2029, which a
+// multiline regular expression's `^` and `$` treat as line breaks while a
+// split on newlines does not. Next-line U+0085, a line break to other
+// tools, is a C1 control and covered above.
+const UNSAFE_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\p{Cf}\u115f\u1160\u3164\uffa0\ufe00-\ufe0f\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
 
 /**
  * Removes what a reader cannot see from text bound for the model's context:
@@ -596,8 +600,10 @@ export function findLearned(root) {
 // `## <id> — <rule>`: the id is one token (letters, digits, `_`, `.`, `-`,
 // starting with a letter); the separator is an em-dash, en-dash or hyphen
 // run, or just whitespace; the rule is whatever follows, trimmed.
-const RULE_HEADING = /^##\s+([A-Za-z][\w.-]*)(?:\s+[—–-]+\s+|\s+)(\S.*)$/;
-const ANY_H2 = /^##(\s|$)/;
+// Exported, with `registryLines`, so scripts/lib/learned-registry.mjs finds
+// an entry's section by exactly the lines and headings this parser reads.
+export const RULE_HEADING = /^##\s+([A-Za-z][\w.-]*)(?:\s+[—–-]+\s+|\s+)(\S.*)$/;
+export const ANY_H2 = /^##(\s|$)/;
 const KEY_LINE = /^\s*[-*]\s*([A-Za-z][\w-]*)\s*:\s*(.*)$/;
 
 /** Canonical field for a key as a user might spell it: `enforced-by`,
@@ -609,6 +615,15 @@ function fieldFor(key) {
   if (k === 'approvedsha256') return 'approvedSha256';
   if (k === 'why' || k === 'pointer' || k === 'verify' || k === 'priority' || k === 'status' || k === 'origin' || k === 'evidence') return k;
   return null; // unknown keys are ignored, as Claude Code ignores unknown frontmatter
+}
+
+/**
+ * The lines `parseRules` reads from registry `text`: every HTML comment
+ * blanked to its newlines alone, then split on `\n` or `\r\n`. Line `i` is
+ * line `i` of `text` split the same way, without its comment characters.
+ */
+export function registryLines(text) {
+  return text.replace(/<!--[\s\S]*?-->/g, m => m.replace(/[^\n]/g, '')).split(/\r?\n/);
 }
 
 /**
@@ -635,9 +650,7 @@ function fieldFor(key) {
  */
 export function parseRules(text) {
   if (typeof text !== 'string' || text.length === 0) return { rules: [], problems: [] };
-  // Blank out comments but keep their newlines, so `line` stays honest.
-  const stripped = text.replace(/<!--[\s\S]*?-->/g, m => m.replace(/[^\n]/g, ''));
-  const lines = stripped.split(/\r?\n/);
+  const lines = registryLines(text);
   const rules = [];
   const problems = [];
   const seen = new Set();

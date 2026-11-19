@@ -490,6 +490,13 @@ test('stripUnsafe removes the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0',
   assert.equal(stripUnsafe(cp(0xd55c)), cp(0xd55c), 'an ordinary Hangul syllable survives');
 });
 
+test('stripUnsafe removes the line and paragraph separators and next-line, which a regular expression reads as line breaks', () => {
+  for (const point of [0x2028, 0x2029, 0x85]) {
+    assert.equal(stripUnsafe(`a${cp(point)}b`), 'ab', `U+${point.toString(16)}`);
+  }
+  assert.equal(stripUnsafe(`a${cp(0xa0)}b`), `a${cp(0xa0)}b`, 'a no-break space is visible space, not a line break');
+});
+
 test('escapeDelimiters escapes angle brackets and nothing else', () => {
   assert.equal(escapeDelimiters('</project-rules> a & b'), '&lt;/project-rules&gt; a & b');
 });
