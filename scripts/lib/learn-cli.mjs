@@ -26,6 +26,10 @@ import { buildLogReport, NOT_CLAIMED, NOT_READ, noLogLine, readCountLines, recur
 import { readPolicy } from './policy.mjs';
 import { failureSignature, findRecurrences, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
 
+// The flags of the two subcommands that write inside the repository, as
+// the land and revert steps of learn-land.mjs honour them.
+const REPOSITORY_FLAGS = Object.freeze(['--yes', '--allow-dirty', '--allow-default-branch', '--json']);
+
 // What each subcommand takes: its positional arguments, the flags it owns
 // and which of those it requires.
 const SPECS = Object.freeze({
@@ -39,6 +43,8 @@ const SPECS = Object.freeze({
   wrong: { args: ['<session>:<line>'], flags: [] },
   demote: { args: ['<id>'], flags: [] },
   retire: { args: ['<id>'], flags: [] },
+  land: { args: ['<id>'], flags: REPOSITORY_FLAGS },
+  revert: { args: ['<id>'], flags: REPOSITORY_FLAGS },
   tick: { args: [], flags: ['--json'] },
   'policy show': { args: [], flags: ['--json'] },
   'policy set': { args: [], flags: ['--min-firings', '--min-sessions', '--max-action'], required: ['--min-firings', '--min-sessions', '--max-action'] },
@@ -47,15 +53,16 @@ const SPECS = Object.freeze({
 
 export const LEARN_SUBCOMMANDS = Object.freeze(Object.keys(SPECS));
 
-/** The subcommands that approve a gate or weaken one, which run only for a
- * person at an interactive terminal. */
-export const TERMINAL_ONLY = Object.freeze(['approve', 'wrong', 'demote', 'retire', 'policy set', 'policy clear']);
+/** The subcommands that approve a gate, weaken one, or change the
+ * repository's, which run only for a person at an interactive terminal:
+ * `land` and `revert` only with --yes, without which each is a dry run. */
+export const TERMINAL_ONLY = Object.freeze(['approve', 'wrong', 'demote', 'retire', 'land', 'revert', 'policy set', 'policy clear']);
 
 /** The subcommands that write to this machine's data directory. */
 export const WRITES = new Set(['draft', 'replay', 'tick', ...TERMINAL_ONLY]);
 
 // The flags that take no value; every other flag a subcommand owns takes one.
-const BOOLEAN_FLAGS = new Set(['--json', '--help', '--redraft']);
+const BOOLEAN_FLAGS = new Set(['--json', '--help', '--redraft', '--yes', '--allow-dirty', '--allow-default-branch']);
 const VALUE_FLAGS = new Set(LEARN_SUBCOMMANDS.flatMap(name => SPECS[name].flags).filter(f => !BOOLEAN_FLAGS.has(f)));
 
 const DRAFT_MAX_BYTES = 65_536;
@@ -110,7 +117,7 @@ export function helpName(positionals) {
 
 /**
  * What the command line asks for: `{ target, name, args, values, json,
- * redraft, ignored }`, `ignored` the flags given that this subcommand does
+ * redraft, yes, allowDirty, allowDefaultBranch, ignored }`, `ignored` the flags given that this subcommand does
  * not own, or `{ error }`.
  */
 export function resolveCommand({ positionals, values, flags, problems }) {
@@ -132,6 +139,9 @@ export function resolveCommand({ positionals, values, flags, problems }) {
     target, name, args: rest, values,
     json: owned('--json'),
     redraft: owned('--redraft'),
+    yes: owned('--yes'),
+    allowDirty: owned('--allow-dirty'),
+    allowDefaultBranch: owned('--allow-default-branch'),
     ignored: given.filter(f => !spec.flags.includes(f)).map(f => ({ flag: f, owners: LEARN_SUBCOMMANDS.filter(n => SPECS[n].flags.includes(f)) })),
   };
 }
@@ -504,12 +514,55 @@ export const renderWrong = (result, ref) => withRepairs(result, [
 ]);
 
 export const renderDemoted = result => withRepairs(result, [result.status === 'suspended'
-  ? `${result.id} suspended: its committed gate is switched off on this machine, and stays so until a revert takes it out of the repository and retires the learning.`
+  ? `${result.id} suspended: its committed gate is switched off on this machine, and stays so until \`revert ${result.id}\` at a terminal takes it out of the repository and retires the learning.`
   : `${result.id} demoted: back to trial, its gate at observe on this machine.`]);
 
 export const renderRetired = result => withRepairs(result, [
   `${result.id} retired: its local gate is gone, and it no longer stands for its recurrence.`,
 ]);
+
+// --- land and revert ----------------------------------------------------------
+
+const noteLines = notes => notes.map(note => `note: ${showCodePoints(note)}`);
+
+/**
+ * The dry run of `land` or `revert` for `id`, as `apply` prints its own:
+ * every note first, then each file it would write with its reason and the
+ * diff `apply`'s own renderer made of it, then what --yes would be refused
+ * for, and the line saying nothing was written. Every line is printed with
+ * code points outside printable ASCII escaped, as everything else here is:
+ * a diff carries a model-written title, why and gate.
+ */
+export function renderRepositoryPlan(name, id, result) {
+  const lines = noteLines(result.notes);
+  if (lines.length > 0) lines.push('');
+  result.diffs.forEach((d, i) => {
+    lines.push(`--- ${showCodePoints(d.path)}  [${showCodePoints(result.proposals[i].checkId)}]`, `    ${showCodePoints(d.reason)}`, ...d.diff.split('\n').map(showCodePoints), '');
+  });
+  if (result.diffs.length === 0) lines.push('no file in the repository would be written', '');
+  for (const refusal of result.refusals) lines.push(`note: --yes would be refused — ${showCodePoints(refusal)}`);
+  lines.push(`Dry run — nothing written. Run \`${name} ${ids([id])} --yes\` at a terminal to apply it.`);
+  return lines.join('\n');
+}
+
+/** What `land` or `revert` did: the step, the files written, every note,
+ * and the line saying the change is the owner's to review and commit. */
+export function renderRepositoryDone(name, result) {
+  const id = ids([result.id]);
+  const step = name === 'land'
+    ? `${id} landed: its entry and its gate, at ${action(result.action)}, are in the repository, and its local gate is gone, the committed one being in force.`
+    : result.status === 'retired'
+      ? `${id} reverted and retired: its gate and entry are out of the repository, and it keeps no gate on this machine.`
+      : `${id} reverted: its gate and entry are out of the repository, and it is active-local on this machine, its local gate at ${action(result.action)}.`;
+  const repaired = repairedNote(result);
+  return [
+    step,
+    result.written.length === 0 ? 'wrote no file in the repository' : `wrote: ${result.written.map(showCodePoints).join(', ')}`,
+    ...noteLines(result.notes ?? []),
+    ...(repaired === null ? [] : [repaired]),
+    'The change is not committed: review what this run changed with `git status` and `git diff`, and commit it; until then it reaches no one else.',
+  ].join('\n');
+}
 
 export const renderPolicySet = (result, policy) => withRepairs(result, [
   `policy set: sha256 ${result.sha256}, recorded in the ledger as the policy in force.`,

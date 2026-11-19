@@ -254,7 +254,7 @@ test('a LEARNED.md or gates.json edited by hand stops land and revert, which nam
       assert.deepEqual(step(), { error: modified, exitCode: 3 }, rel);
     }
     assert.deepEqual(revertLearning(root, 'L1', YES), {
-      error: `${modified}; or, if it is to stay as it is, take L1 out of it by hand and run the revert again, which then finds nothing of L1 in it and goes on`, exitCode: 3,
+      error: `${modified}; or, if it is to stay as it is, take L1 out of it by hand and run \`learn revert L1 --yes\` again, which then finds nothing of L1 in it and goes on`, exitCode: 3,
     }, rel);
     assert.deepEqual(mtimes(root), before.files);
     assert.deepEqual(kinds(root), before.ledger);
@@ -421,7 +421,7 @@ test('a revert of an interrupted land names the land that finishes it', () => {
   withLedgerHeld(root, () => landLearning(root, 'L1', YES));
   const last = readLedger(root).at(-1);
   appendLedger(root, { kind: 'landed', learningId: 'L1', contentSha256: learning.sha256, evidence: last.evidence, base: last.base, learned: last.learned, approvedBy: 'owner', action: gate.action });
-  assert.deepEqual(revertLearning(root, 'L1', YES).error, 'L1: a land of it stopped before its learning file was written; running land for L1 again finishes it');
+  assert.deepEqual(revertLearning(root, 'L1', YES).error, 'L1: a land of it stopped before its learning file was written; running `learn land L1 --yes` again at a terminal finishes it');
   assert.equal(landLearning(root, 'L1', YES).ok, true);
   assert.equal(statusOf(root), 'landed');
 });
@@ -455,7 +455,7 @@ test('retiring a suspended learning whose gate is still committed is refused, an
   commitAll(root);
   assert.equal(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'suspended');
   assert.deepEqual(retireLearning(root, 'L1', { interactive: AT_TERMINAL }), {
-    error: `L1: its gate is still in ${GATES_PATH}, binding everyone who has the repository; reverting L1 takes it out of the repository and retires it`,
+    error: `L1: its gate is still in ${GATES_PATH}, binding everyone who has the repository; \`learn revert L1 --yes\` at a terminal takes it out of the repository and retires it`,
   });
 
   // A learning retired so before the refusal existed.
@@ -479,7 +479,7 @@ test('retiring a landed learning whose gate is still committed is refused, namin
   const { root } = activeRepo();
   assert.equal(landLearning(root, 'L1', YES).ok, true);
   assert.deepEqual(retireLearning(root, 'L1', { interactive: AT_TERMINAL }), {
-    error: `L1: its gate is still in ${GATES_PATH}, binding everyone who has the repository; reverting L1 takes it out of the repository, and it can be retired after that`,
+    error: `L1: its gate is still in ${GATES_PATH}, binding everyone who has the repository; \`learn revert L1 --yes\` at a terminal takes it out of the repository, and it can be retired after that`,
   });
   assert.equal(revertLearning(root, 'L1', YES).ok, true);
   assert.equal(retireLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'retired');
@@ -511,7 +511,7 @@ test('a land killed between a file write and the manifest is finished by the nex
   writeFileSync(join(root, LEARNED_PATH), text(root, LEARNED_PATH) + 'A hand edit.\n');
   assert.deepEqual(revertLearning(root, 'L2', YES), {
     error: `${LEARNED_PATH} no longer matches what kh-harness last wrote (a hand edit, a deletion, or a write that stopped before the manifest recorded it), so kh-harness no longer updates it; restore it from git and run again; `
-      + 'or, if it is to stay as it is, take L2 out of it by hand and run the revert again, which then finds nothing of L2 in it and goes on', exitCode: 3,
+      + 'or, if it is to stay as it is, take L2 out of it by hand and run `learn revert L2 --yes` again, which then finds nothing of L2 in it and goes on', exitCode: 3,
   }, 'any other difference is still refused, as before');
 });
 
@@ -1089,10 +1089,10 @@ test('a hand-edited gate file names the hand removal that lets a revert go on, a
   assert.equal(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'suspended');
   const edited = text(root, GATES_PATH).replace('"schema": 1', '"schema": 1 ');
   writeFileSync(join(root, GATES_PATH), edited);
-  assert.match(retireLearning(root, 'L1', { interactive: AT_TERMINAL }).error, /reverting L1 takes it out of the repository and retires it$/);
+  assert.match(retireLearning(root, 'L1', { interactive: AT_TERMINAL }).error, /`learn revert L1 --yes` at a terminal takes it out of the repository and retires it$/);
   const refusal = revertLearning(root, 'L1', YES);
   assert.equal(refusal.exitCode, 3);
-  assert.match(refusal.error, /^\.claude\/kh-harness\/gates\.json no longer matches what kh-harness last wrote .*restore it from git and run again; or, if it is to stay as it is, take L1 out of it by hand and run the revert again, which then finds nothing of L1 in it and goes on$/);
+  assert.match(refusal.error, /^\.claude\/kh-harness\/gates\.json no longer matches what kh-harness last wrote .*restore it from git and run again; or, if it is to stay as it is, take L1 out of it by hand and run `learn revert L1 --yes` again, which then finds nothing of L1 in it and goes on$/);
 
   const handFile = JSON.parse(edited);
   writeFileSync(join(root, GATES_PATH), JSON.stringify({ ...handFile, gates: handFile.gates.filter(g => g.id !== 'L1') }, null, 4) + '\n');

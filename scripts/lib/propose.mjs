@@ -330,13 +330,15 @@ export function toolGateDenyRules() {
   return [...inRepository, 'Edit(~/.claude/kh-harness/**)', ...learnCommandDenyRules()];
 }
 
-// The `learn` subcommands that approve a gate or weaken one.
-const LEARN_TERMINAL_SUBCOMMANDS = ['approve', 'wrong', 'demote', 'retire', 'policy set', 'policy clear'];
+// The `learn` subcommands that approve a gate, weaken one, or change the
+// repository's. `land` and `revert` are denied whole, their dry runs too:
+// the owner runs both.
+const LEARN_TERMINAL_SUBCOMMANDS = ['approve', 'wrong', 'demote', 'retire', 'land', 'revert', 'policy set', 'policy clear'];
 
 /**
- * Deny rules for running the `learn` subcommands that approve or weaken a
- * gate, in the Bash and the PowerShell tool. A rule's `*` stands for any
- * text, so `*learn.mjs* approve*` matches the command with any path to the
+ * Deny rules for running the `learn` subcommands that approve a gate,
+ * weaken one or change the repository's, in the Bash and the PowerShell
+ * tool. A rule's `*` stands for any text, so `*learn.mjs* approve*` matches the command with any path to the
  * script, quoted or not, and any repository path before the subcommand; a
  * deny rule applies to each part of a compound command. It matches the
  * command text Claude writes and not the same program reached another way,

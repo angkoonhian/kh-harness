@@ -390,7 +390,7 @@ function revertStage(state, learning, traced) {
   if (status === 'suspended' && ends(['suspended', 'reverted', 'retired'])) return stage(toRetired, []);
   if (status === 'retired' && ends(['retired', 'reverted'])) return stage(learning, [retired]);
   if (status === 'active-local' && ends(['landed'])) {
-    return refused(`${id}: a land of it stopped before its learning file was written; running land for ${id} again finishes it`);
+    return refused(`${id}: a land of it stopped before its learning file was written; running \`learn land ${id} --yes\` again at a terminal finishes it`);
   }
   if (unrecorded !== null) return refused(unrecorded);
   if (traced && revertedSinceLanding) return stage(learning, []);
@@ -560,7 +560,7 @@ function revertFile(root, manifest, rel, step, holdsId, id) {
     return error?.code === 'ENOENT' ? { text: null, adopt: null } : file;
   }
   if (!holdsId(text)) return { text: null, adopt: null };
-  return { error: `${file.error}; or, if it is to stay as it is, take ${id} out of it by hand and run the revert again, which then finds nothing of ${id} in it and goes on` };
+  return { error: `${file.error}; or, if it is to stay as it is, take ${id} out of it by hand and run \`learn revert ${id} --yes\` again, which then finds nothing of ${id} in it and goes on` };
 }
 
 /**
