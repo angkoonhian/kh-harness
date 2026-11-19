@@ -9,11 +9,11 @@ import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, wri
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-import { appendEvent, isEnabled, repoDataDir, setEnabled, storeBlob } from '../../assets/scripts/harness-log.mjs';
+import { appendEvent, isEnabled, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { EXIT_CODES, LOG_USAGE } from './cli.mjs';
 import {
-  CANARY, DATA_ROOT, DAY_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeSession,
+  CANARY, DATA_ROOT, DAY_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeBlob, writeSession,
 } from './log-fixtures.mjs';
 import { logStatus, SESSION_LOG_SCRIPT } from './log-lib.mjs';
 import { DATA_MARKERS } from './log-report.mjs';
@@ -487,7 +487,7 @@ test('status writes nothing: the data directory is byte-identical before and aft
   writeSession(root, 's2');
   sealAll(root);
   writeSession(root, 's3');
-  storeBlob(root, 'x'.repeat(10));
+  writeBlob(root, 'x'.repeat(10));
   const before = snapshot(repoDataDir(root));
   for (const args of [['status'], ['status', '--json']]) assert.equal(runLog(root, ...args).status, 0);
   logStatus(root);

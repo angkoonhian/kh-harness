@@ -26,13 +26,11 @@ import {
   repoDataDir,
   repoKey,
   SCRUB_MARK,
-  scrubValue,
   sessionFileName,
   setEnabled,
-  storeBlob,
 } from '../../assets/scripts/harness-log.mjs';
 
-import { CREDENTIAL_SHAPES } from '../../assets/scripts/harness-redact.mjs';
+import { CREDENTIAL_SHAPES, maskText } from '../../assets/scripts/harness-redact.mjs';
 
 const HARNESS_LOG_URL = new URL('../../assets/scripts/harness-log.mjs', import.meta.url).href;
 
@@ -569,12 +567,20 @@ test('each event carries schema, ts and pid, and the writer owns them', () => {
   assert.equal(e.type, 'PreToolUse');
 });
 
+/** `value` as an event stores it: written as one field of an event, under
+ * the default inline cap, and read back. */
+function scrubValue(value) {
+  const root = tempDir('hk-log-scrub-');
+  assert.deepEqual(appendEvent(root, 's', { value }), { written: true });
+  return readEvents(root, 's').events[0].value;
+}
+
 test('SCRUB_MARK is what both the mask and a credential-named key leave behind', () => {
   assert.equal(SCRUB_MARK, '***');
   assert.deepEqual(scrubValue({ note: `key ${githubToken()}`, [PASSWORD]: 'plain' }), { note: `key ${SCRUB_MARK}`, [PASSWORD]: SCRUB_MARK });
 });
 
-test('scrubValue masks every string leaf of a deep copy and leaves the input alone', () => {
+test('an event stores a deep copy with every string leaf masked, and the input is left alone', () => {
   const token = githubToken();
   const input = { a: [token, 1, null, true, { b: `key ${token}` }], c: 'plain' };
   assert.deepEqual(scrubValue(input), { a: ['***', 1, null, true, { b: 'key ***' }], c: 'plain' });
@@ -803,7 +809,7 @@ test('a 200 KB output becomes a blob reference and the blob holds the scrubbed t
   assert.ok(Buffer.byteLength(output) > 200 * 1024);
   assert.deepEqual(appendEvent(root, 's1', { tool_response: { stdout: output, exitCode: 0 } }), { written: true });
   const [e] = readEvents(root, 's1').events;
-  const scrubbed = scrubValue(output);
+  const scrubbed = maskText(output);
   assert.ok(!scrubbed.includes(token));
   assert.deepEqual(e.tool_response, { stdout: { blob: sha256Of(scrubbed), bytes: Buffer.byteLength(scrubbed), truncated: true }, exitCode: 0 });
   assert.equal(gunzipSync(readFileSync(blobFile(root, e.tool_response.stdout.blob))).toString('utf8'), scrubbed);
@@ -813,29 +819,20 @@ test('a 200 KB output becomes a blob reference and the blob holds the scrubbed t
 test('the same blob is written once', () => {
   const root = tempDir('hk-log-once-');
   const text = 'z'.repeat(70000);
-  const first = storeBlob(root, text);
-  assert.deepEqual(first, { sha256: sha256Of(text), bytes: 70000 });
+  appendEvent(root, 's0', { output: text });
+  assert.deepEqual(readEvents(root, 's0').events[0].output, { blob: sha256Of(text), bytes: 70000, truncated: true });
   const old = new Date('2020-01-01T00:00:00Z');
-  utimesSync(blobFile(root, first.sha256), old, old);
-  assert.deepEqual(storeBlob(root, text), first);
+  utimesSync(blobFile(root, sha256Of(text)), old, old);
   appendEvent(root, 's1', { output: text });
   appendEvent(root, 's2', { output: text });
-  assert.equal(statSync(blobFile(root, first.sha256)).mtimeMs, old.getTime(), 'the existing blob is not rewritten');
-  assert.deepEqual(readdirSync(join(repoDataDir(root), 'blobs')), [`${first.sha256}.gz`]);
-});
-
-test('storeBlob masks what it stores', () => {
-  const root = tempDir('hk-log-storemask-');
-  const { sha256 } = storeBlob(root, `value ${githubToken()}`);
-  assert.equal(gunzipSync(readFileSync(blobFile(root, sha256))).toString('utf8'), 'value ***');
-  assert.equal(sha256, sha256Of('value ***'));
+  assert.equal(statSync(blobFile(root, sha256Of(text))).mtimeMs, old.getTime(), 'the existing blob is not rewritten');
+  assert.deepEqual(readdirSync(join(repoDataDir(root), 'blobs')), [`${sha256Of(text)}.gz`]);
 });
 
 test('a blob that cannot be stored leaves a null reference, never a dangling one', () => {
   const root = tempDir('hk-log-noblob-');
   mkdirSync(repoDataDir(root), { recursive: true });
   writeFileSync(join(repoDataDir(root), 'blobs'), 'a file where the directory should be');
-  assert.equal(storeBlob(root, 'text'), null);
   assert.deepEqual(appendEvent(root, 's1', { output: 'y'.repeat(70000) }), { written: true });
   assert.deepEqual(readEvents(root, 's1').events[0].output, { blob: null, bytes: 70000, truncated: true });
 });

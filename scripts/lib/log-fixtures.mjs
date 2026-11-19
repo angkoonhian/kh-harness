@@ -8,9 +8,11 @@
 import { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 import { appendEvent, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 import { SEAL_IDLE_MS, sealClosedSessions } from '../../assets/scripts/harness-seal.mjs';
@@ -66,6 +68,16 @@ export function writeSession(root, id) {
   ]) {
     assert.equal(appendEvent(root, id, event).written, true);
   }
+}
+
+/** Puts a blob holding `text` in the blob store, named as the hook names
+ * one, with no event referencing it; returns its `{ sha256 }`. */
+export function writeBlob(root, text) {
+  const data = Buffer.from(text, 'utf8');
+  const sha256 = createHash('sha256').update(data).digest('hex');
+  mkdirSync(join(repoDataDir(root), 'blobs'), { recursive: true });
+  writeFileSync(join(repoDataDir(root), 'blobs', `${sha256}.gz`), gzipSync(data));
+  return { sha256 };
 }
 
 /** Seals every session as if they had all been idle past the threshold. */

@@ -8,10 +8,10 @@ import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-import { repoDataDir, setEnabled, storeBlob } from '../../assets/scripts/harness-log.mjs';
+import { repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { SEAL_IDLE_MS } from '../../assets/scripts/harness-seal.mjs';
 import {
-  CANARY, DATA_ROOT, DAY_MS, MINUTE_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeSession,
+  CANARY, DATA_ROOT, DAY_MS, MINUTE_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeBlob, writeSession,
 } from './log-fixtures.mjs';
 
 test('maintain refuses a data directory that is a link, and writes nothing through it', () => {
@@ -37,7 +37,7 @@ test('maintain seals and sweeps what the hook would, and says what it did', () =
   writeSession(root, 'old');
   touchAgo(sessionFile(root, 'old'), SEAL_IDLE_MS + MINUTE_MS);
   writeSession(root, 'live');
-  const blob = storeBlob(root, 'unreferenced');
+  const blob = writeBlob(root, 'unreferenced');
   touchAgo(join(repoDataDir(root), 'blobs', `${blob.sha256}.gz`), 2 * DAY_MS);
   const r = runLog(root, 'maintain');
   assert.equal(r.status, 0, r.stderr);
