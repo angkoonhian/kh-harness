@@ -15,7 +15,7 @@ import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
 import { deriveCouldNotDerive, exposureSectionLines, stillOpen } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
-import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason, writeGateRefusals } from './lib/apply-lib.mjs';
+import { applyProposals, diffRenderer, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason, writeGateRefusals } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE, EXECUTION_DISCLOSURE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -194,6 +194,7 @@ process.stdout.write(
 // below. A settings patch — a hook entry or deny rules — is a few lines and
 // the most security-relevant thing this tool writes, so it is still shown.
 const showFileDiffs = !flags.has('--yes');
+const preview = diffRenderer(root);
 try {
   for (const p of proposals) {
     const label = p.kind === 'file' ? p.path
@@ -201,7 +202,7 @@ try {
       : `.claude/settings.json (hook: ${p.event})`;
     process.stdout.write(`--- ${label}  [${p.checkId}]\n`);
     process.stdout.write(`    ${p.reason}\n`);
-    if (showFileDiffs || p.kind !== 'file') process.stdout.write(renderDiff(root, p) + '\n');
+    if (showFileDiffs || p.kind !== 'file') process.stdout.write(preview(p) + '\n');
     process.stdout.write('\n');
   }
 } catch (err) {

@@ -1346,3 +1346,14 @@ test('uninstall says docs/harness/detect.json is left in place, before and after
   }
   assert.equal(existsSync(join(d, 'docs/harness/detect.json')), true);
 });
+
+test('the reverted settings are written whole: a temporary file an interrupted run left is cleared, and none is left', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify({ permissions: { deny: ['Edit(x)'] } }, null, 2) + '\n');
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeFileSync(join(d, '.claude/settings.json.tmp-424242'), '{ "hooks": ');
+  runUninstall({ root: d, manifest, plan: planUninstall({ root: d, manifest }) });
+  assert.deepEqual(JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')), { permissions: { deny: ['Edit(x)'] } });
+  assert.equal(existsSync(join(d, '.claude/settings.json.tmp-424242')), false);
+});

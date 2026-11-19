@@ -135,12 +135,9 @@ function sensorProposal({ kitVersion, stack, check }) {
     kind: 'settings-hook', event: 'PostToolUse', step: 9,
     matcher: SENSOR_MATCHER,
     entry: execEntry(LINT_TOUCHED_PATH),
-    // Review finding 5: a hook must never be ACTIVATED (registered in
-    // settings.json) unless the script it runs, and everything that
-    // script imports, is actually present on disk — never merely
-    // "was in this batch's plan". See applySettingsHookProposal in
-    // apply-lib.mjs, which checks this against the real filesystem AFTER
-    // the write phase, not against this list alone.
+    // A hook is registered only when the script it runs and everything that
+    // script loads are on disk holding this kit's bytes: apply-lib.mjs's
+    // `unmetDependencies` reads the files themselves, after the write phase.
     requiresFiles: requiredFiles(files),
     reason: hookRegistrationReason('PostToolUse', check),
   }];

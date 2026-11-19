@@ -10,7 +10,7 @@ import * as fs from 'node:fs';
 import { join } from 'node:path';
 import { assertAllowed, assertContained, isAllowedDirectory, isCanonicalJson, serializeSettings, settingsReformattedNote } from './apply-lib.mjs';
 import { readJsonFile } from './read-json.mjs';
-import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
+import { classify, MANIFEST_PATH, replaceFile, writeManifest } from './manifest.mjs';
 import { revertPatches } from './settings-merge.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { carriesStamp } from './render.mjs';
@@ -684,7 +684,7 @@ export function runUninstall({ root, manifest, plan }) {
       // nothing has no business rewriting the owner's settings.json.
       if (r.reverted.length > 0) {
         try {
-          fs.writeFileSync(join(root, SETTINGS), serializeSettings(r.settings, validated.raw), 'utf8');
+          replaceFile(join(root, SETTINGS), serializeSettings(r.settings, validated.raw));
           // Asked of the file as it was before this run, not of the revert.
           settingsReformatted = !isCanonicalJson(validated.raw);
         } catch {

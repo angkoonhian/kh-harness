@@ -975,7 +975,7 @@ const CHECKS = [
       // verbatim when it is a path-taking permission (`Edit`/`Read`/
       // `Write`/`Glob`/`Grep`/`NotebookEdit`), `null` otherwise — a
       // `Bash(...)` deny rule can embed a literal credential as its argument
-      // (see apply-lib.mjs's own comment on `renderSettingsDenyDiff`), and
+      // (see apply-lib.mjs's own comment on `settingsDenyPreview`), and
       // `harness` is serialised wholesale into docs/harness/detect.json.
       const denyList = harness.claudeDir.denyRuleList ?? [];
       const { covered, uncovered, unrelated } = denyRuleCoverage({ candidates, denyRuleList: denyList, files });
