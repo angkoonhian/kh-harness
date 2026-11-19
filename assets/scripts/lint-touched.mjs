@@ -4,10 +4,11 @@
 // writing to stderr and exiting 2. Exit 2 does not block anything; the edit
 // already happened, and the point is only to surface the problem fast.
 //
-// A lint run that could not check the file — the linter is missing, crashed,
-// timed out, or failed without naming the file — is not a clean file. It
-// exits 0 with a `systemMessage` for the user on stdout, the only thing this
-// script ever writes there, once per session (see couldNotCheck).
+// A lint run that did not confirm the file clean — the linter is missing,
+// crashed, timed out, or failed without reporting on the file — is not a
+// clean file. It exits 0 with one JSON object on stdout, the only thing this
+// script ever writes there, telling both the user and Claude, once per
+// session (see notConfirmedClean).
 //
 // This script itself never writes to the repository — but the project's
 // OWN lint script might (an auto-fixing `scripts.lint` such as
@@ -337,8 +338,8 @@ function hasChanged(before, after) {
  * cannot be bypassed by a future call site that forgets it.
  *
  * `lines` is never empty: a failure with nothing attributable to the edited
- * file is not reported to Claude at all, but told to the user as a
- * could-not-check notice (see couldNotCheck).
+ * file is not a lint report but a not-confirmed-clean notice (see
+ * notConfirmedClean).
  */
 function writeReport(lines) {
   process.stderr.write(boundReport(lines) + '\n');
@@ -444,24 +445,29 @@ function forgetFile(root, sessionId, filePath) {
 }
 
 /**
- * Tells the user, once per session, that the lint script could not check
- * `filePath` — never a lint failure, so exit 0, where Claude Code
- * shows a `systemMessage` from stdout and nothing from stderr. `reason`
- * carries the exit code, signal or timeout and nothing from the linter's
- * output: none of that output named the file, so none of it is attributed
- * to the file. Once per session, not per file: a missing or broken linter
- * fails the same way for every file, and the message says later files go
+ * Says, once per session, that `filePath` was not confirmed clean — never a
+ * lint failure, so exit 0, where Claude Code reads stdout as JSON and shows
+ * nothing from stderr. The one sentence goes to the person as
+ * `systemMessage` and to the model as PostToolUse `additionalContext`, so
+ * neither mistakes "never checked" for "clean". `outcome` carries the exit
+ * code, signal or timeout and nothing from the linter's output: none of
+ * that output named the file, so none of it is attributed to the file.
+ * Once per session, not per file: a missing or broken linter fails the
+ * same way for every file, and the sentence says later files go
  * unreported. A marker that cannot be read or written means the notice is
  * shown again, never that it is lost.
  */
-function couldNotCheck(root, sessionId, filePath, reason) {
+function notConfirmedClean(root, sessionId, filePath, outcome) {
   const path = sessionId === null ? null : markerPath(root, sessionId, 'sensor-unchecked');
   if (path !== null) {
     if (readJSONMarker(path, {}).noticed === true) return 0;
     writeJSONMarker(path, { noticed: true });
   }
-  const systemMessage = `lint-touched: the lint script could not check ${filePath}: ${reason}. Files it cannot check later this session are not reported again.`;
-  process.stdout.write(JSON.stringify({ systemMessage }) + '\n');
+  const sentence = `lint-touched: the lint script ${outcome}, so ${filePath} was not confirmed clean. Files not confirmed later this session are not reported again.`;
+  process.stdout.write(JSON.stringify({
+    systemMessage: sentence,
+    hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: sentence },
+  }) + '\n');
   return 0;
 }
 
@@ -552,9 +558,9 @@ async function main() {
   // A timeout (our own kill), a spawn failure or any other signal is never
   // reported as a lint failure: whatever the run printed is incomplete.
   const sessionId = safeSessionId(payload.session_id);
-  if (result.timedOut) return couldNotCheck(root, sessionId, filePath, `it timed out after ${LINT_TIMEOUT_MS / 1000}s`);
-  if (result.error) return couldNotCheck(root, sessionId, filePath, 'it could not be started');
-  if (result.signal) return couldNotCheck(root, sessionId, filePath, `it was killed by ${result.signal}`);
+  if (result.timedOut) return notConfirmedClean(root, sessionId, filePath, `timed out after ${LINT_TIMEOUT_MS / 1000}s before reporting on ${filePath}`);
+  if (result.error) return notConfirmedClean(root, sessionId, filePath, 'could not be started');
+  if (result.signal) return notConfirmedClean(root, sessionId, filePath, `was killed by ${result.signal} before reporting on ${filePath}`);
 
   // The file the edit touched may have been rewritten by scripts.lint
   // itself (an auto-fixing `--fix`/`--write` linter) — checked BEFORE the
@@ -592,9 +598,9 @@ async function main() {
   // recognises, matches only a raw token.
   const reported = dropCommandFragments(attributed, [lintScript, fullCommand].flatMap(c => [c, maskText(c)]), exemptions);
   // Nothing attributable survived: the run failed without saying anything
-  // about this file, so it was not checked — and a filtered-out report never
-  // participates in dedupe bookkeeping.
-  if (reported.length === 0) return couldNotCheck(root, sessionId, filePath, `it exited with code ${result.status}`);
+  // about this file, so it was not confirmed clean — and a filtered-out
+  // report never participates in dedupe bookkeeping.
+  if (reported.length === 0) return notConfirmedClean(root, sessionId, filePath, `exited with code ${result.status} without reporting on ${filePath}`);
 
   const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
   if (decision.action === 'terse') return writeReport([decision.message]);
