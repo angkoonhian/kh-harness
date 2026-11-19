@@ -35,6 +35,7 @@ import { approveLearning, demoteLearning, markWrong, retireLearning, setPolicy }
 import { appendLedger, readLedger } from './ledger.mjs';
 import { buildLogReport, NOT_CLAIMED, REROUTED_MEANS } from './log-report.mjs';
 import { readPolicy } from './policy.mjs';
+import { MAX_DOCUMENT_BYTES } from './scan.mjs';
 import { learnCommandDenyRules } from './propose.mjs';
 import { requireInteractive, TERMINAL_CHECK } from './tty.mjs';
 
@@ -135,6 +136,19 @@ const DRAFTABLE = 'RECURRENCES NO LEARNING STANDS FOR (each that names a failure
 const REDRAFT_ONLY = 'RECURRENCES DRAFTED BEFORE, WHOSE LEARNING WAS REJECTED OR RETIRED AS WRONG (a new draft is made only with --redraft)';
 const earlierOf = view => view.redraftGroups.flatMap(g => g.recurrences.map(r => [r.signature, r.earlier]));
 
+test('candidates says a taxonomy that was not read hides which recurrences an earlier learning covers', () => {
+  const root = loggedRepo();
+  const taxonomy = readFileSync(join(root, FAILURES_PATH), 'utf8');
+  writeFileSync(join(root, FAILURES_PATH), `${taxonomy}<!-- ${'x'.repeat(MAX_DOCUMENT_BYTES)} -->\n`);
+  const text = ok(runLearn(root, 'candidates'));
+  assert.ok(text.includes(`  ${FAILURES_PATH} is larger than the ${MAX_DOCUMENT_BYTES} bytes kh-harness reads of a file, so no recurrence here is known to be labelled, `
+    + 'and an earlier learning under the same failure kind is not seen; draft refuses until it is read\n'), text);
+  assert.match(text, /failure kind: not read, because docs\/harness\/FAILURES\.md is larger than this command reads/);
+  assert.equal(json(root, 'candidates').taxonomy.state, 'over-limit');
+  writeFileSync(join(root, FAILURES_PATH), taxonomy);
+  assert.doesNotMatch(ok(runLearn(root, 'candidates')), /is not seen; draft refuses until it is read/);
+});
+
 test('candidates lists a recurrence the replay rejected a learning for apart, with its ids, in text and JSON', () => {
   const root = rejectedRepo();
   const bash = signatureOf(root, 'Bash');
@@ -202,7 +216,7 @@ test('a recurrence whose failure kind labels a rejected learning\'s signature is
   assert.match(sibling.stderr, /an earlier learning for this recurrence did not hold: L1 \(drafted for another signature of failure kind F3, rejected by the replay\); a new draft for it is the owner's decision/);
 });
 
-test('a rejection under one failure kind leaves a recurrence of another kind listed as draftable; with an unreadable taxonomy draft refuses it for want of a label', () => {
+test('a rejection under one failure kind leaves a recurrence of another kind listed as draftable; with an unreadable taxonomy draft refuses it, saying the taxonomy was not read', () => {
   const root = rejectedRepo();
   const bash = signatureOf(root, 'Bash');
   const read = signatureOf(root, 'Read');
@@ -218,8 +232,7 @@ test('a rejection under one failure kind leaves a recurrence of another kind lis
   assert.ok(ok(runLearn(unreadable, 'candidates')).includes(`failure kind: not read, because ${FAILURES_PATH} could not be read`));
   const unlabelled = runLearn(unreadable, 'draft', '--from', draftFile(JSON.stringify(draftFor(unreadable, { gate: READ_GATE }))));
   assert.equal(unlabelled.status, 3, unlabelled.stderr);
-  assert.match(unlabelled.stderr, /^kh-harness: draft: signature: no failure kind in docs\/harness\/FAILURES\.md lists this signature, and only the owner names a failure: /);
-  assert.equal(unlabelled.stderr.trim().split('\n').length, 1);
+  assert.equal(unlabelled.stderr, 'kh-harness: draft: signature: docs/harness/FAILURES.md exists but could not be read, so whether a failure kind lists this signature is not known; nothing was drafted\n');
 });
 
 test('a learning the owner retired puts its recurrence among those drafted again only with --redraft; a live candidate keeps it out of both lists', () => {

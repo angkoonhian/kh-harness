@@ -15,6 +15,7 @@ import { appendLedger } from './ledger.mjs';
 import { project, runLog, sealAll, sealedFile, sessionFile, snapshot, writeSession } from './log-fixtures.mjs';
 import { buildLogReport, DATA_MARKERS, dataBegin, dataEnd, NOT_CLAIMED, RECORDED_NOTE, REROUTED_MEANS } from './log-report.mjs';
 import { failureSignature } from './recurrence.mjs';
+import { MAX_DOCUMENT_BYTES } from './scan.mjs';
 
 const BASE = 'b'.repeat(64);
 const OTHER_BASE = 'c'.repeat(64);
@@ -233,6 +234,19 @@ test('a taxonomy that cannot be read leaves every label not read', () => {
   assert.match(reportText(root), /failure kind: not read, because docs\/harness\/FAILURES\.md could not be read/);
 });
 
+test('a taxonomy larger than is read leaves every label not read, and is not called absent or empty', () => {
+  const root = project();
+  for (const id of ['a', 'b']) log(root, id, harness(), failure());
+  mkdirSync(join(root, 'docs/harness'), { recursive: true });
+  writeFileSync(join(root, 'docs/harness/FAILURES.md'), `## F1 — a kind\n- signatures: 0123456789abcdef\n<!-- ${'x'.repeat(MAX_DOCUMENT_BYTES)} -->\n`);
+  const json = reportJson(root);
+  assert.equal(json.taxonomy.state, 'over-limit');
+  assert.equal(json.groups[0].recurrences[0].failureKinds, null);
+  const text = reportText(root);
+  assert.match(text, /failure kind: not read, because docs\/harness\/FAILURES\.md is larger than this command reads/);
+  assert.doesNotMatch(text, /unlabelled/);
+});
+
 test('gate firings are counted per gate and action, and a warn or block followed by a successful call of the same tool is rerouted', () => {
   const root = project();
   const firing = (gateId, action, tool, useId) => ({ type: 'gate_firing', gateId, gateSha256: 'a'.repeat(64), action, tool, tool_use_id: useId });
@@ -288,6 +302,25 @@ test('marked wrong is read from the ledger, and a broken ledger is reported as n
   assert.deepEqual(broken.ledger, { intact: false, brokenAt: 5 });
   assert.deepEqual(broken.gates.firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal]), [['L1', null, null]]);
   assert.match(reportText(root), /L1: .*marked wrong: not read, because the ledger's chain is broken at line 5/);
+});
+
+test('a ledger larger than the report reads leaves the wrong marks not read, and says so', () => {
+  const root = project();
+  const warned = { type: 'gate_firing', gateId: 'L1', gateSha256: 'a'.repeat(64), action: 'warn', tool: 'Bash' };
+  log(root, 'a', warned, warned);
+  writeFileSync(join(repoDataDir(root), 'ledger.jsonl'), `${'x'.repeat(5000)}\n`);
+  process.env.KH_LOG_MAX_FILE_BYTES = '4000';
+  let json;
+  let text;
+  try {
+    json = reportJson(root);
+    text = reportText(root);
+  } finally {
+    delete process.env.KH_LOG_MAX_FILE_BYTES;
+  }
+  assert.deepEqual(json.ledger, { intact: false, brokenAt: null, overLimit: true });
+  assert.deepEqual(json.gates.firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal]), [['L1', null, null]]);
+  assert.match(text, /L1: .*marked wrong: not read, because the ledger is larger than this command reads/);
 });
 
 test('a gate id with no learning on this machine is reported from its firings alone, never marked wrong', () => {

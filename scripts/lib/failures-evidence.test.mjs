@@ -13,12 +13,12 @@ import { pathToFileURL } from 'node:url';
 import { appendEvent, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { failureSignature, FAILURE_EVENT } from './recurrence.mjs';
-import { FAILURES_PATH, failuresEvidence, parseFailures } from './failures-evidence.mjs';
+import { FAILURES_PATH, failuresEvidence, parseFailures, readFailures } from './failures-evidence.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { selectProfile } from './profiles/index.mjs';
-import { listFiles } from './scan.mjs';
+import { listFiles, MAX_DOCUMENT_BYTES } from './scan.mjs';
 
 const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
 const HARNESS_LOG = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'harness-log.mjs');
@@ -186,6 +186,26 @@ test('a FAILURES.md that cannot be read is declared, with the could-not-be-read 
   const c = failuresCheck(d);
   assert.equal(c.state, 'declared');
   assert.deepEqual(c.evidence, [`${FAILURES_PATH} exists but could not be read — the failure kinds it names are unknown`]);
+  assert.deepEqual(readFailures(d), { state: 'unreadable', kinds: [] });
+});
+
+test('a FAILURES.md larger than is read is declared as not read, never as naming no failure kind', () => {
+  const d = tempDir('hk-fail-repo-');
+  mkdirSync(join(d, 'docs/harness'), { recursive: true });
+  writeFileSync(join(d, FAILURES_PATH), `## F1 — a kind\n- signatures: 0123456789abcdef\n<!-- ${'x'.repeat(MAX_DOCUMENT_BYTES)} -->\n`);
+  assert.deepEqual(readFailures(d), { state: 'over-limit', kinds: [] });
+  assert.deepEqual(failuresEvidence(d), { path: FAILURES_PATH, readable: false, overLimit: true, kinds: 0, signatures: 0, malformedSignatures: 0, ignoredHeadings: 0 });
+  const c = failuresCheck(d);
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [`${FAILURES_PATH} is larger than the ${MAX_DOCUMENT_BYTES} bytes kh-harness reads of a file — the failure kinds it names are unknown`]);
+});
+
+test('readFailures gives the kinds of a taxonomy it read, and none with no file', () => {
+  const d = tempDir('hk-fail-repo-');
+  assert.deepEqual(readFailures(d), { state: 'absent', kinds: [] });
+  mkdirSync(join(d, 'docs/harness'), { recursive: true });
+  writeFileSync(join(d, FAILURES_PATH), '## F1 — a kind\n- signatures: 0123456789abcdef\n');
+  assert.deepEqual(readFailures(d), { state: 'read', kinds: [{ id: 'F1', title: 'a kind', signatures: ['0123456789abcdef'] }] });
 });
 
 test('with failure kinds named, P5.failures is declared, never verified', () => {

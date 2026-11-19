@@ -26,9 +26,10 @@ import { GATES_PATH, harnessIdentity, LAST_TICK_FILE, readEvents, repoDataDir } 
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { indexLineCount } from '../../assets/scripts/harness-seal.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
+import { FAILURES_PATH, failuresNotRead, readFailures } from './failures-evidence.mjs';
 import { FIRING_EVENT, gateStats, wrongSinceGrant } from './gate-stats.mjs';
 import {
-  citationsGone, citesGone, codeOf, failed, failureKinds, fileless, gateActionsFor, ID_ERROR, idCollisions, isId, isPlainObject, learningIn,
+  citationsGone, citesGone, codeOf, failed, fileless, gateActionsFor, ID_ERROR, idCollisions, isId, isPlainObject, learningIn,
   ledgerEntry, proseUnrecorded, readFailure, readState, recordedIn, recordedState, refuse, refused, repairedStep, repairLocalGates,
   rewriteLocalGates, rollLearningsForward, SETTLED, unapprovedGateIds, unrecordedReason, withLearningsLock, writeTransition, wrongMarkedFor,
 } from './learn-lib.mjs';
@@ -532,7 +533,13 @@ function promoteUnderPolicy(root, write, policy, result, apply) {
   const { entries } = state.view;
   const trials = recordedIn(state).filter(l => l.status === 'trial' && state.recorded.get(l.id).kind === 'trial');
   if (trials.length === 0) return;
-  const kinds = failureKinds(root);
+  const taxonomy = readFailures(root);
+  const notRead = failuresNotRead(taxonomy.state);
+  if (notRead !== null) {
+    for (const { id } of trials) result.heldBack.push({ id, reason: `${FAILURES_PATH} ${notRead}, so whether an earlier learning for its failure kind was marked wrong is not known` });
+    return;
+  }
+  const { kinds } = taxonomy;
   const { recurrences } = findRecurrences(root);
   const { gates } = gateStats(root, entries, new Map(trials.map(l => [l.id, l.sha256])), { places: true });
   const flagged = new Map();

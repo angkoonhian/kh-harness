@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { listFiles, walkFiles, readIfPresent, existsAny } from './scan.mjs';
+import { listFiles, walkFiles, readDocument, readIfPresent, existsAny, MAX_DOCUMENT_BYTES } from './scan.mjs';
 
 function fixture() {
   const d = mkdtempSync(join(tmpdir(), 'hk-scan-'));
@@ -175,6 +175,25 @@ test('readIfPresent returns null for a missing file', () => {
 
 test('readIfPresent returns contents for a present file', () => {
   assert.equal(readIfPresent(fixture(), 'package.json'), '{}');
+});
+
+test('readDocument says whether a file was read, is absent, cannot be read as a file, or is larger than is read', () => {
+  const d = fixture();
+  assert.deepEqual(readDocument(d, 'package.json'), { state: 'read', text: '{}' });
+  assert.deepEqual(readDocument(d, 'nope.txt'), { state: 'absent' });
+  assert.deepEqual(readDocument(d, 'package.json/under-a-file'), { state: 'absent' });
+  assert.deepEqual(readDocument(d, 'src'), { state: 'unreadable' });
+  writeFileSync(join(d, 'at-the-bound.md'), 'x'.repeat(MAX_DOCUMENT_BYTES));
+  assert.equal(readDocument(d, 'at-the-bound.md').state, 'read');
+  writeFileSync(join(d, 'over.md'), 'x'.repeat(MAX_DOCUMENT_BYTES + 1));
+  assert.deepEqual(readDocument(d, 'over.md'), { state: 'over-limit' });
+});
+
+test('readIfPresent returns null for a directory and for a file larger than is read', () => {
+  const d = fixture();
+  assert.equal(readIfPresent(d, 'src'), null);
+  writeFileSync(join(d, 'over.md'), 'x'.repeat(MAX_DOCUMENT_BYTES + 1));
+  assert.equal(readIfPresent(d, 'over.md'), null);
 });
 
 test('existsAny returns the first hit, else null', () => {

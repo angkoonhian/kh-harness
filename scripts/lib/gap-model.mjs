@@ -1,4 +1,4 @@
-import { readIfPresent } from './scan.mjs';
+import { OVER_DOCUMENT_LIMIT, readIfPresent } from './scan.mjs';
 import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
@@ -737,7 +737,7 @@ const CHECKS = [
     check: ({ harness }) => {
       const f = harness.failures ?? null;
       if (!f) return { state: 'absent', proposal: `scaffold ${FAILURES_PATH} — generated EMPTY; each failure kind is named by hand, with the recurrence signatures it covers` };
-      if (!f.readable) return { state: 'declared', evidence: [`${f.path} exists but could not be read — the failure kinds it names are unknown`] };
+      if (!f.readable) return { state: 'declared', evidence: [`${f.path} ${f.overLimit ? OVER_DOCUMENT_LIMIT : 'exists but could not be read'} — the failure kinds it names are unknown`] };
       const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
       const evidence = [`${f.path}: ${plural(f.kinds, 'failure kind')} named, listing ${plural(f.signatures, 'signature id')}`];
       if (f.malformedSignatures) evidence.push(`${plural(f.malformedSignatures, 'malformed signature id')} ignored (a signature id is 16 lowercase hex characters)`);

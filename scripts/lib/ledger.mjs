@@ -11,10 +11,10 @@
 // finished its line: every reader passes over them, and the next append
 // removes them, under the lock, before it chains to the last whole line.
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, truncateSync } from 'node:fs';
+import { appendFileSync, mkdirSync, truncateSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { canonicalJson, maxLogFileBytes, OVER_LIMIT, readBounded, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { isProcessAlive, withFileLock } from './file-lock.mjs';
 
@@ -153,10 +153,11 @@ function entryProblem(value, { stored }) {
 const ledgerPath = root => join(repoDataDir(root), LEDGER_FILE);
 
 /** The ledger's bytes, or null when the file is absent; any other read
- * failure throws. */
+ * failure throws, and so does a ledger larger than `maxLogFileBytes()`
+ * (code `OVER_LIMIT`), which is not read. */
 function ledgerBytes(root) {
   try {
-    return readFileSync(ledgerPath(root));
+    return readBounded(ledgerPath(root), maxLogFileBytes());
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
     throw error;
@@ -177,7 +178,7 @@ function splitLines(buf) {
 }
 
 /** The ledger's terminated lines, none when the file is absent; any other
- * read failure throws. */
+ * read failure throws, as `ledgerBytes` does. */
 const ledgerLines = root => splitLines(ledgerBytes(root) ?? Buffer.alloc(0)).lines;
 
 /** The fields of a valid `entry` the ledger stores, copied so nothing
@@ -201,7 +202,9 @@ function recordedFields(entry) {
  * SHA-256 of the previous line's bytes, null for the first line). Throws,
  * writing nothing, when the entry is not the ledger's schema; the caller
  * supplies neither `ts` nor `prev`. An unterminated last line, left by an
- * append that stopped partway, is removed first. `now` is the clock for
+ * append that stopped partway, is removed first. A ledger that cannot be
+ * read, or is larger than is read, throws and is left as it is: an entry is
+ * chained only to a line that was read. `now` is the clock for
  * `ts`, the lock wait and the age of an ownerless lock; `isAlive` says
  * whether a lock's writer is still running.
  */
@@ -225,7 +228,8 @@ export function appendLedger(root, entry, { now = Date.now, isAlive = isProcessA
 }
 
 /** Every ledger entry in order, without checking the chain; `verifyLedger`
- * does that. An absent ledger is empty; a line that does not parse throws. */
+ * does that. An absent ledger is empty; a line that does not parse throws,
+ * and so does a ledger that cannot be read or is larger than is read. */
 export function readLedger(root) {
   return ledgerLines(root).map((line, i) => {
     try {
@@ -256,14 +260,19 @@ function checkedLines(lines) {
 }
 
 /** The ledger checked from one read: `{ brokenAt, entries }`, broken at
- * line 1 when it cannot be read at all. */
+ * line 1 when it cannot be read at all, or `{ brokenAt: null, overLimit:
+ * true }` for one larger than is read, of which no line is known. */
 function checkedLedger(root) {
   try {
     return checkedLines(ledgerLines(root));
-  } catch {
-    return { brokenAt: 1 };
+  } catch (error) {
+    return error?.code === OVER_LIMIT ? { brokenAt: null, overLimit: true } : { brokenAt: 1 };
   }
 }
+
+/** What a reader is told of where a checked ledger stands, without its
+ * entries. */
+const standing = ({ brokenAt, entries, overLimit }) => ({ intact: entries !== undefined, brokenAt, ...(overLimit ? { overLimit } : {}) });
 
 /**
  * Whether the ledger is one unbroken chain. `brokenAt` is the 1-based number
@@ -271,17 +280,18 @@ function checkedLedger(root) {
  * not parse or is not the schema; the first line when its `prev` is not
  * null; or a line whose successor's `prev` is not its hash. An edit to the
  * last line leaves no successor to catch it. A ledger that cannot be read
- * at all is broken at line 1. Never throws.
+ * at all is broken at line 1. One larger than `maxLogFileBytes()` is not
+ * read: it is `{ intact: false, brokenAt: null, overLimit: true }`, neither
+ * intact nor broken at a line. Never throws.
  */
 export function verifyLedger(root) {
-  const { brokenAt } = checkedLedger(root);
-  return { intact: brokenAt === null, brokenAt };
+  return standing(checkedLedger(root));
 }
 
-/** `{ intact, entries }`: the ledger's entries when its chain is intact,
- * else none, since a broken chain vouches for nothing. One read of the file
- * decides both. Never throws. */
+/** What `verifyLedger` gives, with `entries`: the ledger's entries when its
+ * chain is intact, else none, since a chain that is broken or was not read
+ * vouches for nothing. One read of the file decides both. Never throws. */
 export function readLedgerView(root) {
-  const { brokenAt, entries } = checkedLedger(root);
-  return brokenAt === null ? { intact: true, entries } : { intact: false, entries: [] };
+  const checked = checkedLedger(root);
+  return { ...standing(checked), entries: checked.entries ?? [] };
 }

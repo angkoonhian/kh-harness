@@ -10,11 +10,11 @@ import { lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 
 import {
-  dataRoot, isEnabled, LINK_REFUSED, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
+  dataRoot, isEnabled, LINK_REFUSED, maxLogFileBytes, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
 } from '../../assets/scripts/harness-log.mjs';
 import { contentFieldsOf, SEALED_SUFFIX, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
-import { readLedger, verifyLedger } from './ledger.mjs';
+import { readLedgerView } from './ledger.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { listSessions } from './recurrence.mjs';
 import { hookPathTokens } from './settings-merge.mjs';
@@ -292,7 +292,7 @@ export function logStatus(root) {
   const cutoff = Date.now() - config.contentRetentionDays * DAY_MS;
   const read = readSessions(root, sessions ?? [], cutoff, id => index.unreadable || altered.has(id));
   const usage = exists ? diskUsage(location) : { bytes: 0, unreadable: 0 };
-  const ledger = verifyLedger(root);
+  const { entries: ledgerEntries, ...ledger } = readLedgerView(root);
   const whenListed = value => (listed ? value : null);
   return {
     enabled: isEnabled(root),
@@ -310,7 +310,7 @@ export function logStatus(root) {
     lastTs: read.lastTs,
     index,
     ledger,
-    ledgerEntries: ledger.intact ? readLedger(root).length : null,
+    ledgerEntries: ledger.intact ? ledgerEntries.length : null,
     unparseableLines: whenListed(read.unparseableLines),
     unreadableSessions: whenListed(read.unreadableSessions),
     hookRegistered: hook.registered,
@@ -345,6 +345,7 @@ function hookClause(events, problem) {
 }
 
 function ledgerLine(s) {
+  if (s.ledger.overLimit) return `ledger: not read; it is larger than the ${maxLogFileBytes()} bytes this command reads of a file`;
   if (!s.ledger.intact) return `ledger: broken at line ${s.ledger.brokenAt}`;
   return s.ledgerEntries === 0 ? 'ledger: no entry yet, so there is no chain to check' : `ledger: intact; the chain of its ${s.ledgerEntries} entries is unbroken`;
 }

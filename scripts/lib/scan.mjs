@@ -1,5 +1,6 @@
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { OVER_LIMIT, readBounded } from '../../assets/scripts/harness-log.mjs';
 import { git } from './git-info.mjs';
 
 // Listing a very large tree's untracked files can take git far longer than
@@ -264,10 +265,36 @@ function walk(root, rel, readdir, result) {
   }
 }
 
+/** The most bytes read of one repository document or manifest; those the
+ * kit reads whole are far smaller. */
+export const MAX_DOCUMENT_BYTES = 1024 * 1024;
+
+/** Why a file `readDocument` gives as `over-limit` was not read, as a
+ * clause after its path. */
+export const OVER_DOCUMENT_LIMIT = `is larger than the ${MAX_DOCUMENT_BYTES} bytes kh-harness reads of a file`;
+
+/**
+ * The file at `rel` as it was read: `{ state: 'read', text }`; `{ state:
+ * 'absent' }` when nothing is there; `{ state: 'over-limit' }` for a file
+ * larger than `MAX_DOCUMENT_BYTES`; `{ state: 'unreadable' }` for a path
+ * that is not a regular file or cannot be read. The size is checked first,
+ * so a huge file, a pipe or a device costs a stat. Never throws.
+ */
+export function readDocument(root, rel) {
+  try {
+    return { state: 'read', text: readBounded(join(root, rel), MAX_DOCUMENT_BYTES).toString('utf8') };
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return { state: 'absent' };
+    return { state: error?.code === OVER_LIMIT ? 'over-limit' : 'unreadable' };
+  }
+}
+
+/** The text `readDocument` read, or null for every other state. A caller
+ * to which null means "absent" or "empty" must not say so of a file that
+ * exists: it uses `readDocument` and reports the file as not read. */
 export function readIfPresent(root, rel) {
-  const p = join(root, rel);
-  if (!existsSync(p)) return null;
-  try { return readFileSync(p, 'utf8'); } catch { return null; }
+  const document = readDocument(root, rel);
+  return document.state === 'read' ? document.text : null;
 }
 
 export function existsAny(root, rels) {

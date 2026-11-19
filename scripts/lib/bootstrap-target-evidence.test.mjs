@@ -96,15 +96,11 @@ test('a Makefile that is actually a directory is not found, never a throw', () =
   assert.deepEqual(setupTargetEvidence(d, 'Makefile', 'make'), { found: false, target: null });
 });
 
-// Whole-branch review, F14: these two were named for the `content == null`
-// exit in `setupTargetEvidence`, and they cannot fail for it — `readIfPresent`
-// returns `null` for exactly two inputs, a MISSING file and a DIRECTORY, and
-// neither of those is what these fixtures are. An empty file returns `''`; a
-// binary file returns mojibake. Both reach `{ found: false }` because their
-// BYTES match no target name, which is a real guarantee worth keeping and is
-// what they are named for now. The `content == null` guard is pinned by the
-// missing-file and directory tests above — measured: neutering it kills those
-// two and leaves these untouched.
+// These two do not reach the `content == null` exit in `setupTargetEvidence`:
+// `readIfPresent` gives `''` for an empty file and mojibake for a binary
+// one. Both end at `{ found: false }` because their BYTES match no target
+// name, which is what the tests are named for. The `content == null` guard
+// is pinned by the missing-file and directory tests above.
 test('an empty Makefile matches no target name, and never throws', () => {
   const d = repo();
   write(d, 'Makefile', '');

@@ -24,6 +24,7 @@ import { readFileSync } from 'node:fs';
 
 import { readEvents } from '../../assets/scripts/harness-log.mjs';
 import { LEARN_TERMINAL_ONLY } from './cli.mjs';
+import { FAILURES_PATH, failuresNotRead } from './failures-evidence.mjs';
 import { REROUTED_MEANS } from './gate-stats.mjs';
 import {
   codeOf, earlierFor, ENDINGS, failed, failureKinds, ID_ERROR, idCollisions, isId, isPlainObject, learningIn, learningStats, proseUnrecorded,
@@ -270,7 +271,7 @@ export function candidatesView(root) {
   const redraftGroups = narrowed(rs => rs.filter(unclaimed)
     .map(r => ({ ...r, earlier: earlierFor(state, r.signature, kinds) })).filter(r => r.earlier.length > 0));
   const { gates, ledger, notClaimed, ...read } = report;
-  return { note: CANDIDATES_NOTE, ...read, groups, redraftGroups, ledgerIntact: state.view.intact, learningsUnreadable: state.unreadable };
+  return { ...read, note: CANDIDATES_NOTE, groups, redraftGroups, ledgerIntact: state.view.intact, learningsUnreadable: state.unreadable };
 }
 
 const DRAFTABLE_HEADING = 'RECURRENCES NO LEARNING STANDS FOR (each that names a failure kind may be drafted)';
@@ -294,6 +295,7 @@ export function renderCandidates(view) {
   if (view.sessionsUnlistable) return ['CANDIDATES', ...indent([`location: ${view.location}`, `sessions: ${NOT_READ}`]), '', NOT_CLAIMED].join('\n');
   const notes = [
     ...(view.ledgerIntact ? [] : ['the ledger cannot be read or its chain is broken, so a learning only the ledger still names is not seen here, and draft refuses until it is mended']),
+    ...(failuresNotRead(view.taxonomy.state) === null ? [] : [`${FAILURES_PATH} ${failuresNotRead(view.taxonomy.state)}, so no recurrence here is known to be labelled, and an earlier learning under the same failure kind is not seen; draft refuses until it is read`]),
     ...(view.learningsUnreadable.length > 0 ? [`learning files that do not read back, which may stand for any of these: ${ids(view.learningsUnreadable)}; draft refuses until each is mended or removed`] : []),
   ];
   return [

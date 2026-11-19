@@ -10,18 +10,15 @@
 // tool input or output, prompt, or path taken from an event is returned or
 // rendered.
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 
 import { GATE_ACTIONS } from '../../assets/scripts/harness-gates.mjs';
 import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { escapeDelimiters, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
-import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
+import { FAILURES_PATH, failuresNotRead, readFailures } from './failures-evidence.mjs';
 import { gateStats, REROUTED_MEANS } from './gate-stats.mjs';
-import { readLedger, verifyLedger } from './ledger.mjs';
+import { readLedgerView } from './ledger.mjs';
 import { checkDataDir, NOT_READ } from './log-lib.mjs';
 import { findRecurrences } from './recurrence.mjs';
-import { readIfPresent } from './scan.mjs';
 
 export { NOT_READ, REROUTED_MEANS };
 
@@ -58,14 +55,6 @@ const shown = text => escapeDelimiters([...stripUnsafe(text).replace(/\s+/g, ' '
  * not one. */
 const isoOrNull = ts => (isString(ts) && !Number.isNaN(Date.parse(ts)) ? new Date(ts).toISOString() : null);
 
-/** Whether the taxonomy is `absent`, `unreadable` or `read`, and the
- * failure kinds it names. */
-function readTaxonomy(root) {
-  if (!existsSync(join(root, FAILURES_PATH))) return { state: 'absent', kinds: [] };
-  const text = readIfPresent(root, FAILURES_PATH);
-  return text === null ? { state: 'unreadable', kinds: [] } : { state: 'read', kinds: parseFailures(text) };
-}
-
 /** The recurrence as the report shows it: its log-sourced text cleaned, its
  * times re-spelled, and the ids of the failure kinds that list its
  * signature, or null when the taxonomy could not be read. */
@@ -81,7 +70,7 @@ function shownRecurrence(r, taxonomy) {
     firstTs: isoOrNull(r.firstTs),
     lastTs: isoOrNull(r.lastTs),
     exampleEventRefs: r.exampleEventRefs,
-    failureKinds: taxonomy.state === 'unreadable' ? null : taxonomy.kinds.filter(k => k.signatures.includes(r.signature)).map(k => k.id),
+    failureKinds: failuresNotRead(taxonomy.state) !== null ? null : taxonomy.kinds.filter(k => k.signatures.includes(r.signature)).map(k => k.id),
   };
 }
 
@@ -132,8 +121,8 @@ function gateFirings(root, ledgerEntries) {
 export function buildLogReport(root) {
   const location = repoDataDir(root);
   const exists = checkDataDir(root).state !== 'absent';
-  const taxonomy = readTaxonomy(root);
-  const ledger = verifyLedger(root);
+  const taxonomy = readFailures(root);
+  const { entries, ...ledger } = readLedgerView(root);
   const report = {
     location,
     exists,
@@ -153,7 +142,7 @@ export function buildLogReport(root) {
     note: RECORDED_NOTE,
     notClaimed: NOT_CLAIMED,
   };
-  const ledgerEntries = ledger.intact ? readLedger(root) : null;
+  const ledgerEntries = ledger.intact ? entries : null;
   let found;
   let gates;
   try {
@@ -171,7 +160,7 @@ const times = n => (n === 1 ? '1 time' : `${n} times`);
 const sessionsWord = n => (n === 1 ? '1 session' : `${n} sessions`);
 
 function kindLine(kinds, taxonomyState) {
-  if (kinds === null) return `failure kind: not read, because ${FAILURES_PATH} could not be read`;
+  if (kinds === null) return `failure kind: not read, because ${FAILURES_PATH} ${taxonomyState === 'over-limit' ? 'is larger than this command reads' : 'could not be read'}`;
   if (kinds.length > 0) return `failure kind: ${kinds.join(', ')}`;
   return taxonomyState === 'absent' ? `failure kind: unlabelled; there is no ${FAILURES_PATH}` : 'failure kind: unlabelled';
 }
@@ -216,7 +205,7 @@ export function markedRecurrenceSection(report, heading = RECURRENCES_HEADING, n
 }
 
 function markedWrongText(g, ledger) {
-  if (g.markedWrong === null) return `not read, because the ledger's chain is broken at line ${ledger.brokenAt}`;
+  if (g.markedWrong === null) return ledger.overLimit ? 'not read, because the ledger is larger than this command reads' : `not read, because the ledger's chain is broken at line ${ledger.brokenAt}`;
   return `${g.markedWrong} since the last promotion or landing, ${g.markedWrongTotal} in all`;
 }
 

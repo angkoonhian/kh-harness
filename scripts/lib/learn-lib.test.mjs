@@ -19,6 +19,7 @@ import { draftLearning, failed, gateActionsFor, learningStats, listLearnings, pr
 import { approveLearning, demoteLearning, retireLearning, tick } from './learn-promote.mjs';
 import { appendLedger, readLedger, verifyLedger } from './ledger.mjs';
 import { findRecurrences } from './recurrence.mjs';
+import { MAX_DOCUMENT_BYTES } from './scan.mjs';
 import { requireInteractive } from './tty.mjs';
 
 // What `requireInteractive` returns at a person's terminal.
@@ -218,9 +219,7 @@ const UNLABELLED = refused(`signature: no failure kind in ${FAILURES_PATH} lists
 test('a draft for a signature no failure kind lists is refused, naming the taxonomy, and stores nothing', () => {
   const absent = loggedRepo({ label: false });
   const other = loggedRepo({ label: false, files: { [FAILURES_PATH]: '## F1 — something else\n- signatures: 0123456789abcdef\n' } });
-  const unreadable = loggedRepo({ label: false });
-  mkdirSync(join(unreadable, FAILURES_PATH), { recursive: true });
-  for (const root of [absent, other, unreadable]) {
+  for (const root of [absent, other]) {
     assert.deepEqual(draftLearning(root, draftFor(root)), UNLABELLED);
     assert.deepEqual(draftLearning(root, draftFor(root), { redraft: true }), UNLABELLED, 'a redraft is no way round it');
     assert.equal(existsSync(join(repoDataDir(root), 'learnings')), false);
@@ -228,6 +227,21 @@ test('a draft for a signature no failure kind lists is refused, naming the taxon
   }
   labelFailures(absent);
   assert.equal(drafted(absent).failureId, 'F1', 'once the owner has named it, it is drafted');
+});
+
+test('a draft is refused while the taxonomy cannot be read or is larger than is read, and says the file was not read', () => {
+  const unreadable = loggedRepo({ label: false });
+  mkdirSync(join(unreadable, FAILURES_PATH), { recursive: true });
+  const over = loggedRepo({ label: false });
+  labelFailures(over);
+  writeFileSync(join(over, FAILURES_PATH), `${readFileSync(join(over, FAILURES_PATH), 'utf8')}<!-- ${'x'.repeat(MAX_DOCUMENT_BYTES)} -->\n`);
+  const notRead = why => refused(`signature: ${FAILURES_PATH} ${why}, so whether a failure kind lists this signature is not known; nothing was drafted`);
+  for (const [root, why] of [[unreadable, 'exists but could not be read'], [over, `is larger than the ${MAX_DOCUMENT_BYTES} bytes kh-harness reads of a file`]]) {
+    assert.deepEqual(draftLearning(root, draftFor(root)), notRead(why));
+    assert.deepEqual(draftLearning(root, draftFor(root), { redraft: true }), notRead(why));
+    assert.equal(existsSync(join(repoDataDir(root), 'learnings')), false);
+    assert.deepEqual(readLedger(root), []);
+  }
 });
 
 test('a learning the owner retired bars a plain draft for its recurrence; a live candidate still covers it', () => {

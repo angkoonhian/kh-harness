@@ -11,9 +11,7 @@
 // Counts only. This output is serialised into docs/harness/detect.json,
 // which is committed, and a failure kind's title or a signature is
 // whatever its author wrote.
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { readIfPresent } from './scan.mjs';
+import { OVER_DOCUMENT_LIMIT, readDocument } from './scan.mjs';
 
 export const FAILURES_PATH = 'docs/harness/FAILURES.md';
 
@@ -64,16 +62,36 @@ export function parseFailures(text) {
 }
 
 /**
+ * The taxonomy as it was read: `{ state, kinds }`, `state` one of
+ * `absent`, `read`, `unreadable` (the path exists and cannot be read as a
+ * file) or `over-limit` (the file is larger than `readDocument` reads).
+ * `kinds` is what `parseFailures` gives for a taxonomy that was read, and
+ * empty otherwise: a caller must not take an unread taxonomy for one that
+ * names no failure kind, and `failuresNotRead` says why it was not read.
+ */
+export function readFailures(root) {
+  const { state, text } = readDocument(root, FAILURES_PATH);
+  return { state, kinds: state === 'read' ? parseFailures(text) : [] };
+}
+
+/** Why a taxonomy in `state` was not read, as a clause after its path, or
+ * null for one that was read or is absent. */
+export function failuresNotRead(state) {
+  if (state === 'over-limit') return OVER_DOCUMENT_LIMIT;
+  return state === 'unreadable' ? 'exists but could not be read' : null;
+}
+
+/**
  * `null` when there is no taxonomy; otherwise `{ path, readable, kinds,
  * signatures, malformedSignatures, ignoredHeadings }`, where `kinds` is how
  * many failure kinds are named and `signatures` how many signature ids they
- * list in all. A path that exists but cannot be read as a file is
- * `readable: false` with every count 0.
+ * list in all. A taxonomy that was not read is `readable: false` with every
+ * count 0 and `overLimit`, whether that is because of its size.
  */
 export function failuresEvidence(root) {
-  if (!existsSync(join(root, FAILURES_PATH))) return null;
-  const text = readIfPresent(root, FAILURES_PATH);
-  if (text === null) return { path: FAILURES_PATH, readable: false, kinds: 0, signatures: 0, malformedSignatures: 0, ignoredHeadings: 0 };
+  const { state, text } = readDocument(root, FAILURES_PATH);
+  if (state === 'absent') return null;
+  if (state !== 'read') return { path: FAILURES_PATH, readable: false, overLimit: state === 'over-limit', kinds: 0, signatures: 0, malformedSignatures: 0, ignoredHeadings: 0 };
   const { kinds, malformedSignatures, ignoredHeadings } = readTaxonomy(text);
   return {
     path: FAILURES_PATH, readable: true,

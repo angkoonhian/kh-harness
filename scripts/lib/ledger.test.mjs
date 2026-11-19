@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { OVER_LIMIT, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { LOCK_STALE_MS } from './file-lock.mjs';
 import { appendLedger, isApprover, LEDGER_KINDS, readLedger, readLedgerView, verifyLedger } from './ledger.mjs';
 
@@ -124,7 +124,7 @@ test('a ledger that is only an unterminated line is empty, and the first append 
   const root = tempDir('hk-ledger-repo-');
   appendLedger(root, entry());
   writeFileSync(ledgerPath(root), '{"kind":"pro', 'utf8');
-  assert.deepEqual(readLedgerView(root), { intact: true, entries: [] });
+  assert.deepEqual(readLedgerView(root), { intact: true, brokenAt: null, entries: [] });
   appendLedger(root, entry());
   assert.equal(readLedger(root).length, 1);
   assert.equal(readLedger(root)[0].prev, null);
@@ -132,12 +132,30 @@ test('a ledger that is only an unterminated line is empty, and the first append 
 
 test('readLedgerView gives the entries of an intact chain and none of a broken one, from one read', () => {
   const root = tempDir('hk-ledger-repo-');
-  assert.deepEqual(readLedgerView(root), { intact: true, entries: [] });
+  assert.deepEqual(readLedgerView(root), { intact: true, brokenAt: null, entries: [] });
   for (const kind of ['proposed', 'replayed', 'trial']) appendLedger(root, entry({ kind }));
-  assert.deepEqual(readLedgerView(root), { intact: true, entries: readLedger(root) });
+  assert.deepEqual(readLedgerView(root), { intact: true, brokenAt: null, entries: readLedger(root) });
   const raw = lines(root);
   writeFileSync(ledgerPath(root), [raw[0], raw[2]].join('\n') + '\n', 'utf8');
-  assert.deepEqual(readLedgerView(root), { intact: false, entries: [] });
+  assert.deepEqual(readLedgerView(root), { intact: false, brokenAt: 1, entries: [] });
+});
+
+test('a ledger larger than the kit reads is not read: no reader calls it intact or empty, and nothing is appended to it', () => {
+  const root = tempDir('hk-ledger-repo-');
+  for (const kind of ['proposed', 'replayed', 'trial']) appendLedger(root, entry({ kind }));
+  const before = readFileSync(ledgerPath(root));
+  process.env.KH_LOG_MAX_FILE_BYTES = String(before.length - 1);
+  try {
+    assert.deepEqual(verifyLedger(root), { intact: false, brokenAt: null, overLimit: true });
+    assert.deepEqual(readLedgerView(root), { intact: false, brokenAt: null, overLimit: true, entries: [] });
+    assert.throws(() => readLedger(root), { code: OVER_LIMIT });
+    assert.throws(() => appendLedger(root, entry({ kind: 'trial' })), { code: OVER_LIMIT });
+    assert.deepEqual(readFileSync(ledgerPath(root)), before, 'nothing is chained to lines that were not read');
+    assert.equal(existsSync(`${ledgerPath(root)}.lock`), false, 'the lock is released');
+  } finally {
+    delete process.env.KH_LOG_MAX_FILE_BYTES;
+  }
+  assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
 });
 
 test('a learning entry may carry the hash of the learning\'s prose, and nothing else in its place', () => {

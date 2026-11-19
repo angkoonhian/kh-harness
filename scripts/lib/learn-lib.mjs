@@ -81,7 +81,7 @@ import { GATE_ID, GATE_LIMITS, gateSha256, validateGate } from '../../assets/scr
 import { canonicalJson, GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
-import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
+import { FAILURES_PATH, failuresNotRead, readFailures } from './failures-evidence.mjs';
 import { LOCKED, withFileLock } from './file-lock.mjs';
 import { gateStats } from './gate-stats.mjs';
 import { readCommittedGateFile } from './integrity-evidence.mjs';
@@ -89,7 +89,6 @@ import { registryLine, SIGNATURE, TITLE_MAX, WHY_MAX } from './learned-registry.
 import { ACTION_KINDS, appendLedger, isApprover, readLedgerView } from './ledger.mjs';
 import { findRecurrences } from './recurrence.mjs';
 import { replayGate } from './replay.mjs';
-import { readIfPresent } from './scan.mjs';
 
 /** An error the step refused to act on, and one it could not act on, each
  * with the exit code the command ends with. */
@@ -298,8 +297,9 @@ export function proseSha256Of({ title, why, external, evidence }) {
 }
 
 /** The failure kinds `docs/harness/FAILURES.md` names, none when it is
- * absent or cannot be read. */
-export const failureKinds = root => parseFailures(readIfPresent(root, FAILURES_PATH));
+ * absent or was not read. A step that would act on there being none reads
+ * the taxonomy with `readFailures` and refuses one that was not read. */
+export const failureKinds = root => readFailures(root).kinds;
 
 /** The id of the failure kind in `kinds` that lists `signature`, or null. */
 const failureIdIn = (kinds, signature) => kinds.find(k => k.signatures.includes(signature))?.id ?? null;
@@ -1048,7 +1048,10 @@ function draftUnguarded(root, draft, redraft) {
   const recurrence = currentRecurrence(root, r => r.signature === signature);
   if (recurrence === undefined) return malformed('signature: not the signature of a current recurrence');
   if (drafted.gate.tool !== recurrence.tool) return malformed("gate: tool must be the recurrence's tool");
-  const kinds = failureKinds(root);
+  const taxonomy = readFailures(root);
+  const notRead = failuresNotRead(taxonomy.state);
+  if (notRead !== null) return refuse(root, refused(`signature: ${FAILURES_PATH} ${notRead}, so whether a failure kind lists this signature is not known; nothing was drafted`));
+  const { kinds } = taxonomy;
   const failureId = failureIdIn(kinds, signature);
   if (failureId === null) {
     return refuse(root, refused(`signature: no failure kind in ${FAILURES_PATH} lists this signature, and only the owner names a failure: `

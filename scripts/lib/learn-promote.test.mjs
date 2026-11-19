@@ -26,6 +26,7 @@ import { buildLogReport } from './log-report.mjs';
 import { readPolicy, writePolicy } from './policy.mjs';
 import { SUCCESS_EVENT } from './recurrence.mjs';
 import { MIN_CLEAN_CALLS } from './replay.mjs';
+import { MAX_DOCUMENT_BYTES } from './scan.mjs';
 import { requireInteractive, TERMINAL_CHECK } from './tty.mjs';
 
 // What `requireInteractive` returns at a person's terminal and inside Claude Code.
@@ -1062,6 +1063,23 @@ test('a firing in a session flagged for outside content counts toward no policy 
   fired(root, 'fire-c', learning.gate);
   assert.deepEqual(tick(root).promoted, ['L1']);
   assert.equal(readLedger(root).at(-1).detail, '2 firings in 2 sessions', 'the entry names what was counted');
+});
+
+test('a policy promotes nothing while the taxonomy is not read, since an earlier wrong mark under its failure kind cannot be ruled out', () => {
+  const { root, learning } = trialRepo();
+  ownerPolicy(root, { ...POLICY, minTrialFirings: 1, minTrialSessions: 1 });
+  for (const s of ['fire-a', 'fire-b']) fired(root, s, learning.gate);
+  const taxonomy = readFileSync(join(root, FAILURES_PATH), 'utf8');
+  writeFileSync(join(root, FAILURES_PATH), `${taxonomy}<!-- ${'x'.repeat(MAX_DOCUMENT_BYTES)} -->\n`);
+  const ticked = tick(root);
+  assert.deepEqual(ticked.promoted, []);
+  assert.deepEqual(ticked.heldBack, [{
+    id: 'L1',
+    reason: `${FAILURES_PATH} is larger than the ${MAX_DOCUMENT_BYTES} bytes kh-harness reads of a file, so whether an earlier learning for its failure kind was marked wrong is not known`,
+  }]);
+  assert.equal(statusOf(root), 'trial');
+  writeFileSync(join(root, FAILURES_PATH), taxonomy);
+  assert.deepEqual(tick(root).promoted, ['L1']);
 });
 
 test('a policy does not promote a learning whose title, why and evidence the ledger records no hash of', () => {

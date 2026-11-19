@@ -407,6 +407,25 @@ test('status reports the ledger chain', () => {
   assert.match(runLog(root, 'status').stdout, /ledger: broken at line 1/);
 });
 
+test('status says a ledger larger than it reads was not read', () => {
+  const root = project();
+  writeSession(root, 's1');
+  writeFileSync(join(repoDataDir(root), 'ledger.jsonl'), `${'x'.repeat(5000)}\n`);
+  process.env.KH_LOG_MAX_FILE_BYTES = '4000';
+  let json;
+  let text;
+  try {
+    json = statusJson(root);
+    text = runLog(root, 'status').stdout;
+  } finally {
+    delete process.env.KH_LOG_MAX_FILE_BYTES;
+  }
+  assert.deepEqual(json.ledger, { intact: false, brokenAt: null, overLimit: true });
+  assert.equal(json.ledgerEntries, null);
+  assert.match(text, /^ {2}ledger: not read; it is larger than the 4000 bytes this command reads of a file$/m);
+  assert.doesNotMatch(text, /ledger: (intact|broken|no entry)/);
+});
+
 test('status does not call a ledger that does not exist intact', () => {
   const root = project();
   writeSession(root, 's1');
