@@ -35,7 +35,9 @@
 //       reads, so the two cannot disagree again.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { boundReport, findHandoff, projectRoot, HANDOFF_CANDIDATES } from './harness-redact.mjs';
+import {
+  boundReport, escapeDelimiters, findHandoff, maskText, projectRoot, stripUnsafe, HANDOFF_CANDIDATES,
+} from './harness-redact.mjs';
 
 const root = projectRoot();
 const rel = findHandoff(root);
@@ -56,15 +58,19 @@ try {
   process.exit(0);
 }
 
-const lines = text.split('\n');
+// The handoff reaches the model's context as written, and its "What didn't
+// work" section invites pasted error output. Order matters: stripping first
+// lets the mask see a token an invisible character split; masking before
+// escaping keeps the `;` of `&lt;` from ending a masked value early.
+const lines = escapeDelimiters(maskText(stripUnsafe(text))).split('\n');
 // `boundReport` bounds by line count AND by bytes, and appends its own
-// truncation notice inside the byte budget — so whatever it returns, plus
-// the newline below, stays under Claude Code's 10,000-character cap and
-// therefore actually reaches the session.
+// truncation notice inside the byte budget, with the closing delimiter after
+// it — so whatever it returns, plus the newline below, stays under Claude
+// Code's 10,000-character cap and therefore actually reaches the session.
 //
 // The line-count notice it emits is deliberately kept as well as the byte
 // one: "N more lines in the file" tells a user their handoff is longer than
 // the brief, which is the actionable half ("prune it"), while "output
 // exceeded the byte limit" tells them the brief itself was cut. Both are
 // true and they are different facts.
-process.stdout.write(boundReport(lines, `--- ${rel} ---\n`) + '\n');
+process.stdout.write(boundReport(lines, `<project-handoff source="${rel}">\n`, '</project-handoff>') + '\n');

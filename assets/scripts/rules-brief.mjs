@@ -24,15 +24,15 @@
 //   - The output is capped at RULES_BRIEF_MAX_BYTES (1,500 by default — a
 //     small fraction of Claude Code's 10,000-character hook cap, chosen so
 //     the hook stays cheap on every single prompt). Whole rules are dropped,
-//     never mid-line, and the cut is announced in the text itself.
+//     never mid-line: a rule that does not fit is skipped and the next is
+//     tried, so one long rule cannot starve the rest, and every skipped rule
+//     is counted in a notice in the text itself.
 //   - `high` priority rules go first, then `normal`, stable within each.
 //   - Superseded rules are skipped: they are a record, not a claim.
-//   - Every emitted line passes `maskCredentials`, the same shared mask the
-//     other hooks apply to stderr — a rule's text is the user's prose and may
-//     carry anything — and `stripUnsafe` first: C0/C1 control characters and
-//     the Unicode bidirectional and zero-width format characters are removed,
-//     so a right-to-left override in a rule cannot reach the model (audit
-//     Tier 4, finding 25).
+//   - A rule's text is the user's prose and may carry anything, so it passes
+//     `stripUnsafe` (controls, invisible and reordering characters, the tag
+//     block), then `maskText`, the shared credential mask, then
+//     `escapeDelimiters`, so no rule can close the block.
 //   - The block is wrapped in `<project-rules source="…">` … `</project-rules>`,
 //     so the model can tell the injected rules from the prompt they arrive
 //     beside, and knows the file they come from.
@@ -61,7 +61,7 @@ import { join } from 'node:path';
 // `kept (modified)` and the notice would return on every prompt with a
 // remedy that cannot work. `uninstall --yes` then `apply --yes` is the way
 // through in that case, so the one line says both.
-const NEEDED = ['findRules', 'maskCredentials', 'parseRules', 'projectRoot', 'RULES_PATH'];
+const NEEDED = ['escapeDelimiters', 'findRules', 'maskText', 'parseRules', 'projectRoot', 'RULES_PATH', 'stripUnsafe'];
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
 let asset;
 try {
@@ -76,7 +76,7 @@ if (NEEDED.some(name => !(name in asset))) {
   process.stderr.write(`kh-harness rules-brief: .claude/scripts/harness-redact.mjs is older than this hook and lacks what it needs — ${REMEDY}\n`);
   process.exit(1);
 }
-const { findRules, maskCredentials, parseRules, projectRoot, RULES_PATH } = asset;
+const { escapeDelimiters, findRules, maskText, parseRules, projectRoot, RULES_PATH, stripUnsafe } = asset;
 
 export const RULES_BRIEF_MAX_BYTES = 1500;
 // Overridable only so a test can exercise the truncation path cheaply;
@@ -101,36 +101,35 @@ if (active.length === 0) process.exit(0);
 // preserved within each group.
 const ordered = [...active.filter(r => r.priority === 'high'), ...active.filter(r => r.priority !== 'high')];
 
-// C0 and C1 controls except tab and newline, and the Unicode format
-// characters that reorder or hide text: zero-width (U+200B–U+200F), bidi
-// embeddings and overrides (U+202A–U+202E), bidi isolates (U+2066–U+2069)
-// and the byte-order mark.
-const UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
-const stripUnsafe = s => s.replace(UNSAFE, '');
-
 const open = `<project-rules source="${RULES_PATH}">`;
 const close = '</project-rules>';
 const header = `Project rules (${RULES_PATH}):`;
+const moreNotice = count => `… ${count} more rule(s) in ${RULES_PATH}`;
 const lines = [open, header];
 // The closing tag is reserved up front so the bound holds with it in place.
 let used = Buffer.byteLength(open, 'utf8') + 1 + Buffer.byteLength(header, 'utf8') + 1 + Buffer.byteLength(close, 'utf8');
-let shown = 0;
-for (const r of ordered) {
-  const line = maskCredentials(stripUnsafe(`- ${r.id}: ${r.rule} [enforced-by: ${r.enforcedBy}]`));
-  const remaining = ordered.length - shown - 1;
-  // Reserve room for the "… N more" notice if this is not the last rule,
-  // so adding this line can never force the notice itself over the cap.
-  const notice = remaining > 0 ? `\n… ${remaining} more rule(s) in ${RULES_PATH}` : '';
+let skipped = 0;
+ordered.forEach((r, i) => {
+  // Only the rule's text comes from the file as written: the parser limits
+  // the id to word characters and the enforcer to `ENFORCERS`, and masking
+  // the text alone keeps an unclosed quoted value from swallowing the suffix.
+  const line = `- ${r.id}: ${escapeDelimiters(maskText(stripUnsafe(r.rule)))} [enforced-by: ${r.enforcedBy}]`;
+  // Admitting a line reserves room for the notice at the largest count it
+  // could still reach, every rule skipped so far plus every rule after this
+  // one, so the notice can never push the block over the bound.
+  const mayYetSkip = skipped + ordered.length - i - 1;
+  const notice = mayYetSkip > 0 ? 1 + Buffer.byteLength(moreNotice(mayYetSkip), 'utf8') : 0;
   const cost = 1 + Buffer.byteLength(line, 'utf8');
-  if (used + cost + Buffer.byteLength(notice, 'utf8') > MAX_BYTES) break;
+  if (used + cost + notice > MAX_BYTES) {
+    skipped++;
+    return;
+  }
   lines.push(line);
   used += cost;
-  shown++;
-}
-if (shown < ordered.length) lines.push(`… ${ordered.length - shown} more rule(s) in ${RULES_PATH}`);
-// Nothing fit at all (an absurdly small bound): still say where the rules
-// are, rather than emit an empty context.
-if (shown === 0 && lines.length === 2) lines.push(`… ${ordered.length} more rule(s) in ${RULES_PATH}`);
+});
+// Emitted even when no rule fit at all, so the block still says where the
+// rules are.
+if (skipped > 0) lines.push(moreNotice(skipped));
 lines.push(close);
 
 process.stdout.write(JSON.stringify({
