@@ -7,6 +7,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -350,6 +351,19 @@ test('an unreadable session in the recurrence makes the verdict not-checkable', 
   assert.equal(result.linesUnparseable, 1);
   assert.match(result.reason, /1 of the recurrence's 2 sessions could not be read in full/);
   assert.match(result.reason, /1 session could not be read in full and 1 line could not be parsed/);
+});
+
+test('a recurrence session with events in a claimed or temporary file is not read in full, so the verdict is not-checkable', () => {
+  const root = standardLog();
+  const recurrence = theRecurrence(root);
+  const sessions = join(repoDataDir(root), 'sessions');
+  writeFileSync(join(sessions, `${sessionFileName('two')}.sealing`), '');
+  writeFileSync(join(sessions, `${sessionFileName('clean-a')}.gz.tmp`), gzipSync(''));
+  const result = replayGate(root, WATCH_GATE, recurrence);
+  assert.equal(result.verdict, 'not-checkable');
+  assert.equal(result.sessionsBeingSealed, 2);
+  assert.match(result.reason, /1 of the recurrence's 2 sessions could not be read in full/);
+  assert.match(result.reason, /2 sessions have events in a claimed or temporary file, which are not read until a maintenance run finishes sealing them/);
 });
 
 test('a recurrence session that no longer holds the mistake makes the verdict not-checkable', () => {

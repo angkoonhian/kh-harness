@@ -90,7 +90,7 @@ const idNumber = id => Number(id.slice(1));
  * to vouch for what it holds. Throws when the sessions directory cannot be
  * listed. */
 function gateFirings(root, ledgerEntries) {
-  const { gates, sessionsRead, sessionsUnreadable, firingsMalformed } = gateStats(root, ledgerEntries);
+  const { gates, sessionsRead, sessionsUnreadable, sessionsBeingSealed, firingsMalformed } = gateStats(root, ledgerEntries);
   const firings = [...gates]
     .sort(([a], [b]) => idNumber(a) - idNumber(b))
     .map(([gateId, g]) => ({
@@ -101,7 +101,7 @@ function gateFirings(root, ledgerEntries) {
       markedWrongTotal: g.wrong?.total ?? null,
       gateSha256s: g.gateSha256s,
     }));
-  return { sessionsRead, sessionsUnreadable, firingsMalformed, reroutedMeans: REROUTED_MEANS, firings };
+  return { sessionsRead, sessionsUnreadable, sessionsBeingSealed, firingsMalformed, reroutedMeans: REROUTED_MEANS, firings };
 }
 
 /**
@@ -121,6 +121,8 @@ export function buildLogReport(root) {
     sessionsUnlistable: false,
     sessionsRead: null,
     sessionsUnreadable: null,
+    sessionsBeingSealed: null,
+    sessionsOverLimit: null,
     linesUnparseable: null,
     failuresUnattributed: null,
     groups: null,
@@ -138,11 +140,13 @@ export function buildLogReport(root) {
   } catch {
     return { ...report, sessionsUnlistable: true };
   }
-  const { recurrences, sessionsRead, sessionsUnreadable, linesUnparseable, failuresUnattributed } = found;
+  const { recurrences, sessionsRead, sessionsUnreadable, sessionsBeingSealed, sessionsOverLimit, linesUnparseable, failuresUnattributed } = found;
   return {
     ...report,
     sessionsRead,
     sessionsUnreadable,
+    sessionsBeingSealed,
+    sessionsOverLimit,
     linesUnparseable,
     failuresUnattributed,
     groups: groupRecurrences(recurrences, taxonomy),
@@ -218,6 +222,10 @@ export const noLogLine = report => `No log for this repository on this machine: 
 export const readCountLines = report => [
   `location: ${report.location}`,
   `sessions read: ${report.sessionsRead}; of them unreadable, in whole or part: ${report.sessionsUnreadable}; unparseable lines: ${report.linesUnparseable}`,
+  ...(report.sessionsBeingSealed > 0
+    ? [`sessions with events in a claimed or temporary file, which are not read until a maintenance run finishes sealing them: ${report.sessionsBeingSealed}`]
+    : []),
+  ...(report.sessionsOverLimit.length > 0 ? [`sessions larger than this command reads, counted as unreadable: ${report.sessionsOverLimit.join(', ')}`] : []),
   `failures left out, because no harness and model was recorded before them: ${report.failuresUnattributed}`,
 ];
 

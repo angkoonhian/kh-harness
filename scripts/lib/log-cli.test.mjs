@@ -215,6 +215,24 @@ test('status counts claimed and temporary files in the size it reports', () => {
   assert.equal(json.sessionsBeingSealed, 1);
 });
 
+test('status names a session larger than it reads', () => {
+  const root = project();
+  writeSession(root, 's1');
+  appendEvent(root, 'big', { type: 'Stop', pad: 'x'.repeat(6000) });
+  process.env.KH_LOG_MAX_FILE_BYTES = '4000';
+  let json;
+  let text;
+  try {
+    json = statusJson(root);
+    text = runLog(root, 'status').stdout;
+  } finally {
+    delete process.env.KH_LOG_MAX_FILE_BYTES;
+  }
+  assert.deepEqual(json.sessionsOverLimit, ['big']);
+  assert.equal(json.unreadableSessions, 1);
+  assert.match(text, /sessions larger than this command reads, counted as unreadable and not sealed or expired: big/);
+});
+
 test('status reports an altered session', () => {
   const root = project();
   writeSession(root, 'kept');

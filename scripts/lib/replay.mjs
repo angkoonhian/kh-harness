@@ -19,7 +19,7 @@
 // counts and fixed text only, never from a tool input.
 import { GATE_LIMITS, matchGate, validateGate } from '../../assets/scripts/harness-gates.mjs';
 import { readEvents, SCRUB_MARK } from '../../assets/scripts/harness-log.mjs';
-import { FAILURE_EVENT, failureSignature, sessionIds, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
+import { FAILURE_EVENT, failureSignature, listSessions, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
 
 /** The least clean evidence a `pass` needs: calls of the gate's own tool
  * whose inspected field was replayed, across at least this many sessions
@@ -204,6 +204,10 @@ function limits(totals) {
   if (totals.sessionsUnreadable > 0 || totals.linesUnparseable > 0) {
     notes.push(`${plural(totals.sessionsUnreadable, 'session')} could not be read in full and ${plural(totals.linesUnparseable, 'line')} could not be parsed; what did parse was used`);
   }
+  if (totals.sessionsBeingSealed > 0) {
+    const verb = totals.sessionsBeingSealed === 1 ? 'has' : 'have';
+    notes.push(`${plural(totals.sessionsBeingSealed, 'session')} ${verb} events in a claimed or temporary file, which are not read until a maintenance run finishes sealing them`);
+  }
   return notes;
 }
 
@@ -221,6 +225,7 @@ function result(totals, verdict, reason) {
     contentMissing: mistakes[MISSING] + successors[MISSING] + clean[MISSING],
     sessionsOutsideRecurrence: totals.sessionsOutsideRecurrence,
     sessionsUnreadable: totals.sessionsUnreadable,
+    sessionsBeingSealed: totals.sessionsBeingSealed,
     linesUnparseable: totals.linesUnparseable,
     verdict,
     reason,
@@ -251,8 +256,10 @@ function result(totals, verdict, reason) {
  * Anything else short of a pass is `not-checkable`. A gate that is not well
  * formed is `fail` without being replayed. A session that could not be read
  * in full, or has lines that do not parse, is still used for what did parse
- * and counted in `sessionsUnreadable` and `linesUnparseable`. Throws only
- * when the sessions directory exists and cannot be listed.
+ * and counted in `sessionsUnreadable` and `linesUnparseable`. A session with
+ * events in a claimed or temporary file is counted in `sessionsBeingSealed`,
+ * and when it is one of the recurrence's it was not read in full. Throws
+ * only when the sessions directory exists and cannot be listed.
  */
 export function replayGate(root, gate, recurrence) {
   const totals = {
@@ -266,6 +273,7 @@ export function replayGate(root, gate, recurrence) {
     recurrenceWithoutMistake: 0,
     sessionsOutsideRecurrence: 0,
     sessionsUnreadable: 0,
+    sessionsBeingSealed: 0,
     linesUnparseable: 0,
   };
   const valid = validateGate(gate);
@@ -274,14 +282,17 @@ export function replayGate(root, gate, recurrence) {
   const { signature } = recurrence;
   const mistakeSessions = new Set(recurrence.sessions);
   totals.recurrenceSessions = mistakeSessions.size;
-  for (const sessionId of new Set([...sessionIds(root), ...mistakeSessions])) {
+  const listed = listSessions(root);
+  const beingSealed = new Set(listed.filter(session => session.beingSealed).map(session => session.id));
+  totals.sessionsBeingSealed = beingSealed.size;
+  for (const sessionId of new Set([...listed.map(session => session.id), ...mistakeSessions])) {
     const { events, unparseable, unreadable } = readEvents(root, sessionId);
     if (unreadable) totals.sessionsUnreadable++;
     totals.linesUnparseable += unparseable;
     const signatures = events.map(e => failureSignature(e, root));
     const holdsMistake = signatures.includes(signature);
     if (mistakeSessions.has(sessionId)) {
-      if (unreadable) totals.recurrenceUnreadable++;
+      if (unreadable || beingSealed.has(sessionId)) totals.recurrenceUnreadable++;
       if (!holdsMistake) totals.recurrenceWithoutMistake++;
       replayDifferential(gate, events, signatures, signature, totals);
     } else if (holdsMistake) {
