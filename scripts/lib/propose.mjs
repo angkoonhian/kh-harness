@@ -560,16 +560,17 @@ const REINJECT_STEP = 28;
  * No `matcher`: UserPromptSubmit has no tool to match on, and
  * `buildMatcherEntry` omits the key entirely when none is passed.
  *
- * Gated on the registry holding at least one active rule — read from
- * `harness.rulesRegistry`, the SAME evidence gap-model.mjs's P3.reinject
- * check decides from, so check and generator agree by construction. This
+ * Gated on the registry holding at least one rule to inject — its
+ * `injectable` count, read from `harness.rulesRegistry`, the SAME evidence
+ * gap-model.mjs's P3.reinject check decides from, so check and generator
+ * agree by construction. This
  * is the defensive SECOND gate, independent of the check-level `decidable`
  * flag `buildProposals` enforces centrally — `bootstrapProposal` keeps the
  * same belt-and-braces for the same reason: a hook with nothing to inject
  * is noise on every prompt, and no forced check may produce one.
  */
 function reinjectProposal({ kitVersion, harness, check }) {
-  if (!(harness?.rulesRegistry?.count > 0)) return [];
+  if (!(harness?.rulesRegistry?.injectable > 0)) return [];
   const files = hookFiles(RULES_BRIEF_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'UserPromptSubmit', step: REINJECT_STEP,

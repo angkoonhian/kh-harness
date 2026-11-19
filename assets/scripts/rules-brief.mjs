@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// UserPromptSubmit hook: puts this repository's rules registry
-// (docs/harness/RULES.md) back in front of the model on EVERY prompt.
+// UserPromptSubmit hook: puts this repository's rules registry — the
+// owner's docs/harness/RULES.md and the kit's docs/harness/LEARNED.md — back
+// in front of the model on EVERY prompt.
 //
 // Why a hook, and why per prompt. A rule stated once in CLAUDE.md is a
 // claim the model is told at session start; the 2026 studies the design
@@ -26,19 +27,22 @@
 //     the hook stays cheap on every single prompt). Whole rules are dropped,
 //     never mid-line: a rule that does not fit is skipped and the next is
 //     tried, so one long rule cannot starve the rest, and every skipped rule
-//     is counted in a notice in the text itself.
-//   - `high` priority rules go first, then `normal`, stable within each.
-//   - Superseded rules are skipped: they are a record, not a claim.
+//     is counted in a notice in the text itself. The bound and the notice
+//     cover both files together.
+//   - The owner's `high` priority rules go first, then the owner's
+//     `normal` ones, stable within each, then the learned rules.
+//   - Superseded rules are skipped: they are a record, not a claim. So is
+//     a learned rule enforced by a hook: a gate already holds it.
 //   - A rule's text is the user's prose and may carry anything, so it passes
 //     `stripUnsafe` (controls, invisible and reordering characters, the tag
 //     block), then `maskText` at the sweep's floors, then
 //     `escapeDelimiters`, so no rule can close the block.
 //   - The block is wrapped in `<project-rules source="…">` … `</project-rules>`,
 //     so the model can tell the injected rules from the prompt they arrive
-//     beside, and knows the file they come from.
+//     beside, and knows the files they come from.
 //
-// The parser (`parseRules`) and the registry's location (`findRules`,
-// `RULES_PATH`) come from harness-redact.mjs, the one module shared with
+// The parser (`parseRules`) and the registry's locations (`findRules`,
+// `findLearned`) come from harness-redact.mjs, the one module shared with
 // `detect` — so what this hook injects and what `detect` reports can never
 // disagree about what a rule is.
 import { readFileSync } from 'node:fs';
@@ -61,7 +65,7 @@ import { join } from 'node:path';
 // `kept (modified)` and the notice would return on every prompt with a
 // remedy that cannot work. `uninstall --yes` then `apply --yes` is the way
 // through in that case, so the one line says both.
-const NEEDED = ['escapeDelimiters', 'findRules', 'maskText', 'parseRules', 'projectRoot', 'RULES_PATH', 'stripUnsafe'];
+const NEEDED = ['escapeDelimiters', 'findLearned', 'findRules', 'maskText', 'parseRules', 'projectRoot', 'stripUnsafe'];
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
 let asset;
 try {
@@ -76,7 +80,7 @@ if (NEEDED.some(name => !(name in asset))) {
   process.stderr.write(`kh-harness rules-brief: .claude/scripts/harness-redact.mjs is older than this hook and lacks what it needs — ${REMEDY}\n`);
   process.exit(1);
 }
-const { escapeDelimiters, findRules, maskText, parseRules, projectRoot, RULES_PATH, stripUnsafe } = asset;
+const { escapeDelimiters, findLearned, findRules, maskText, parseRules, projectRoot, stripUnsafe } = asset;
 
 export const RULES_BRIEF_MAX_BYTES = 1500;
 // Overridable only so a test can exercise the truncation path cheaply;
@@ -84,27 +88,37 @@ export const RULES_BRIEF_MAX_BYTES = 1500;
 const MAX_BYTES = Number(process.env.HK_RULES_BRIEF_MAX_BYTES) || RULES_BRIEF_MAX_BYTES;
 
 const root = projectRoot();
-const rel = findRules(root);
-if (!rel) process.exit(0);
 
-let text;
-try {
-  text = readFileSync(join(root, rel), 'utf8');
-} catch {
-  process.exit(0);
+/** The active rules of the registry file at `rel`; none when it is absent
+ * or unreadable. */
+function activeRules(rel) {
+  if (!rel) return [];
+  try {
+    return parseRules(readFileSync(join(root, rel), 'utf8')).rules.filter(r => r.status !== 'superseded');
+  } catch {
+    return [];
+  }
 }
 
-const active = parseRules(text).rules.filter(r => r.status !== 'superseded');
-if (active.length === 0) process.exit(0);
+const ownerRel = findRules(root);
+const learnedRel = findLearned(root);
+const owner = activeRules(ownerRel);
+// A learned rule enforced by a hook is held by a gate; telling the model as
+// well would spend every prompt's budget on a rule it cannot break.
+// scripts/lib/rules-evidence.mjs's `injectable` counts the same selection.
+const learned = activeRules(learnedRel).filter(r => r.enforcedBy !== 'hook');
 
-// Stable partition: `high` first, then everything else, document order
-// preserved within each group.
-const ordered = [...active.filter(r => r.priority === 'high'), ...active.filter(r => r.priority !== 'high')];
+// The owner's rules first, `high` before the rest with document order kept
+// within each group, then the learned rules in document order.
+const ordered = [...owner.filter(r => r.priority === 'high'), ...owner.filter(r => r.priority !== 'high'), ...learned];
+if (ordered.length === 0) process.exit(0);
 
-const open = `<project-rules source="${RULES_PATH}">`;
+// The files the injected rules come from, and no other.
+const source = [owner.length > 0 ? ownerRel : null, learned.length > 0 ? learnedRel : null].filter(Boolean).join(', ');
+const open = `<project-rules source="${source}">`;
 const close = '</project-rules>';
-const header = `Project rules (${RULES_PATH}):`;
-const moreNotice = count => `… ${count} more rule(s) in ${RULES_PATH}`;
+const header = `Project rules (${source}):`;
+const moreNotice = count => `… ${count} more rule(s) in ${source}`;
 const lines = [open, header];
 // The closing tag is reserved up front so the bound holds with it in place.
 let used = Buffer.byteLength(open, 'utf8') + 1 + Buffer.byteLength(header, 'utf8') + 1 + Buffer.byteLength(close, 'utf8');

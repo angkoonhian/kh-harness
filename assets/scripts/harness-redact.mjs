@@ -559,10 +559,16 @@ export function findHandoff(root) {
 //
 // Why Markdown with `key: value` bullets and not JSON or YAML: this file is
 // written and edited by a HUMAN — the kit scaffolds the shape and never
-// writes a rule — so it must stay pleasant to edit by hand, and the kit has
-// no YAML parser (zero dependencies). A 40-line parser is the cheaper
-// choice. Anthropic's observation that models alter JSON less than Markdown
-// applies to machine-maintained state; this is not that.
+// writes a rule into it — so it must stay pleasant to edit by hand, and the
+// kit has no YAML parser (zero dependencies). A 40-line parser is the
+// cheaper choice. Anthropic's observation that models alter JSON less than
+// Markdown applies to machine-maintained state; this is not that.
+//
+// The rules the learning loop adds live in a second file of the same
+// format, `docs/harness/LEARNED.md`, which the kit writes and the owner does
+// not (scripts/lib/learned-registry.mjs). Every reader of the registry reads
+// both, and a rule is the owner's or a learned one by the file it is in,
+// never by its `origin` key.
 //
 // HTML comments are stripped FIRST. That is what makes the shipped
 // template's worked example inert: everything the kit itself puts in the
@@ -572,6 +578,7 @@ export function findHandoff(root) {
 // property from the other side, to recognise an unfilled scaffold.)
 
 export const RULES_PATH = 'docs/harness/RULES.md';
+export const LEARNED_PATH = 'docs/harness/LEARNED.md';
 
 /** Every value `enforced-by` may take. `none` is a claim, not an enforcer —
  * it is recorded so the registry can say plainly which rules are told and
@@ -580,6 +587,10 @@ export const ENFORCERS = Object.freeze(['deny', 'hook', 'lint', 'test', 'critic'
 
 export function findRules(root) {
   return existsSync(join(root, RULES_PATH)) ? RULES_PATH : null;
+}
+
+export function findLearned(root) {
+  return existsSync(join(root, LEARNED_PATH)) ? LEARNED_PATH : null;
 }
 
 // `## <id> — <rule>`: the id is one token (letters, digits, `_`, `.`, `-`,
@@ -595,7 +606,8 @@ function fieldFor(key) {
   const k = key.toLowerCase().replace(/[-_]/g, '');
   if (k === 'enforcedby') return 'enforcedBy';
   if (k === 'lastverified') return 'lastVerified';
-  if (k === 'why' || k === 'pointer' || k === 'verify' || k === 'priority' || k === 'status') return k;
+  if (k === 'approvedsha256') return 'approvedSha256';
+  if (k === 'why' || k === 'pointer' || k === 'verify' || k === 'priority' || k === 'status' || k === 'origin' || k === 'evidence') return k;
   return null; // unknown keys are ignored, as Claude Code ignores unknown frontmatter
 }
 
@@ -609,7 +621,9 @@ function fieldFor(key) {
  * rejected is the only way the sentence can be acted on.
  *
  * Each rule: `{ id, rule, why, enforcedBy, pointer, verify, priority, status,
- * lastVerified, line }`. `status` is `active` (default) or `superseded` — a
+ * lastVerified, origin, evidence, approvedSha256, line }`. The last three
+ * keys are the ones the kit writes into a learned entry; each is its
+ * trimmed text, or null when absent or empty. `status` is `active` (default) or `superseded` — a
  * superseded rule stays in the file as a record but is excluded from
  * re-injection and from the enforcement counts; `lastVerified` is a
  * YYYY-MM-DD string or null (anything else is reported, never guessed at).
@@ -652,7 +666,7 @@ export function parseRules(text) {
         continue;
       }
       seen.add(id);
-      current = { id, rule: m[2].trim(), why: null, enforcedBy: undefined, pointer: null, verify: null, priority: 'normal', status: 'active', lastVerified: null, line: i + 1 };
+      current = { id, rule: m[2].trim(), why: null, enforcedBy: undefined, pointer: null, verify: null, priority: 'normal', status: 'active', lastVerified: null, origin: null, evidence: null, approvedSha256: null, line: i + 1 };
       continue;
     }
     if (!current) continue;

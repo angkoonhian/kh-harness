@@ -23,7 +23,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SENSOR_MATCHER, GENERATORS, kitSkew } from './propose.mjs';
 import { MANIFEST_PATH } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
-import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
@@ -705,7 +705,7 @@ const CHECKS = [
   },
   {
     id: 'P3.rules', step: 27, phase: 3,
-    lookedFor: [RULES_PATH, 'rule-shaped lines in the instruction file and .claude/rules/'],
+    lookedFor: [RULES_PATH, LEARNED_PATH, 'rule-shaped lines in the instruction file and .claude/rules/'],
     // The registry is the kit's own claim/evidence split applied to a
     // sentence: a rule with `enforced-by: none` is a CLAIM (Claude is told
     // it), one with a resolving pointer is held by something. This check
@@ -721,6 +721,11 @@ const CHECKS = [
     // renderSummary prints it after the `→`). The scaffold's only value is
     // being a place for the user to write, exactly like P1.pathrules.
     //
+    // The learned registry is reported beside the owner's and never in
+    // place of it: with learned rules and no owner's registry, the
+    // owner's scaffold is still proposed. Nothing here creates the learned
+    // file; the learning loop does, when a learning is committed.
+    //
     // Advice (never a proposal): rule-shaped lines in CLAUDE.md and
     // `.claude/rules/*.md` are the registry's natural first entries. Named
     // by COUNT and LINE NUMBER, never by sentence — rules-evidence.mjs's
@@ -731,32 +736,39 @@ const CHECKS = [
       const listed = lines => lines.length > 10 ? `${lines.slice(0, 10).join(', ')} … and ${lines.length - 10} more` : lines.join(', ');
       const advice = (harness.ruleShapedLines ?? []).map(({ file, lines }) =>
         `${file} holds ${lines.length} rule-shaped line${lines.length === 1 ? '' : 's'} (line${lines.length === 1 ? '' : 's'} ${listed(lines)}) not in ${RULES_PATH} — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart`);
+      // One registry file's counts, superseded rules, dead pointers and
+      // parser problems. The owner's rules and the learned rules are
+      // reported apart, each in this shape.
+      const summarise = (file, noun, problemPrefix) => {
+        const enforced = file.count - file.unenforced.length;
+        const byEnforcer = Object.entries(file.byEnforcer).filter(([k]) => k !== 'none').map(([k, n]) => `${k} ${n}`).join(', ');
+        const unenforced = file.unenforced.length ? `${file.unenforced.length} with enforced-by: none (${file.unenforced.join(', ')})` : 'none with enforced-by: none';
+        const lines = [`${file.path}: ${file.count} ${noun}${file.count === 1 ? '' : 's'} — ${enforced} enforced${byEnforcer ? ` (${byEnforcer})` : ''}, ${unenforced}`];
+        if (file.superseded) lines.push(`${file.superseded} superseded ${noun}${file.superseded === 1 ? '' : 's'} kept as a record, not counted`);
+        for (const m of file.missingPointers) {
+          lines.push(m.pointer == null
+            ? `${m.id}: enforced-by names a mechanism but no pointer says where it is`
+            : `${m.id}: pointer ${m.pointer} does not exist`);
+        }
+        for (const p of file.problems) lines.push(`${problemPrefix}: ${p}`);
+        return lines;
+      };
       const reg = harness.rulesRegistry ?? null;
-      if (!reg) {
-        return { state: 'absent', advice, proposal: `scaffold ${RULES_PATH} — generated EMPTY; rules are added by hand, each with the enforcer that holds it` };
+      const learned = reg?.learned ? summarise(reg.learned, 'learned rule', 'learned registry') : [];
+      if (!reg || reg.path === null) {
+        return { state: 'absent', advice, evidence: learned, proposal: `scaffold ${RULES_PATH} — generated EMPTY; rules are added by hand, each with the enforcer that holds it` };
       }
       if (reg.count === 0) {
         const evidence = [`${reg.path} (0 rules — scaffold not yet filled in)`];
         if (reg.superseded) evidence.push(`${reg.superseded} superseded rule${reg.superseded === 1 ? '' : 's'} kept as a record`);
-        return { state: 'declared', advice, evidence: [...evidence, ...reg.problems.map(p => `registry: ${p}`)] };
+        return { state: 'declared', advice, evidence: [...evidence, ...reg.problems.map(p => `registry: ${p}`), ...learned] };
       }
-      const enforced = reg.count - reg.unenforced.length;
-      const byEnforcer = Object.entries(reg.byEnforcer).filter(([k]) => k !== 'none').map(([k, n]) => `${k} ${n}`).join(', ');
-      const unenforced = reg.unenforced.length ? `${reg.unenforced.length} with enforced-by: none (${reg.unenforced.join(', ')})` : 'none with enforced-by: none';
-      const evidence = [`${reg.path}: ${reg.count} rule${reg.count === 1 ? '' : 's'} — ${enforced} enforced${byEnforcer ? ` (${byEnforcer})` : ''}, ${unenforced}`];
-      if (reg.superseded) evidence.push(`${reg.superseded} superseded rule${reg.superseded === 1 ? '' : 's'} kept as a record, not counted`);
-      for (const m of reg.missingPointers) {
-        evidence.push(m.pointer == null
-          ? `${m.id}: enforced-by names a mechanism but no pointer says where it is`
-          : `${m.id}: pointer ${m.pointer} does not exist`);
-      }
-      for (const p of reg.problems) evidence.push(`registry: ${p}`);
-      return { state: 'declared', advice, evidence };
+      return { state: 'declared', advice, evidence: [...summarise(reg, 'rule', 'registry'), ...learned] };
     },
   },
   {
     id: 'P3.reinject', step: 28, phase: 3,
-    lookedFor: ['a UserPromptSubmit hook registered at ' + RULES_BRIEF_PATH, RULES_PATH + ' with at least one rule'],
+    lookedFor: ['a UserPromptSubmit hook registered at ' + RULES_BRIEF_PATH, `${RULES_PATH} or ${LEARNED_PATH} with at least one rule to inject`],
     // Decidable only with something to inject — the same evidence-gated
     // shape as P2.sensor (no lint script, no sensor). Two undecidable
     // branches, deliberately different: with NO registry, P3.rules' own
@@ -772,10 +784,13 @@ const CHECKS = [
     // without a longer file. The hook is byte-bounded (1500) so it stays
     // cheap on every single prompt — the figure is named in the proposal so
     // the gate carries it.
+    //
+    // What there is to inject is `injectable`: the owner's rules and the
+    // learned rules no gate holds, as the hook selects them.
     check: ({ harness, manifest, root }) => {
       const reg = harness.rulesRegistry ?? null;
-      if (!reg) return { state: 'absent', decidable: false, evidence: [`no ${RULES_PATH} yet — nothing to inject`] };
-      if (reg.count === 0) {
+      if (!reg || (reg.path === null && reg.injectable === 0)) return { state: 'absent', decidable: false, evidence: [`no ${RULES_PATH} yet — nothing to inject`] };
+      if (reg.injectable === 0) {
         return {
           state: 'absent', decidable: false,
           evidence: [`${reg.path} holds 0 rules — nothing to inject yet`],

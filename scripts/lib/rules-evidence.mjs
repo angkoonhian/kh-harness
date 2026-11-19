@@ -14,7 +14,10 @@
 //   rule's `pointer` still resolves. A pointer that no longer resolves is
 //   the drift signal this whole layer exists to produce: a rule whose
 //   enforcer was deleted is a claim again, whatever its `enforced-by` line
-//   still says. Reported by id and pointer, never by rule text.
+//   still says. Reported by id and pointer, never by rule text. The owner's
+//   file and the kit's learned file are read and counted apart; `injectable`
+//   must select what assets/scripts/rules-brief.mjs injects, which cannot
+//   import this module (pinned in rules-brief.test.mjs).
 //
 //   ruleShapedLines — how many imperative sentences ("must", "never",
 //   "always", ...) sit in the instruction file and `.claude/rules/*.md`
@@ -25,7 +28,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readIfPresent } from './scan.mjs';
-import { parseRules, findRules } from '../../assets/scripts/harness-redact.mjs';
+import { parseRules, findLearned, findRules } from '../../assets/scripts/harness-redact.mjs';
 
 /** Enforcers that need no pointer: `none` is a claim, `review` is a human. */
 const POINTERLESS = new Set(['none', 'review']);
@@ -55,15 +58,11 @@ function pointerResolves(root, harness, pointer) {
 }
 
 /**
- * `null` when there is no registry; otherwise
- * `{ path, count, superseded, byEnforcer, unenforced, missingPointers, problems }`
- * where `count`, `byEnforcer`, `unenforced` and `missingPointers` cover
- * ACTIVE rules only (a superseded rule is a record, not a claim), and
- * `missingPointers` is `[{ id, pointer }]` — `pointer: null` when an
- * enforcer other than none/review was declared with no pointer at all.
+ * One registry file's evidence, `{ path, count, superseded, byEnforcer,
+ * unenforced, missingPointers, problems }`, and its active rules, or null
+ * when `rel` is null.
  */
-export function rulesRegistryEvidence(root, harness) {
-  const rel = findRules(root);
+function fileEvidence(root, harness, rel) {
   if (!rel) return null;
   const { rules, problems } = parseRules(readIfPresent(root, rel) ?? '');
   const active = rules.filter(r => r.status !== 'superseded');
@@ -78,13 +77,44 @@ export function rulesRegistryEvidence(root, harness) {
     else if (!pointerResolves(root, harness, r.pointer)) missingPointers.push({ id: r.id, pointer: r.pointer });
   }
   return {
-    path: rel,
-    count: active.length,
-    superseded: rules.length - active.length,
-    byEnforcer,
-    unenforced,
-    missingPointers,
-    problems: [...problems],
+    active,
+    evidence: {
+      path: rel,
+      count: active.length,
+      superseded: rules.length - active.length,
+      byEnforcer,
+      unenforced,
+      missingPointers,
+      problems: [...problems],
+    },
+  };
+}
+
+/**
+ * `null` when neither registry file exists; otherwise the owner's registry,
+ * `{ path, count, superseded, byEnforcer, unenforced, missingPointers,
+ * problems }`, with two more keys: `learned`, the same shape for the learned
+ * registry or null without one, and `injectable`, how many rules the rules
+ * brief would inject. `path` is null, and every count 0, when only the
+ * learned registry exists. A rule's file decides whose it is: an entry in
+ * the owner's file that says `origin: learned` is counted as the owner's.
+ *
+ * `count`, `byEnforcer`, `unenforced` and `missingPointers` cover ACTIVE
+ * rules only (a superseded rule is a record, not a claim), and
+ * `missingPointers` is `[{ id, pointer }]` — `pointer: null` when an
+ * enforcer other than none/review was declared with no pointer at all.
+ * `injectable` counts every active owner's rule and every active learned
+ * rule whose enforcer is not `hook`, since a gate already holds those.
+ */
+export function rulesRegistryEvidence(root, harness) {
+  const owner = fileEvidence(root, harness, findRules(root));
+  const learned = fileEvidence(root, harness, findLearned(root));
+  if (!owner && !learned) return null;
+  const ownerEvidence = owner?.evidence ?? { path: null, count: 0, superseded: 0, byEnforcer: {}, unenforced: [], missingPointers: [], problems: [] };
+  return {
+    ...ownerEvidence,
+    learned: learned?.evidence ?? null,
+    injectable: ownerEvidence.count + (learned?.active.filter(r => r.enforcedBy !== 'hook').length ?? 0),
   };
 }
 

@@ -33,7 +33,7 @@ const args = (checks, extra = {}) => ({
 test('every shipped-script proposal names its assetSource, and its contents are the asset plus the stamp', () => {
   const ASSETS = new URL('../../assets/', import.meta.url);
   const stack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'typecheck', 'test'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
-  const harness = { claudeDir: {}, rulesRegistry: { count: 1 } };
+  const harness = { claudeDir: {}, rulesRegistry: { count: 1, injectable: 1 } };
   const seen = new Set();
   for (const id of ['P2.sensor', 'P2.stopgate', 'P2.loopwatch', 'P4.sessionbrief', 'P3.reinject']) {
     const ps = GENERATORS[id]({ kitVersion: '0.2.0', stack, harness, check: check({ id }), root: root(), files: [], checks: [] });
@@ -1367,7 +1367,7 @@ test('SECRET: P3.intent has no registered generator — forcing state absent and
 // --- Phase 3: the re-injection hook (P3.reinject) --------------------------
 import { RULES_BRIEF_PATH, REDACT_PATH } from './propose.mjs';
 
-const oneRule = { path: 'docs/harness/RULES.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [] };
+const oneRule = { path: 'docs/harness/RULES.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [], learned: null, injectable: 1 };
 const reinjectCheck = (o = {}) => check({ id: 'P3.reinject', step: 28, phase: 3, proposal: 'register the hook', ...o });
 const reinjectArgs = (checks, extra = {}) => args(checks, { harness: { claudeDir: {}, rulesRegistry: oneRule }, ...extra });
 
@@ -1397,11 +1397,20 @@ test('P3.reinject reuses detect\'s "already registered, but not ours" wording as
   assert.equal(hook.reason, evidence[0]);
 });
 
-test('DEFENCE IN DEPTH: P3.reinject yields nothing when the registry has no rule, even if the check is forced open', () => {
-  for (const rulesRegistry of [null, { ...oneRule, count: 0 }]) {
+test('DEFENCE IN DEPTH: P3.reinject yields nothing when the registry has no rule to inject, even if the check is forced open', () => {
+  const gated = { path: 'docs/harness/LEARNED.md', count: 1, superseded: 0, byEnforcer: { hook: 1 }, unenforced: [], missingPointers: [], problems: [] };
+  const gatedOnly = { ...oneRule, count: 0, byEnforcer: {}, learned: gated, injectable: 0 };
+  for (const rulesRegistry of [null, { ...oneRule, count: 0, injectable: 0 }, gatedOnly]) {
     const ps = buildProposals(args([reinjectCheck()], { harness: { claudeDir: {}, rulesRegistry } }));
     assert.deepEqual(ps, [], 'a hook with nothing to inject must not be proposed, whatever the check said');
   }
+});
+
+test('P3.reinject proposes for learned rules no gate holds, with no owner\'s rule', () => {
+  const learned = { path: 'docs/harness/LEARNED.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [] };
+  const rulesRegistry = { ...oneRule, path: null, count: 0, byEnforcer: {}, learned, injectable: 1 };
+  const ps = buildProposals(args([reinjectCheck()], { harness: { claudeDir: {}, rulesRegistry } }));
+  assert.deepEqual(ps.map(p => p.kind), ['file', 'file', 'settings-hook']);
 });
 
 // --- The failure taxonomy scaffold (P5.failures) ----------------------------
@@ -1459,7 +1468,7 @@ function manifestWith(d, relPath, contents, kit = '0.1.0') {
 }
 const reinjectArgsAt = (d, manifest, checks) => ({
   root: d, checks, manifest, kitVersion: '0.2.0',
-  harness: { claudeDir: {}, rulesRegistry: { path: 'docs/harness/RULES.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [] } },
+  harness: { claudeDir: {}, rulesRegistry: oneRule },
   stack: { packages: [], languages: [], isWorkspace: false, packageManager: null, ci: [] },
   files: [],
 });

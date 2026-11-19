@@ -39,7 +39,7 @@ const richHarness = {
   // section, a registry with at least one rule, and OUR re-injection hook
   // registered — the three fields detect-harness.mjs computes.
   intent: { path: 'docs/INTENT.md', found: ['Purpose', 'Users', 'How it works', 'Success', 'Failure', 'Non-goals', 'Open questions'], missing: [], lastReviewed: null },
-  rulesRegistry: { path: 'docs/harness/RULES.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [] },
+  rulesRegistry: { path: 'docs/harness/RULES.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [], learned: null, injectable: 1 },
   ruleShapedLines: [],
   failures: { path: 'docs/harness/FAILURES.md', readable: true, kinds: 0, signatures: 0, malformedSignatures: 0, ignoredHeadings: 0 },
 };
@@ -1653,9 +1653,15 @@ const fullIntent = { path: 'docs/INTENT.md', found: [...INTENT_SECTIONS], missin
 const filledRegistry = {
   path: 'docs/harness/RULES.md', count: 3, superseded: 0,
   byEnforcer: { critic: 1, test: 1, none: 1 }, unenforced: ['R3'],
-  missingPointers: [], problems: [],
+  missingPointers: [], problems: [], learned: null, injectable: 3,
 };
-const emptyRegistry = { path: 'docs/harness/RULES.md', count: 0, superseded: 0, byEnforcer: {}, unenforced: [], missingPointers: [], problems: [] };
+const emptyRegistry = { path: 'docs/harness/RULES.md', count: 0, superseded: 0, byEnforcer: {}, unenforced: [], missingPointers: [], problems: [], learned: null, injectable: 0 };
+const learnedRegistry = {
+  path: 'docs/harness/LEARNED.md', count: 2, superseded: 1,
+  byEnforcer: { hook: 1, test: 1 }, unenforced: [],
+  missingPointers: [{ id: 'L2', pointer: 'tests/gone.test.mjs' }], problems: ['L9: no enforced-by line — recorded as none'],
+};
+const noOwner = { ...emptyRegistry, path: null };
 const p3Harness = (extra = {}) => ({ ...bareHarness, intent: null, rulesRegistry: null, ruleShapedLines: [], ...extra });
 
 test('P3.intent: proposes when no documentation exists anywhere', () => {
@@ -1734,6 +1740,52 @@ test('P3.rules: advice names counts and line numbers per file, never a sentence'
     'CLAUDE.md holds 4 rule-shaped lines (lines 12, 18, 40, 41) not in docs/harness/RULES.md — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart',
     '.claude/rules/api.md holds 1 rule-shaped line (line 4) not in docs/harness/RULES.md — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart',
   ]);
+});
+
+test('P3.rules: learned rules are counted on their own line, their dead pointers and problems reported like the owner\'s', () => {
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...filledRegistry, learned: learnedRegistry, injectable: 4 } })), 'P3.rules');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [
+    'docs/harness/RULES.md: 3 rules — 2 enforced (critic 1, test 1), 1 with enforced-by: none (R3)',
+    'docs/harness/LEARNED.md: 2 learned rules — 2 enforced (hook 1, test 1), none with enforced-by: none',
+    '1 superseded learned rule kept as a record, not counted',
+    'L2: pointer tests/gone.test.mjs does not exist',
+    'learned registry: L9: no enforced-by line — recorded as none',
+  ]);
+});
+
+test('P3.rules: with learned rules and no owner\'s registry, still proposes the owner\'s scaffold and reports the learned rules', () => {
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...noOwner, learned: learnedRegistry, injectable: 1 } })), 'P3.rules');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.proposal, 'scaffold docs/harness/RULES.md — generated EMPTY; rules are added by hand, each with the enforcer that holds it');
+  assert.equal(c.evidence[0], 'docs/harness/LEARNED.md: 2 learned rules — 2 enforced (hook 1, test 1), none with enforced-by: none');
+});
+
+test('P3.rules: an unfilled owner\'s scaffold beside learned rules reports both', () => {
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...emptyRegistry, learned: { ...learnedRegistry, superseded: 0, missingPointers: [], problems: [] }, injectable: 1 } })), 'P3.rules');
+  assert.deepEqual(c.evidence, [
+    'docs/harness/RULES.md (0 rules — scaffold not yet filled in)',
+    'docs/harness/LEARNED.md: 2 learned rules — 2 enforced (hook 1, test 1), none with enforced-by: none',
+  ]);
+});
+
+test('P3.reinject: learned rules that no gate holds are something to inject', () => {
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...emptyRegistry, learned: learnedRegistry, injectable: 1 } })), 'P3.reinject');
+  assert.equal(c.decidable, true);
+  assert.equal(c.proposal, "register a UserPromptSubmit hook that re-injects the registry's rules into every prompt, bounded at 1500 bytes");
+  const alone = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...noOwner, learned: learnedRegistry, injectable: 1 } })), 'P3.reinject');
+  assert.equal(alone.decidable, true);
+});
+
+test('P3.reinject: learned rules a gate holds are not something to inject', () => {
+  const gated = { ...learnedRegistry, count: 1, byEnforcer: { hook: 1 } };
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...emptyRegistry, learned: gated, injectable: 0 } })), 'P3.reinject');
+  assert.equal(c.decidable, false);
+  assert.match(c.question, /at least one rule/);
+  const alone = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...noOwner, learned: gated, injectable: 0 } })), 'P3.reinject');
+  assert.equal(alone.decidable, false);
+  assert.equal(alone.question, null);
+  assert.deepEqual(alone.evidence, ['no docs/harness/RULES.md yet — nothing to inject']);
 });
 
 test('P3.reinject: undecidable, no question, when the registry is absent (P3.rules already says what to do)', () => {

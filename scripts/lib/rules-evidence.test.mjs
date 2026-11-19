@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rulesRegistryEvidence, ruleShapedLines, RULE_SHAPED } from './rules-evidence.mjs';
-import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-rules-ev-')); }
 function write(d, rel, text) {
@@ -123,6 +123,76 @@ test('parser problems are passed through', () => {
   const ev = rulesRegistryEvidence(d, bare);
   assert.equal(ev.problems.length, 1);
   assert.match(ev.problems[0], /magic/);
+});
+
+// --- The learned registry, docs/harness/LEARNED.md ---------------------------
+
+const LEARNED = [
+  '## L1 — Run the suite through npm test',
+  '- enforced-by: hook',
+  '- pointer: .claude/kh-harness/gates.json',
+  '- origin: learned',
+  '- status: active',
+  '- evidence: signature 3f9a0c2e7b14d856, seen in 3 sessions from 2026-11-01 to 2026-11-18',
+  `- approved-sha256: ${'ab'.repeat(32)}`,
+  '## L2 — Keep the money test green',
+  '- enforced-by: test',
+  '- pointer: tests/money.test.mjs',
+  '- origin: learned',
+  '## L3 — Retired learning',
+  '- enforced-by: none',
+  '- status: superseded',
+  '',
+].join('\n');
+
+test('detect counts learned rules separately from the owner\'s', () => {
+  const d = repo();
+  write(d, RULES_PATH, '## R1 — r\n- enforced-by: none\n## R2 — claims to be learned\n- enforced-by: none\n- origin: learned\n');
+  write(d, LEARNED_PATH, LEARNED);
+  write(d, '.claude/kh-harness/gates.json', '{}');
+  write(d, 'tests/money.test.mjs', '');
+  const ev = rulesRegistryEvidence(d, bare);
+  assert.equal(ev.path, RULES_PATH);
+  assert.equal(ev.count, 2, 'an owner\'s entry that claims origin: learned is still the owner\'s');
+  assert.deepEqual(ev.unenforced, ['R1', 'R2']);
+  assert.deepEqual(ev.problems, [], 'the learned keys are known keys in the owner\'s file');
+  assert.deepEqual(ev.learned, {
+    path: LEARNED_PATH, count: 2, superseded: 1,
+    byEnforcer: { hook: 1, test: 1 }, unenforced: [], missingPointers: [], problems: [],
+  });
+  assert.equal(ev.injectable, 3, 'two owner\'s rules and the one learned rule no gate enforces');
+});
+
+test('a learned entry whose pointer does not resolve is reported the way an owner\'s is', () => {
+  const d = repo();
+  write(d, RULES_PATH, '## R1 — r\n- enforced-by: test\n- pointer: tests/gone.test.mjs\n');
+  write(d, LEARNED_PATH, LEARNED);
+  const ev = rulesRegistryEvidence(d, bare);
+  assert.deepEqual(ev.missingPointers, [{ id: 'R1', pointer: 'tests/gone.test.mjs' }]);
+  assert.deepEqual(ev.learned.missingPointers, [
+    { id: 'L1', pointer: '.claude/kh-harness/gates.json' },
+    { id: 'L2', pointer: 'tests/money.test.mjs' },
+  ]);
+});
+
+test('without a learned registry, learned is null and injectable is the owner\'s count', () => {
+  const d = repo();
+  write(d, RULES_PATH, REGISTRY);
+  const ev = rulesRegistryEvidence(d, bare);
+  assert.equal(ev.learned, null);
+  assert.equal(ev.injectable, 5);
+});
+
+test('a learned registry without the owner\'s reports the learned rules and no owner\'s file', () => {
+  const d = repo();
+  write(d, LEARNED_PATH, LEARNED);
+  const ev = rulesRegistryEvidence(d, bare);
+  assert.equal(ev.path, null);
+  assert.equal(ev.count, 0);
+  assert.equal(ev.superseded, 0);
+  assert.deepEqual(ev.byEnforcer, {});
+  assert.equal(ev.learned.count, 2);
+  assert.equal(ev.injectable, 1);
 });
 
 test('RULE_SHAPED matches the imperative shapes and nothing ordinary', () => {
