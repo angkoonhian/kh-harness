@@ -17,13 +17,13 @@ import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { EXIT_CODES, LEARN_USAGE, learnHelp } from './cli.mjs';
 import {
-  draftFor, drafted, learningFile, logClean, logFiring, loggedRepo, logReadMistakes, signatureOf, tempDir, trialRepo, useId, writeLocalGates,
+  draftFor, drafted, learningFile, logClean, logFiring, loggedRepo, logReadMistakes, repo, signatureOf, tempDir, trialRepo, useId, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { LEARN_SUBCOMMANDS, TERMINAL_ONLY } from './learn-cli.mjs';
 import { listLearnings } from './learn-lib.mjs';
 import { approveLearning, setPolicy } from './learn-promote.mjs';
 import { appendLedger } from './ledger.mjs';
-import { buildLogReport, REROUTED_MEANS } from './log-report.mjs';
+import { buildLogReport, NOT_CLAIMED, REROUTED_MEANS } from './log-report.mjs';
 import { learnCommandDenyRules } from './propose.mjs';
 import { requireInteractive } from './tty.mjs';
 
@@ -105,6 +105,8 @@ test('candidates lists recurrences that have no learning', () => {
   assert.ok(text.includes(`${read}  Read: in 2 sessions`), text);
   assert.ok(text.includes(`error: ${shown.errorLine}`), text);
   assert.equal(text.includes(bash), false, text);
+  assert.ok(text.trimEnd().endsWith(NOT_CLAIMED), 'it ends with what log report says it does not claim');
+  assert.ok(ok(runLearn(repo(), 'candidates')).trimEnd().endsWith(NOT_CLAIMED), 'with no log too');
 });
 
 test('candidates says when the ledger cannot vouch for what stands', () => {
@@ -207,10 +209,28 @@ test('list shows every learning with its status and what the ledger says beside 
   assert.match(text, /L1 {2}active-local {2}block/);
   assert.match(text, new RegExp(`L1 sha256 ${learning.sha256} at block, approved by owner at \\d{4}-`));
 
+  const order = ['learnings and ledger entries that disagree', 'local gate entries the next step that writes', 'local gate entries above observe', 'approvals:', 'enforcing learnings whose cited paths', 'learning files that do not read back'];
+  const at = order.map(line => text.indexOf(line));
+  assert.ok(at.every(i => i >= 0), at.join(','));
+  assert.deepEqual([...at].sort((a, b) => a - b), at, 'the sections come in the order they are listed');
+
   writeFileSync(join(repoDataDir(root), 'ledger.jsonl'), '{"not":"a ledger line"}\n', { flag: 'a' });
   const broken = ok(runLearn(root, 'list'));
   assert.match(broken.split('\n')[0], /ledger cannot be read or its chain is broken/, 'a broken ledger is said first');
   assert.deepEqual(json(root, 'list').ledgerMismatch, ['L1']);
+});
+
+test('an approval whose learning id holds an escape is printed escaped', () => {
+  const { root, learning } = promotedRepo('block');
+  // The ledger checks a learning id only for being a non-empty string, and
+  // anything running as this user can append to it.
+  const forged = `L1\u001b[2J\u0007`;
+  appendLedger(root, { kind: 'promoted', learningId: forged, contentSha256: learning.sha256, evidence: learning.evidence, base: 'b', learned: 'l', approvedBy: 'owner', action: 'block' });
+  const text = ok(runLearn(root, 'list'));
+  assert.match(text, PRINTABLE, 'no control character reaches the terminal');
+  assert.ok(text.includes('"L1\\u001b[2J\\u0007" sha256'), text);
+  assert.equal(json(root, 'list').approvals.at(-1).id, forged, '--json parses back to the id itself');
+  assert.match(runLearn(root, 'list', '--json').stdout, PRINTABLE);
 });
 
 test('policy show says whether the policy on disk is the one in force', () => {

@@ -175,9 +175,14 @@ test('denyRuleList redacts a Bash(...) rule to null, never the raw string', () =
 
 test("denyRuleList keeps the kit's own learn command rules verbatim, and only those", () => {
   const d = repo();
-  const lookalikes = ['Bash(*learn.mjs* approve --sha256 SECRET*)', 'Bash(*learn.mjs* Approve*)', 'Bash(learn.mjs approve*)'];
+  const lookalikes = [
+    'Bash(*learn.mjs* approve --sha256 SECRET*)', 'Bash(*learn.mjs* Approve*)', 'Bash(learn.mjs approve*)',
+    'Bash(*learn.mjs* deploy*)', 'PowerShell(*learn.mjs* hunter two*)',
+  ];
   write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: [...learnCommandDenyRules(), ...lookalikes] } }));
-  assert.deepEqual(run(d).claudeDir.denyRuleList, [...learnCommandDenyRules(), null, null, null]);
+  assert.deepEqual(run(d).claudeDir.denyRuleList, [...learnCommandDenyRules(), ...lookalikes.map(() => null)]);
+  const full = JSON.stringify(run(d));
+  for (const word of ['SECRET', 'deploy', 'hunter two']) assert.equal(full.includes(word), false, `${word} never reaches the serialised harness`);
 });
 
 test('denyRuleList is [] when there is no settings file, and does not throw on malformed JSON', () => {

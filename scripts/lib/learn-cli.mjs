@@ -16,8 +16,8 @@ import { readFileSync } from 'node:fs';
 import { REROUTED_MEANS } from './gate-stats.mjs';
 import { ID_ERROR, isId, learningIn, learningStats, readState, standingFor, unrecordedReason } from './learn-lib.mjs';
 import { recordedPolicySha256 } from './learn-promote.mjs';
-import { readLedger, verifyLedger } from './ledger.mjs';
-import { buildLogReport, NOT_READ, noLogLine, readCountLines, recurrenceSection } from './log-report.mjs';
+import { isApprover, readLedger, verifyLedger } from './ledger.mjs';
+import { buildLogReport, NOT_CLAIMED, NOT_READ, noLogLine, readCountLines, recurrenceSection } from './log-report.mjs';
 import { readPolicy } from './policy.mjs';
 
 // What each subcommand takes: its positional arguments, the flags it owns
@@ -156,8 +156,14 @@ export const visible = value => showCodePoints(JSON.stringify(value) ?? 'null');
 export const asciiJson = value => JSON.stringify(value, null, 2).replace(/[^\n\x20-\x7e]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 const plain = v => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : visible(v));
+// A value read from a file is printed bare only when it matches the fixed
+// pattern its field allows; anything else is printed escaped.
 const VERDICTS = new Set(['pass', 'fail', 'not-checkable']);
+const ACTIONS = new Set(['observe', 'warn', 'block']);
 const verdict = v => (VERDICTS.has(v) ? v : visible(v));
+const action = v => (ACTIONS.has(v) ? v : visible(v));
+const hash = v => (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v) ? v : visible(v));
+const approver = v => (isApprover(v) ? v : visible(v));
 const time = v => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString() : visible(v));
 const ids = list => (list.length === 0 ? 'none' : list.map(id => (/^[A-Za-z0-9 ]+$/.test(id) ? id : visible(id))).join(', '));
 const indent = lines => lines.map(l => `  ${l}`);
@@ -202,8 +208,8 @@ export function candidatesView(root) {
 }
 
 export function renderCandidates(view) {
-  if (!view.exists) return noLogLine(view);
-  if (view.sessionsUnlistable) return ['CANDIDATES', ...indent([`location: ${view.location}`, `sessions: ${NOT_READ}`])].join('\n');
+  if (!view.exists) return [noLogLine(view), '', NOT_CLAIMED].join('\n');
+  if (view.sessionsUnlistable) return ['CANDIDATES', ...indent([`location: ${view.location}`, `sessions: ${NOT_READ}`]), '', NOT_CLAIMED].join('\n');
   const notes = [
     ...(view.ledgerIntact ? [] : ['the ledger cannot be read or its chain is broken, so a learning only the ledger still names is not seen here, and draft refuses until it is mended']),
     ...(view.learningsUnreadable.length > 0 ? [`learning files that do not read back, which may stand for any of these: ${ids(view.learningsUnreadable)}; draft refuses until each is mended or removed`] : []),
@@ -213,6 +219,8 @@ export function renderCandidates(view) {
     ...indent([...readCountLines(view), ...notes]),
     '',
     ...recurrenceSection(view, 'RECURRENCES NO LEARNING STANDS FOR (each may be drafted)'),
+    '',
+    NOT_CLAIMED,
   ].join('\n');
 }
 
@@ -246,7 +254,7 @@ const STATUS_AFTER_REPLAY = {
 };
 
 /** A replay's verdict and the status it left the learning `id` in. */
-const replayLines = (id, trial) => [`replay: ${trial.replay.verdict}: ${visible(trial.replay.reason)}`, STATUS_AFTER_REPLAY[trial.status](id)];
+const replayLines = (id, trial) => [`replay: ${verdict(trial.replay.verdict)}: ${visible(trial.replay.reason)}`, STATUS_AFTER_REPLAY[trial.status](id)];
 
 /** Each stage of a draft: the candidate stored, then the replay's verdict
  * and the status it left, or nothing more when the replay could not run. */
@@ -287,23 +295,24 @@ export function renderList(view) {
   out.push('LEARNINGS');
   if (view.learnings.length === 0) out.push('  none');
   for (const l of view.learnings) {
-    out.push(`  ${l.id}  ${l.status}  ${l.action}  sha256 ${l.sha256}${l.vouched ? '' : '  (the ledger does not vouch for this)'}`);
+    out.push(`  ${ids([l.id])}  ${l.status}  ${action(l.action)}  sha256 ${hash(l.sha256)}${l.vouched ? '' : '  (the ledger does not vouch for this)'}`);
     out.push(`      title: ${visible(l.title)}`);
     out.push(`      replay: ${l.replayVerdict === null ? 'not yet' : verdict(l.replayVerdict)}`);
   }
-  out.push('', 'LEDGER', ...indent([
-    `learnings and ledger entries that disagree: ${ids(view.ledgerMismatch)}`,
-    `learning files that do not read back as a learning: ${ids(view.unreadable)}`,
-    `approvals: ${view.approvals.length === 0 ? 'none' : ''}`.trimEnd(),
-    ...view.approvals.map(a => `  ${a.id} sha256 ${a.sha256} at ${a.action}, approved by ${a.approvedBy} at ${time(a.ts)}`),
-  ]));
-  out.push('', 'LOCAL GATES', ...indent(view.gatesToRepair === null
+  const localGates = view.gatesToRepair === null
     ? ['the local gate file is not a gate file, so its entries could not be checked; tick rewrites it while the ledger is intact']
     : [
-      `entries the next step that writes removes, replaces or restores: ${ids(view.gatesToRepair)}`,
-      `entries above observe that no approval grants: ${ids(view.unapprovedGates)}`,
-    ]));
-  out.push(`  enforcing learnings whose cited paths are all gone, in force until retired at a terminal: ${ids(view.citationsGone)}`);
+      `local gate entries the next step that writes removes, replaces or restores: ${ids(view.gatesToRepair)}`,
+      `local gate entries above observe that no approval grants: ${ids(view.unapprovedGates)}`,
+    ];
+  out.push('', 'LEDGER AND LOCAL GATES', ...indent([
+    `learnings and ledger entries that disagree: ${ids(view.ledgerMismatch)}`,
+    ...localGates,
+    `approvals: ${view.approvals.length === 0 ? 'none' : ''}`.trimEnd(),
+    ...view.approvals.map(a => `  ${ids([a.id])} sha256 ${hash(a.sha256)} at ${action(a.action)}, approved by ${approver(a.approvedBy)} at ${time(a.ts)}`),
+    `enforcing learnings whose cited paths are all gone, in force until retired at a terminal: ${ids(view.citationsGone)}`,
+    `learning files that do not read back as a learning: ${ids(view.unreadable)}`,
+  ]));
   return out.join('\n');
 }
 
@@ -430,7 +439,7 @@ function policyTickLine(view) {
 export function renderPolicy(view) {
   return ['POLICY', ...indent([
     policyFileLine(view),
-    view.recorded === 'set' ? `ledger: records sha256 ${view.recordedSha256} as the policy in force` : RECORDED_LINES[view.recorded],
+    view.recorded === 'set' ? `ledger: records sha256 ${hash(view.recordedSha256)} as the policy in force` : RECORDED_LINES[view.recorded],
     policyTickLine(view),
   ])].join('\n');
 }

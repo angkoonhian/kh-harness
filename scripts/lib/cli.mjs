@@ -364,11 +364,12 @@ const TERMINAL_ONLY_TEXT = `TERMINAL ONLY
 
   \`apply\` also installs deny rules for these subcommands, Bash and
   PowerShell patterns over \`learn.mjs\`, so Claude Code declines to run them.
-  That is a second barrier: a deny rule matches the command as Claude writes
-  it, not the same command reached another way, and then the terminal check
-  is the one that holds. A rule matches any command that names \`learn.mjs\`
-  and, after it, one of these subcommand words, so an unrelated command that
-  happens to, such as a commit message, is declined too.`;
+  That is a second barrier. Each rule matches the text \`learn.mjs\` followed,
+  after a space, by one of these subcommand words. A command that reaches the
+  script another way, through a package script or with the subcommand quoted,
+  is not caught by them and is stopped by the terminal check alone. And an
+  unrelated command that happens to hold that text, such as a commit
+  message, is declined too.`;
 
 export const LEARN_USAGE = `kh-harness learn — the learnings for one repository on this machine
 
