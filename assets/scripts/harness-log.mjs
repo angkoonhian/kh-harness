@@ -450,7 +450,8 @@ export function appendEvent(root, sessionId, event) {
   }
 }
 
-function parsedObject(line) {
+/** The JSON object `line` holds, or null when it does not parse as one. */
+export function parsedObject(line) {
   try {
     const value = JSON.parse(line);
     return isPlainObject(value) ? value : null;

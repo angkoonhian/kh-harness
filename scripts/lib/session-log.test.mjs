@@ -7,12 +7,12 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { canonicalJson, readEvents, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
-import { verifyIndex } from '../../assets/scripts/harness-seal.mjs';
+import { CONTENT_FIELDS, SEAL_IDLE_MS, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { stripAnsi } from '../../assets/scripts/harness-redact.mjs';
 import { LOGGED_EVENTS, toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -438,12 +438,61 @@ test('the hook never spawns a child process', () => {
   ]);
 });
 
+// Every field each handler writes that is kept when content expires, beside
+// the identity fields: an identifier, a path, a name from a fixed set, a
+// hash, a size or a flag. A field that is neither here nor in
+// `CONTENT_FIELDS` fails the test below until it is classified.
+const IDENTITY = ['type', 'session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
+const TOOL = ['tool', 'inputHash', 'inputBytes'];
+const KEPT_FIELDS = {
+  SessionStart: ['source', 'transcriptPath'],
+  UserPromptSubmit: [],
+  PreToolUse: TOOL,
+  PermissionRequest: TOOL,
+  PermissionDenied: TOOL,
+  PostToolUse: [...TOOL, 'status', 'outputBytes', 'durationMs'],
+  PostToolUseFailure: [...TOOL, 'status', 'outputBytes', 'durationMs'],
+  SubagentStart: ['agentType'],
+  SubagentStop: ['agentType', 'stopHookActive'],
+  Stop: ['stopHookActive'],
+  StopFailure: [],
+  InstructionsLoaded: ['path', 'reason', 'memoryType'],
+  PreCompact: ['trigger'],
+  PostCompact: ['trigger'],
+  PostModelSwitch: ['fromModel', 'toModel', 'source'],
+  SessionEnd: ['reason'],
+};
+
+/** A payload that answers every field the hook reads with `value`, so each
+ * handler writes every field it can. */
+const everyField = (name, value) =>
+  new Proxy({}, { get: (_, key) => (key === 'hook_event_name' ? name : typeof key === 'symbol' ? undefined : value) });
+
+test('every field the hook writes is classified as content or kept', () => {
+  assert.deepEqual(Object.keys(KEPT_FIELDS).sort(), [...LOGGED_EVENTS].sort());
+  for (const type of Object.keys(CONTENT_FIELDS)) assert.ok(LOGGED_EVENTS.includes(type), type);
+  for (const name of LOGGED_EVENTS) {
+    const written = new Set(['text', 7].flatMap(value => Object.keys(toLogEvent(everyField(name, value)))));
+    const content = CONTENT_FIELDS[name] ?? [];
+    const classified = [...IDENTITY, ...KEPT_FIELDS[name], ...content];
+    assert.deepEqual([...written].sort(), [...new Set(classified)].sort(), name);
+    for (const field of content) assert.equal(KEPT_FIELDS[name].includes(field), false, `${name}.${field} is both`);
+  }
+});
+
 const sessionsDir = root => join(repoDataDir(root), 'sessions');
+
+/** Makes a session's plain file look idle past the sealing threshold. */
+const idle = (root, sessionId) => {
+  const at = new Date(Date.now() - SEAL_IDLE_MS - 60_000);
+  utimesSync(join(sessionsDir(root), `s-${sessionId}.jsonl`), at, at);
+};
 
 test('a session start seals the other sessions, silently and without spawning', () => {
   const root = enabledProject();
   assertSilentSuccess(runHook(root, toolPayload('PostToolUse', 'earlier-1', { tool_response: 'ok' })));
   assertSilentSuccess(runHook(root, { session_id: 'earlier-1', hook_event_name: 'SessionEnd', reason: 'other' }));
+  idle(root, 'earlier-1');
   const trap = join(tempDir('hk-slog-trap-'), 'calls');
   assertSilentSuccess(runHook(root, { session_id: 'next-1', hook_event_name: 'SessionStart', source: 'startup' }, {
     nodeArgs: ['--require', FORBID_SPAWN], env: { KH_SPAWN_TRAP: trap },
@@ -453,12 +502,13 @@ test('a session start seals the other sessions, silently and without spawning', 
   assert.deepEqual(events(root, 'earlier-1').map(e => e.type), ['PostToolUse', 'SessionEnd']);
   const index = readFileSync(join(repoDataDir(root), 'index.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
   assert.deepEqual(index.map(l => l.sessionId), ['earlier-1']);
-  assert.deepEqual(verifyIndex(root), { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [] });
+  assert.deepEqual(verifyIndex(root), { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [] });
 });
 
 test('with the log disabled a session start seals nothing', () => {
   const root = enabledProject();
   assertSilentSuccess(runHook(root, toolPayload('PostToolUse', 'off-earlier', { tool_response: 'ok' })));
+  idle(root, 'off-earlier');
   setEnabled(root, false);
   assertSilentSuccess(runHook(root, { session_id: 'off-next', hook_event_name: 'SessionStart', source: 'startup' }));
   assert.deepEqual(readdirSync(sessionsDir(root)), ['s-off-earlier.jsonl']);
@@ -500,6 +550,7 @@ test('only a session start loads the sealing module', () => {
   ];
   for (const payload of others) assertSilentSuccess(runInstalled(hook, root, payload));
   assert.equal(existsSync(loads), false);
+  idle(root, 'lazy-1');
 
   assertSilentSuccess(runInstalled(hook, root, { session_id: 'lazy-2', hook_event_name: 'SessionStart', source: 'startup' }));
   assert.equal(readFileSync(loads, 'utf8'), 'loaded\n');
@@ -510,6 +561,7 @@ test('a session start with the sealing module missing records the event and does
   const root = enabledProject();
   const hook = installedHook();
   assertSilentSuccess(runInstalled(hook, root, toolPayload('PostToolUse', 'nomod-1', { tool_response: 'ok' })));
+  idle(root, 'nomod-1');
   assertSilentSuccess(runInstalled(hook, root, { session_id: 'nomod-2', hook_event_name: 'SessionStart', source: 'startup' }));
   assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-nomod-1.jsonl', 's-nomod-2.jsonl']);
   assert.deepEqual(events(root, 'nomod-2').map(e => e.type), ['SessionStart', 'harness']);

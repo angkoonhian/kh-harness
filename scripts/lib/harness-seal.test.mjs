@@ -4,15 +4,17 @@
 // writes the real `~/.claude/kh-harness`.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
 import { appendEvent, readEvents, repoDataDir, sessionFileName, storeBlob } from '../../assets/scripts/harness-log.mjs';
-import { applyRetention, CLAIMED_SUFFIX, SEAL_TEMP_SUFFIX, sealClosedSessions, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
+import {
+  applyRetention, CLAIMED_SUFFIX, SEAL_IDLE_MS, SEAL_TEMP_SUFFIX, sealClosedSessions, verifyIndex,
+} from '../../assets/scripts/harness-seal.mjs';
 
 const HARNESS_SEAL_URL = new URL('../../assets/scripts/harness-seal.mjs', import.meta.url).href;
 
@@ -37,12 +39,8 @@ const writeConfig = (root, config) => {
   writeFileSync(join(repoDataDir(root), 'config.json'), JSON.stringify(config));
 };
 
-test('the claimed and temporary file suffixes are exported for later readers', () => {
-  assert.equal(`${sessionFileName('x')}${CLAIMED_SUFFIX}`, 's-x.jsonl.sealing');
-  assert.equal(`${sessionFileName('x')}${SEAL_TEMP_SUFFIX}`, 's-x.jsonl.gz.tmp');
-});
-
 const DAY_MS = 86_400_000;
+const MINUTE_MS = 60_000;
 const dataFile = (root, name) => join(repoDataDir(root), name);
 const indexLines = root => readFileSync(dataFile(root, 'index.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
 const rawIndexLines = root => readFileSync(dataFile(root, 'index.jsonl'), 'utf8').split('\n').filter(Boolean);
@@ -52,6 +50,19 @@ const tempFile = (root, sessionId) => `${sessionFile(root, sessionId)}${SEAL_TEM
 const eventsOf = (root, sessionId) => readEvents(root, sessionId).events;
 const sha256OfBytes = bytes => createHash('sha256').update(bytes).digest('hex');
 
+/** A clock reading by which every file written so far has been idle past
+ * the sealing threshold. */
+const idleNow = () => Date.now() + SEAL_IDLE_MS + MINUTE_MS;
+
+/** `sealClosedSessions` at `idleNow()` unless the test says otherwise. */
+const seal = (root, options = {}) => sealClosedSessions(root, { now: idleNow(), ...options });
+
+/** Sets a file's modification time to `msAgo` before the real clock. */
+const touchAgo = (path, msAgo) => {
+  const at = new Date(Date.now() - msAgo);
+  utimesSync(path, at, at);
+};
+
 /** A session of `count` tool results, each with input and output. */
 function writeSession(root, sessionId, count = 2) {
   for (let i = 0; i < count; i++) {
@@ -60,7 +71,14 @@ function writeSession(root, sessionId, count = 2) {
   }
 }
 
-const INTACT = { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [] };
+const INTACT = { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [] };
+const SWEPT = { skipped: false, reason: null };
+
+test('the claimed and temporary file suffixes are exported for later readers', () => {
+  assert.equal(`${sessionFileName('x')}${CLAIMED_SUFFIX}`, 's-x.jsonl.sealing');
+  assert.equal(`${sessionFileName('x')}${SEAL_TEMP_SUFFIX}`, 's-x.jsonl.gz.tmp');
+  assert.equal(SEAL_IDLE_MS, 10 * MINUTE_MS);
+});
 
 test('a closed session is compressed and indexed', () => {
   const root = tempDir('hk-log-seal-');
@@ -69,7 +87,7 @@ test('a closed session is compressed and indexed', () => {
   const plainBytes = readFileSync(sessionFile(root, 'closed-1'));
   const before = eventsOf(root, 'closed-1');
 
-  assert.deepEqual(sealClosedSessions(root, { currentSessionId: 'current-1' }), { sealed: ['closed-1'] });
+  assert.deepEqual(seal(root, { currentSessionId: 'current-1' }), { sealed: ['closed-1'] });
 
   assert.equal(existsSync(sessionFile(root, 'closed-1')), false);
   assert.deepEqual(gunzipSync(readFileSync(sealedFile(root, 'closed-1'))), plainBytes);
@@ -89,14 +107,33 @@ test('a closed session is compressed and indexed', () => {
     prev: null,
   });
   assert.deepEqual(verifyIndex(root), INTACT);
-  assert.deepEqual(sealClosedSessions(root, { currentSessionId: 'current-1' }), { sealed: [] }, 'a sealed session is not sealed again');
+  assert.deepEqual(seal(root, { currentSessionId: 'current-1' }), { sealed: [] }, 'a sealed session is not sealed again');
   assert.equal(indexLines(root).length, 1);
+});
+
+test('a session written to two minutes ago is left unsealed', () => {
+  const root = tempDir('hk-log-recent-');
+  writeSession(root, 'recent');
+  touchAgo(sessionFile(root, 'recent'), 2 * MINUTE_MS);
+  assert.deepEqual(sealClosedSessions(root, {}), { sealed: [] });
+  assert.equal(existsSync(sessionFile(root, 'recent')), true);
+  assert.equal(existsSync(dataFile(root, 'index.jsonl')), false);
+});
+
+test('the same session is sealed once it has been idle past the threshold', () => {
+  const root = tempDir('hk-log-idle-');
+  writeSession(root, 'idle');
+  touchAgo(sessionFile(root, 'idle'), 2 * MINUTE_MS);
+  assert.deepEqual(sealClosedSessions(root, {}), { sealed: [] });
+  touchAgo(sessionFile(root, 'idle'), SEAL_IDLE_MS + MINUTE_MS);
+  assert.deepEqual(sealClosedSessions(root, {}), { sealed: ['idle'] });
+  assert.deepEqual(verifyIndex(root), INTACT);
 });
 
 test('each index line chains to the one before it', () => {
   const root = tempDir('hk-log-chain-');
   for (const id of ['a', 'b', 'c']) writeSession(root, id);
-  sealClosedSessions(root, {});
+  seal(root);
   const raw = rawIndexLines(root);
   assert.equal(raw.length, 3);
   assert.equal(JSON.parse(raw[0]).prev, null);
@@ -108,7 +145,7 @@ test('a session that fetched outside content is indexed as external', () => {
   writeSession(root, 'inside');
   writeSession(root, 'outside');
   appendEvent(root, 'outside', { type: 'external_content', tool: 'WebFetch' });
-  sealClosedSessions(root, {});
+  seal(root);
   assert.deepEqual(Object.fromEntries(indexLines(root).map(l => [l.sessionId, l.external])), { inside: false, outside: true });
 });
 
@@ -116,16 +153,16 @@ test('editing a sealed session is reported as altered', () => {
   const root = tempDir('hk-log-altered-');
   writeSession(root, 'kept');
   writeSession(root, 'edited');
-  sealClosedSessions(root, {});
+  seal(root);
   const content = gunzipSync(readFileSync(sealedFile(root, 'edited'))).toString('utf8');
   writeFileSync(sealedFile(root, 'edited'), gzipSync(content.replace('"c0"', '"c9"')));
-  assert.deepEqual(verifyIndex(root), { intact: false, brokenAt: null, sessionsMissing: [], sessionsAltered: ['edited'] });
+  assert.deepEqual(verifyIndex(root), { ...INTACT, intact: false, sessionsAltered: ['edited'] });
 
   rmSync(sealedFile(root, 'kept'));
   assert.deepEqual(verifyIndex(root).sessionsMissing, ['kept']);
 
   appendEvent(root, 'edited', { type: 'Stop' });
-  assert.deepEqual(sealClosedSessions(root, {}), { sealed: [] }, 'an altered session is not sealed over');
+  assert.deepEqual(seal(root), { sealed: [] }, 'an altered session is not sealed over');
   assert.deepEqual(verifyIndex(root).sessionsAltered, ['edited']);
   assert.deepEqual(eventsOf(root, 'edited').map(e => e.type), ['PostToolUse', 'PostToolUse', 'Stop'], 'its unsealed events stay readable');
 });
@@ -135,13 +172,13 @@ test('a sealed file with no index line is reported as altered', () => {
   writeSession(root, 'planted');
   writeFileSync(sealedFile(root, 'planted'), gzipSync(readFileSync(sessionFile(root, 'planted'))));
   rmSync(sessionFile(root, 'planted'));
-  assert.deepEqual(verifyIndex(root), { intact: false, brokenAt: null, sessionsMissing: [], sessionsAltered: ['planted'] });
+  assert.deepEqual(verifyIndex(root), { ...INTACT, intact: false, sessionsAltered: ['planted'] });
 });
 
 test('deleting an index line is reported as a break at that position', () => {
   const root = tempDir('hk-log-break-');
   for (const id of ['a', 'b', 'c', 'd']) writeSession(root, id);
-  sealClosedSessions(root, {});
+  seal(root);
   const raw = rawIndexLines(root);
   writeFileSync(dataFile(root, 'index.jsonl'), [raw[0], raw[2], raw[3]].map(l => `${l}\n`).join(''));
   const result = verifyIndex(root);
@@ -156,7 +193,7 @@ test('deleting an index line is reported as a break at that position', () => {
 test('an index line that does not parse is a break at that position and never throws', () => {
   const root = tempDir('hk-log-garbled-');
   for (const id of ['a', 'b', 'c']) writeSession(root, id);
-  sealClosedSessions(root, {});
+  seal(root);
   const raw = rawIndexLines(root);
   for (const garbled of ['{"sessionId": trunc', '[]', JSON.stringify({ ...JSON.parse(raw[1]), extra: 1 })]) {
     writeFileSync(dataFile(root, 'index.jsonl'), [raw[0], garbled, raw[2]].map(l => `${l}\n`).join(''));
@@ -168,7 +205,11 @@ test('an index line that does not parse is a break at that position and never th
 test('two simultaneous sealers index each session once', async () => {
   const root = tempDir('hk-log-race-');
   const ids = Array.from({ length: 12 }, (_, i) => `race-${String(i).padStart(2, '0')}`);
-  for (const id of ids) writeSession(root, id, 5);
+  for (const id of ids) {
+    writeSession(root, id, 5);
+    touchAgo(sessionFile(root, id), SEAL_IDLE_MS + MINUTE_MS);
+  }
+  // The real clock, so the lock each sealer takes is as young as it is.
   const script = `
     import { sealClosedSessions } from ${JSON.stringify(HARNESS_SEAL_URL)};
     process.stdout.write(JSON.stringify(sealClosedSessions(process.argv[1], {}).sealed));`;
@@ -191,28 +232,41 @@ test('two simultaneous sealers index each session once', async () => {
   assert.equal(existsSync(dataFile(root, 'index.jsonl.lock')), false, 'the lock is released');
 });
 
-test('a lock held by a live process means skip, and one left by an exited process is broken', () => {
-  const root = tempDir('hk-log-lock-');
+/** A repository with one idle session and the index lock held by `owner`. */
+function lockedRepo(prefix, owner) {
+  const root = tempDir(prefix);
   writeSession(root, 'locked');
+  touchAgo(sessionFile(root, 'locked'), SEAL_IDLE_MS + MINUTE_MS);
   const lock = dataFile(root, 'index.jsonl.lock');
-  const held = JSON.stringify({ pid: process.pid, token: 'other' });
-  writeFileSync(lock, held);
-  assert.deepEqual(sealClosedSessions(root, {}), { sealed: [] });
-  assert.deepEqual(applyRetention(root, { now: Date.now() + 365 * DAY_MS }), { contentRemoved: 0 });
-  assert.equal(readFileSync(lock, 'utf8'), held, 'only its owner releases a lock');
+  writeFileSync(lock, owner);
+  return { root, lock };
+}
 
-  const exited = spawnSync(process.execPath, ['-e', '0']).pid;
-  writeFileSync(lock, JSON.stringify({ pid: exited, token: 'gone' }));
-  assert.deepEqual(sealClosedSessions(root, {}), { sealed: ['locked'] });
+test('a lock held by a live process means skip, and one whose owner has exited is broken', () => {
+  const owner = JSON.stringify({ pid: 4242, token: 'other' });
+  const { root, lock } = lockedRepo('hk-log-lock-', owner);
+  const alive = pid => pid === 4242;
+  assert.deepEqual(sealClosedSessions(root, { isAlive: alive }), { sealed: [] });
+  const retention = applyRetention(root, { isAlive: alive });
+  assert.deepEqual(retention, { contentRemoved: 0, contentUnverifiable: 0, blobSweep: { skipped: true, reason: 'another process holds the index lock' } });
+  assert.equal(readFileSync(lock, 'utf8'), owner, 'only its owner releases a lock');
+
+  assert.deepEqual(sealClosedSessions(root, { isAlive: () => false }), { sealed: ['locked'] });
+  assert.equal(existsSync(lock), false);
+});
+
+test('a lock ten minutes old is broken whatever its owner', () => {
+  const { root, lock } = lockedRepo('hk-log-lock-age-', JSON.stringify({ pid: 4242, token: 'stuck' }));
+  const alive = () => true;
+  assert.deepEqual(sealClosedSessions(root, { now: Date.now() + 9 * MINUTE_MS, isAlive: alive }), { sealed: [] });
+  assert.deepEqual(sealClosedSessions(root, { now: Date.now() + 11 * MINUTE_MS, isAlive: alive }), { sealed: ['locked'] });
   assert.equal(existsSync(lock), false);
 });
 
 test('a lock with no owner is broken only once it is stale', () => {
-  const root = tempDir('hk-log-ownerless-');
-  writeSession(root, 'waiting');
-  writeFileSync(dataFile(root, 'index.jsonl.lock'), '');
+  const { root } = lockedRepo('hk-log-ownerless-', '');
   assert.deepEqual(sealClosedSessions(root, {}), { sealed: [] });
-  assert.deepEqual(sealClosedSessions(root, { now: Date.now() + 60_000 }), { sealed: ['waiting'] });
+  assert.deepEqual(sealClosedSessions(root, { now: Date.now() + MINUTE_MS }), { sealed: ['locked'] });
 });
 
 test('sealing stops when the budget is spent and resumes on the next run', () => {
@@ -221,10 +275,10 @@ test('sealing stops when the budget is spent and resumes on the next run', () =>
   for (const id of ids) writeSession(root, id);
   let t = 0;
   const clock = () => (t += 10);
-  const first = sealClosedSessions(root, { budgetMs: 25, clock }).sealed;
+  const first = seal(root, { budgetMs: 25, clock }).sealed;
   assert.ok(first.length > 0 && first.length < ids.length, `sealed ${first.length} of ${ids.length}`);
-  assert.deepEqual(sealClosedSessions(root, { budgetMs: 0 }), { sealed: [] }, 'no budget, no work');
-  const second = sealClosedSessions(root, {}).sealed;
+  assert.deepEqual(seal(root, { budgetMs: 0 }), { sealed: [] }, 'no budget, no work');
+  const second = seal(root).sealed;
   assert.deepEqual([...first, ...second], ids);
   assert.deepEqual(verifyIndex(root), INTACT);
 });
@@ -232,12 +286,12 @@ test('sealing stops when the budget is spent and resumes on the next run', () =>
 test('an event that arrives after sealing is sealed on the next run and no event is read twice', () => {
   const root = tempDir('hk-log-late-');
   writeSession(root, 'late', 2);
-  sealClosedSessions(root, {});
+  seal(root);
   appendEvent(root, 'late', { type: 'SessionEnd', reason: 'other' });
   assert.deepEqual(eventsOf(root, 'late').map(e => e.type), ['PostToolUse', 'PostToolUse', 'SessionEnd']);
   assert.deepEqual(verifyIndex(root), INTACT, 'events not yet sealed are not a break');
 
-  assert.deepEqual(sealClosedSessions(root, {}), { sealed: ['late'] });
+  assert.deepEqual(seal(root), { sealed: ['late'] });
   assert.equal(existsSync(sessionFile(root, 'late')), false);
   assert.deepEqual(eventsOf(root, 'late').map(e => e.type), ['PostToolUse', 'PostToolUse', 'SessionEnd']);
   assert.deepEqual(indexLines(root).map(l => [l.sessionId, l.events]), [['late', 2], ['late', 3]]);
@@ -251,9 +305,9 @@ test('an event appended while its session is being sealed starts a new plain fil
   // creates a new plain file rather than one the sealer is about to remove.
   renameSync(sessionFile(root, 'busy'), claimedFile(root, 'busy'));
   appendEvent(root, 'busy', { type: 'Stop' });
-  assert.deepEqual(sealClosedSessions(root, {}), { sealed: ['busy'] });
+  assert.deepEqual(seal(root), { sealed: ['busy'] });
   assert.deepEqual(eventsOf(root, 'busy').map(e => e.type), ['PostToolUse', 'PostToolUse', 'Stop']);
-  assert.deepEqual(sealClosedSessions(root, {}), { sealed: ['busy'] });
+  assert.deepEqual(seal(root), { sealed: ['busy'] });
   assert.deepEqual(eventsOf(root, 'busy').map(e => e.type), ['PostToolUse', 'PostToolUse', 'Stop']);
   assert.deepEqual(indexLines(root).map(l => l.events), [2, 3]);
   assert.deepEqual(verifyIndex(root), INTACT);
@@ -262,11 +316,11 @@ test('an event appended while its session is being sealed starts a new plain fil
 test('a crash between writing the compressed file and removing the plain one is recovered without duplicating events', () => {
   const root = tempDir('hk-log-crash-');
   writeSession(root, 'crash', 2);
-  sealClosedSessions(root, {});
+  seal(root);
   const firstSeal = readFileSync(sealedFile(root, 'crash'));
   appendEvent(root, 'crash', { type: 'SessionEnd', reason: 'other' });
   const late = readFileSync(sessionFile(root, 'crash'));
-  sealClosedSessions(root, {});
+  seal(root);
   // The state a crash leaves once the continuation's index line is appended:
   // the whole content is in the temporary file, the claimed events are still
   // on disk and the earlier sealed file is still in place.
@@ -274,8 +328,9 @@ test('a crash between writing the compressed file and removing the plain one is 
   writeFileSync(sealedFile(root, 'crash'), firstSeal);
   writeFileSync(claimedFile(root, 'crash'), late);
   assert.deepEqual(eventsOf(root, 'crash').map(e => e.type), ['PostToolUse', 'PostToolUse'], 'no state shows an event twice');
+  assert.deepEqual(verifyIndex(root), { ...INTACT, sessionsPending: ['crash'] });
 
-  assert.deepEqual(sealClosedSessions(root, {}), { sealed: [] }, 'the interrupted seal is finished, not repeated');
+  assert.deepEqual(seal(root), { sealed: [] }, 'the interrupted seal is finished, not repeated');
   assert.deepEqual(eventsOf(root, 'crash').map(e => e.type), ['PostToolUse', 'PostToolUse', 'SessionEnd']);
   assert.equal(existsSync(claimedFile(root, 'crash')), false);
   assert.equal(existsSync(tempFile(root, 'crash')), false);
@@ -288,7 +343,7 @@ test('a crash before the index line was written leaves the session to be sealed 
   writeSession(root, 'early', 2);
   renameSync(sessionFile(root, 'early'), claimedFile(root, 'early'));
   writeFileSync(tempFile(root, 'early'), gzipSync('half-written'));
-  assert.deepEqual(sealClosedSessions(root, {}), { sealed: ['early'] });
+  assert.deepEqual(seal(root), { sealed: ['early'] });
   assert.deepEqual(eventsOf(root, 'early').map(e => e.output), ['o0', 'o1']);
   assert.equal(existsSync(tempFile(root, 'early')), false);
   assert.deepEqual(verifyIndex(root), INTACT);
@@ -303,13 +358,13 @@ test('content older than the retention period is removed and structure kept', ()
   const [, withBlob] = eventsOf(root, 'old');
   assert.equal(withBlob.output.truncated, true);
   assert.equal(existsSync(blobFile(root, withBlob.output.blob)), true);
-  sealClosedSessions(root, {});
+  seal(root);
   assert.deepEqual(indexLines(root)[0].blobs, [withBlob.output.blob]);
 
-  assert.deepEqual(applyRetention(root, { now: Date.now() + 6 * DAY_MS }), { contentRemoved: 0 }, 'content inside the period is kept');
+  assert.deepEqual(applyRetention(root, { now: Date.now() + 6 * DAY_MS }), { contentRemoved: 0, contentUnverifiable: 0, blobSweep: SWEPT }, 'content inside the period is kept');
   assert.equal(eventsOf(root, 'old')[0].prompt, 'fix the parser');
 
-  assert.deepEqual(applyRetention(root, { now: Date.now() + 8 * DAY_MS }), { contentRemoved: 1 });
+  assert.deepEqual(applyRetention(root, { now: Date.now() + 8 * DAY_MS }), { contentRemoved: 1, contentUnverifiable: 0, blobSweep: SWEPT });
   const [prompt, tool, stop] = eventsOf(root, 'old');
   assert.equal(Object.hasOwn(prompt, 'prompt'), false);
   assert.equal(Object.hasOwn(tool, 'input'), false);
@@ -320,14 +375,49 @@ test('content older than the retention period is removed and structure kept', ()
   assert.equal(tool.ts, withBlob.ts);
   assert.equal(Object.hasOwn(stop, 'contentExpired'), false, 'an event that held no content is unchanged');
   assert.equal(existsSync(blobFile(root, withBlob.output.blob)), false, 'a blob only expired content referenced is removed');
-  assert.deepEqual(applyRetention(root, { now: Date.now() + 9 * DAY_MS }), { contentRemoved: 0 }, 'expired content is not expired again');
+  assert.equal(applyRetention(root, { now: Date.now() + 9 * DAY_MS }).contentRemoved, 0, 'expired content is not expired again');
+});
+
+test('retention removes every free-text field the hook writes and keeps the rest', () => {
+  const root = tempDir('hk-log-retention-text-');
+  appendEvent(root, 'texts', { type: 'PostToolUseFailure', tool: 'Bash', status: 'error', firstErrorLine: 'Exit code 1', input: { command: 'x' }, output: 'Exit code 1' });
+  appendEvent(root, 'texts', { type: 'PermissionDenied', tool: 'Bash', reason: 'the classifier refused it' });
+  appendEvent(root, 'texts', { type: 'StopFailure', error: 'rate_limit', errorDetails: 'try again in 5 minutes' });
+  appendEvent(root, 'texts', { type: 'SessionEnd', reason: 'other' });
+  seal(root);
+  assert.equal(applyRetention(root, { now: Date.now() + 91 * DAY_MS }).contentRemoved, 1);
+  const [failure, denied, stopFailure, end] = eventsOf(root, 'texts');
+  assert.deepEqual([failure.tool, failure.status, failure.contentExpired], ['Bash', 'error', true]);
+  for (const f of ['firstErrorLine', 'input', 'output']) assert.equal(Object.hasOwn(failure, f), false, f);
+  assert.deepEqual([denied.tool, Object.hasOwn(denied, 'reason')], ['Bash', false]);
+  assert.deepEqual([Object.hasOwn(stopFailure, 'error'), Object.hasOwn(stopFailure, 'errorDetails')], [false, false]);
+  assert.equal(end.reason, 'other', 'a session end reason is one of a fixed set, not free text');
+});
+
+test('content that cannot be verified is left in place and counted', () => {
+  const root = tempDir('hk-log-retention-unverifiable-');
+  writeSession(root, 'edited');
+  writeSession(root, 'fine');
+  seal(root);
+  const content = gunzipSync(readFileSync(sealedFile(root, 'edited'))).toString('utf8');
+  writeFileSync(sealedFile(root, 'edited'), gzipSync(content.replace('"c0"', '"c9"')));
+  writeSession(root, 'planted');
+  writeFileSync(sealedFile(root, 'planted'), gzipSync(readFileSync(sessionFile(root, 'planted'))));
+  rmSync(sessionFile(root, 'planted'));
+
+  const result = applyRetention(root, { now: Date.now() + 91 * DAY_MS });
+  assert.equal(result.contentRemoved, 1);
+  assert.equal(result.contentUnverifiable, 2);
+  assert.equal(eventsOf(root, 'edited')[0].input.command, 'c9', 'unverified content is not rewritten');
+  assert.equal(eventsOf(root, 'planted')[0].input.command, 'c0');
+  assert.equal(applyRetention(root, { now: Date.now() + 5 * DAY_MS }).contentUnverifiable, 0, 'only sessions past the period are counted');
 });
 
 test('a retention rewrite is itself recorded so the index stays intact', () => {
   const root = tempDir('hk-log-retention-index-');
   writeSession(root, 'aged', 2);
   writeSession(root, 'other', 1);
-  sealClosedSessions(root, {});
+  seal(root);
   applyRetention(root, { now: Date.now() + 91 * DAY_MS });
   const lines = indexLines(root);
   assert.deepEqual(lines.map(l => [l.sessionId, l.contentExpired === true]), [['aged', false], ['other', false], ['aged', true], ['other', true]]);
@@ -338,17 +428,17 @@ test('a retention rewrite is itself recorded so the index stays intact', () => {
   assert.deepEqual(verifyIndex(root), INTACT);
 });
 
-test('a crash during a retention rewrite is finished on the next run', () => {
+test('a crash during a retention rewrite is pending and finished on the next run', () => {
   const root = tempDir('hk-log-retention-crash-');
   writeSession(root, 'aged', 2);
-  sealClosedSessions(root, {});
+  seal(root);
   const original = readFileSync(sealedFile(root, 'aged'));
   applyRetention(root, { now: Date.now() + 91 * DAY_MS });
   // The state a crash leaves once the rewrite's index line is appended.
   renameSync(sealedFile(root, 'aged'), tempFile(root, 'aged'));
   writeFileSync(sealedFile(root, 'aged'), original);
-  assert.deepEqual(verifyIndex(root).sessionsAltered, ['aged']);
-  sealClosedSessions(root, {});
+  assert.deepEqual(verifyIndex(root), { ...INTACT, sessionsPending: ['aged'] });
+  seal(root);
   assert.deepEqual(verifyIndex(root), INTACT);
   assert.equal(Object.hasOwn(eventsOf(root, 'aged')[0], 'output'), false);
 });
@@ -361,13 +451,35 @@ test('a blob no event references is removed once it is a day old', () => {
   const orphan = storeBlob(root, 'z'.repeat(4096)).sha256;
   writeFileSync(join(repoDataDir(root), 'blobs', `${orphan}.gz.123.abc.tmp`), '');
 
-  applyRetention(root, {});
+  assert.deepEqual(applyRetention(root, {}).blobSweep, SWEPT);
   assert.equal(existsSync(blobFile(root, orphan)), true, 'a blob under a day old may belong to an event still being written');
 
   applyRetention(root, { now: Date.now() + 2 * DAY_MS });
   assert.deepEqual(readdirSync(join(repoDataDir(root), 'blobs')), [`${kept}.gz`], 'an unsealed session\'s blob is kept');
 
-  sealClosedSessions(root, {});
+  seal(root);
   applyRetention(root, { now: Date.now() + 2 * DAY_MS });
   assert.deepEqual(readdirSync(join(repoDataDir(root), 'blobs')), [`${kept}.gz`], 'a sealed session\'s blob is kept');
+});
+
+test('a lost index line does not let the sweep remove a blob sealed content still references', () => {
+  const root = tempDir('hk-log-sweep-guard-');
+  writeConfig(root, { inlineCapBytes: 1024 });
+  writeSession(root, 'two-seals', 1);
+  seal(root);
+  appendEvent(root, 'two-seals', { type: 'PostToolUse', output: 'b'.repeat(4096) });
+  const blob = eventsOf(root, 'two-seals')[1].output.blob;
+  seal(root);
+  const raw = rawIndexLines(root);
+  assert.deepEqual(indexLines(root).map(l => l.blobs), [[], [blob]]);
+  writeFileSync(dataFile(root, 'index.jsonl'), `${raw[0]}\n`);
+  touchAgo(blobFile(root, blob), 2 * DAY_MS);
+
+  const result = applyRetention(root, {});
+  assert.deepEqual(result.blobSweep, { skipped: true, reason: 'sealed sessions do not match the index (altered: two-seals)' });
+  assert.equal(existsSync(blobFile(root, blob)), true);
+
+  writeFileSync(dataFile(root, 'index.jsonl'), `${raw[0]}\n{"torn\n${raw[1]}\n`);
+  assert.deepEqual(applyRetention(root, {}).blobSweep, { skipped: true, reason: 'the index chain is broken at line 2' });
+  assert.equal(existsSync(blobFile(root, blob)), true);
 });
