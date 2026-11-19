@@ -304,7 +304,7 @@ function sessionLogProposal({ kitVersion, harness, manifest, root }) {
   }))];
 }
 
-const TOOL_GATE_STEP = 30;
+export const TOOL_GATE_STEP = 30;
 
 /**
  * The deny rules for the kit's protected surface: the whole `.claude/scripts/`

@@ -11,13 +11,137 @@
 //      unrecorded — a partially applied repository that is accurately
 //      described in its manifest is recoverable; one that is not, is not.
 //   4. There is no --force. Not a flag, not an option, not a code path.
+import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { classify, emptyManifest, sha256 } from './manifest.mjs';
+import { defaultBranches } from './git-info.mjs';
+import { classify, emptyManifest, MANIFEST_PATH, sha256 } from './manifest.mjs';
+import { DETECT_REPORT_PATH } from './report.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
 import { readJsonFile, stripBom, UTF8_BOM } from './read-json.mjs';
 
 const SETTINGS_PATH = '.claude/settings.json';
+
+/**
+ * Paths the dirty-tree gate must not hold against the user: the tool's own
+ * prior writes, per the manifest's own record of them — never re-derived
+ * from the filesystem, which is exactly what a forged or stale record could
+ * fool. `.claude/settings.json` counts only when the manifest actually
+ * recorded a patch there; an untouched settings.json dirtied by something
+ * else is not "ours" merely because it shares that path. The manifest file
+ * itself is always ours: it is this tool's own bookkeeping, and a run that
+ * updates it (new `installedAt`, a new file entry) is expected to leave it
+ * modified if the user has ever committed it. So is `detect`'s report
+ * (audit Tier 4, finding 21): its `generatedAt` changes on every run, and
+ * a user who commits it was refused on every apply that followed a detect.
+ * A corrupt manifest cannot be trusted to name what is ours, so nothing is
+ * excused then and the gate is at its strictest; a missing one (a first
+ * run) still excuses the fixed paths.
+ */
+function ownedByUs(manifestResult) {
+  if (manifestResult.state === 'corrupt') return new Set();
+  const owned = new Set([MANIFEST_PATH, DETECT_REPORT_PATH]);
+  const manifest = manifestResult.manifest;
+  for (const f of manifest?.files ?? []) owned.add(f.path);
+  if ((manifest?.settingsPatches ?? []).length > 0) owned.add(SETTINGS_PATH);
+  return owned;
+}
+
+/**
+ * True only for changes to tracked files NOT already accounted for by
+ * `ignorePaths` — new, untracked files are not this tool's problem either
+ * way. Without `ignorePaths`, this tool's own first `apply --yes` dirties
+ * any tracked `.claude/settings.json` it patches, so a plain second run
+ * refused with no recourse but `--allow-dirty`, which waives the gate for
+ * every OTHER uncommitted change too. The gate still exists, and still
+ * refuses, for anything genuinely not ours.
+ *
+ * `-z` for the same reason `scan.mjs`'s `gitPaths` uses it: git's quoted
+ * output escapes non-ASCII bytes in octal, which made `.claude/caf\303\251.md`
+ * compare unequal to the owned entry for the same file, so this tool's OWN
+ * prior write looked like the user's uncommitted work.
+ *
+ * Porcelain v1 in `-z` mode: each record is `XY<space><path>`, NUL-
+ * terminated, and a rename or copy emits the NEW path in its own record
+ * followed immediately by the ORIGINAL path as a separate record — there is
+ * no ` -> ` form here. The status belongs to the pair, and the path that
+ * matters is the new one, so the original-path record is consumed and never
+ * tested.
+ *
+ * Returns `{ dirty, error }`. Audit Tier 1, finding 3: a failed `git status`
+ * used to read as "clean", which waived the gate on exactly the repositories
+ * where git could not be trusted to answer. An error is the caller's to
+ * refuse on.
+ */
+function trackedChanges(root, ignorePaths) {
+  let out;
+  try {
+    out = execFileSync('git', ['-C', root, 'status', '--porcelain', '-z', '--untracked-files=no'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
+    return { dirty: false, error: stderr || (err?.code === 'ENOENT' ? 'git is not installed or not on PATH' : 'git status failed') };
+  }
+  const records = out.split('\0');
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (!record) continue;
+    const status = record.slice(0, 2);
+    const path = record.slice(3);
+    // Rename/copy: skip the original-path record that follows this one.
+    if (status.includes('R') || status.includes('C')) i += 1;
+    if (!ignorePaths.has(path.split('\\').join('/'))) return { dirty: true, error: null };
+  }
+  return { dirty: false, error: null };
+}
+
+/**
+ * The two refusals that protect `git diff` as the record of what this tool
+ * did — the default branch and a dirty tree — as the sentences a write
+ * prints before exiting 3, or, on a dry run, prints as notes after the
+ * diffs. A dry run writes nothing, so there is nothing to refuse (audit
+ * finding 5). Every command that writes into the repository asks this one
+ * function, so the commands cannot disagree. `git` is `gitInfo(root)`,
+ * `manifestResult` is `readManifestResult(root)`, and `verb` names the
+ * command in the refusal ("apply", "land").
+ *
+ * Audit Tier 1, finding 3, the three bypasses this closes: a repository with
+ * no commits (an unborn `main` is `main` — `gitInfo` reads the symbolic
+ * ref, not a commit); a default branch not named `main` or `master`
+ * (`defaultBranches` adds `init.defaultBranch` and `origin/HEAD`); and a git
+ * that cannot answer at all (not installed, "dubious ownership"), which used
+ * to read as "not a repository" and waive both gates — it now refuses unless
+ * BOTH waivers are given, because neither gate could run.
+ */
+export function writeGateRefusals({ root, git, manifestResult, allowDefaultBranch, allowDirty, verb }) {
+  if (git.error) {
+    return allowDefaultBranch && allowDirty ? [] : [
+      `git could not report the state of ${root} (${git.error}), so neither the default-branch gate nor the ` +
+      `dirty-tree gate can run. Re-run with --allow-default-branch --allow-dirty to proceed without them.`,
+    ];
+  }
+  if (!git.isRepo) return [];
+  const refusals = [];
+  if (!allowDefaultBranch && defaultBranches(root).includes(git.branch)) {
+    refusals.push(
+      `refusing to ${verb} on the default branch "${git.branch}". A user must be able to \`git diff\` exactly what ` +
+      `this tool did — switch to a feature branch, or re-run with --allow-default-branch if this is intentional.`,
+    );
+  }
+  if (!allowDirty) {
+    const { dirty, error } = trackedChanges(root, ownedByUs(manifestResult));
+    if (error) {
+      refusals.push(`git could not report whether the tree is clean (${error}), so the dirty-tree gate cannot run. Re-run with --allow-dirty to proceed without it.`);
+    } else if (dirty) {
+      refusals.push(
+        `refusing to ${verb} with uncommitted changes to tracked files. Commit or stash first so you can ` +
+        `\`git diff\` what this tool did, or re-run with --allow-dirty.`,
+      );
+    }
+  }
+  return refusals;
+}
 
 // A hand-rolled O(n·m) LCS diff is fine for the kit's own small template and
 // script files. It is not fine for an arbitrary file a future proposal might

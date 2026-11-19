@@ -17,7 +17,9 @@ import { REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, GENERATOR_SCRIPT_PATHS, HOOK_M
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
-import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { GATES_PATH, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
+import { LEARNED_PATH, parseRules } from '../../assets/scripts/harness-redact.mjs';
 
 const SETTINGS = '.claude/settings.json';
 
@@ -193,6 +195,11 @@ const GENERATOR_PRODUCIBLE_EXACT = new Set([
   RULES_PATH,
   // Written into by a person, like the registry.
   FAILURES_PATH,
+  // The two files a landed learning is written into (learn-land.mjs). Both
+  // are kit-owned, and removable only while they hold nothing but learnings
+  // the manifest records (see `holdsOnlyRecordedLearnings`).
+  LEARNED_PATH,
+  GATES_PATH,
 ]);
 // `.claude/rules/<slug>.md` — one per non-root workspace package, a path
 // pathrules-evidence.mjs derives dynamically from the repository's own
@@ -421,6 +428,35 @@ function hasUserAuthoredBody(root, relPath) {
 }
 
 /**
+ * The learned registry and the committed gate file are the deliberate
+ * exception to the empty-scaffold rule above: the kit writes their body, one
+ * entry per landed learning. True when every entry of the file at `relPath`
+ * is a learning `manifest.learnings` records: each registry entry by its id
+ * and `approved-sha256`, each gate by its id and content hash. An entry the
+ * kit did not record landing is somebody's own, so the file is kept. Fails
+ * closed: a file that cannot be read or parsed holds something unaccounted
+ * for.
+ */
+function holdsOnlyRecordedLearnings(root, manifest, relPath) {
+  const recorded = new Map((manifest?.learnings ?? []).map(l => [l.id, l.gateSha256]));
+  let text;
+  try {
+    text = fs.readFileSync(join(root, relPath), 'utf8');
+  } catch {
+    return false;
+  }
+  if (relPath === LEARNED_PATH) return parseRules(text).rules.every(r => recorded.get(r.id) === r.approvedSha256);
+  let file;
+  try {
+    file = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  const isEntry = g => g !== null && typeof g === 'object' && !Array.isArray(g);
+  return Array.isArray(file?.gates) && file.gates.every(g => isEntry(g) && recorded.get(g.id) === gateSha256(g));
+}
+
+/**
  * Every CONTENT-level reason a recorded file may not be removed, in one
  * place — `classify`'s verdict, the stamp, and the user's own body.
  *
@@ -446,6 +482,7 @@ function contentRefusal(root, manifest, relPath) {
   // F6: and in-file provenance is not enough either, for the one family of
   // artefacts whose designed workflow is the user writing into our file.
   if (hasUserAuthoredBody(root, relPath)) return 'user-authored-body';
+  if ((relPath === LEARNED_PATH || relPath === GATES_PATH) && !holdsOnlyRecordedLearnings(root, manifest, relPath)) return 'unrecorded-learning';
   return null;
 }
 
@@ -833,6 +870,8 @@ export function runUninstall({ root, manifest, plan }) {
       dirsCreated: dirsCreated.filter(d => !removedDirs.includes(d)),
       settingsCreated: settingsRemoved ? false : (manifest?.settingsCreated ?? false),
     };
+    // A learning is landed only while the committed gate file holds it.
+    if (removed.includes(GATES_PATH) && manifest?.learnings !== undefined) updatedManifest.learnings = [];
     try {
       writeManifest(root, updatedManifest);
     } catch (e) {

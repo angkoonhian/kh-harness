@@ -3,7 +3,6 @@
 //
 // The default is always a dry run: without --yes this prints proposals and
 // diffs and writes nothing. There is no --force — git is the escape hatch.
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { listFiles } from './lib/scan.mjs';
@@ -12,11 +11,11 @@ import { detectHarness } from './lib/detect-harness.mjs';
 import { detectExposures } from './lib/detect-exposure.mjs';
 import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps } from './lib/gap-model.mjs';
-import { gitInfo, defaultBranches } from './lib/git-info.mjs';
+import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
-import { deriveCouldNotDerive, exposureSectionLines, stillOpen, DETECT_REPORT_PATH } from './lib/report.mjs';
+import { deriveCouldNotDerive, exposureSectionLines, stillOpen } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
-import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason } from './lib/apply-lib.mjs';
+import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason, writeGateRefusals } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE, EXECUTION_DISCLOSURE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -43,7 +42,7 @@ const git = gitInfo(root);
 
 // The manifest is read before the gates (Task 9b, finding 3) so the dirty-
 // tree gate can tell the user's own uncommitted work apart from the tool's
-// own prior writes — see `ownedByUs` and `gateRefusals`, below.
+// own prior writes — see `writeGateRefusals` in apply-lib.mjs.
 //
 // Coordinator finding (Major): a manifest file that EXISTS but cannot be
 // read as our schema must refuse the run, not be silently treated as "no
@@ -51,141 +50,15 @@ const git = gitInfo(root);
 // the end of this run (see writeManifest below), permanently losing the
 // record of every file a prior install wrote. Those files become
 // invisible to `uninstall` forever, with no notice. Same contract as the
-// default-branch and dirty-tree refusals in `gateRefusals` below: exit 3, name the file,
-// no automatic repair. A CORRUPT manifest cannot be trusted to name what
-// is "ours" either, so `ownedByUs` stays empty in that case and the gate
-// below falls back to its original, strict behaviour — the corrupt-
-// manifest refusal after detection still fires regardless. A MISSING
-// manifest (a first run) is not a corrupt one: the kit's own fixed paths —
-// the manifest and detect's report — are still ours to excuse.
+// default-branch and dirty-tree refusals: exit 3, name the file, no
+// automatic repair. The corrupt-manifest refusal after detection fires
+// whatever the gates decide.
 const manifestResult = readManifestResult(root);
 
-/**
- * Paths the dirty-tree gate must not hold against the user: the tool's own
- * prior writes, per the manifest's own record of them — never re-derived
- * from the filesystem, which is exactly what a forged or stale record could
- * fool. `.claude/settings.json` counts only when the manifest actually
- * recorded a patch there; an untouched settings.json dirtied by something
- * else is not "ours" merely because it shares that path. The manifest file
- * itself is always ours: it is this tool's own bookkeeping, and a run that
- * updates it (new `installedAt`, a new file entry) is expected to leave it
- * modified if the user has ever committed it. So is `detect`'s report
- * (audit Tier 4, finding 21): its `generatedAt` changes on every run, and
- * a user who commits it was refused on every apply that followed a detect.
- */
-function ownedByUs(manifest) {
-  const owned = new Set([MANIFEST_PATH, DETECT_REPORT_PATH]);
-  for (const f of manifest?.files ?? []) owned.add(f.path);
-  if ((manifest?.settingsPatches ?? []).length > 0) owned.add(SETTINGS_PATH);
-  return owned;
-}
-const ourPaths = manifestResult.state === 'corrupt' ? new Set() : ownedByUs(manifestResult.manifest);
-
-/**
- * True only for changes to tracked files NOT already accounted for by
- * `ignorePaths` — new, untracked files are not this tool's problem either
- * way. Without `ignorePaths`, this tool's own first `apply --yes` dirties
- * any tracked `.claude/settings.json` it patches, so a plain second run
- * refused with no recourse but `--allow-dirty`, which waives the gate for
- * every OTHER uncommitted change too — the mechanism that protects the
- * legibility of a `git diff` of this tool's own work was forcing its own
- * blanket waiver. The gate still exists, and still refuses, for anything
- * genuinely not ours.
- */
-/**
- * `-z` for the same reason `scan.mjs`'s `gitPaths` uses it, and this is the
- * third of the three places in the tool that asks git for a path (the other
- * two are both inside `gitPaths`). This one used to half-know about the
- * problem — it stripped the surrounding double quotes git adds without ever
- * un-escaping the octal inside them — which made `.claude/caf\303\251.md`
- * compare unequal to the `ourPaths` entry for the same file, so this tool's
- * OWN prior write looked like the user's uncommitted work and the dirty-tree
- * gate refused with no recourse but `--allow-dirty`. Un-escaping by hand was
- * never the fix; not asking for escaped output is.
- *
- * Porcelain v1 in `-z` mode: each record is `XY<space><path>`, NUL-
- * terminated, and a rename or copy emits the NEW path in its own record
- * followed immediately by the ORIGINAL path as a separate record — there is
- * no ` -> ` form here (verified against git directly on this branch, not
- * assumed). The status belongs to the pair, and the path that matters is the
- * new one, so the original-path record is consumed and never tested.
- *
- * Returns `{ dirty, error }`. Audit Tier 1, finding 3: a failed `git status`
- * used to read as "clean", which waived the gate on exactly the repositories
- * where git could not be trusted to answer. An error is now the caller's to
- * refuse on.
- */
-function trackedChanges(r, ignorePaths = new Set()) {
-  let out;
-  try {
-    out = execFileSync('git', ['-C', r, 'status', '--porcelain', '-z', '--untracked-files=no'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (err) {
-    const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
-    return { dirty: false, error: stderr || (err?.code === 'ENOENT' ? 'git is not installed or not on PATH' : 'git status failed') };
-  }
-  const records = out.split('\0');
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i];
-    if (!record) continue;
-    const status = record.slice(0, 2);
-    const path = record.slice(3);
-    // Rename/copy: skip the original-path record that follows this one.
-    if (status.includes('R') || status.includes('C')) i += 1;
-    if (!ignorePaths.has(path.split('\\').join('/'))) return { dirty: true, error: null };
-  }
-  return { dirty: false, error: null };
-}
-
-/**
- * The two refusals that protect `git diff` as the record of what this tool
- * did, as the sentences `--yes` prints before exiting 3 — or, on a dry run,
- * prints as notes after the diffs. A dry run writes nothing, so there is
- * nothing to refuse; it used to be refused anyway, before showing anything,
- * which contradicted the README's "read the diffs — nothing is written"
- * (audit finding 5). Computed once, here, so the two paths cannot disagree.
- *
- * Audit Tier 1, finding 3, the three bypasses this closes: a repository with
- * no commits (an unborn `main` is `main` — `gitInfo` reads the symbolic
- * ref, not a commit); a default branch not named `main` or `master`
- * (`defaultBranches` adds `init.defaultBranch` and `origin/HEAD`); and a git
- * that cannot answer at all (not installed, "dubious ownership"), which used
- * to read as "not a repository" and waive both gates — it now refuses unless
- * BOTH waivers are given, because neither gate could run.
- */
-function gateRefusals() {
-  const waivedBranch = flags.has('--allow-default-branch');
-  const waivedDirty = flags.has('--allow-dirty');
-  if (git.error) {
-    return waivedBranch && waivedDirty ? [] : [
-      `git could not report the state of ${root} (${git.error}), so neither the default-branch gate nor the ` +
-      `dirty-tree gate can run. Re-run with --allow-default-branch --allow-dirty to proceed without them.`,
-    ];
-  }
-  if (!git.isRepo) return [];
-  const refusals = [];
-  if (!waivedBranch && defaultBranches(root).includes(git.branch)) {
-    refusals.push(
-      `refusing to apply on the default branch "${git.branch}". A user must be able to \`git diff\` exactly what ` +
-      `this tool did — switch to a feature branch, or re-run with --allow-default-branch if this is intentional.`,
-    );
-  }
-  if (!waivedDirty) {
-    const { dirty, error } = trackedChanges(root, ourPaths);
-    if (error) {
-      refusals.push(`git could not report whether the tree is clean (${error}), so the dirty-tree gate cannot run. Re-run with --allow-dirty to proceed without it.`);
-    } else if (dirty) {
-      refusals.push(
-        `refusing to apply with uncommitted changes to tracked files. Commit or stash first so you can ` +
-        `\`git diff\` what this tool did, or re-run with --allow-dirty.`,
-      );
-    }
-  }
-  return refusals;
-}
-
-const refusals = gateRefusals();
+const refusals = writeGateRefusals({
+  root, git, manifestResult, verb: 'apply',
+  allowDefaultBranch: flags.has('--allow-default-branch'), allowDirty: flags.has('--allow-dirty'),
+});
 // Both gates waived over a git failure: the run proceeds, and the checks
 // treat the directory as not under version control (P4.remote may propose a
 // remote). Said once, as `detect` says it, so the waiver never makes the
@@ -340,7 +213,7 @@ if (!flags.has('--yes')) {
   if (proposals.some(p => p.kind === 'settings-hook')) process.stdout.write(EXECUTION_DISCLOSURE + '\n\n');
   reportDrift();
   // What `--yes` would refuse, said now rather than after the diffs have
-  // been read and acted on — see gateRefusals.
+  // been read and acted on — see writeGateRefusals.
   for (const r of refusals) process.stdout.write(`note: --yes would be refused — ${r}\n`);
   process.stdout.write('Dry run — nothing written. Re-run with --yes to apply.\n');
   process.exit(0);

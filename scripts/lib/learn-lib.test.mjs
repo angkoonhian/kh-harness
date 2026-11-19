@@ -25,10 +25,10 @@ function holdLock(path) {
   return () => rmSync(path, { force: true });
 }
 
-test('a learning gate warns or blocks only once promoted on this machine, and observes otherwise', () => {
+test('a learning gate warns or blocks only once promoted, on this machine or in the repository, and observes otherwise', () => {
   for (const status of ['candidate', 'rejected', 'trial', 'suspended', 'retired']) assert.deepEqual(gateActionsFor(status), ['observe']);
-  assert.deepEqual(gateActionsFor('active-local'), ['warn', 'block']);
-  for (const status of ['landed', 'unknown', 'constructor']) assert.deepEqual(gateActionsFor(status), []);
+  for (const status of ['active-local', 'landed']) assert.deepEqual(gateActionsFor(status), ['warn', 'block']);
+  for (const status of ['reverted', 'unknown', 'constructor']) assert.deepEqual(gateActionsFor(status), []);
 });
 
 test('the recorded status is the last status-changing ledger entry for that id, and only under the learning\'s content', () => {
@@ -43,6 +43,10 @@ test('the recorded status is the last status-changing ledger entry for that id, 
   assert.equal(recordedStatus([entry('trial'), promoted, entry('demoted')], 'L1', sha), 'trial');
   assert.equal(recordedStatus([entry('trial'), entry('suspended')], 'L1', sha), 'suspended');
   assert.equal(recordedStatus([entry('trial'), entry('retired')], 'L1', sha), 'retired');
+  const landed = entry('landed', { action: 'warn', approvedBy: 'owner' });
+  assert.equal(recordedStatus([entry('trial'), promoted, landed], 'L1', sha), 'landed');
+  assert.equal(recordedStatus([entry('trial'), promoted, landed, entry('reverted', { action: 'warn', approvedBy: 'owner' })], 'L1', sha), 'active-local',
+    'a revert takes the gate out of the repository, not the approval');
   assert.equal(recordedStatus([entry('proposed'), entry('rejected', { contentSha256: other })], 'L1', sha), null,
     'an older entry under the matching hash does not win over a newer one under another');
   assert.equal(recordedStatus([entry('proposed'), entry('rejected', { contentSha256: other })], 'L1', other), 'rejected');
@@ -398,13 +402,26 @@ test('a trial the ledger records is still restored when its gate entry is missin
   assert.deepEqual(localGates(root).gates, [trial.gate]);
 });
 
-test('a learning file edited to a status the table does not know, with a block gate, yields no gate', () => {
+test('a learning file edited to a status no ledger kind leads to, with a block gate, yields no gate', () => {
+  const { root, trial, candidate } = trialAndCandidate();
+  const blocking = { ...trial.gate, action: 'block' };
+  editLearning(root, 'L1', { status: 'reverted', gate: blocking });
+  writeLocalGates(root, [blocking]);
+  const listed = listLearnings(root);
+  assert.deepEqual(listed.unreadable, ['L1']);
+  assert.deepEqual(listed.gatesToRepair, ['L1']);
+  runTrial(root, candidate.id);
+  assert.deepEqual(localGates(root).gates, [], 'never kept, never restored');
+});
+
+test('a learning file edited to landed with a block gate, with no landing in the ledger, yields no gate', () => {
   const { root, trial, candidate } = trialAndCandidate();
   const blocking = { ...trial.gate, action: 'block' };
   editLearning(root, 'L1', { status: 'landed', gate: blocking });
   writeLocalGates(root, [blocking]);
   const listed = listLearnings(root);
-  assert.deepEqual(listed.unreadable, ['L1']);
+  assert.deepEqual(listed.unreadable, []);
+  assert.deepEqual(listed.ledgerMismatch, ['L1']);
   assert.deepEqual(listed.gatesToRepair, ['L1']);
   runTrial(root, candidate.id);
   assert.deepEqual(localGates(root).gates, [], 'never kept, never restored');

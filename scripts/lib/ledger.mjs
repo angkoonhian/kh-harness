@@ -73,12 +73,17 @@ const POLICY_FIELDS = {
 
 const FIRING_KEYS = ['sessionId', 'line'];
 
+/** The kinds that record the action they grant: a promotion, and a landing
+ * or a revert, each of which carries the promotion's approved action on. */
+export const ACTION_KINDS = Object.freeze(['promoted', 'landed', 'reverted']);
+
 // Fields only some kinds carry: each is required on those kinds and refused
-// on every other. A promotion records the action it grants, so a learning's
-// file cannot claim a stronger one; a wrong mark records the firing it
-// marks, by session and 1-based event index, so a firing is marked once.
+// on every other. An `ACTION_KINDS` entry records the action it grants, so a
+// learning's file cannot claim a stronger one; a wrong mark records the
+// firing it marks, by session and 1-based event index, so a firing is marked
+// once.
 const KIND_FIELDS = {
-  action: { kinds: ['promoted'], valid: v => v === 'warn' || v === 'block' },
+  action: { kinds: ACTION_KINDS, valid: v => v === 'warn' || v === 'block' },
   firing: {
     kinds: ['wrong'],
     valid: v => isPlainObject(v) && Object.keys(v).length === FIRING_KEYS.length && FIRING_KEYS.every(k => Object.hasOwn(v, k))
@@ -128,7 +133,8 @@ function entryProblem(value, { stored }) {
     if (kinds.includes(value.kind)) {
       if (!valid(value[field])) return `${field} is missing or invalid for a ${value.kind} entry`;
     } else if (value[field] !== undefined) {
-      return `${field} is carried only by a ${kinds.join(' or ')} entry`;
+      const named = kinds.length === 1 ? kinds[0] : `${kinds.slice(0, -1).join(', ')} or ${kinds.at(-1)}`;
+      return `${field} is carried only by a ${named} entry`;
     }
   }
   return evidenceProblem(value.evidence);

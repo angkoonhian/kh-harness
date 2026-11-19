@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, readdirSync } from 'node:fs';
 import { join, dirname, basename, resolve, relative } from 'node:path';
 import { readJsonFile } from './read-json.mjs';
+import { GATE_ID } from '../../assets/scripts/harness-gates.mjs';
 
 const MANIFEST_PATH = '.claude/kh-harness.manifest.json';
 
@@ -42,18 +43,25 @@ export function readManifestResult(root) {
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/** A landed learning as the manifest records it: exactly `{ id, gateSha256 }`,
+ * a gate id and the SHA-256 hex of the gate the repository holds for it. */
+const isLearningRecord = l => isPlainObject(l) && Object.keys(l).length === 2 &&
+  typeof l.id === 'string' && GATE_ID.test(l.id) && typeof l.gateSha256 === 'string' && /^[0-9a-f]{64}$/.test(l.gateSha256);
+
 /**
  * Every shape a reader of the manifest dereferences without checking —
- * `f.path`, `f.sha256`, `p.event`, `dirsCreated` iterated as paths — is
- * checked here, once, so a hand-edited or forged manifest is refused as
- * `corrupt` instead of crashing `apply` or `uninstall` part-way through.
+ * `f.path`, `f.sha256`, `p.event`, `dirsCreated` iterated as paths, each
+ * landed learning's id and hash — is checked here, once, so a hand-edited
+ * or forged manifest is refused as `corrupt` instead of crashing `apply`,
+ * `uninstall` or a landing part-way through.
  */
 function isWellFormedManifest(m) {
   return isPlainObject(m) && m.schema === 1 &&
     Array.isArray(m.files) &&
     m.files.every(f => isPlainObject(f) && typeof f.path === 'string' && typeof f.sha256 === 'string') &&
     (m.settingsPatches === undefined || (Array.isArray(m.settingsPatches) && m.settingsPatches.every(isPlainObject))) &&
-    (m.dirsCreated === undefined || (Array.isArray(m.dirsCreated) && m.dirsCreated.every(d => typeof d === 'string')));
+    (m.dirsCreated === undefined || (Array.isArray(m.dirsCreated) && m.dirsCreated.every(d => typeof d === 'string'))) &&
+    (m.learnings === undefined || (Array.isArray(m.learnings) && m.learnings.every(isLearningRecord)));
 }
 
 export function readManifest(root) {
