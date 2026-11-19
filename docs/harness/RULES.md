@@ -110,7 +110,7 @@
 - priority: high
 - last-verified: 2026-11-19
 
-## R13 — No learning is promoted without a terminal-typed approval or a recorded policy hash
+## R13 — No learn command promotes a learning without a terminal check or a recorded policy hash
 
 - why: a gate that warns or blocks changes what the agent may do; the `learn` commands move one past observe only for a hash approved by a command run at an interactive terminal outside Claude Code, or under a policy whose hash the ledger records; and since a committed gate binds everyone, `land` writes one into the repository only from such a terminal too. These are checks against accident and against an agent using the tools as given, not isolation
 - enforced-by: test

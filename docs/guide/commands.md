@@ -194,7 +194,8 @@ default.
   manifest records as landed. Then the two are weighed against each other,
   so that a committed gate is never left without its registry entry:
   `LEARNED.md` is kept whenever `gates.json` is kept for a reason of its own
-  (edited, unstamped, or holding an unrecorded learning);
+  (edited, unstamped, not recorded in the manifest, or holding an
+  unrecorded learning);
   `gates.json` is kept for its partner only when `LEARNED.md` holds an entry
   the manifest does not record. So a hand-edited `LEARNED.md` is kept while
   `gates.json` is removed. Removing `gates.json` also clears the manifest's

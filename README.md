@@ -15,11 +15,14 @@ For a developer who already has a repository and uses Claude Code in it.
 evidence it read. `apply` writes only what that report proposed, as a dry run
 until you add `--yes`. `uninstall` removes what the kit wrote, and nothing
 of yours. Once installed, the harness can also keep a log of your sessions
-on your machine and turn a tool failure that recurs into a small gate. A
-gate stays at `observe`, where it blocks nothing, until a `learn` command
-run at an interactive terminal outside Claude Code, or a policy whose hash
-the ledger records, promotes it. These are deny rules and checks against
-accident and against an agent using the tools as given, not isolation; see
+on your machine and turn a tool failure that recurs into a small gate on
+tool calls. A gate the kit drafts starts at `observe`, where it blocks
+nothing. The kit's own commands move it further only when run at an
+interactive terminal outside Claude Code, or, on this machine, when
+`learn tick` finds a policy recorded in the kit's ledger. Those are checks
+against accident and against an agent using the tools as given, not
+isolation: a process running as you can forge either, and the gate hook
+enforces whatever the gate files hold, however a gate got there. See
 [Limits](#limits).
 
 **What it does that you should know before installing**
@@ -285,7 +288,7 @@ flowchart LR
 |---|---|---|
 | [`detect`](docs/guide/commands.md#detect) | Inventories the repository and reports each capability with its evidence | `docs/harness/detect.json` only |
 | [`apply`](docs/guide/commands.md#apply) | Writes what `detect` proposed; a dry run without `--yes` | the repository, with `--yes` |
-| [`uninstall`](docs/guide/commands.md#uninstall) | Removes what `apply` wrote, and `land`'s two files when they hold only recorded learnings; nothing of yours; a dry run without `--yes` | the repository, with `--yes` |
+| [`uninstall`](docs/guide/commands.md#uninstall) | Removes what `apply` wrote, and `land`'s two files when they are unmodified and hold only recorded learnings; nothing of yours; a dry run without `--yes` | the repository, with `--yes` |
 | [`log`](docs/guide/commands.md#log) | The session log for one repository on this machine | the data directory |
 | [`learn`](docs/guide/commands.md#learn) | The learnings for one repository on this machine | the data directory; `land` and `revert` also the repository |
 

@@ -2,10 +2,12 @@
 
 How a tool failure that recurs across sessions becomes one small gate on
 tool calls, and how that gate is promoted, landed, suspended, reverted or
-retired. Plain code does every check. A model drafts. A gate moves past
-`observe` only through `learn approve`, which runs only at an interactive
-terminal outside Claude Code, or through `tick` under a policy whose hash
-the ledger records. A process running as you can forge either; see
+retired. Plain code does every check. A model drafts. The kit's commands
+move a gate past `observe` in two ways: `learn approve`, which runs only at
+an interactive terminal outside Claude Code, and `tick` under a policy
+whose hash the ledger records. A process running as you can forge either,
+and a gate that reaches a gate file some other way (a teammate's commit, a
+hand edit) acts as soon as it is there; see
 [Limits](../../README.md#limits).
 
 [Back to the README](../../README.md) ·
@@ -103,7 +105,7 @@ stateDiagram-v2
 `retire` also leads to `retired` from the other live states, and is left out
 of the diagram for clarity; the table below gives its conditions.
 
-| From | To | Caused by | What the command checks |
+| From | To | Caused by | Terminal check |
 |---|---|---|---|
 | — | `candidate` | `learn draft` | none; in practice the skill runs it |
 | `candidate` | `trial` | a replay that passes, from `draft` or `replay` | none: the script decides |
@@ -112,7 +114,7 @@ of the diagram for clarity; the table below gives its conditions.
 | `trial` | `active-local` | `learn approve` | an interactive terminal outside Claude Code |
 | `trial` | `active-local` | `learn tick` under a recorded policy | none at the terminal; the policy file's hash must equal the last policy hash the ledger records |
 | `trial` | `retired` | `learn tick`, when every cited path is gone | none |
-| `active-local` | `trial` | `learn demote`, or the second wrong mark since its promotion, while its gate is not in the committed gate file | an interactive terminal outside Claude Code (`learn demote`, `learn wrong`); `tick`, which checks none, finishes a demotion that did not happen |
+| `active-local` | `trial` | `learn demote`, or the second wrong mark since its promotion, while its gate is not in the committed gate file | an interactive terminal outside Claude Code (`learn demote`, `learn wrong`); `tick`, which has none, finishes a demotion that did not happen |
 | `active-local` | `suspended` | the same, while its gate is in the committed gate file (a land that stopped before its ledger entry, or a checkout that already holds it) | an interactive terminal outside Claude Code for `demote` and `wrong`; none for `tick` |
 | `active-local` | `landed` | `learn land --yes` | an interactive terminal outside Claude Code |
 | `landed` | `active-local` | `learn revert --yes` | an interactive terminal outside Claude Code |
