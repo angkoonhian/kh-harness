@@ -4,9 +4,10 @@
 // recurring failure; this module validates the draft, replays the gate
 // against the recorded sessions and, when the replay passes, puts it in this
 // machine's local gate set with action `observe`, where it logs what it would
-// have done and changes nothing. Only a person at an interactive terminal, or
-// a promotion policy that person wrote, moves it on to `warn` or `block`;
-// wrong marks, a demotion or a retirement take it back.
+// have done and changes nothing. What moves it past `observe`, and back, is
+// `learn-promote.mjs`; the tables that decide what each status allows, and
+// the repair that holds the local gate set to them, are here, since both
+// halves depend on them.
 //
 // A draft is untrusted, model-written input: every field is checked before
 // anything is stored, and an error is fixed text naming the field and the
@@ -32,12 +33,11 @@ import { dirname, join } from 'node:path';
 
 import { GATE_LIMITS, gateSha256, validateGate } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
-import { maskText, safeSessionId, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
+import { maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { LOCKED, withFileLock } from './file-lock.mjs';
 import { appendLedger, isApprover, readLedger, verifyLedger } from './ledger.mjs';
-import { policyAllows, readPolicy } from './policy.mjs';
 import { FAILURE_EVENT, findRecurrences, sessionIds, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
 import { replayGate } from './replay.mjs';
 import { readIfPresent } from './scan.mjs';
@@ -63,7 +63,8 @@ export function gateActionsFor(status) {
 }
 
 // The status each ledger kind leaves a learning in; a kind absent here, such
-// as `wrong`, changes no status.
+// as `wrong`, changes no status. No kind leads out of `suspended` or
+// `retired`: both are terminal.
 const STATUS_AFTER = Object.freeze({
   proposed: 'candidate',
   replayed: 'candidate',
@@ -77,25 +78,20 @@ const STATUS_AFTER = Object.freeze({
 
 // A learning in one of these no longer stands for its signature, so a new
 // draft for the signature may be made.
-const SETTLED = new Set(['rejected', 'retired']);
+export const SETTLED = new Set(['rejected', 'retired']);
 
 // The statuses whose gate lives in the local gate set.
 const LOCAL_GATE_STATUSES = new Set(['trial', 'active-local']);
 
 const ABOVE_OBSERVE = new Set(['warn', 'block']);
 
-// A promoted learning marked wrong this many times since its last promotion
-// goes back to `observe`.
-const WRONG_MARKS_TO_DEMOTE = 2;
-
 const LEARNINGS_DIR = 'learnings';
 // The highest id ever assigned on this machine for this repository, so the
 // number of a rejected or removed learning is never assigned again.
 const ID_COUNTER_FILE = 'learning-ids.json';
 const LOCK_FILE = 'learnings.lock';
-const LAST_TICK_FILE = 'last-tick.json';
 
-const FIRING_EVENT = 'gate_firing';
+export const FIRING_EVENT = 'gate_firing';
 
 const TITLE_MAX = 120;
 const WHY_MAX = 300;
@@ -104,18 +100,16 @@ const ID_NUMBER_MAX = 999_999_999;
 const ID = /^L([1-9][0-9]{0,8})$/;
 const LEARNING_FILE = /^(L[1-9][0-9]{0,8})\.json$/;
 const SIGNATURE = /^[0-9a-f]{16}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
 const LINE_BREAK = /[\n\p{Zl}\p{Zp}]/u;
 const DRAFT_KEYS = new Set(['signature', 'title', 'why', 'gate']);
 
-const ID_ERROR = 'id: must be L followed by 1 to 9 digits, without a leading zero';
+export const ID_ERROR = 'id: must be L followed by 1 to 9 digits, without a leading zero';
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isString = v => typeof v === 'string';
-const isId = v => isString(v) && ID.test(v);
+export const isId = v => isString(v) && ID.test(v);
 const idNumber = id => Number(ID.exec(id)[1]);
 const codeOf = error => (isString(error?.code) ? error.code : 'unknown');
-const optionsOf = value => (isPlainObject(value) ? value : {});
 
 /** Learning ids by number, then any other id, as a hand-written gate entry
  * may carry, by its text. */
@@ -124,12 +118,6 @@ function idOrder(a, b) {
   if (isId(a) !== isId(b)) return isId(a) ? -1 : 1;
   return a < b ? -1 : a > b ? 1 : 0;
 }
-
-/** True only for what `requireInteractive` returns for a person at an
- * interactive terminal; anything else, a missing value among them, is a
- * refusal. */
-const isInteractive = value => isPlainObject(value) && value.ok === true;
-const needsTerminal = what => `${what} needs a person at an interactive terminal outside Claude Code; nothing was written`;
 
 const learningsDir = root => join(repoDataDir(root), LEARNINGS_DIR);
 const learningPath = (root, id) => join(learningsDir(root), `${id}.json`);
@@ -142,7 +130,7 @@ function writeJson(path, value) {
 
 /** What an exported function returns when something it reads before taking
  * the lock cannot be read. */
-const readFailure = error => ({ error: `what this step reads could not be read (${codeOf(error)}); nothing was written` });
+export const readFailure = error => ({ error: `what this step reads could not be read (${codeOf(error)}); nothing was written` });
 
 /**
  * Runs `fn` holding the lock every update to a learning, the id counter and
@@ -151,7 +139,7 @@ const readFailure = error => ({ error: `what this step reads could not be read (
  * not be taken, or a failure inside `fn`, is returned as `{ error }` saying
  * whether anything was written.
  */
-function withLearningsLock(root, fn) {
+export function withLearningsLock(root, fn) {
   let entered = false;
   let wrote = false;
   try {
@@ -292,7 +280,7 @@ function readLearnings(root) {
   return { learnings, unreadable };
 }
 
-const isGateEntry = entry => isPlainObject(entry) && isString(entry.id) && !Object.hasOwn(entry, 'suspended');
+export const isGateEntry = entry => isPlainObject(entry) && isString(entry.id) && !Object.hasOwn(entry, 'suspended');
 const entryId = entry => (isPlainObject(entry) && isString(entry.id) ? entry.id : null);
 const learningIdsIn = entries => entries.map(entryId).filter(isId);
 
@@ -318,7 +306,7 @@ function readLocalGates(root) {
 /** `{ gates }`, the committed gate file's entries, none when it is absent,
  * or `{ unreadable: true }` when it exists and cannot be read as a gate
  * file. */
-function readCommittedGates(root) {
+export function readCommittedGates(root) {
   let text;
   try {
     text = readFileSync(join(root, GATES_PATH), 'utf8');
@@ -383,7 +371,7 @@ function readLedgerView(root) {
 /** Why the ledger does not vouch for `learning` as its file holds it, or
  * null when it does: its last status-changing entry must name the
  * learning's content and status, and grant its gate's action. */
-function unrecordedReason(learning, view) {
+export function unrecordedReason(learning, view) {
   const { id, status } = learning;
   if (!view.intact) return `${id}: the ledger cannot be read or its chain is broken, so it does not record this learning's status`;
   const state = recordedState(view.entries, id);
@@ -407,14 +395,14 @@ function recordedLearnings(learnings, view) {
 /** Everything a step decides from, read afresh: the learning files, the
  * ledger, the learnings it vouches for and the local gate file. Throws when
  * the learnings directory cannot be listed. */
-function readState(root) {
+export function readState(root) {
   const { learnings, unreadable } = readLearnings(root);
   const view = readLedgerView(root);
   return { learnings, unreadable, view, recorded: recordedLearnings(learnings, view), local: readLocalGates(root) };
 }
 
 /** The learnings in `state` the ledger vouches for. */
-const recordedIn = state => state.learnings.filter(l => state.recorded.has(l.id));
+export const recordedIn = state => state.learnings.filter(l => state.recorded.has(l.id));
 
 /**
  * The local gate entries as the learnings the ledger vouches for require
@@ -480,7 +468,7 @@ function repairedGates(gates, learnings, unreadable, recorded) {
 
 /** Every ledger entry that granted an action above `observe`: who approved
  * which content of which learning, at which action, and when. */
-const approvalsIn = entries => entries
+export const approvalsIn = entries => entries
   .filter(e => e?.kind === 'promoted' && isApprover(e.approvedBy) && ABOVE_OBSERVE.has(e.action))
   .map(e => ({ id: e.learningId, sha256: e.contentSha256, action: e.action, approvedBy: e.approvedBy, ts: e.ts }));
 
@@ -488,7 +476,7 @@ const approvalsIn = entries => entries
  * grants: none names their id, content and action. The repair removes each
  * of them, since an entry above `observe` stays only on a recorded
  * promotion; these are the ones nobody ever approved. */
-function unapprovedGateIds(gates, approvals) {
+export function unapprovedGateIds(gates, approvals) {
   const ids = new Set();
   for (const entry of gates) {
     if (!isGateEntry(entry) || !ABOVE_OBSERVE.has(entry.action)) continue;
@@ -501,7 +489,7 @@ function unapprovedGateIds(gates, approvals) {
 /** Brings the local gate set into line with what the ledger grants, under
  * the lock, and returns the ids changed. A local gate file that is not a
  * gate file is left as it is. */
-function repairLocalGates(root, write) {
+export function repairLocalGates(root, write) {
   const { learnings, unreadable, recorded, local } = readState(root);
   if (!local.file) return [];
   const repair = repairedGates(local.file.gates, learnings, unreadable, recorded);
@@ -514,7 +502,7 @@ function repairLocalGates(root, write) {
  * repaired, and returns its result with the ids the repair changed as
  * `repairedGates`: always on success, on a refusal only when there are any.
  */
-function repairedStep(root, step) {
+export function repairedStep(root, step) {
   return withLearningsLock(root, write => {
     const repaired = repairLocalGates(root, write);
     const result = step(write);
@@ -525,7 +513,7 @@ function repairedStep(root, step) {
 /** `{ error }` for a call refused before the lock was taken, once the
  * repair the call owes has run; a repair that cannot run leaves the
  * refusal as it is. */
-function refuse(root, error) {
+export function refuse(root, error) {
   const result = repairedStep(root, () => ({ error }));
   return result.error === error ? result : { error };
 }
@@ -541,19 +529,10 @@ function ledgerMismatches(learnings, unreadable, view, recorded) {
 }
 
 /** `{ learning }` for the readable learning `id` in `state`, or `{ error }`. */
-function learningIn(state, id) {
+export function learningIn(state, id) {
   if (state.unreadable.includes(id)) return { error: `${id}: the learning file does not read back as a learning` };
   const learning = state.learnings.find(l => l.id === id);
   return learning === undefined ? { error: `${id}: no such learning` } : { learning };
-}
-
-/** `{ learning }` for the learning `id` the ledger vouches for in `state`,
- * or `{ error }` saying why there is none. */
-function vouchedLearning(state, id) {
-  const found = learningIn(state, id);
-  if (found.error) return found;
-  const unrecorded = unrecordedReason(found.learning, state.view);
-  return unrecorded === null ? found : { error: unrecorded };
 }
 
 /**
@@ -614,7 +593,7 @@ function nextId(root, state) {
  * event happened under. `approvedBy` names who decided the step, null when
  * a rule did; `action` and `firing` are carried by the kinds that require
  * them. */
-const ledgerEntry = (learning, identity, { kind, approvedBy = null, action, firing, detail }) => ({
+export const ledgerEntry = (learning, identity, { kind, approvedBy = null, action, firing, detail }) => ({
   kind,
   learningId: learning.id,
   contentSha256: learning.sha256,
@@ -636,7 +615,7 @@ const ledgerEntry = (learning, identity, { kind, approvedBy = null, action, firi
  * gate file, which the change needs, is not a gate file, or when the set
  * would grow past its limit.
  */
-function writeTransition(root, write, state, { updated, entries, suspend = false }) {
+export function writeTransition(root, write, state, { updated, entries, suspend = false }) {
   // Every entry precedes the writes, so each names the harness in force
   // before this step.
   const identity = harnessIdentity(root);
@@ -790,88 +769,9 @@ function runTrialUnguarded(root, id) {
   });
 }
 
-/**
- * Promotes a learning on trial to `warn` or `block` on this machine, as the
- * person at the terminal approved: `options` is `{ sha256, action,
- * interactive }`, where `interactive` is what `requireInteractive` returned
- * and `sha256` the content hash the person was shown, which must still be
- * the learning's. The ledger gets `promoted` with `approvedBy: 'owner'` and
- * the action, and the local gate takes that action. Returns `{ ok: true,
- * id, action, repairedGates }`, or `{ error }`.
- */
-export function approveLearning(root, id, options) {
-  try {
-    return approveUnguarded(root, id, optionsOf(options));
-  } catch (error) {
-    return readFailure(error);
-  }
-}
-
-function approveUnguarded(root, id, { sha256, action, interactive }) {
-  if (!isInteractive(interactive)) return refuse(root, needsTerminal('approval'));
-  if (!isId(id)) return refuse(root, ID_ERROR);
-  if (!ABOVE_OBSERVE.has(action)) return refuse(root, 'action: must be warn or block');
-  if (!isString(sha256) || !SHA256.test(sha256)) return refuse(root, 'sha256: must be 64 lowercase hex characters');
-  return repairedStep(root, write => {
-    const state = readState(root);
-    const found = learningIn(state, id);
-    if (found.error) return found;
-    const { learning } = found;
-    if (learning.sha256 !== sha256) return { error: `${id}: the hash approved is not the learning's content; show it again and approve the hash it shows` };
-    const unrecorded = unrecordedReason(learning, state.view);
-    if (unrecorded !== null) return { error: unrecorded };
-    if (learning.status !== 'trial') return { error: `${id} is ${learning.status}; only a learning on trial is approved` };
-    const written = promote(root, write, state, learning, { action, approvedBy: 'owner' });
-    return written.error === undefined ? { ok: true, id, action } : written;
-  });
-}
-
-/** Records `promoted` for a learning on trial and gives its local gate
- * `action`. */
-function promote(root, write, state, learning, { action, approvedBy, detail }) {
-  const updated = { ...learning, status: 'active-local', gate: { ...learning.gate, action } };
-  return writeTransition(root, write, state, { updated, entries: [{ kind: 'promoted', approvedBy, action, detail }] });
-}
-
-/** `{ committed }`, whether the committed gate file holds a gate with the
- * learning's id, or `{ error }` when it cannot be told. A local entry
- * weaker than a committed gate does not replace it, so only a suspension
- * takes a committed gate out of force on this machine. */
-function isCommitted(root, id) {
-  const committed = readCommittedGates(root);
-  if (committed.unreadable) return { error: 'the committed gate file cannot be read, so whether this gate is committed cannot be told; nothing was written' };
-  return { committed: committed.gates.some(e => isGateEntry(e) && e.id === id) };
-}
-
-/**
- * Takes a promoted learning's gate back to `observe` on this machine. A
- * gate only this machine holds is rewritten at `observe` and the learning
- * returns to `trial`, recorded as `demoted`; a committed gate is suspended
- * here and the learning is `suspended`. `approvedBy` names the person who
- * asked, null when the demotion rule decided. Returns `{ status }`, or
- * `{ error }`.
- */
-function demote(root, write, state, learning, approvedBy) {
-  const where = isCommitted(root, learning.id);
-  if (where.error) return where;
-  const status = where.committed ? 'suspended' : 'trial';
-  const updated = { ...learning, status, gate: { ...learning.gate, action: 'observe' } };
-  const written = writeTransition(root, write, state, { updated, entries: [{ kind: where.committed ? 'suspended' : 'demoted', approvedBy }], suspend: where.committed });
-  return written.error === undefined ? { status } : written;
-}
-
-/** Retires a learning: its local gate goes, a committed gate of its is
- * suspended on this machine, and the ledger gets `retired`. */
-function retire(root, write, state, learning, { approvedBy, detail }) {
-  const where = isCommitted(root, learning.id);
-  if (where.error) return where;
-  const updated = { ...learning, status: 'retired', gate: { ...learning.gate, action: 'observe' } };
-  return writeTransition(root, write, state, { updated, entries: [{ kind: 'retired', approvedBy, detail }], suspend: where.committed });
-}
-
 /** How many times the learning `id` was marked wrong since its last
  * promotion, or ever when it was never promoted. */
-function wrongSincePromotion(entries, id) {
+export function wrongSincePromotion(entries, id) {
   let wrong = 0;
   for (const entry of entries) {
     if (entry?.learningId !== id) continue;
@@ -879,108 +779,6 @@ function wrongSincePromotion(entries, id) {
     else if (entry.kind === 'wrong') wrong++;
   }
   return wrong;
-}
-
-const isFiringRef = ref => isPlainObject(ref) && safeSessionId(ref.sessionId) === ref.sessionId && Number.isSafeInteger(ref.line) && ref.line >= 1;
-
-/**
- * Marks one gate firing wrong, as the person at the terminal judged it:
- * `firingRef` is `{ sessionId, line }`, `line` the 1-based index into the
- * events `readEvents(root, sessionId)` returns, which must be a
- * `gate_firing` of a learning's gate as the ledger records it; `options` is
- * `{ interactive }`, what `requireInteractive` returned. The ledger gets a
- * `wrong` entry carrying the reference, and a firing is marked once. The
- * mark that brings a promoted learning to two since its promotion demotes
- * it, as `demoteLearning` does but by the rule. Returns `{ ok: true, id,
- * wrong, status, repairedGates }`, `wrong` the marks since the last
- * promotion and `status` the learning's after the mark, or `{ error }`.
- */
-export function markWrong(root, firingRef, options) {
-  try {
-    return markWrongUnguarded(root, firingRef, optionsOf(options));
-  } catch (error) {
-    return readFailure(error);
-  }
-}
-
-function markWrongUnguarded(root, ref, { interactive }) {
-  if (!isInteractive(interactive)) return refuse(root, needsTerminal('a wrong mark'));
-  if (!isFiringRef(ref)) return refuse(root, 'firing: must be { sessionId, line } with a session id and a line number of at least 1');
-  const { sessionId, line } = ref;
-  const event = readEvents(root, sessionId).events[line - 1];
-  if (!isPlainObject(event) || event.type !== FIRING_EVENT || !isId(event.gateId)) return refuse(root, 'firing: no gate firing is recorded at that line of that session');
-  return repairedStep(root, write => {
-    const state = readState(root);
-    const found = learningIn(state, event.gateId);
-    if (found.error) return found;
-    const { learning } = found;
-    if (event.gateSha256 !== learning.sha256) return { error: `firing: it is of other content than learning ${learning.id}'s gate` };
-    const unrecorded = unrecordedReason(learning, state.view);
-    if (unrecorded !== null) return { error: unrecorded };
-    if (state.view.entries.some(e => e?.kind === 'wrong' && e.firing?.sessionId === sessionId && e.firing?.line === line)) {
-      return { error: 'firing: it is already marked wrong' };
-    }
-    write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'wrong', approvedBy: 'owner', firing: { sessionId, line } })));
-    const marked = readState(root);
-    const wrong = wrongSincePromotion(marked.view.entries, learning.id);
-    if (wrong < WRONG_MARKS_TO_DEMOTE || learning.status !== 'active-local') return { ok: true, id: learning.id, wrong, status: learning.status };
-    const demoted = demote(root, write, marked, learning, null);
-    if (demoted.error) return { error: `${learning.id}: the mark was recorded, and the demotion it calls for was not; tick retries it (${demoted.error})` };
-    return { ok: true, id: learning.id, wrong, status: demoted.status };
-  });
-}
-
-/**
- * Demotes a learning promoted on this machine, as the person at the
- * terminal asked: its gate goes back to `observe` and it returns to
- * `trial`, or, when its gate is committed, that gate is suspended on this
- * machine and it is `suspended`. Demotion weakens a gate, so it takes a
- * person at a terminal, like approval: `options` is `{ interactive }`.
- * Returns `{ ok: true, id, status, repairedGates }`, or `{ error }`.
- */
-export function demoteLearning(root, id, options) {
-  try {
-    return byHand(root, id, optionsOf(options), 'a demotion', (write, state, learning) => {
-      if (learning.status !== 'active-local') return { error: `${id} is ${learning.status}; only a learning promoted on this machine is demoted` };
-      return demote(root, write, state, learning, 'owner');
-    });
-  } catch (error) {
-    return readFailure(error);
-  }
-}
-
-/**
- * Retires a learning that is neither rejected nor retired, as the person at
- * the terminal asked: its local gate goes, a committed gate of its is
- * suspended on this machine, and it no longer stands for its signature.
- * Retirement takes a gate out of force, so it takes a person at a terminal:
- * `options` is `{ interactive }`. Returns `{ ok: true, id, status,
- * repairedGates }`, or `{ error }`.
- */
-export function retireLearning(root, id, options) {
-  try {
-    return byHand(root, id, optionsOf(options), 'a retirement', (write, state, learning) => {
-      if (SETTLED.has(learning.status)) return { error: `${id} is ${learning.status}; a rejected or retired learning is not retired again` };
-      const written = retire(root, write, state, learning, { approvedBy: 'owner' });
-      return written.error === undefined ? { status: 'retired' } : written;
-    });
-  } catch (error) {
-    return readFailure(error);
-  }
-}
-
-/** A step a person asked for at the terminal on the learning `id`, which
- * the ledger must vouch for; `change` returns `{ status }` or `{ error }`. */
-function byHand(root, id, { interactive }, what, change) {
-  if (!isInteractive(interactive)) return refuse(root, needsTerminal(what));
-  if (!isId(id)) return refuse(root, ID_ERROR);
-  return repairedStep(root, write => {
-    const state = readState(root);
-    const found = vouchedLearning(state, id);
-    if (found.error) return found;
-    const changed = change(write, state, found.learning);
-    return changed.error === undefined ? { ok: true, id, status: changed.status } : changed;
-  });
 }
 
 /** True when the path at `path` does not exist; one that cannot be checked
@@ -996,102 +794,31 @@ function isGone(path) {
 
 /** True when the learning's gate cites at least one path and none of them
  * exists in the repository any more. */
-function citesGone(root, learning) {
+export function citesGone(root, learning) {
   const cites = learning.gate.cites ?? [];
   return cites.length > 0 && cites.every(cite => isGone(join(root, cite)));
 }
 
-/**
- * The deterministic part of the loop, run unattended. In order: the gate
- * repair, which removes every local gate the ledger does not grant, the
- * ones nobody approved among them (`unapprovedRemoved`); retirement of each
- * learning every path of whose `cites` is gone (one citing nothing is never
- * retired this way); demotion of each promoted learning marked wrong twice
- * since its promotion, suspending a committed gate (`suspended`) and
- * otherwise returning it to `trial` (`demoted`); and, under a readable
- * policy, promotion to the policy's `maxAction` of each learning on trial
- * since its replay that `policyAllows`, recorded with `approvedBy:
- * 'policy:<sha256>'`. A learning demoted back to trial is promoted again
- * only by the owner. Writes `last-tick.json` as `{ ts }` from `now` at the
- * end.
- *
- * Changes only learnings the ledger vouches for, and only in the data
- * directory; never a rule in `docs/harness/RULES.md` or any file in the
- * repository. With the ledger broken it does the removals and nothing else.
- * Returns `{ promoted, demoted, retired, suspended, unapprovedRemoved,
- * repairedGates, ledgerIntact, policy, errors }`, `policy` the policy's
- * state and `errors` what could not be done, or `{ error }`.
- */
-export function tick(root, options) {
-  try {
-    return tickUnguarded(root, optionsOf(options));
-  } catch (error) {
-    return readFailure(error);
-  }
-}
-
-function tickUnguarded(root, { now = Date.now }) {
-  return withLearningsLock(root, write => {
-    const before = readState(root);
-    const unapprovedRemoved = before.local.file ? unapprovedGateIds(before.local.file.gates, approvalsIn(before.view.entries)) : [];
-    const repairedGates = repairLocalGates(root, write);
-    const policy = readPolicy(root);
-    const result = {
-      promoted: [], demoted: [], retired: [], suspended: [],
-      unapprovedRemoved, repairedGates, ledgerIntact: before.view.intact, policy: policy.state, errors: [],
-    };
-    if (before.view.intact) applyRules(root, write, policy, result);
-    else result.errors.push('the ledger cannot be read or its chain is broken, so nothing was retired, demoted or promoted');
-    write(() => writeJson(join(repoDataDir(root), LAST_TICK_FILE), { ts: new Date(now()).toISOString() }));
-    return result;
-  });
-}
-
-/** Retirement, demotion and promotion under `policy`, in that order, each
- * over the learnings the ledger vouches for once the one before is done;
- * what each did, or could not do, goes into `result`. */
-function applyRules(root, write, policy, result) {
-  const apply = (learning, change, onDone) => {
-    const done = change(readState(root), learning);
-    if (done.error) result.errors.push(`${learning.id}: ${done.error}`);
-    else onDone(done);
-  };
-
-  for (const learning of recordedIn(readState(root))) {
-    if (SETTLED.has(learning.status) || !citesGone(root, learning)) continue;
-    apply(learning, (state, l) => retire(root, write, state, l, { detail: 'every path it cites is gone' }), () => result.retired.push(learning.id));
-  }
-
-  const marked = readState(root);
-  for (const learning of recordedIn(marked)) {
-    if (learning.status !== 'active-local' || wrongSincePromotion(marked.view.entries, learning.id) < WRONG_MARKS_TO_DEMOTE) continue;
-    apply(learning, (state, l) => demote(root, write, state, l, null), done => (done.status === 'suspended' ? result.suspended : result.demoted).push(learning.id));
-  }
-
-  if (policy.state === 'unreadable') result.errors.push(`the policy cannot be used (${policy.reason}), so nothing was promoted`);
-  if (policy.state !== 'ok') return;
-  const onTrial = readState(root);
-  const trials = recordedIn(onTrial).filter(l => l.status === 'trial' && onTrial.recorded.get(l.id).kind === 'trial');
-  const { stats } = logStats(root, trials);
-  for (const learning of trials) {
-    const { firings, sessions } = stats.get(learning.id);
-    const evidence = { firings, sessions, wrong: wrongSincePromotion(onTrial.view.entries, learning.id), external: learning.external || learning.evidence.external };
-    if (!policyAllows(policy.policy, evidence)) continue;
-    const promotion = { action: policy.policy.maxAction, approvedBy: `policy:${policy.sha256}`, detail: `${firings} firings in ${sessions} sessions` };
-    apply(learning, (state, l) => promote(root, write, state, l, promotion), () => result.promoted.push(learning.id));
-  }
+/** The ids of the learnings in `state` the ledger vouches for whose gate
+ * warns or blocks and every path of whose `cites` is gone. Anything running
+ * as this user can delete a file, so no rule retires an enforcing gate for
+ * this; it stays in force until the owner retires it at a terminal. */
+export function citationsGone(root, state) {
+  return recordedIn(state).filter(l => l.status === 'active-local' && citesGone(root, l)).map(l => l.id);
 }
 
 /**
  * Every learning on this machine for the repository, in id order:
- * `{ learnings, gatesToRepair, unapprovedGates, ledgerMismatch,
- * ledgerIntact, unreadable, approvals }`. The ledger, not a learning's
+ * `{ learnings, gatesToRepair, unapprovedGates, citationsGone,
+ * ledgerMismatch, ledgerIntact, unreadable, approvals }`. The ledger, not a learning's
  * file, is the authority for its status. `gatesToRepair` are the ids whose
  * local gate entries the next step that writes removes, replaces or
  * restores, and every gate whose learning file cannot be read;
  * `unapprovedGates` the ids of the local gate entries above `observe` that
  * no approval in the ledger grants, which that step removes; both null when
- * the local gate file cannot be read. `ledgerMismatch` are the ids of the
+ * the local gate file cannot be read. `citationsGone` are the enforcing
+ * learnings whose cited paths are all gone, as `citationsGone` finds them.
+ * `ledgerMismatch` are the ids of the
  * learnings the ledger does not vouch for (all of them when `ledgerIntact`
  * is false, since the ledger then records nothing) and the ids the ledger
  * names with no learning file; `unreadable` the ids whose learning file
@@ -1101,12 +828,14 @@ function applyRules(root, write, policy, result) {
  */
 export function listLearnings(root) {
   try {
-    const { learnings, unreadable, view, recorded, local } = readState(root);
+    const state = readState(root);
+    const { learnings, unreadable, view, recorded, local } = state;
     const approvals = approvalsIn(view.entries);
     return {
       learnings,
       gatesToRepair: local.file ? repairedGates(local.file.gates, learnings, unreadable, recorded).changed : null,
       unapprovedGates: local.file ? unapprovedGateIds(local.file.gates, approvals) : null,
+      citationsGone: citationsGone(root, state),
       ledgerMismatch: ledgerMismatches(learnings, unreadable, view, recorded),
       ledgerIntact: view.intact,
       unreadable,
@@ -1128,7 +857,7 @@ export function listLearnings(root) {
  * `sessionsUnreadable` counts the sessions that could not be read in full,
  * whose counts are what did parse.
  */
-function logStats(root, learnings) {
+export function logStats(root, learnings) {
   const counts = new Map(learnings.map(l => [l.id, { sha256: l.sha256, firings: 0, rerouted: 0, sessions: new Set() }]));
   let sessionsUnreadable = 0;
   for (const sessionId of sessionIds(root)) {
