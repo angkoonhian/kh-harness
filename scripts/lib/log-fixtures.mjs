@@ -86,8 +86,8 @@ export function snapshot(dir) {
 }
 
 /** Every entry under `dir` by relative path: a file with its bytes, a
- * directory (empty or not) as `{ dir: true }`, anything else by its kind, so
- * a new empty directory and a changed file both show. */
+ * directory (empty or not) as `{ dir: true }`, and any other entry as
+ * `{ other: true }`, so a new empty directory and a changed file both show. */
 export function treeSnapshot(dir) {
   const entries = {};
   const walk = rel => {

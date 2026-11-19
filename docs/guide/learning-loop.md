@@ -2,7 +2,11 @@
 
 How a tool failure that recurs across sessions becomes one small gate on
 tool calls, and how that gate is promoted, landed, suspended, reverted or
-retired. Plain code does every check. A model drafts, and only you approve.
+retired. Plain code does every check. A model drafts. A gate moves past
+`observe` only through `learn approve`, which runs only at an interactive
+terminal outside Claude Code, or through `tick` under a policy whose hash
+the ledger records. A process running as you can forge either; see
+[Limits](../../README.md#limits).
 
 [Back to the README](../../README.md) ·
 [Command reference](commands.md#learn) ·
@@ -68,9 +72,12 @@ flowchart LR
 5. **The script** replays the gate against the log (below).
 6. **The gate hook** runs a passing gate at `observe`, which records each
    firing and blocks nothing.
-7. **You**, at a terminal, approve its hash for `warn` or `block` on this
-   machine — or **`tick`** promotes it under the policy you recorded.
-8. **You**, at a terminal, land it in the repository and commit it.
+7. **You** run `learn approve` with its hash, for `warn` or `block` on this
+   machine; the command runs only at an interactive terminal outside Claude
+   Code. Or **`tick`** promotes it under a policy whose hash the ledger
+   records.
+8. **You** run `learn land --yes`, which also needs that terminal, and
+   commit the change.
 
 ## States and transitions
 
@@ -96,24 +103,24 @@ stateDiagram-v2
 `retire` also leads to `retired` from the other live states, and is left out
 of the diagram for clarity; the table below gives its conditions.
 
-| From | To | Caused by | Who |
+| From | To | Caused by | What the command checks |
 |---|---|---|---|
-| — | `candidate` | `learn draft` | anyone; in practice the skill |
-| `candidate` | `trial` | a replay that passes, from `draft` or `replay` | the script |
-| `candidate` | `rejected` | a replay that fails | the script |
-| `candidate` | `candidate` | a replay that is not checkable | the script |
-| `trial` | `active-local` | `learn approve` | you, at a terminal |
-| `trial` | `active-local` | `learn tick` under a recorded policy | `tick`, which anyone can run |
-| `trial` | `retired` | `learn tick`, when every cited path is gone | `tick` |
-| `active-local` | `trial` | `learn demote`, or the second wrong mark since its promotion, while its gate is not in the committed gate file | you, at a terminal; `tick` finishes a demotion that did not happen |
-| `active-local` | `suspended` | the same, while its gate is in the committed gate file (a land that stopped before its ledger entry, or a checkout that already holds it) | you, at a terminal; or `tick` |
-| `active-local` | `landed` | `learn land --yes` | you, at a terminal |
-| `landed` | `active-local` | `learn revert --yes` | you, at a terminal |
-| `landed` | `suspended` | `learn demote`, or the second wrong mark since its landing | you, at a terminal; or `tick` |
-| `suspended` | `retired` | `learn revert --yes` | you, at a terminal |
-| `retired` | `retired` | `learn revert --yes`, for a learning retired while its gate was still committed: the gate is taken out | you, at a terminal |
-| `candidate`, `trial`, `active-local` | `retired` | `learn retire` | you, at a terminal |
-| `landed`, `suspended` | `retired` | `learn retire`, only once no gate of it is left in the committed gate file; while one is, retire is refused and names the revert | you, at a terminal |
+| — | `candidate` | `learn draft` | none; in practice the skill runs it |
+| `candidate` | `trial` | a replay that passes, from `draft` or `replay` | none: the script decides |
+| `candidate` | `rejected` | a replay that fails | none: the script decides |
+| `candidate` | `candidate` | a replay that is not checkable | none: the script decides |
+| `trial` | `active-local` | `learn approve` | an interactive terminal outside Claude Code |
+| `trial` | `active-local` | `learn tick` under a recorded policy | none at the terminal; the policy file's hash must equal the last policy hash the ledger records |
+| `trial` | `retired` | `learn tick`, when every cited path is gone | none |
+| `active-local` | `trial` | `learn demote`, or the second wrong mark since its promotion, while its gate is not in the committed gate file | an interactive terminal outside Claude Code (`learn demote`, `learn wrong`); `tick`, which checks none, finishes a demotion that did not happen |
+| `active-local` | `suspended` | the same, while its gate is in the committed gate file (a land that stopped before its ledger entry, or a checkout that already holds it) | an interactive terminal outside Claude Code for `demote` and `wrong`; none for `tick` |
+| `active-local` | `landed` | `learn land --yes` | an interactive terminal outside Claude Code |
+| `landed` | `active-local` | `learn revert --yes` | an interactive terminal outside Claude Code |
+| `landed` | `suspended` | `learn demote`, or the second wrong mark since its landing | an interactive terminal outside Claude Code for `demote` and `wrong`; none for `tick` |
+| `suspended` | `retired` | `learn revert --yes` | an interactive terminal outside Claude Code |
+| `retired` | `retired` | `learn revert --yes`, for a learning retired while its gate was still committed: the gate is taken out | an interactive terminal outside Claude Code |
+| `candidate`, `trial`, `active-local` | `retired` | `learn retire` | an interactive terminal outside Claude Code |
+| `landed`, `suspended` | `retired` | `learn retire`, only once no gate of it is left in the committed gate file; while one is, retire is refused and names the revert | an interactive terminal outside Claude Code |
 
 The ledger, not a learning's own file, decides its status and the action its
 gate may carry. Every step that writes first brings this machine's gate file
@@ -157,7 +164,8 @@ link here.
 > [!IMPORTANT]
 > Eight subcommands are terminal-only: `approve`, `wrong`, `demote`,
 > `retire`, `land`, `revert`, `policy set` and `policy clear`. Each runs
-> only for a person at an interactive terminal outside Claude Code.
+> only when its standard input and output are an interactive terminal and
+> `CLAUDECODE` is unset; it does not check who is at that terminal.
 
 **The terminal check.** Standard input and standard output must both be
 terminals, and `CLAUDECODE` must be unset. The check relies on what
@@ -221,8 +229,9 @@ read outside content. Both counts must be at least 1.
 - Without a policy, nothing is promoted automatically.
 
 The firings a policy counts come from the session log, which anything
-running as you can append to. Your approval of a hash at a terminal is the
-only control that does not depend on the log.
+running as you can append to. An approval with `learn approve` does not
+depend on the log's firing counts, but it is a ledger entry like any
+other, and a process running as you can forge it too.
 
 ## tick
 
@@ -245,7 +254,7 @@ repository:
 
 - its entry in `docs/harness/LEARNED.md`, a kit-owned file in the format of
   `RULES.md`;
-- its gate, at the action you approved, in `.claude/kh-harness/gates.json`;
+- its gate, at the action its approval recorded, in `.claude/kh-harness/gates.json`;
 - a record of both in the manifest.
 
 Without `--yes` it is a dry run: it shows the notes and the diff, needs no
@@ -254,7 +263,7 @@ terminal, and writes nothing in the repository or the data directory. With
 branch, not on a dirty tree, unless `--allow-default-branch` or
 `--allow-dirty` waives one. A `LEARNED.md` or `gates.json` that kh-harness
 no longer owns stops it with exit 3. `RULES.md` is never written. The ledger
-records you as the approver of the landing, whoever promoted the learning
+records `approvedBy: 'owner'` for the landing, whoever promoted the learning
 here. The change is left uncommitted, and the command says so: review it
 with `git status` and `git diff` and commit it. Only then does the gate
 bind everyone who has the repository. `detect`'s `P5.integrity` checks that

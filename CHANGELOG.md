@@ -1,8 +1,10 @@
 # Changelog
 
-All notable changes to kh-harness are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
-uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to kh-harness are recorded here, one section per
+release headed by its version and date, with Added, Changed and Fixed
+lists in the manner of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+The headings are plain, without links, since no release is tagged yet. The
+project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## 0.2.0 - 2026-11-19
 
@@ -37,8 +39,11 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `show`, `approve`, `wrong`, `demote`, `retire`, `tick`, `land`, `revert`,
   `policy show`, `policy set` and `policy clear`. A drafted gate is replayed
   against the log before it can act, tried at `observe`, and promoted to
-  `warn` or `block` only by the owner's approval of its hash at a terminal
-  or by a policy whose hash the owner recorded in the ledger at a terminal.
+  `warn` or `block` by a `learn` command only through `learn approve` with
+  its hash, run at an interactive terminal outside Claude Code, or through
+  `tick` under a policy whose hash the ledger records (set with
+  `learn policy set`, which needs the same terminal). A process running as
+  the user can forge a terminal or a ledger line.
 - `learn show <id>` lists a learning's latest ten firings, each as the
   `session:line` reference `learn wrong` takes, and how many more there
   are; `--firings` lists every one, and `--json` gives them as
@@ -54,8 +59,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `learn land` and `learn revert`: a learning promoted on this machine goes
   into `docs/harness/LEARNED.md` and `.claude/kh-harness/gates.json`
   through `apply`'s write path and refusals, and comes out again. The dry
-  run needs no terminal and writes nothing; the write (`--yes`) needs a
-  person at a terminal and is left uncommitted for the owner. A revert
+  run needs no terminal and writes nothing; the write (`--yes`) runs only
+  at an interactive terminal outside Claude Code and is left uncommitted
+  for the owner. A revert
   proceeds from whatever trace of the learning remains, reads the commit
   when the working tree's gate file has lost the gate, and returns a landed
   learning to this machine or retires a suspended one. An interrupted land
@@ -103,7 +109,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hook is proposed.
 - `uninstall` also removes the two files `learn land` writes, each only
   while it is unmodified and holds nothing but learnings the manifest
-  records; `LEARNED.md` stays whenever `gates.json` stays, and `gates.json`
+  records; `LEARNED.md` stays whenever `gates.json` stays for a reason of its own, and `gates.json`
   stays for its partner only when `LEARNED.md` holds an unrecorded
   learning. Removing `gates.json` clears the manifest's landed learnings;
   the ledger is not changed. It reports the session log's directory and
