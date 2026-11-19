@@ -89,10 +89,11 @@ export function logClean(root) {
   for (const id of ids) log(root, id, HARNESS, ...Array.from({ length: perSession }, (_, i) => success(id, `npm run task-${i}`)));
 }
 
-/** A second recurrence, of the Read tool, in two more sessions, named in
- * the taxonomy unless `label` is false. */
+/** A second recurrence, of the Read tool, in two more sessions, each with a
+ * Read that worked (a replay needs a good call of the gate's tool there),
+ * named in the taxonomy unless `label` is false. */
 export function logReadMistakes(root, { label = true } = {}) {
-  for (const id of ['three', 'four']) log(root, id, HARNESS, call(FAILURE_EVENT, id, 'Read', { file_path: 'missing.txt' }));
+  for (const id of ['three', 'four']) log(root, id, HARNESS, call(FAILURE_EVENT, id, 'Read', { file_path: 'missing.txt' }), read(id));
   if (label) labelFailures(root);
 }
 
