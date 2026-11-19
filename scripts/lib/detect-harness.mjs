@@ -40,6 +40,7 @@ import { readJsonFile } from './read-json.mjs';
 import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
 import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
+import { failuresEvidence } from './failures-evidence.mjs';
 import { normalizeMatcher, hookPathTokens } from './settings-merge.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
@@ -481,5 +482,6 @@ export function detectHarness(root, files) {
   harness.intent = intentEvidence(root);
   harness.rulesRegistry = rulesRegistryEvidence(root, harness);
   harness.ruleShapedLines = ruleShapedLines(root, harness);
+  harness.failures = failuresEvidence(root);
   return harness;
 }

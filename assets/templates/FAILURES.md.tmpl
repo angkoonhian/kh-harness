@@ -1,0 +1,34 @@
+{{stamp}}
+
+# Failures
+
+<!--
+  This is this repository's FAILURE TAXONOMY: one entry per kind of failure
+  you have seen recur across agent sessions, each naming the recurrence
+  signatures it covers. kh-harness scaffolded the shape and will never
+  write a failure kind here — naming what went wrong, and deciding whether
+  it is a defect in the harness or a limit of the model, is yours. No rule
+  is drafted from a recurrence until a failure kind here names it.
+
+  A recurrence is the same tool, the same normalised input and the same
+  first error line in two or more sessions under one harness and model.
+  `log report` lists them, each with its signature: 16 lowercase hex
+  characters. `detect` counts how many current recurrences no failure kind
+  below names yet.
+
+  FORMAT — one level-2 heading per failure kind, then one bullet listing the
+  signatures it covers, comma-separated:
+
+    ## F<n> — <what kind of failure this is, in a few words>
+    - signatures: <signature>, <signature>, ...
+
+  `F<n>` is the letter F and a number, stable, never reused. A heading with
+  no signatures line is a failure kind that covers nothing yet. Anything in
+  the list that is not a signature is ignored, and `detect` says how many.
+
+  WORKED EXAMPLE (inside this comment, so it is never read as a failure
+  kind — write your own below the comment rather than uncommenting this one):
+
+    ## F1 — The test runner is invoked with a flag this version dropped
+    - signatures: 3f9a0c2e7b14d856, a07e5b19c3d2f480
+-->

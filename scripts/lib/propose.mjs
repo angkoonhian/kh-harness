@@ -13,6 +13,7 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 // lib.mjs reads every producible path from this one module, as it does for
 // the other five.
 import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { FAILURES_PATH } from './failures-evidence.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -508,6 +509,25 @@ function rulesScaffoldProposal({ kitVersion }) {
   }];
 }
 
+const FAILURES_STEP = 29;
+
+/**
+ * The failure taxonomy scaffold (Phase 5, step 29): `docs/harness/FAILURES.md`
+ * from a template whose schema and worked example sit inside one static HTML
+ * comment under one heading. The kit scaffolds the shape and never a failure
+ * kind: naming what kind of failure a recurrence is belongs to a person.
+ * `rulesScaffoldProposal`'s two properties hold here for the same reasons,
+ * with `parseFailures` in place of `parseRules`; both are pinned in
+ * propose.test.mjs.
+ */
+function failuresScaffoldProposal({ kitVersion }) {
+  return [{
+    kind: 'file', path: FAILURES_PATH, step: FAILURES_STEP,
+    contents: render(read('templates/FAILURES.md.tmpl'), { stamp: versionStamp(kitVersion, FAILURES_STEP, '<!--') + ' -->' }),
+    reason: 'no failure taxonomy found',
+  }];
+}
+
 const REINJECT_STEP = 28;
 
 /**
@@ -719,6 +739,7 @@ const GENERATORS = {
   'P1.pathrules': pathRuleProposal,
   'P3.rules': rulesScaffoldProposal,
   'P3.reinject': reinjectProposal,
+  'P5.failures': failuresScaffoldProposal,
   // Each update goes through `buildProposals`' recorded-path branch like any
   // other proposal for a recorded file.
   [KITSKEW_ID]: ctx => kitSkew(ctx).updates,

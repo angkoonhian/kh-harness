@@ -24,6 +24,7 @@ import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, S
 import { MANIFEST_PATH } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { FAILURES_PATH } from './failures-evidence.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
@@ -784,6 +785,33 @@ const CHECKS = [
       return registeredHook(harness, 'UserPromptSubmit', RULES_BRIEF_PATH,
         "register a UserPromptSubmit hook that re-injects the registry's rules into every prompt, bounded at 1500 bytes",
         { manifest, root });
+    },
+  },
+  {
+    id: 'P5.failures', step: 29, phase: 5,
+    lookedFor: [FAILURES_PATH, "the recurrences in this machine's session log"],
+    // Never `verified`: labels are a person's judgement and nothing here
+    // executes. The evidence is counts only — failures-evidence.mjs's own
+    // comment says why no log content may reach detect.json.
+    check: ({ harness }) => {
+      const f = harness.failures ?? null;
+      if (!f) return { state: 'absent', proposal: `scaffold ${FAILURES_PATH} — generated EMPTY; each failure kind is named by hand, with the recurrence signatures it covers` };
+      if (!f.readable) return { state: 'declared', evidence: [`${f.path} exists but could not be read — its failure kinds and the recurrences it labels are unknown`] };
+      const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+      const evidence = [`${f.path}: ${plural(f.kinds, 'failure kind')} named`];
+      if (f.malformedSignatures) evidence.push(`${plural(f.malformedSignatures, 'malformed signature id')} ignored (a signature id is 16 lowercase hex characters)`);
+      const log = f.log;
+      if (!log.read) {
+        evidence.push(log.why === 'disabled'
+          ? 'no sessions read — the session log is not enabled on this machine'
+          : "no sessions read — the session log's directory could not be listed");
+      } else if (log.sessionsRead === 0) {
+        evidence.push('no sessions read — the session log holds no sessions');
+      } else {
+        evidence.push(`${plural(log.sessionsRead, 'session')} read: ${plural(log.recurrences, 'recurrence')}, ${log.unlabelled} not labelled in ${FAILURES_PATH}`);
+        if (log.sessionsUnreadable) evidence.push(`${log.sessionsUnreadable} of those sessions could not be read in full`);
+      }
+      return { state: 'declared', evidence };
     },
   },
   {
