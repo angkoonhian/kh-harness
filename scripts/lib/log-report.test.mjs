@@ -264,7 +264,9 @@ test('gate firings are counted per gate and action, and a warn or block followed
   assert.match(text, /L1: fired 6 times \(observe 0, warn 0, block 6\); rerouted after 3 of 6 warnings and blocks; marked wrong: 0 since the last promotion or landing, 0 in all/);
   assert.match(text, /L2: fired 2 times \(observe 1, warn 1, block 0\); rerouted after 1 of 1 warnings and blocks;/);
   assert.match(text, /firing events not counted, because their gate id or action is not one a gate can have: 2/);
-  assert.doesNotMatch(text, /L9|shout/);
+  // The section alone: the location line above it holds a temporary
+  // directory's random name, which can spell `L9`.
+  assert.doesNotMatch(text.slice(text.indexOf('GATE FIRINGS')), /L9|shout/);
 });
 
 test('marked wrong is read from the ledger, and a broken ledger is reported as not read', () => {
