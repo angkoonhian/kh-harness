@@ -13,8 +13,9 @@
 
   A rule with `enforced-by: none` is a claim; it is the automation backlog.
   kh-harness does not write an enforcer for it. Its learning loop drafts
-  tool-call gates only for failures that recur in the session log, and
-  keeps them in docs/harness/LEARNED.md, never in this file.
+  tool-call gates only for failures that recur in the session log. A gate
+  the owner lands is kept in .claude/kh-harness/gates.json and its rule in
+  docs/harness/LEARNED.md, never in this file.
 
   FORMAT — one level-2 heading per rule, then `key: value` bullets:
 
@@ -44,8 +45,10 @@
   Two things kh-harness installs read this file: `detect` (which reports
   the counts above and any pointer that no longer exists) and, once at
   least one rule exists, the UserPromptSubmit hook `rules-brief.mjs`, which
-  puts the rules here and in docs/harness/LEARNED.md back in front of Claude
-  on every prompt — bounded, high-priority first — because compliance with
-  a rule stated once has been measured to decay as a session runs. Keep
-  each rule to one sentence: the hook has 1500 bytes for both files.
+  puts the rules here back in front of Claude on every prompt — bounded,
+  high-priority first — because compliance with a rule stated once decays
+  as a session runs. After them it re-tells each learned rule in
+  docs/harness/LEARNED.md unless that rule's gate blocks the call, since a
+  blocked call needs no reminder. Keep each rule to one sentence: the hook
+  has 1500 bytes for both files.
 -->

@@ -91,7 +91,7 @@ export function dataRoot() {
 /**
  * The path's real, absolute spelling. `realpathSync.native` because git
  * records real paths in a worktree's `gitdir` file while a caller may hold a
- * link or, on win32, an 8.3 short name (`C:\Users\DREAMB~1`), and both must
+ * link or, on win32, an 8.3 short name (`C:\Users\LONGNA~1`), and both must
  * key the same; a path that does not exist keeps its resolved spelling.
  */
 function normalisedPath(path) {
@@ -272,8 +272,9 @@ function isInside(root, path) {
 }
 
 /** The manifest when it reads as the kit's schema, null when absent, and
- * `UNREADABLE` otherwise. Every file path must stay inside the repository,
- * since each one is read. */
+ * `UNREADABLE` otherwise. Every file path must stay inside the repository:
+ * the installed scripts among them are read, and a manifest that names a
+ * path outside is not one the kit wrote. */
 function readInstalledManifest(root) {
   const read = readJson(join(root, MANIFEST_PATH));
   if (!read.ok) return read.absent ? null : UNREADABLE;

@@ -178,14 +178,14 @@ function pickVerifyCommand(scripts) {
 }
 
 // The bounded runner and the process-tree kill live in harness-redact.mjs
-// (`runBounded`, `killTree`) since audit Tier 3, shared with lint-touched.mjs.
+// (`runBounded`, `killTree`), shared with lint-touched.mjs.
 
 /**
  * A fingerprint of the working tree — HEAD, `git status` for tracked and
  * untracked files, and the size and mtime of every path status lists — or
- * null outside a repository or when git cannot answer. Audit Tier 3,
- * finding 10: the whole typecheck re-ran on turns that changed nothing (a
- * read-only Q&A turn included). A fingerprint equal to the one recorded
+ * null outside a repository or when git cannot answer. Without it the
+ * whole typecheck would re-run on turns that changed nothing, a read-only
+ * question among them. A fingerprint equal to the one recorded
  * after the last PASSING run means there is nothing new to verify, at the
  * cost of one `git status` and a few stats instead of a typecheck. Content
  * is not hashed: a tracked file edited twice between turns keeps its status
@@ -201,10 +201,9 @@ function treeFingerprint(root) {
   let status;
   try {
     // `git status --porcelain` paths are REPOSITORY-root relative whatever
-    // the working directory (Tier 3 review, Critical 1: stat-ing them
-    // against a project rooted below the toplevel — a monorepo package —
-    // found nothing, hashed every path as `gone`, and a file edited twice
-    // between turns was skipped as unchanged).
+    // the working directory. Stat-ing them against a project rooted below
+    // the toplevel, a monorepo package, would find nothing, hash every path
+    // as `gone`, and skip a file edited twice between turns as unchanged.
     top = git(['rev-parse', '--show-toplevel']).trim();
     status = git(['status', '--porcelain', '-z', '--untracked-files=all']);
   } catch {
@@ -239,10 +238,10 @@ function treeFingerprint(root) {
 }
 
 /**
- * An exit-0 notice. Claude Code never shows a hook's stderr when it exits 0
- * (audit Tier 3, finding 12: the "already reported" and "cap reached" lines
- * were invisible); `systemMessage` is the documented field "shown to the
- * user", and stdout is where it goes.
+ * An exit-0 notice. Claude Code never shows a hook's stderr when it exits
+ * 0, so the "already reported" and "cap reached" lines would be invisible
+ * there; `systemMessage` is the documented field "shown to the user", and
+ * stdout is where it goes.
  */
 function notice(text) {
   process.stdout.write(JSON.stringify({ systemMessage: text }) + '\n');
@@ -265,8 +264,6 @@ async function main() {
   const sessionId = safeSessionId(payload.session_id);
   if (sessionId === null) return 0; // cannot safely track state for this session — see safeSessionId's own comment
 
-  // Shared with session-brief.mjs, which used a bare process.cwd() —
-  // whole-branch review, F4: three hooks, two conventions, one of them wrong.
   const root = projectRoot();
   const scripts = readScripts(root);
   if (!scripts) return 0; // no package.json, or unreadable — nothing to verify
@@ -329,10 +326,9 @@ async function main() {
   }
 
   // An overflow (output exceeded VERIFY_MAX_BUFFER) is not a verification
-  // failure in itself: the command ran to its own end — audit Tier 3,
-  // finding 12: it used to be KILLED at the cutoff and then blamed, so a
-  // passing but verbose command blocked the turn — and `result.status` is
-  // its own. What was captured before the cut is reported below, with the
+  // failure in itself: the command ran to its own end, since killing it at
+  // the cutoff would blame a passing but verbose command, and
+  // `result.status` is its own. What was captured before the cut is reported below, with the
   // cut named in the header. Any error (a spawn failure) or signal (a kill
   // that was not our own timeout) is never reported as a verification
   // failure.

@@ -1,81 +1,69 @@
 // assets/scripts/harness-redact.mjs
 //
-// The one module EVERY hook this kit installs imports — lint-touched.mjs's
-// PostToolUse sensor, verify-touched.mjs's Stop gate, and session-brief.mjs's
-// SessionStart brief — and any future one must import this file rather than
-// carry its own copy of anything in it. Two hooks each holding an
-// independent copy of this logic is exactly the shape that lets a fix land
-// in one and not the other; this project has already shipped four
-// secret-exposure defects, and "the fix only ever reached one of the two
-// copies" is a failure mode this extraction removes structurally, not by
-// convention.
+// The one module every hook this kit installs may import, besides Node's
+// built-ins and the other installed scripts: a hook is copied into a
+// repository's `.claude/scripts/`, where nothing in `scripts/lib/` can
+// reach it. Whatever two hooks must agree on therefore lives here, once,
+// and a hook must import it from here and never carry a copy: a fix made
+// to one copy and not the other is how a credential reaches the model.
+// `detect` imports the same functions, so what a hook does and what
+// `detect` reports cannot disagree.
 //
-// THE NAME DESCRIBES ONE OF FIVE THINGS THIS MODULE NOW CARRIES. It is
-// named for the first one it shared, stderr redaction, and the full list is:
+// The file's name covers the first of the things it holds:
 //
 //   1. REDACTION — `dropCommandFragments` (layer 1, a denylist of command
 //      fragments) and `maskCredentials`/`maskText` (layer 2, masking by
 //      `CREDENTIAL_SHAPES`, the credential table the sweep in
 //      `scripts/lib/detect-exposure.mjs` reads too), with `stripUnsafe` and
 //      `escapeDelimiters` for repository text a brief injects into the
-//      model's context. The only part the name covers.
-//   2. OUTPUT BOUNDS — `MAX_REPORT_LINES`, `MAX_REPORT_BYTES` and
+//      model's context.
+//   2. CANONICAL JSON — `canonicalJson`, which every hash of a JSON value
+//      is taken over.
+//   3. OUTPUT BOUNDS — `MAX_REPORT_LINES`, `MAX_REPORT_BYTES` and
 //      `boundReport`, which keep a hook's output inside Claude Code's
-//      10,000-character cap so it actually ARRIVES (see F3 below).
-//   3. SESSION-MARKER STATE — `safeSessionId`, `markerPath`,
-//      `readJSONMarker`/`writeJSONMarker`, `signatureOf`,
-//      `MAX_REPORTS_SINCE_CLEAN`: the per-session bookkeeping both process
-//      hooks bound themselves with.
-//   4. THE PROJECT ROOT — `projectRoot`, the one answer all three hooks
-//      use (whole-branch review, F4: there were two).
-//   5. THE HANDOFF LOCATION — `HANDOFF_CANDIDATES` and `findHandoff`,
-//      shared with `scripts/lib/detect-harness.mjs` so detection and the
-//      hook cannot disagree about where the file is (F4 again).
+//      10,000-character cap, past which it does not arrive.
+//   4. SESSION-MARKER STATE — `safeSessionId`, `markerPath`,
+//      `readJSONMarker`/`writeJSONMarker`, `openMarker`, `signatureOf`,
+//      `MAX_REPORTS_SINCE_CLEAN`: the per-session bookkeeping the hooks
+//      bound themselves with.
+//   5. THE PROJECT ROOT — `projectRoot`, the one answer every hook uses.
+//   6. THE HANDOFF LOCATION — `HANDOFF_CANDIDATES` and `findHandoff`.
+//   7. THE RULES REGISTRY — its two locations and `parseRules`.
+//   8. A BOUNDED RUNNER — `runBounded` and `killTree`, for the two hooks
+//      that run a repository's own command.
 //
-// Coordinator ruling (post-review, concern 3): the name is KEPT, and the
-// mismatch is disclosed here rather than left for the next reader to
-// discover. Renaming is not available: `REDACT_PATH`
-// (`.claude/scripts/harness-redact.mjs`) is recorded in every manifest this
-// tool has ever written, and `uninstall` reads that manifest to decide what
-// it may remove — so a rename orphans every existing install's record of
-// this file, permanently, with no notice. A name that under-describes its
-// module is survivable; one that under-describes it SILENTLY sends the next
-// reader looking in the wrong file for `findHandoff` or `boundReport`.
-// If this is ever renamed, the manifest needs a migration first, not a
-// `git mv`.
+// The file cannot be renamed to say so: `.claude/scripts/harness-redact.mjs`
+// is recorded in every manifest the kit has written, and `uninstall` reads
+// the manifest to decide what it may remove, so a rename would orphan every
+// existing install's record of this file. A rename needs a manifest
+// migration first.
 //
-// Whole-branch review, F3: session-brief.mjs is the reason the bound below
-// has a byte limit at all — `MAX_REPORT_LINES`' own comment cited it as the
-// model — and it was the one hook that never got that byte limit, because
-// it predates this module and could not import it. It imports it now.
-//
-// Two independent layers:
+// Two independent layers of redaction:
 //
 //   Layer 1 (dropCommandFragments): a denylist against what is KNOWN to
 //   have come from a command the calling hook itself built. A shell or
 //   interpreter can echo a FRAGMENT of a failing command line, not
-//   necessarily the whole string (confirmed: node's own SyntaxError
-//   reporter prints only the text after an unbalanced quote) — so every
-//   whitespace-delimited token of length >= 8 drawn from the command(s) is
-//   treated as sensitive, and any surviving line containing one is dropped
-//   outright. `exemptions` carries whatever legitimately belongs in a real
-//   diagnostic and must never be treated as a redactable fragment: what
-//   the caller appended to its own command (the edited file), and — via
-//   `pathTokenExemptions` — the command's own path and config-file tokens
-//   (`eslint src/components`, `tsc -p tsconfig.build.json`), which every
-//   diagnostic names and which are not secrets.
+//   necessarily the whole string (node's SyntaxError reporter prints only
+//   the text after an unbalanced quote), so every whitespace-delimited token
+//   of length >= 8 drawn from the command(s) is treated as sensitive, and
+//   any surviving line containing one is dropped outright. `exemptions`
+//   carries whatever legitimately belongs in a real diagnostic and must
+//   never be treated as a redactable fragment: what the caller appended to
+//   its own command (the edited file), and, via `pathTokenExemptions`, the
+//   command's own path and config-file tokens (`eslint src/components`,
+//   `tsc -p tsconfig.build.json`), which every diagnostic names and which
+//   are not secrets.
 //
-//   Layer 2 (maskCredentials, maskText): the credential-SHAPE table, independent of
-//   layer 1 — catches a credential-shaped value arriving from ANYWHERE in
-//   the output, including content the hook never built itself (e.g. a
-//   linted file's own source, or a verification command's own diagnostic
-//   text). Masks the VALUE and never drops the line: a genuine diagnostic
-//   that happens to mention a credential should still reach Claude, with
-//   the secret starred out, not disappear entirely.
+//   Layer 2 (maskCredentials, maskText): the credential-SHAPE table,
+//   independent of layer 1. It catches a credential-shaped value arriving
+//   from ANYWHERE in the output, including content the hook never built
+//   itself (a linted file's own source, a verification command's own
+//   diagnostic text). It masks the VALUE and never drops the line: a
+//   genuine diagnostic that happens to mention a credential should still
+//   reach Claude, with the secret starred out.
 //
-// Attribution — deciding what the output is even ABOUT — is each caller's
-// own concern and stays in the caller; it has nothing to do with redaction
-// and does not belong in a shared chokepoint.
+// Attribution, deciding what the output is even ABOUT, is each caller's own
+// concern and stays in the caller.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
@@ -109,18 +97,17 @@ const CONFIG_SHAPED = /(?:\.(?:json|ya?ml|toml|[cm]?[jt]s|cfg|ini|conf)|(?:^|[/=
 // looks like: `--token` set to `secrets.json` is still a token.
 const CREDENTIAL_FLAG = /^--?(?:[\w-]*(?:token|key|secret|password|passwd|pwd|auth)[\w-]*)=/i;
 // Nor is anything that can carry userinfo: a URL or an `scp`-style
-// `user@host:path`, whatever it ends in (final review: `…@host/x.json`
-// was exempt by its suffix and a credential URL survived layer 1).
+// `user@host:path`, whatever it ends in. `…@host/x.json` has a config
+// file's suffix and may hold a credential before the `@`.
 const CARRIES_USERINFO = /:\/\/|@/;
 
 /**
  * The tokens of `command` that name a PATH or a CONFIG FILE rather than
- * anything secret, for use as layer-1 exemptions. Audit Tier 1, finding 2
- * (docs/2026-11-02-audit-findings.md): with `eslint src/components`,
- * `ruff check backend/app` or `eslint -c .eslintrc.cjs .`, every diagnostic
- * named the path or config the command named, so `dropCommandFragments`
- * treated every diagnostic as an echo of the command and the hook reported
- * nothing — the sensor's one job, failing silently.
+ * anything secret, for use as layer-1 exemptions. With
+ * `eslint src/components`, `ruff check backend/app` or
+ * `eslint -c .eslintrc.cjs .`, every diagnostic names the path or config
+ * the command named; without these exemptions `dropCommandFragments` takes
+ * every diagnostic for an echo of the command and the hook reports nothing.
  *
  * Exempt: (a) a token that is a DIRECTORY prefix of one of `paths` (whole
  * segments — `src/comp` is not a prefix of `src/components/x`), with a
@@ -424,8 +411,7 @@ export function canonicalJson(value) {
 // Shared so neither hook's bound can silently drift out of sync with the
 // other's — see MAX_REPORT_LINES/MAX_REPORT_BYTES below.
 
-/** The line bound every hook's output shares, session-brief.mjs included —
- * it used to carry its own copy of this number and nothing else. */
+/** The line bound every hook's output shares. */
 export const MAX_REPORT_LINES = 60;
 /**
  * A line-count bound alone cannot stop a single very long line (minified
@@ -443,9 +429,8 @@ export const MAX_REPORT_LINES = 60;
  * session directory and replaces it with the file path plus a preview of the
  * first 2,000 characters — and "Claude Code doesn't ask Claude to read the
  * file". So exceeding this is not a flooded context, it is the output
- * SILENTLY NOT ARRIVING. That is what F3 cost session-brief.mjs: past the
- * cap, the handoff was replaced by a path Claude is never told to open, and
- * nothing anywhere reported it.
+ * SILENTLY NOT ARRIVING: past the cap a handoff brief is replaced by a path
+ * Claude is never told to open, and nothing reports it.
  */
 export const MAX_REPORT_BYTES = 10_000;
 
@@ -473,19 +458,12 @@ function sliceUtf8(str, maxBytes) {
  * but this one plus its own single `write` call site — see each hook's own
  * comment on its chokepoint.
  *
- * Whole-branch review, F3: the byte bound used to cut at exactly
- * `MAX_REPORT_BYTES` and THEN append the truncation notice, so the string
- * this returned was ~10,050 bytes — over Claude Code's 10,000-character cap
- * by the length of its own notice, which is precisely the cap this constant
- * exists to stay under. Two things are fixed here, because a bound that is
- * fifty bytes over is not a bound at all for the failure mode it exists to
- * prevent:
- *
- *   - the notice is now INSIDE the budget, not appended after it; and
- *   - one further byte is reserved for the single trailing newline every
- *     caller adds (all three hooks write `boundReport(...) + '\n'`), so the
- *     bound holds on what is actually WRITTEN rather than on an
- *     intermediate string nothing emits.
+ * The truncation notice is INSIDE the byte budget, not appended after it,
+ * and one further byte is reserved for the single trailing newline every
+ * caller adds (each writes `boundReport(...) + '\n'`), so the bound holds on
+ * what is actually WRITTEN rather than on an intermediate string: a bound
+ * that is over by the length of its own notice is no bound against a cap
+ * past which the output does not arrive.
  *
  * A non-empty `footer` follows everything else on its own line, truncation
  * notices included, and its bytes are reserved from the budget, so a
@@ -515,14 +493,9 @@ export function boundReport(lines, header = '', footer = '') {
  * The repository root, as Claude Code reports it, falling back to the
  * process's own working directory.
  *
- * Whole-branch review, F4, secondary: three hooks, two conventions. This is
- * what lint-touched.mjs and verify-touched.mjs both already did inline;
- * session-brief.mjs used a bare `process.cwd()` and DOCUMENTED the
- * assumption ("Assumes cwd is the repository root at SessionStart") rather
- * than removing it — so any SessionStart invocation whose cwd was not the
- * project root printed "no HANDOFF.md in this repository yet" into the
- * model's context, as a false premise, at the start of every session. One
- * function, three callers.
+ * Every hook asks here. A bare `process.cwd()` is wrong whenever a hook is
+ * invoked with another working directory: the session-start brief would
+ * then tell the model, as a premise, that the repository has no handoff.
  */
 export function projectRoot() {
   return process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -532,30 +505,20 @@ export function projectRoot() {
  * The two conventional locations for a repository's handoff file, in
  * precedence order, and the one function that resolves them.
  *
- * Whole-branch review, F4. `detect-harness.mjs` credited `P4.handoff` from
- * `existsAny(root, ['HANDOFF.md', 'docs/HANDOFF.md'])` while the hook it
- * installs read `join(process.cwd(), 'HANDOFF.md')` and nothing else — so a
- * repository whose handoff lives at `docs/HANDOFF.md` was credited
- * `declared` by `detect` and then told, by the artefact that same run
- * installed three lines later, that it had no handoff file at all. Printed
- * into the model's context, not a terminal: a false premise the agent starts
- * from, about a file this very tool had already proved exists.
+ * `detect-harness.mjs` credits `P4.handoff` through this function and the
+ * session-start hook reads through it, so a repository whose handoff lives
+ * at `docs/HANDOFF.md` is never credited by `detect` and then told by the
+ * hook, in the model's context, that it has none.
  *
- * The direction chosen is THE HOOK LOOKS WHERE DETECTION CREDITED, not the
- * reverse, for two reasons. First, `docs/HANDOFF.md` is a real convention —
- * this list is the tool's own admission that repositories put it there — and
- * narrowing detection to the root would make `P4.handoff` propose CREATING a
- * root `HANDOFF.md` in a repository that already has one under `docs/`,
- * which turns a false sentence into a duplicate file and leaves the user
- * with two handoffs that disagree. A wrong write is worse than a wrong read.
- * Second, widening the hook costs one extra `existsSync`.
+ * The hook looks where detection credits, not the reverse:
+ * `docs/HANDOFF.md` is a real convention, and narrowing detection to the
+ * root would make `P4.handoff` propose creating a root `HANDOFF.md` in a
+ * repository that already has one under `docs/`, leaving two handoffs that
+ * disagree. A wrong write is worse than a wrong read, and widening the hook
+ * costs one extra `existsSync`.
  *
- * `detect-harness.mjs` imports THIS function rather than keeping its own
- * list, so the two sides cannot drift again. That is the only way they can
- * be shared: the hook is a file copied verbatim into a user's repository,
- * where the only module beside it is this one, so a constant in
- * `scripts/lib/` could never reach it. The dependency runs the other way,
- * at build time, and the installed copy depends on nothing new.
+ * The list lives in this module because the hook is copied into a user's
+ * repository, where a constant in `scripts/lib/` could never reach it.
  */
 export const HANDOFF_CANDIDATES = ['HANDOFF.md', 'docs/HANDOFF.md'];
 
@@ -568,20 +531,16 @@ export function findHandoff(root) {
 
 // --- The rules registry: location and parser -----------------------------
 //
-// Phase 3 (intent and rules — see docs/superpowers/specs/2026-11-02-intent-
-// and-rules-design.md). `docs/harness/RULES.md` is where a repository
-// records its own rules, each with the mechanism that ENFORCES it, so a rule
-// Claude is merely told (`enforced-by: none`) can be told apart from one it
-// cannot break (a deny rule, a hook, a lint, a test, a critic).
+// `docs/harness/RULES.md` is where a repository records its own rules, each
+// with the mechanism that ENFORCES it, so a rule Claude is merely told
+// (`enforced-by: none`) can be told apart from one it cannot break (a deny
+// rule, a hook, a lint, a test, a critic).
 //
-// The parser lives HERE, in the shared hook asset, for exactly the reason
-// `findHandoff` does: two things must agree on what a rule is — `detect`
-// (scripts/lib/rules-evidence.mjs, which credits `P3.rules`) and the
-// installed `rules-brief.mjs` hook (which re-injects the rules into every
-// prompt). The hook is copied verbatim into a user's `.claude/scripts/`,
-// where the only module beside it is this one, so a parser in
-// `scripts/lib/` could never reach it. Same import direction, same reason,
-// same cost (none at runtime: node builtins only).
+// The parser lives HERE for the reason `findHandoff` does: two things must
+// agree on what a rule is — `detect` (scripts/lib/rules-evidence.mjs, which
+// credits `P3.rules`) and the installed `rules-brief.mjs` hook (which
+// re-injects the rules into every prompt) — and a parser in `scripts/lib/`
+// could never reach the installed hook.
 //
 // Why Markdown with `key: value` bullets and not JSON or YAML: this file is
 // written and edited by a HUMAN — the kit scaffolds the shape and never
@@ -788,8 +747,7 @@ export function safeSessionId(sessionId) {
  * concern the way `session_id` already is one. Falls back to a constant
  * rather than throwing — `os.userInfo()` can throw in a minimal/sandboxed
  * environment with no resolvable home directory — which only widens the
- * shared-temp-directory exposure Finding 10 already documents as an
- * accepted residual risk, never a crash.
+ * shared-temp-directory exposure `markerDir` describes, never a crash.
  */
 function userTag() {
   try {
@@ -814,7 +772,7 @@ export function rootTag(root) {
  * access under `%TEMP%`). This narrows, but does not eliminate, the
  * pre-seeded-marker exposure a shared temp directory allows across
  * DIFFERENT users; within the same user and the same machine the residual
- * risk is accepted and documented (Finding 10) rather than chased further.
+ * risk is accepted.
  * Creation failure is swallowed — the caller's own marker read/write is
  * already failure-tolerant, and a directory that cannot be created simply
  * means every marker operation beneath it will consistently fail-safe too.
@@ -827,43 +785,34 @@ export function rootTag(root) {
  * COLLIDE — but they do accumulate, one file per repository per namespace
  * per session, for ever.
  *
- * BOUNDED, THEN ACCEPTED, AND WRITTEN DOWN HERE RATHER THAN LEFT TO BE
- * DISCOVERED. Two separate decisions:
+ * The accumulation is bounded and then accepted:
  *
  *   BOUNDED — `markerPath` shards by `rootTag` as a DIRECTORY level, so the
  *   entry count in any one directory grows with sessions PER REPOSITORY
- *   rather than with sessions globally. Measured before that change, from
- *   this project's own test runs alone: 8983 entries in the one shared
- *   directory. That is also where the naming scheme's own history is
- *   visible — flat, pre-subdirectory markers from earlier iterations are
- *   still sitting there, including one written for an EMPTY session id,
- *   which is the plainest possible proof that markers outlive the code that
- *   wrote them.
+ *   rather than with sessions across the machine.
  *
- *   ACCEPTED — the remaining accumulation is NOT fixed with a cleanup sweep.
- *   A marker is a few dozen bytes of JSON and the OS cleans its temp
- *   directory; deleting files is a destructive action on the hot path of a
- *   hook that fires on every edit and every turn end, and the one thing
- *   worse than litter is a hook that removes the wrong file while a turn is
- *   in flight. Litter in a temp directory is the better trade, and it is the
- *   trade this comment records.
+ *   ACCEPTED — what remains is NOT fixed with a cleanup sweep. A marker is a
+ *   few dozen bytes of JSON and the OS cleans its temp directory; deleting
+ *   files is a destructive action on the hot path of a hook that fires on
+ *   every edit and every turn end, and the one thing worse than litter is a
+ *   hook that removes the wrong file while a turn is in flight.
  *
- * Stale markers from an older naming scheme are never read by the current
- * one and are harmless: a marker's absence is the permissive default
- * everywhere (see `readJSONMarker`'s `fallback`), so an unreachable marker
- * can only ever cost a hook one un-deduplicated report.
+ * A marker under a name no current hook uses is never read and is harmless:
+ * a marker's absence is the permissive default everywhere (see
+ * `readJSONMarker`'s `fallback`), so an unreachable marker can only ever
+ * cost a hook one un-deduplicated report.
  *
  * In TESTS the accumulation is removed outright, which is what the override
  * is for: `scripts/lib/test-marker-sandbox.mjs` points this at a per-run
  * temp directory and deletes it in a teardown that runs on pass, fail or
- * throw. Measured before that existed: 8983 files in the shared directory on
- * the development machine, which is a credible mechanism for a rare,
- * unattributable failure in a suite that sets sub-second timeouts.
+ * throw, since thousands of entries in one shared directory are a credible
+ * cause of a rare, unattributable failure in a suite that sets sub-second
+ * timeouts.
  */
 /**
  * True when `dir` is a real directory of ours: not a link (a symlink or
  * junction planted at a predictable path redirects every marker read and
- * write — audit Tier 4, finding 26), and on POSIX not another user's. A
+ * write), and on POSIX not another user's. A
  * refusal means "no marker directory": `markerPath` returns null and every
  * caller's existing fail-open path takes over.
  */
@@ -908,25 +857,18 @@ export function markerDir() {
  * `namespace` they would silently corrupt one another's bookkeeping the
  * moment both fired in the same session.
  *
- * `rootTag` is a DIRECTORY LEVEL rather than a filename prefix, and that is
- * the only thing that changed here. The marker's IDENTITY is unchanged — it
- * is still exactly (root, namespace, session) — so no collision behaviour
- * moves and the cross-repo and cross-session isolation guarantees are the
- * same guarantees. What changes is how many entries land in one directory.
- *
- * Why it had to change. Flat, every marker this tool has ever written on a
- * machine shares ONE directory, for the life of that machine, and nothing
- * removes them (see `markerDir`, which rules against a cleanup sweep and
- * says why). Measured on the development machine, from this project's own
- * test runs alone: 8983 entries. Entry count grew with sessions GLOBALLY. It
- * now grows with sessions PER REPOSITORY, which is the bound that actually
- * matters — a heavy user of one repository is bounded by their own session
- * count rather than by the sum across every repository they have ever opened.
+ * `rootTag` is a DIRECTORY LEVEL rather than a filename prefix. The marker's
+ * identity is (root, namespace, session) either way; the directory level
+ * bounds how many entries land in one directory. Nothing removes a marker
+ * (see `markerDir`, which rules against a cleanup sweep and says why), so in
+ * one flat directory the entry count would grow with sessions across every
+ * repository on the machine, for the life of the machine. A directory per
+ * repository bounds it by that repository's own session count.
  *
  * The cost is one `mkdirSync` on a path that already did one, on a hot path
  * (every edit, every turn end). It is not a cleanup mechanism and it deletes
  * nothing: deleting files on the hot path of a hook that fires mid-turn is a
- * worse trade than litter, which remains the ruling.
+ * worse trade than litter.
  *
  * Creation failure is swallowed for the same reason `markerDir`'s is: every
  * marker read and write beneath it is already failure-tolerant, so a
@@ -994,10 +936,9 @@ export function openMarker(path, flags) {
 
 // --- Running a repository's own command, bounded ---------------------------
 //
-// Shared by the two process hooks (audit Tier 3, finding 10): lint-touched.mjs
-// used `spawnSync` with a `timeout`, which signals only the SHELL and leaves
-// the linter running — the orphan verify-touched.mjs had already fixed for
-// itself with the runner below. One runner, two callers.
+// Shared by the two process hooks. `spawnSync` with a `timeout` signals only
+// the SHELL and leaves what the shell started running, so both go through
+// the runner below, which kills the tree.
 
 /**
  * Kills the ENTIRE process tree `child` roots, not merely `child` itself.
@@ -1036,8 +977,8 @@ export function killTree(child) {
  * resolving to a result shaped like `spawnSync`'s own (`status`, `signal`,
  * `error`, `stdout`, `stderr`) plus `timedOut`/`overflowed`. A timeout
  * kills the whole tree (see killTree) and waits up to `killGraceMs` for it
- * to go. An overflow does NOT kill (audit Tier 3, finding 12: it used to,
- * so a passing but verbose command was blamed for the cutoff): the first
+ * to go. An overflow does NOT kill, or a passing but verbose command would
+ * be blamed for the cutoff: the first
  * `maxBuffer` characters of each stream are kept, the rest is dropped, the
  * command runs to its own end and `status` is its own. Never throws; a
  * spawn failure resolves with `error` set, exactly like `spawnSync`.
