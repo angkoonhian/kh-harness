@@ -157,3 +157,9 @@ test('the execution disclosure names the UserPromptSubmit re-injection hook and 
   assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit[\s\S]{0,400}executes\s+nothing/i);
   assert.match(EXECUTION_DISCLOSURE, /1500 bytes/);
 });
+
+test('the execution disclosure says the gate hook runs before every tool call, can block one, and has no gate until one is learned and promoted', () => {
+  assert.match(EXECUTION_DISCLOSURE, /PreToolUse[\s\S]{0,80}before\s+every\s+tool\s+call/);
+  assert.match(EXECUTION_DISCLOSURE, /BLOCK\s+the\s+call\s+when\s+a\s+gate\s+with\s+action\s+`block`\s+matches/);
+  assert.match(EXECUTION_DISCLOSURE, /no\s+gate\s+exists\s+until\s+one\s+is\s+learned\s+and\s+promoted/);
+});

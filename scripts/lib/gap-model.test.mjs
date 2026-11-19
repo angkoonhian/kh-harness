@@ -21,9 +21,9 @@ const bareHarness = {
 };
 const richHarness = {
   instructions: { path: 'CLAUDE.md', lines: 153 }, agentsMd: null, reconPresent: true,
-  claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs', '.claude/scripts/loop-watch.mjs'],
+  claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs', '.claude/scripts/loop-watch.mjs', '.claude/scripts/tool-gate.mjs'],
     // hookEvents entries are RESOLVED SCRIPT PATHS, never command strings.
-    hookEvents: { PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'], UserPromptSubmit: ['.claude/scripts/rules-brief.mjs'], PostToolUseFailure: ['.claude/scripts/loop-watch.mjs'] },
+    hookEvents: { PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'], UserPromptSubmit: ['.claude/scripts/rules-brief.mjs'], PostToolUseFailure: ['.claude/scripts/loop-watch.mjs'], PreToolUse: ['.claude/scripts/tool-gate.mjs'] },
     // The same registrations with their matchers — what registeredHook decides from.
     hookRegistrations: {
       PostToolUse: [{ script: '.claude/scripts/lint-touched.mjs', matcher: 'Edit|Write' }],
@@ -31,6 +31,7 @@ const richHarness = {
       SessionStart: [{ script: '.claude/scripts/session-brief.mjs', matcher: null }],
       UserPromptSubmit: [{ script: '.claude/scripts/rules-brief.mjs', matcher: null }],
       PostToolUseFailure: [{ script: '.claude/scripts/loop-watch.mjs', matcher: null }],
+      PreToolUse: [{ script: '.claude/scripts/tool-gate.mjs', matcher: null }],
     },
     agents: Array.from({ length: 13 }, (_, i) => `.claude/agents/c${i}.md`), skills: [], commands: [], rules: ['.claude/rules/api.md'] },
   otherEditors: [], architecture: 'docs/ARCHITECTURE.md', handoff: 'HANDOFF.md',

@@ -20,7 +20,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SENSOR_MATCHER, GENERATORS, kitSkew } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, kitSkew, toolGateDenyRules } from './propose.mjs';
 import { MANIFEST_PATH } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
@@ -821,6 +821,16 @@ const CHECKS = [
     },
   },
   {
+    id: 'P5.toolgate', step: 30, phase: 5,
+    lookedFor: ['a PreToolUse hook in .claude/settings.json'],
+    // Decided from the hook registry alone. Which gates exist is learned
+    // later, so neither the gate files nor the session log is read here, and
+    // nothing executes, so it is never `verified`.
+    check: ({ harness, manifest, root }) => registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH,
+      'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, and deny edits to the hook scripts, the gate file, the manifest and the learned registry',
+      { manifest, root }),
+  },
+  {
     id: 'P2.scripts', step: 8, phase: 2,
     lookedFor: ['a lint and typecheck script in every package', 'an ESLint, ruff or tsconfig.json config to derive a command from'],
     // Ruling (coordinator, Task 7): adding a missing lint/typecheck script
@@ -1014,7 +1024,10 @@ const CHECKS = [
       }
       // "Could not relate", not "do not protect": this tool's matcher is
       // narrower than Claude Code's on `**/` (Tier 2 review, Minor 4).
-      if (unrelated.length) evidence.push(`existing deny rule(s) this tool's matcher could not relate to a protected path this repository has evidence for: ${unrelated.join(', ')}`);
+      // The protected-surface rules are P5.toolgate's, not unrelated ones.
+      const surface = new Set(toolGateDenyRules());
+      const theirs = unrelated.filter(rule => !surface.has(rule));
+      if (theirs.length) evidence.push(`existing deny rule(s) this tool's matcher could not relate to a protected path this repository has evidence for: ${theirs.join(', ')}`);
       if (redactedCount) evidence.push(`plus ${redactedCount} existing deny rule(s) not shown here (not a path-taking permission)`);
       return { state: 'absent', evidence, proposal: 'create .claude/settings.json with deny rules for protected paths' };
     },

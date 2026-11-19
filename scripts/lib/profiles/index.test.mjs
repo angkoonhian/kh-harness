@@ -76,3 +76,9 @@ test('every profile applies step 29 — the failure taxonomy is language-agnosti
     assert.ok(selectProfile(s).appliesToSteps().includes(29), `${selectProfile(s).id} must apply step 29`);
   }
 });
+
+test('every profile applies step 30 — the gate hook is language-agnostic', () => {
+  for (const s of [tsSingle, tsWorkspace, py, nothing]) {
+    assert.ok(selectProfile(s).appliesToSteps().includes(30), `${selectProfile(s).id} must apply step 30`);
+  }
+});

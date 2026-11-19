@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DETECT, APPLY, git, run, settings, fixture, workspaceFixture } from './lifecycle-fixtures.mjs';
+import { toolGateDenyRules } from './propose.mjs';
 
 // --- Audit Tier 3, finding 11: hooks are registered in exec form ---------------
 test('after apply --yes every registered hook is exec form with a ${CLAUDE_PROJECT_DIR}-rooted path, and detect reports it declared', () => {
@@ -182,7 +183,7 @@ test('apply discloses when applying a patch reformats the rest of settings.json'
 
   const out = run(APPLY, d, '--yes');
   assert.match(out, /was re-serialised while applying the patch/, 'the user must be told, not left to discover a diff full of lines they did not change');
-  assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)'] }, 'the content itself is genuinely unchanged — only its formatting is');
+  assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)', ...toolGateDenyRules()] }, "the user's own content is unchanged — only its formatting is, and our rules are appended");
 });
 
 test('apply does NOT disclose a reformat when settings.json was already in the canonical form', () => {

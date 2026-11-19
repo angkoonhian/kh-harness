@@ -13,7 +13,7 @@ import { readJsonFile } from './read-json.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
 import { revertPatch } from './settings-merge.mjs';
 import { STAMP_MARKER } from './render.mjs';
-import { REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, GENERATOR_SCRIPT_PATHS, protectedDenyRules } from './propose.mjs';
+import { REDACT_PATH, BOOTSTRAP_PATH, RULES_PATH, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, protectedDenyRules, toolGateDenyRules } from './propose.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
@@ -25,7 +25,8 @@ const SETTINGS = '.claude/settings.json';
  * the provenance `revertPatch` demands before removing a patch. Deny rules
  * are derived from the repository as it stands now, the same evidence the
  * generator reads; a rule whose evidence has since gone is kept, never
- * guessed at.
+ * guessed at. The protected-surface rules rest on no evidence, so they are
+ * always producible.
  *
  * No candidate glob may ever match a file the kit itself generates: those
  * files are deleted before `runUninstall` rebuilds this set, so a rule
@@ -36,7 +37,7 @@ function producibleSettings(root) {
   const stack = detectStack(root, files);
   return {
     producibleHookScripts: new Set(GENERATOR_SCRIPT_PATHS),
-    producibleDenyRules: new Set(protectedDenyRules({ stack, files })),
+    producibleDenyRules: new Set([...protectedDenyRules({ stack, files }), ...toolGateDenyRules()]),
   };
 }
 
@@ -123,7 +124,7 @@ function producibleSettings(root) {
  *                         this needs a forged hash, and anyone who can
  *                         forge the manifest can delete the file outright.
  *                         Stated, not hidden.
- *   `.claude/scripts/*.mjs` (every hook script, and harness-redact)
+ *   `.claude/scripts/*.mjs` (every hook script and shared module)
  *                         NOT covered, and deliberately not: these are OUR
  *                         code, copied verbatim, and their value is the
  *                         behaviour we wrote rather than anything the user
@@ -141,6 +142,7 @@ const GENERATOR_PRODUCIBLE_EXACT = new Set([
   // Every hook script a generator installs, so a new one is removable
   // without an edit here.
   ...GENERATOR_SCRIPT_PATHS,
+  ...HOOK_MODULE_PATHS,
   REDACT_PATH,
   // Phase 3: the rules-registry scaffold. The registry is the third artefact
   // whose designed workflow is the user writing into our file (see

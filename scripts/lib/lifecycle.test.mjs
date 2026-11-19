@@ -17,7 +17,7 @@ import { sha256, emptyManifest } from './manifest.mjs';
 // contradiction. Membership-tested against the real table rather than a
 // hand-maintained id list, so a capability added later is covered with no
 // test edit (same discipline as propose.test.mjs's coherence test).
-import { GENERATORS } from './propose.mjs';
+import { GENERATORS, toolGateDenyRules } from './propose.mjs';
 import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter } from './lifecycle-fixtures.mjs';
 
 test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall', () => {
@@ -39,7 +39,7 @@ test('LOAD-BEARING: detect -> apply -> no-op -> user edit -> drift -> uninstall'
   assert.ok(existsSync(join(d, 'HANDOFF.md')));
   assert.ok(existsSync(join(d, '.claude/scripts/session-brief.mjs')));
   assert.equal(settings(d).hooks.SessionStart.length, 1);
-  assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)'] }, 'their settings survive apply');
+  assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)', ...toolGateDenyRules()] }, 'their settings survive apply, and ours are appended');
 
   // 4. THE CLOSED LOOP: what we wrote, we now recognise as present
   const after = JSON.parse(run(DETECT, d, '--json'));
@@ -856,7 +856,7 @@ test('PHASE 3 LIFECYCLE: scaffold → fill → hook → uninstall keeps the fill
   assert.ok(existsSync(join(d, '.claude/scripts/harness-redact.mjs')));
   assert.equal(settings(d).hooks.UserPromptSubmit.length, 1);
   assert.equal('matcher' in settings(d).hooks.UserPromptSubmit[0], false, 'UserPromptSubmit takes no matcher');
-  assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)'] }, 'their settings survive');
+  assert.deepEqual(settings(d).permissions, { deny: ['Edit(secrets/**)', ...toolGateDenyRules()] }, 'their settings survive, and ours are appended');
 
   // 6. THE CLOSED LOOP: everything we wrote, we now recognise as present.
   const r6 = JSON.parse(run(DETECT, d, '--json'));

@@ -34,6 +34,9 @@ const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
 // against the same constant the generator registers — one source of truth.
 const RULES_BRIEF_PATH = '.claude/scripts/rules-brief.mjs';
 const LOOP_WATCH_PATH = '.claude/scripts/loop-watch.mjs';
+const TOOL_GATE_PATH = '.claude/scripts/tool-gate.mjs';
+const HARNESS_GATES_PATH = '.claude/scripts/harness-gates.mjs';
+const HARNESS_LOG_PATH = '.claude/scripts/harness-log.mjs';
 
 /**
  * Task 9b, finding 2: a settings-hook proposal's own `reason` used to be a
@@ -276,6 +279,42 @@ function loopWatchProposal({ kitVersion, check }) {
     entry: execEntry(LOOP_WATCH_PATH),
     requiresFiles: files.map(f => f.path),
     reason: hookRegistrationReason('PostToolUseFailure', check),
+  }];
+}
+
+const TOOL_GATE_STEP = 30;
+
+/**
+ * The deny rules for the kit's protected surface: the hook scripts and the
+ * gate interpreter, the gate file, the manifest and the learned registry.
+ * Each is a `/path` rule: in the project's `.claude/settings.json` that
+ * resolves against the session's primary working directory and matches only
+ * there, where a bare `path` deny rule would match at any depth. `Edit(...)`
+ * also covers Write and the Bash file commands Claude Code recognises, but
+ * not a program the agent runs that writes these files itself.
+ */
+export function toolGateDenyRules() {
+  return ['.claude/scripts/**', '.claude/kh-harness/**', '.claude/kh-harness.manifest.json', 'docs/harness/LEARNED.md'].map(p => `Edit(/${p})`);
+}
+
+/**
+ * The gate hook: a PreToolUse hook that interprets the learned gates (see
+ * tool-gate.mjs), with no `matcher`, since a gate may name any tool, and the
+ * deny rules that keep the model from editing what enforces it. No evidence
+ * gate: which gates exist is learned later, and until one is the hook reads
+ * two absent files and does nothing.
+ */
+function toolGateProposal({ kitVersion, check }) {
+  const files = hookFiles(TOOL_GATE_PATH, kitVersion);
+  return [...files, {
+    kind: 'settings-hook', event: 'PreToolUse', step: TOOL_GATE_STEP,
+    entry: execEntry(TOOL_GATE_PATH),
+    requiresFiles: files.map(f => f.path),
+    reason: hookRegistrationReason('PreToolUse', check),
+  }, {
+    kind: 'settings-deny', step: TOOL_GATE_STEP,
+    globs: toolGateDenyRules(),
+    reason: 'deny edits to the hook scripts, the gate file, the manifest and the learned registry',
   }];
 }
 
@@ -582,10 +621,12 @@ function reinjectProposal({ kitVersion, harness, check }) {
 
 /**
  * Every script a generator registers as a hook, with the kit asset it copies
- * and the runbook step its stamp names. uninstall reverts a hook patch only
- * when the entry runs one of these, and deletes only the scripts listed
- * here, so a hook script a generator registers must be listed here or
- * neither its registration nor its file can ever be removed.
+ * and the runbook step its stamp names, and the shared modules beyond the
+ * redaction module that it imports (`modules`, keys of `HOOK_MODULES`).
+ * uninstall reverts a hook patch only when the entry runs one of these, and
+ * deletes only the scripts and modules listed here, so a hook script a
+ * generator registers must be listed here or neither its registration nor
+ * its file can ever be removed.
  */
 const HOOK_SCRIPTS = Object.freeze({
   [LINT_TOUCHED_PATH]: { asset: 'scripts/lint-touched.mjs', step: 9, reason: 'no PostToolUse hook registered' },
@@ -593,25 +634,50 @@ const HOOK_SCRIPTS = Object.freeze({
   [BRIEF_PATH]: { asset: 'scripts/session-brief.mjs', step: 16, reason: 'no SessionStart brief hook registered' },
   [RULES_BRIEF_PATH]: { asset: 'scripts/rules-brief.mjs', step: REINJECT_STEP, reason: 'no UserPromptSubmit re-injection hook registered' },
   [LOOP_WATCH_PATH]: { asset: 'scripts/loop-watch.mjs', step: LOOP_WATCH_STEP, reason: 'no PostToolUseFailure loop-warning hook registered' },
+  [TOOL_GATE_PATH]: { asset: 'scripts/tool-gate.mjs', step: TOOL_GATE_STEP, reason: 'no PreToolUse gate hook registered', modules: [HARNESS_GATES_PATH, HARNESS_LOG_PATH] },
 });
 const GENERATOR_SCRIPT_PATHS = Object.freeze(Object.keys(HOOK_SCRIPTS));
 
 /**
- * The files a hook script needs on disk: the script itself, stamped, and the
- * shared module it imports. Built from the kit's assets alone, with no
- * repository fact, so what the kit would write for an installed copy never
- * depends on whether the hook's evidence gate is on today. A hook's
- * settings proposal requires exactly these paths, and the script depends on
- * every other one.
+ * The shared modules a hook script may list in `modules`, beside the
+ * redaction module every hook imports. Each is a verbatim copy of its asset
+ * under a stamp that names no step, so its bytes are the same whichever
+ * hook proposes it.
+ */
+const HOOK_MODULES = Object.freeze({
+  [HARNESS_GATES_PATH]: { asset: 'scripts/harness-gates.mjs', step: TOOL_GATE_STEP, reason: 'the gate language the PreToolUse gate hook interprets' },
+  [HARNESS_LOG_PATH]: { asset: 'scripts/harness-log.mjs', step: TOOL_GATE_STEP, reason: 'the session log library the gate hook records firings with' },
+});
+const HOOK_MODULE_PATHS = Object.freeze(Object.keys(HOOK_MODULES));
+
+function moduleProposal(path, kitVersion) {
+  const { asset, step, reason } = HOOK_MODULES[path];
+  return {
+    kind: 'file', path, step,
+    contents: `// ${STAMP_MARKER} ${kitVersion} (shared module imported by the kit's hook scripts). ` +
+      `Edit freely — kh-harness will report your changes rather than overwrite them.\n` +
+      read(asset),
+    assetSource: asset,
+    reason,
+  };
+}
+
+/**
+ * The files a hook script needs on disk: the script itself, stamped, the
+ * shared modules it lists, and the redaction module. Built from the kit's
+ * assets alone, with no repository fact, so what the kit would write for an
+ * installed copy never depends on whether the hook's evidence gate is on
+ * today. A hook's settings proposal requires exactly these paths, and the
+ * script depends on every other one.
  */
 function hookFiles(scriptPath, kitVersion) {
-  const { asset, step, reason } = HOOK_SCRIPTS[scriptPath];
+  const { asset, step, reason, modules = [] } = HOOK_SCRIPTS[scriptPath];
   return [{
     kind: 'file', path: scriptPath, step,
     contents: read(asset).replace('#!/usr/bin/env node\n', `#!/usr/bin/env node\n${versionStamp(kitVersion, step, '//')}\n`),
     assetSource: asset,
     reason,
-  }, redactAssetProposal(kitVersion)];
+  }, ...modules.map(path => moduleProposal(path, kitVersion)), redactAssetProposal(kitVersion)];
 }
 
 const KITSKEW_ID = 'P0.kitskew';
@@ -763,6 +829,7 @@ const GENERATORS = {
   'P3.rules': rulesScaffoldProposal,
   'P3.reinject': reinjectProposal,
   'P5.failures': failuresScaffoldProposal,
+  'P5.toolgate': toolGateProposal,
   // Each update goes through `buildProposals`' recorded-path branch like any
   // other proposal for a recorded file.
   [KITSKEW_ID]: ctx => kitSkew(ctx).updates,
@@ -885,4 +952,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // generator (a pyproject-only Python repo: `detect` advertised a proposal,
 // `apply` produced nothing) without any test failing, because nothing
 // checked the two against each other.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS };

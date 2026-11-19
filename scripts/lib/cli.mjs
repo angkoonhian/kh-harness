@@ -89,7 +89,16 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  1500 bytes of its rules to the prompt's
                                  context, high priority first. It executes
                                  nothing. Proposed only once the registry
-                                 holds at least one rule.`;
+                                 holds at least one rule.
+
+  PreToolUse (per tool call)     runs before every tool call and compares it
+                                 with the learned gates in
+                                 .claude/kh-harness/gates.json and this
+                                 machine's own gate file. It can BLOCK the
+                                 call when a gate with action \`block\`
+                                 matches. It executes nothing, and no gate
+                                 exists until one is learned and promoted, so
+                                 until then it does nothing.`;
 
 export const EXIT_CODES = `EXIT CODES
   0  did what it said
