@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -216,4 +216,55 @@ test('the execution disclosure says which hooks run this repository\'s scripts a
 test('the execution disclosure names the terminal check for what it checks', () => {
   assert.match(disclosed, /behind their own check for an interactive terminal outside Claude Code/);
   assert.doesNotMatch(disclosed, /a person at a terminal/);
+});
+
+// --- One repository per run -------------------------------------------------
+
+for (const [name, script] of [['detect', DETECT], ['apply', APPLY], ['uninstall', UNINSTALL]]) {
+  test(`${name} refuses a second path with exit 2, naming it, and touches neither repository`, () => {
+    const first = mkdtempSync(join(tmpdir(), 'hk-cli-a-'));
+    const second = mkdtempSync(join(tmpdir(), 'hk-cli-b-'));
+    const r = name === 'detect' ? cli(script, first, second) : cli(script, first, second, '--yes');
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, new RegExp(`^kh-harness: unexpected argument\\(s\\): .*hk-cli-b-.*\\nusage: ${name} <repo-path>`));
+    assert.equal(r.stdout, '');
+    for (const d of [first, second]) assert.deepEqual(readdirSync(d), [], 'nothing was written');
+  });
+}
+
+// --- What a dry run is refused for, said as it is ---------------------------
+
+test('apply refuses a manifest it cannot read with exit 3, dry run or not, and its usage says so', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-cli-corrupt-'));
+  mkdirSync(join(d, '.claude'));
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), '{not json');
+  for (const flags of [[], ['--yes', '--allow-dirty', '--allow-default-branch']]) {
+    const r = cli(APPLY, d, ...flags);
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.match(r.stderr, /could not be read as a valid kh-harness manifest/);
+  }
+  const usage = APPLY_USAGE.replace(/\s+/g, ' ');
+  assert.doesNotMatch(usage, /a dry run is never refused/);
+  assert.match(usage, /Both gates apply to --yes only: a dry run prints a `note:` for what --yes would refuse, and exits 0\./);
+  assert.match(usage, /A manifest that is there and cannot be read is refused \(3\) with or without --yes/);
+});
+
+test('each command\'s usage says which of the shared exit codes it uses, and for what', () => {
+  const flat = text => text.replace(/\s+/g, ' ');
+  assert.match(flat(EXIT_CODES), /2 could not act \(.*\) 3 refused to act \(/);
+  assert.match(flat(DETECT_USAGE), /detect refuses nothing, so it never exits 3\./);
+  const uninstall = flat(UNINSTALL_USAGE);
+  for (const cause of ['a removal that failed', 'a file that changed after the plan was made', 'a recorded path it refused to remove', 'a settings patch it could not revert', 'a manifest it could not update or remove']) {
+    assert.ok(uninstall.includes(cause), `uninstall's usage does not list "${cause}" under exit 2`);
+  }
+  assert.match(uninstall, /Here 3 is no manifest, or one that cannot be read, with or without --yes\./);
+  assert.match(flat(APPLY_USAGE), /Here 3 is --yes on the default branch/);
+});
+
+test('--help needs no entry among a command\'s known flags: it is answered before they are read', () => {
+  for (const script of [DETECT, APPLY, UNINSTALL]) {
+    const known = readFileSync(script, 'utf8').match(/const KNOWN_FLAGS = new Set\(\[([^\]]*)\]\)/)[1];
+    assert.doesNotMatch(known, /'--help'|'-h'/);
+    for (const flag of ['--help', '-h']) assert.equal(cli(script, flag).stderr, '', 'and is not warned about as unknown');
+  }
 });

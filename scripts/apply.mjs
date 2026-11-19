@@ -16,10 +16,10 @@ import { buildProposals } from './lib/propose.mjs';
 import { deriveCouldNotDerive, exposureSectionLines, stillOpen } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, displayPath, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, diffRenderer, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason, writeGateRefusals } from './lib/apply-lib.mjs';
-import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE, EXECUTION_DISCLOSURE } from './lib/cli.mjs';
+import { parseArgv, refuseExtraArguments, warnUnknown, wantsHelp, APPLY_USAGE, EXECUTION_DISCLOSURE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const KNOWN_FLAGS = new Set(['--yes', '--allow-default-branch', '--allow-dirty', '--help', '-h']);
+const KNOWN_FLAGS = new Set(['--yes', '--allow-default-branch', '--allow-dirty']);
 
 const argv = process.argv.slice(2);
 
@@ -28,10 +28,11 @@ if (wantsHelp(argv)) {
   process.exit(0);
 }
 
-const { flags, target, unknown } = parseArgv(argv, KNOWN_FLAGS);
+const { flags, target, positionals, unknown } = parseArgv(argv, KNOWN_FLAGS);
 const root = resolve(target ?? process.cwd());
 
 warnUnknown(unknown);
+refuseExtraArguments(positionals.slice(1), 'usage: apply <repo-path> [--yes] [--allow-dirty] [--allow-default-branch]   (--help for the full contract)');
 
 if (!existsSync(root)) {
   process.stderr.write(`kh-harness: no such path: ${root}\n`);
