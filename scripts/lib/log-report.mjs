@@ -97,7 +97,7 @@ function gateFirings(root, ledgerEntries) {
       gateId,
       fired: g.fired,
       rerouted: g.rerouted,
-      markedWrong: g.wrong?.sincePromotion ?? null,
+      markedWrong: g.wrong?.sinceGrant ?? null,
       markedWrongTotal: g.wrong?.total ?? null,
       gateSha256s: g.gateSha256s,
     }));
@@ -191,7 +191,7 @@ export function recurrenceSection(report, heading = RECURRENCES_HEADING) {
 
 function markedWrongText(g, ledger) {
   if (g.markedWrong === null) return `not read, because the ledger's chain is broken at line ${ledger.brokenAt}`;
-  return `${g.markedWrong} since the last promotion, ${g.markedWrongTotal} in all`;
+  return `${g.markedWrong} since the last promotion or landing, ${g.markedWrongTotal} in all`;
 }
 
 function gateSection(gates, ledger) {

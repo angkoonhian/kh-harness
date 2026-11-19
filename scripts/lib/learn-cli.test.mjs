@@ -187,7 +187,7 @@ test('show prints the gate, its hash, the replay and the stats', () => {
   assert.ok(text.includes(JSON.stringify(learning.gate, null, 2).split('\n').map(l => `    ${l}`).join('\n')), text);
   assert.ok(text.includes(`gateSha256: ${learning.sha256}`));
   assert.match(text, /replay: pass: "the gate fired on all 2 mistakes/);
-  assert.match(text, /stats: fired 1 time in 1 session; rerouted: 0; marked wrong: 0 since the last promotion, 0 in all/);
+  assert.match(text, /stats: fired 1 time in 1 session; rerouted: 0; marked wrong: 0 since the last promotion or landing, 0 in all/);
   assert.ok(text.includes(REROUTED_MEANS), 'what rerouted counts is stated beside it');
   const view = json(root, 'show', 'L1');
   assert.equal(view.gateSha256, learning.sha256);

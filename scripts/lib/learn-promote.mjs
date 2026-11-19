@@ -22,7 +22,7 @@ import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { harnessIdentity, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
-import { FIRING_EVENT, gateStats, wrongSincePromotion } from './gate-stats.mjs';
+import { FIRING_EVENT, gateStats, wrongSinceGrant } from './gate-stats.mjs';
 import {
   citationsGone, citesGone, committedGates, gateActionsFor, ID_ERROR, isId, learningIn, ledgerEntry,
   readFailure, readState, recordedIn, refuse, repairedStep, repairLocalGates, rewriteLocalGates, SETTLED, unapprovedGateIds,
@@ -180,7 +180,7 @@ function markWrongUnguarded(root, ref, { interactive }) {
     }
     write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'wrong', approvedBy: 'owner', firing: { sessionId, line } })));
     const marked = readState(root);
-    const wrong = wrongSincePromotion(marked.view.entries, learning.id);
+    const wrong = wrongSinceGrant(marked.view.entries, learning.id);
     if (wrong < WRONG_MARKS_TO_DEMOTE || !DEMOTABLE.has(learning.status)) return { ok: true, id: learning.id, wrong, status: learning.status };
     const demoted = demote(root, write, marked, learning, null);
     if (demoted.error) return { error: `${learning.id}: the mark was recorded, and the demotion it calls for was not; tick retries it (${demoted.error})` };
@@ -416,7 +416,7 @@ function applyRules(root, write, policy, result) {
 
   const marked = readState(root);
   for (const learning of recordedIn(marked)) {
-    if (!DEMOTABLE.has(learning.status) || wrongSincePromotion(marked.view.entries, learning.id) < WRONG_MARKS_TO_DEMOTE) continue;
+    if (!DEMOTABLE.has(learning.status) || wrongSinceGrant(marked.view.entries, learning.id) < WRONG_MARKS_TO_DEMOTE) continue;
     apply(learning, (state, l) => demote(root, write, state, l, null), done => (done.status === 'suspended' ? result.suspended : result.demoted).push(learning.id));
   }
 
@@ -450,7 +450,7 @@ function promoteUnderPolicy(root, write, policy, result, apply) {
     const { firings, sessions, wrong } = gates.get(learning.id);
     const external = learning.external || learning.evidence.external
       || state.view.entries.some(e => e?.learningId === learning.id && e.evidence?.external === true);
-    const evidence = { firings, sessions, wrong: wrong.sincePromotion, external };
+    const evidence = { firings, sessions, wrong: wrong.sinceGrant, external };
     if (!policyAllows(policy.policy, evidence)) continue;
     const promotion = { action: policy.policy.maxAction, approvedBy: `policy:${policy.sha256}`, detail: `${firings} firings in ${sessions} sessions` };
     apply(learning, (s, l) => promote(root, write, s, l, promotion), () => result.promoted.push(learning.id));

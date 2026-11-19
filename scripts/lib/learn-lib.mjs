@@ -965,8 +965,8 @@ export function listLearnings(root) {
  * counts them too: `firings`, the well-formed `gate_firing` events for it;
  * `sessions`, how many sessions hold one; `rerouted`, the `warn` and `block`
  * firings after which the next call of the gate's tool in that session
- * succeeded; `wrong`, the firings marked wrong since its last promotion, or
- * ever when it was never promoted; `wrongTotal`, those marked wrong in all;
+ * succeeded; `wrong`, the firings marked wrong since its last promotion or
+ * landing, or ever when it had neither; `wrongTotal`, those marked wrong in all;
  * and `sessionsUnreadable`. Reads only. Returns `{ error }` for an id that
  * names no learning, for a learning the ledger does not vouch for, or when
  * the log cannot be read.
@@ -989,5 +989,5 @@ function learningStatsUnguarded(root, id) {
   if (unrecorded !== null) return { error: unrecorded };
   const { gates, sessionsUnreadable } = gateStats(root, view.entries, new Map([[id, read.learning.sha256]]));
   const { firings, sessions, rerouted, wrong } = gates.get(id);
-  return { firings, sessions, rerouted, wrong: wrong.sincePromotion, wrongTotal: wrong.total, sessionsUnreadable };
+  return { firings, sessions, rerouted, wrong: wrong.sinceGrant, wrongTotal: wrong.total, sessionsUnreadable };
 }

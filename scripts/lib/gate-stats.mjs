@@ -24,7 +24,7 @@ const isWellFormedFiring = e => isString(e.gateId) && GATE_ID.test(e.gateId) && 
 // repository.
 const RECOUNT_KINDS = new Set(['promoted', 'landed']);
 
-/** `{ sincePromotion, total }` per learning id with a `RECOUNT_KINDS` or
+/** `{ sinceGrant, total }` per learning id with a `RECOUNT_KINDS` or
  * `wrong` entry: the wrong marks since its last promotion or landing, or
  * ever when it had neither, and in all. */
 function wrongMarksById(entries) {
@@ -32,12 +32,12 @@ function wrongMarksById(entries) {
   for (const entry of entries) {
     const id = entry?.learningId;
     if (!isString(id) || !GATE_ID.test(id) || (!RECOUNT_KINDS.has(entry.kind) && entry.kind !== 'wrong')) continue;
-    if (!marks.has(id)) marks.set(id, { sincePromotion: 0, total: 0 });
+    if (!marks.has(id)) marks.set(id, { sinceGrant: 0, total: 0 });
     const m = marks.get(id);
     if (RECOUNT_KINDS.has(entry.kind)) {
-      m.sincePromotion = 0;
+      m.sinceGrant = 0;
     } else {
-      m.sincePromotion++;
+      m.sinceGrant++;
       m.total++;
     }
   }
@@ -46,7 +46,7 @@ function wrongMarksById(entries) {
 
 /** How many times the learning `id` was marked wrong since its last
  * promotion or landing, or ever when it had neither. */
-export const wrongSincePromotion = (entries, id) => wrongMarksById(entries).get(id)?.sincePromotion ?? 0;
+export const wrongSinceGrant = (entries, id) => wrongMarksById(entries).get(id)?.sinceGrant ?? 0;
 
 const blank = () => ({ fired: Object.fromEntries(GATE_ACTIONS.map(a => [a, 0])), sessions: new Set(), rerouted: 0, gateSha256s: new Set() });
 
@@ -57,7 +57,7 @@ const blank = () => ({ fired: Object.fromEntries(GATE_ACTIONS.map(a => [a, 0])),
  * gateSha256s, wrong }`. `fired` counts its firings per action and
  * `firings` all of them; `sessions` is how many sessions hold one;
  * `gateSha256s` the content hashes it fired under; `wrong` is
- * `{ sincePromotion, total }`, as `wrongSincePromotion` counts the first, or
+ * `{ sinceGrant, total }`, as `wrongSinceGrant` counts the first, or
  * null when `ledgerEntries` is null because the ledger cannot vouch for
  * what it holds.
  *
@@ -114,7 +114,7 @@ export function gateStats(root, ledgerEntries, contents = null) {
     sessions: g.sessions.size,
     rerouted: g.rerouted,
     gateSha256s: [...g.gateSha256s].sort(),
-    wrong: marks === null ? null : (marks.get(id) ?? { sincePromotion: 0, total: 0 }),
+    wrong: marks === null ? null : (marks.get(id) ?? { sinceGrant: 0, total: 0 }),
   }]));
   return { gates, sessionsRead: ids.length, sessionsUnreadable, firingsMalformed };
 }

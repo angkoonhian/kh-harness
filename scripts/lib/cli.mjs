@@ -281,8 +281,8 @@ SUBCOMMANDS
              kind in docs/harness/FAILURES.md that labels each; and how each
              gate fired, per action, how often a warning or block was followed
              by a successful call of the same tool, and how often its learning
-             was marked wrong in the ledger, since its last promotion and in
-             all. States how many sessions it read and
+             was marked wrong in the ledger, since its last promotion or
+             landing and in all. States how many sessions it read and
              what it could not read, and never that outcomes improved. Reads
              only; writes nothing.
   maintain  Seal closed sessions, expire content past the retention period
@@ -342,7 +342,7 @@ const LEARN_SECTIONS = [
   { name: 'list', synopsis: 'list [--json]', text: 'Every learning with its status and whether the ledger vouches for it, the approvals the ledger records, and every local gate the next step that writes repairs or removes. A broken ledger is said first. Reads only.' },
   { name: 'show', synopsis: 'show <id> [--json]', text: "One learning: its gate as JSON with every code point outside printable ASCII written as \\u{…}, the gate's sha256, the replay result and what the log records of its firings. Reads only." },
   { name: 'approve', terminal: true, synopsis: 'approve <id> --sha256 <hash> --action <warn|block>', text: "Promote a learning on trial to warn or block on this machine. <hash> must be the gate's sha256 as `show` prints it; the same view is printed first, so the hash approved sits beside the text it covers." },
-  { name: 'wrong', terminal: true, synopsis: 'wrong <session>:<line>', text: 'Mark one recorded gate firing wrong. Two marks since a promotion take the gate back to observe.' },
+  { name: 'wrong', terminal: true, synopsis: 'wrong <session>:<line>', text: 'Mark one recorded gate firing wrong. Two marks since a promotion or landing take the gate back to observe on this machine.' },
   { name: 'demote', terminal: true, synopsis: 'demote <id>', text: "Take a promoted learning's gate back to observe; a committed gate is suspended on this machine instead, and that is final." },
   { name: 'retire', terminal: true, synopsis: 'retire <id>', text: 'Retire a learning: its local gate goes, and it no longer stands for its recurrence.' },
   { name: 'tick', synopsis: 'tick [--json]', text: 'Run the unattended rules once: repair the local gate set, retire trials whose cited paths are all gone, demote gates marked wrong twice, and promote under the policy in force; then print all it did and all it could not. Exits 2, after printing all it did, when it could not do part of its work; 0 only when it did all of it.' },

@@ -21,7 +21,7 @@ import {
 } from './learn-fixtures.mjs';
 import { landLearning, planLand, revertLearning } from './learn-land.mjs';
 import { listLearnings, runTrial } from './learn-lib.mjs';
-import { approveLearning, demoteLearning, markWrong, setPolicy, tick } from './learn-promote.mjs';
+import { approveLearning, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './learn-promote.mjs';
 import { appendLedger, readLedger } from './ledger.mjs';
 import { APPLY, DETECT, run, UNINSTALL } from './lifecycle-fixtures.mjs';
 import { MANIFEST_PATH, readManifestResult } from './manifest.mjs';
@@ -145,7 +145,7 @@ test('a trial learning cannot be landed', () => {
   assert.deepEqual(planLand(root, 'L1'), { error: 'L1 is trial; only a learning promoted on this machine is landed', exitCode: 3 });
   assert.deepEqual(landLearning(root, 'L9', YES), { error: 'L9: no such learning', exitCode: 3 });
   assert.deepEqual(landLearning(root, '../L1', YES), { error: 'id: must be L followed by 1 to 9 digits, without a leading zero', exitCode: 3 });
-  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is trial; only a landed learning is reverted', exitCode: 3 });
+  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is trial; only a landed learning, or one suspended on this machine, is reverted', exitCode: 3 });
   assert.deepEqual(mtimes(root), before);
 
   assert.equal(approveLearning(root, 'L1', { sha256: learning.sha256, action: 'block', interactive: AT_TERMINAL }).ok, true);
@@ -509,4 +509,83 @@ test('demoteLearning at a terminal suspends a landed learning', () => {
   assert.equal(blocks(root), false);
   assert.deepEqual(snapshot(root), files, 'a suspension never changes the repository');
   assert.deepEqual(listLearnings(root).ledgerMismatch, []);
+});
+
+/** A repository on a feature branch, with `apply` run, whose Bash learning
+ * L1 was landed, committed, and then suspended on this machine. */
+function suspendedLandedRepo() {
+  const { root, gate } = activeRepo();
+  run(APPLY, root, '--yes');
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  assert.equal(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'suspended');
+  return { root, gate };
+}
+
+test('a suspended landed learning can be reverted at a terminal: its gate leaves the repository and it ends retired with no local gate', () => {
+  const { root } = suspendedLandedRepo();
+  const dry = revertLearning(root, 'L1', {});
+  assert.deepEqual(dry.proposals.map(p => p.path), [GATES_PATH, LEARNED_PATH]);
+
+  const reverted = revertLearning(root, 'L1', YES);
+  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'retired', action: 'observe', written: [GATES_PATH, LEARNED_PATH], repairedGates: [] });
+  assert.deepEqual(committedFile(root).gates, []);
+  assert.deepEqual(parseRules(text(root, LEARNED_PATH)).rules, []);
+  assert.deepEqual(manifest(root).learnings, []);
+  assert.equal(statusOf(root), 'retired');
+  assert.deepEqual(localGates(root).gates, [], 'the suspension goes with the committed gate, and no local gate comes back');
+  assert.equal(blocks(root), false);
+  const [revertEntry, retireEntry] = readLedger(root).slice(-2);
+  assert.deepEqual([revertEntry.kind, revertEntry.approvedBy, revertEntry.action], ['reverted', 'owner', 'block']);
+  assert.deepEqual([retireEntry.kind, retireEntry.approvedBy], ['retired', 'owner']);
+  assert.deepEqual([listLearnings(root).ledgerMismatch, listLearnings(root).gatesToRepair], [[], []]);
+  assert.deepEqual(tick(root).repairedGates, []);
+  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is retired; only a landed learning, or one suspended on this machine, is reverted', exitCode: 3 });
+
+  const integrityAfter = integrity(root);
+  assert.equal(integrityAfter.state, 'declared', JSON.stringify(integrityAfter.evidence));
+});
+
+test('P5.integrity is declared afterwards', () => {
+  const { root } = suspendedLandedRepo();
+  assert.equal(integrity(root).state, 'declared', 'suspended here, still committed and approved');
+  assert.equal(revertLearning(root, 'L1', YES).ok, true);
+  const after = integrity(root);
+  assert.equal(after.state, 'declared', JSON.stringify(after.evidence));
+  assert.ok(after.evidence.includes(`${GATES_PATH}: 0 gates, each approved in ${LEARNED_PATH}`));
+});
+
+test('reverting a suspended learning without a terminal is refused and writes nothing', () => {
+  const { root } = suspendedLandedRepo();
+  const before = { status: repoStatus(root), files: snapshot(root), data: snapshot(repoDataDir(root)) };
+  for (const interactive of WITHOUT_TERMINAL) {
+    assert.deepEqual(revertLearning(root, 'L1', { yes: true, interactive }), NO_TERMINAL('a revert'), JSON.stringify(interactive));
+  }
+  assert.equal(repoStatus(root), before.status);
+  assert.deepEqual(snapshot(root), before.files);
+  assert.deepEqual(snapshot(repoDataDir(root)), before.data);
+  assert.equal(statusOf(root), 'suspended');
+});
+
+test('a suspended learning\'s revert stopped before its ledger entries is reported, and retiring it finishes the step', () => {
+  const { root } = suspendedLandedRepo();
+  const release = holdLock(join(repoDataDir(root), 'ledger.jsonl.lock'));
+  let stopped;
+  try {
+    stopped = revertLearning(root, 'L1', YES);
+  } finally {
+    release();
+  }
+  assert.equal(stopped.exitCode, 2);
+  assert.match(stopped.error, /recording reverted and retired on this machine did not finish .*; retiring L1 at a terminal finishes it/);
+  assert.deepEqual(committedFile(root).gates, [], 'the gate is out of the repository');
+  assert.deepEqual(integrityEvidence(root, manifest(root)).problems, []);
+  assert.equal(statusOf(root), 'suspended');
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['L1'], 'the suspension no longer stands, and the next step removes it');
+  assert.deepEqual(revertLearning(root, 'L1', YES), {
+    error: `L1 is suspended and ${GATES_PATH} does not hold its gate, so there is nothing to revert; if a revert stopped before recording it, retiring L1 at a terminal finishes it`,
+    exitCode: 3, repairedGates: ['L1'],
+  });
+  assert.equal(retireLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'retired');
+  assert.deepEqual(localGates(root).gates, []);
 });

@@ -344,7 +344,7 @@ function statsLine(view) {
   if (view.stats === null) return `stats: not available: ${showCodePoints(view.statsError)}`;
   const s = view.stats;
   const unreadable = s.sessionsUnreadable > 0 ? `; sessions read only in part: ${s.sessionsUnreadable}` : '';
-  return `stats: fired ${plural(s.firings, 'time')} in ${plural(s.sessions, 'session')}; rerouted: ${s.rerouted}; marked wrong: ${s.wrong} since the last promotion, ${s.wrongTotal} in all${unreadable}`;
+  return `stats: fired ${plural(s.firings, 'time')} in ${plural(s.sessions, 'session')}; rerouted: ${s.rerouted}; marked wrong: ${s.wrong} since the last promotion or landing, ${s.wrongTotal} in all${unreadable}`;
 }
 
 export function renderShow(view) {
@@ -377,7 +377,7 @@ export const renderApproved = (result, sha256) => withRepairs(result, [
 ]);
 
 export const renderWrong = (result, ref) => withRepairs(result, [
-  `firing ${ref.sessionId}:${ref.line} of ${result.id} marked wrong: ${result.wrong} since its last promotion; ${result.id} is ${result.status}.`,
+  `firing ${ref.sessionId}:${ref.line} of ${result.id} marked wrong: ${result.wrong} since its last promotion or landing; ${result.id} is ${result.status}.`,
 ]);
 
 export const renderDemoted = result => withRepairs(result, [result.status === 'suspended'

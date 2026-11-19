@@ -210,7 +210,7 @@ test('gate firings are counted per gate and action, and a warn or block followed
   const text = reportText(root);
   assert.ok(text.includes(REROUTED_MEANS), 'the report states what rerouted means');
   assert.match(REROUTED_MEANS, /warn or block/);
-  assert.match(text, /L1: fired 6 times \(observe 0, warn 0, block 6\); rerouted after 3 of 6 warnings and blocks; marked wrong: 0 since the last promotion, 0 in all/);
+  assert.match(text, /L1: fired 6 times \(observe 0, warn 0, block 6\); rerouted after 3 of 6 warnings and blocks; marked wrong: 0 since the last promotion or landing, 0 in all/);
   assert.match(text, /L2: fired 2 times \(observe 1, warn 1, block 0\); rerouted after 1 of 1 warnings and blocks;/);
   assert.match(text, /firing events not counted, because their gate id or action is not one a gate can have: 2/);
   assert.doesNotMatch(text, /L9|shout/);
@@ -227,7 +227,7 @@ test('marked wrong is read from the ledger, and a broken ledger is reported as n
   const json = reportJson(root);
   assert.deepEqual(json.ledger, { intact: true, brokenAt: null });
   assert.deepEqual(json.gates.firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal, g.fired.warn]), [['L1', 1, 2, 2], ['L4', 1, 1, 0]]);
-  assert.match(reportText(root), /L1: .*marked wrong: 1 since the last promotion, 2 in all/);
+  assert.match(reportText(root), /L1: .*marked wrong: 1 since the last promotion or landing, 2 in all/);
 
   writeFileSync(join(repoDataDir(root), 'ledger.jsonl'), '{"not":"a ledger line"}\n', { flag: 'a' });
   const broken = reportJson(root);
@@ -250,7 +250,7 @@ test('a gate id with no learning on this machine is reported from its firings al
   assert.deepEqual(firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal]), [['L4', 1, 1], ['L7', 0, 0]]);
   assert.deepEqual(firings[1],
     { gateId: 'L7', fired: { observe: 0, warn: 0, block: 1 }, rerouted: 1, markedWrong: 0, markedWrongTotal: 0, gateSha256s: ['a'.repeat(64)] });
-  assert.match(reportText(root), /L7: fired 1 time \(observe 0, warn 0, block 1\); rerouted after 1 of 1 warnings and blocks; marked wrong: 0 since the last promotion, 0 in all/);
+  assert.match(reportText(root), /L7: fired 1 time \(observe 0, warn 0, block 1\); rerouted after 1 of 1 warnings and blocks; marked wrong: 0 since the last promotion or landing, 0 in all/);
 });
 
 test('the report counts what it could not read', () => {
