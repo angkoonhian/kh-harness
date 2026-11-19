@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-import { appendEvent, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
+import { appendEvent, keyedWorkTree, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { failureSignature, FAILURE_EVENT, findRecurrences, listSessions, normaliseError, sessionIds, SUCCESS_EVENT } from './recurrence.mjs';
 
@@ -273,6 +273,8 @@ test('a repository with no log has read nothing', () => {
     sessionsOverLimit: [],
     linesUnparseable: 0,
     failuresUnattributed: 0,
+    failuresWithoutSignature: 0,
+    callsInterrupted: 0,
   });
 });
 
@@ -356,4 +358,89 @@ test('failureSignature is null for anything but a failure', () => {
     failureSignature({ ...event, firstErrorLine: `${POSIX_ROOT}/a.mjs:1` }, ROOT),
     failureSignature({ ...event, firstErrorLine: 'a.mjs:22' }, ROOT),
   );
+});
+
+/** A repository and a linked worktree of it, as git lays them out, without
+ * running git: `{ main, worktree }`. */
+function repoWithWorktree() {
+  const main = tempDir('hk-rec-main-');
+  const worktree = tempDir('hk-rec-wt-');
+  const gitDir = join(main, '.git', 'worktrees', 'wt');
+  mkdirSync(gitDir, { recursive: true });
+  writeFileSync(join(gitDir, 'commondir'), '../..\n');
+  writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+  return { main, worktree };
+}
+
+test('the work tree a repository is keyed by is the same from every worktree', () => {
+  const { main, worktree } = repoWithWorktree();
+  mkdirSync(join(worktree, 'sub'));
+  assert.equal(keyedWorkTree(worktree), keyedWorkTree(main));
+  assert.equal(keyedWorkTree(join(worktree, 'sub')), keyedWorkTree(main));
+  const bare = tempDir('hk-rec-nogit-');
+  assert.equal(keyedWorkTree(bare), bare, 'outside git a directory stands for itself');
+});
+
+test('a failure\'s signature does not depend on the directory the reader was run from', () => {
+  const { main, worktree } = repoWithWorktree();
+  const event = failure('one', { firstErrorLine: `${join(main, 'src', 'a.mjs')}:12 unexpected token` });
+  assert.equal(failureSignature(event, worktree), failureSignature(event, main));
+  assert.equal(failureSignature(event, main), failureSignature(failure('one', { firstErrorLine: 'src/a.mjs:7 unexpected token' }), main));
+
+  log(main, 'one', HARNESS, event);
+  log(main, 'two', HARNESS, event);
+  const [fromMain] = findRecurrences(main).recurrences;
+  const [fromWorktree] = findRecurrences(worktree).recurrences;
+  assert.equal(fromWorktree.signature, fromMain.signature);
+  assert.equal(fromWorktree.errorLine, 'src/a.mjs:# unexpected token');
+});
+
+test('a failure is normalised against the root recorded with it, whichever worktree it happened in', () => {
+  const { main, worktree } = repoWithWorktree();
+  const inMain = failure('one', { root: main, firstErrorLine: `${join(main, 'src', 'a.mjs')}:12 unexpected token` });
+  const inWorktree = failure('two', { root: worktree, firstErrorLine: `${join(worktree, 'src', 'a.mjs')}:40 unexpected token` });
+  for (const reader of [main, worktree]) {
+    assert.equal(failureSignature(inWorktree, reader), failureSignature(inMain, reader), reader);
+  }
+  log(main, 'one', HARNESS, inMain);
+  log(main, 'two', HARNESS, inWorktree);
+  const { recurrences } = findRecurrences(worktree);
+  assert.deepEqual(recurrences.map(r => [r.sessions, r.errorLine]), [[['one', 'two'], 'src/a.mjs:# unexpected token']]);
+});
+
+test('the logging hook records the project root on a failure', () => {
+  const previous = process.env.CLAUDE_PROJECT_DIR;
+  process.env.CLAUDE_PROJECT_DIR = ROOT;
+  try {
+    const event = toLogEvent({ hook_event_name: FAILURE_EVENT, session_id: 'one', tool_name: 'Bash', tool_input: { command: 'npm test' }, error: `${POSIX_ROOT}/a.mjs:3 bad` });
+    assert.equal(event.root, ROOT);
+    assert.equal(failureSignature(event, tempDir('hk-rec-elsewhere-')), failureSignature({ ...event, firstErrorLine: 'a.mjs:9 bad' }, ROOT));
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+    else process.env.CLAUDE_PROJECT_DIR = previous;
+  }
+});
+
+test('an interrupted call is not a failure for recurrence, and is counted', () => {
+  const root = tempDir('hk-rec-repo-');
+  const interrupted = id => failure(id, { status: 'interrupted', firstErrorLine: '[Request interrupted by user for tool use]' });
+  assert.equal(failureSignature(interrupted('one'), root), null);
+  log(root, 'one', HARNESS, interrupted('one'));
+  log(root, 'two', HARNESS, interrupted('two'), interrupted('two'));
+  const result = findRecurrences(root);
+  assert.deepEqual(result.recurrences, []);
+  assert.equal(result.callsInterrupted, 3);
+  assert.equal(result.failuresUnattributed, 0);
+});
+
+test('a failure that records no first error line or input hash is counted as left out, not dropped unsaid', () => {
+  const root = tempDir('hk-rec-repo-');
+  const { firstErrorLine: _line, ...noLine } = failure('one');
+  const { inputHash: _hash, ...noHash } = failure('two');
+  log(root, 'one', HARNESS, noLine, failure('one'));
+  log(root, 'two', noHash, HARNESS, noHash, failure('two'));
+  const result = findRecurrences(root);
+  assert.equal(result.failuresWithoutSignature, 3);
+  assert.equal(result.failuresUnattributed, 3, 'each is left out once, whatever else is missing');
+  assert.deepEqual(result.recurrences.map(r => r.count), [2]);
 });
