@@ -160,9 +160,12 @@ link here.
 > only for a person at an interactive terminal outside Claude Code.
 
 **The terminal check.** Standard input and standard output must both be
-terminals, and `CLAUDECODE` must be unset. Claude Code sets `CLAUDECODE` in
-every process it starts, and its IDE extensions set it in their built-in
-terminals too, so those are refused; use a separate terminal window. Run
+terminals, and `CLAUDECODE` must be unset. The check relies on what
+`scripts/lib/tty.mjs` records from the Claude Code environment-variable
+reference (read 2026-11-19): Claude Code sets `CLAUDECODE` in the
+subprocesses it spawns, and IDE extensions set it in their integrated
+terminals. So a command Claude Code runs, or one typed in an IDE's
+built-in terminal, is refused; use a separate terminal window. Run
 anywhere else, or with either stream redirected, a terminal-only
 subcommand exits 3. It changes no learning, but it first runs the gate
 repair, which can rewrite this machine's `gates.local.json`. `land` and
@@ -193,6 +196,11 @@ and clear `CLAUDECODE`, or call the kit's functions from Node directly. See
 Run `learn show <id>`, read the gate, and pass the hash it prints to
 `learn approve <id> --sha256 <hash> --action <warn|block>`, at a terminal.
 Any change to the gate's content changes the hash and voids the approval.
+
+`learn show <id>` also lists the gate's latest ten firings, each as the
+`<session>:<line>` reference that `learn wrong` takes, and says how many
+earlier ones there are; `learn show <id> --firings` lists every one. To mark
+a firing wrong, pass its reference: `learn wrong trial-1:15`, at a terminal.
 
 ## The policy
 

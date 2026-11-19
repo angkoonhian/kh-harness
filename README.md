@@ -13,14 +13,32 @@ remove it again cleanly.
 For a developer who already has a repository and uses Claude Code in it.
 `detect` reports what the repository has and what it lacks, with the
 evidence it read. `apply` writes only what that report proposed, as a dry run
-until you add `--yes`. `uninstall` removes exactly what `apply` wrote. Once
-installed, the harness can also keep a log of your sessions on your machine
-and turn a tool failure that recurs into a small gate, which takes effect
-only when you approve it.
+until you add `--yes`. `uninstall` removes what the kit wrote, and nothing
+of yours. Once installed, the harness can also keep a log of your sessions
+on your machine and turn a tool failure that recurs into a small gate, which
+the kit's commands move past `observe` only with your approval.
 
-**What it will not do:** overwrite or delete a file it did not write, or
-write `CLAUDE.md`; send anything over the network; or let a learned gate
-warn or block without your approval at a terminal or a policy you set there.
+**What it does that you should know before installing**
+
+- Its lint sensor and stop gate run this repository's own `lint`,
+  `typecheck` or `test` scripts automatically, after edits and at each turn
+  end.
+- Once you enable the session log, it stores every prompt and every tool
+  call's input and output on this machine, after a best-effort credential
+  scrub.
+
+**What it will not do**
+
+- Overwrite or delete a file it did not write. In `.claude/settings.json`,
+  which may be yours, it adds only its own hook entries and deny rules, and
+  `uninstall` removes only those; it never writes `CLAUDE.md`.
+- Send anything over the network itself; `detect --verify` and the hooks
+  run your own scripts, which may.
+- Through any of its `learn` commands, promote a learned gate to warn or
+  block without a person at a terminal or a policy that person recorded
+  there, or land one in the repository without a person at a terminal. The
+  gate hook enforces whatever the gate files hold, so a gate written into
+  them by other means acts too; see [Limits](#limits).
 
 **What you get**
 
@@ -292,7 +310,7 @@ Each takes `--help` for its full contract. The flags of the first three:
 | [`draft`](docs/guide/commands.md#learn-draft) | Stores a drafted gate and replays it | data directory | no |
 | [`replay`](docs/guide/commands.md#learn-replay) | Replays a candidate again | data directory | no |
 | [`list`](docs/guide/commands.md#learn-list) | Every learning, its status and the approvals | no | no |
-| [`show`](docs/guide/commands.md#learn-show) | One learning, its gate and its hash | no | no |
+| [`show`](docs/guide/commands.md#learn-show) | One learning, its gate and its hash, and its latest ten firings as `session:line` (`--firings` for all) | no | no |
 | [`approve`](docs/guide/commands.md#learn-approve) | Promotes a gate on trial to `warn` or `block` on this machine | data directory | **yes** |
 | [`wrong`](docs/guide/commands.md#learn-wrong) | Marks one recorded firing wrong | data directory | **yes** |
 | [`demote`](docs/guide/commands.md#learn-demote) | Takes a gate back to `observe`, or suspends a landed one here | data directory | **yes** |
@@ -470,6 +488,12 @@ detail, what the scrub misses, and the cost figures are on
   suspended acts here again. There is no command that repairs the ledger;
   what to do is under
   [the ledger is broken](docs/guide/troubleshooting.md#the-ledger-is-broken).
+- The gate hook enforces every gate in the committed gate file
+  (`.claude/kh-harness/gates.json`) and in this machine's gate file as they
+  stand. It checks no approval. Approval is checked by the kit's `learn`
+  commands and reported by `detect`'s integrity check, not by the hook, so a
+  gate added by a teammate's commit, a hand edit or a program the agent runs
+  warns or blocks as soon as it is there.
 - An agent can write `gates.local.json` directly, and the gate hook enforces
   what it holds. `tick`, or the next `learn` command that writes, removes
   every gate the ledger does not vouch for; until then the forged gate acts.
@@ -502,9 +526,12 @@ detail, what the scrub misses, and the cost figures are on
 - `log enable`, `log disable`, `log maintain` and `log purge --yes` need no
   terminal and are not denied. `log purge --yes` deletes the ledger, the
   learnings, the policy and this machine's gate file with the log, so one
-  command switches off every gate promoted on this machine. `log disable`
-  stops firings being recorded, so `observe` gates do nothing and no policy
-  can promote.
+  command switches off every gate promoted on this machine and drops every
+  suspension, so each committed gate suspended here acts again. `log disable`
+  stops new firings being recorded, so `observe` gates record nothing; it
+  does not stop promotion: `tick` counts the firings already in the log, so
+  a recorded policy can still promote after the disable. What stops
+  promotion under a policy is `learn policy clear`, at a terminal.
 - Retention runs only while the log is enabled: at a session start, or from
   `log maintain`, which refuses a disabled log. After `log disable`, every
   prompt and every tool input and output already recorded stays on disk,
@@ -533,10 +560,15 @@ detail, what the scrub misses, and the cost figures are on
   8 characters or more count: a shorter secret in a
   `sh: <word>: command not found` line reaches the model unless the
   credential mask recognises it.
-- `uninstall` removes the two files `learn land` writes when they hold only
-  learnings the manifest records, which takes every landed gate out of the
-  repository for everyone once committed; the ledger still records those
-  learnings as landed.
+- `uninstall` can remove the two files `learn land` writes, which takes
+  every landed gate out of the repository for everyone once committed. The
+  ledger still records those learnings as landed, and the repair keeps a
+  local gate for a landed learning whose committed gate is absent: the next
+  `learn` command that writes, or `tick`, writes those gates back into
+  `gates.local.json`, and once `apply` has installed the gate hook again
+  they act on this machine. The rule for
+  when the two files are removed is under
+  [uninstall](docs/guide/commands.md#uninstall).
 
 Nothing here claims that the harness or an agent improved. The commands
 report counts: recurrences, replays, firings and what followed them.
@@ -563,8 +595,11 @@ The suite needs no network. **The eval suite cannot measure
 `harness-init`:** its `disable-model-invocation: true` keeps it out of the
 model's context, and `claude plugin eval` passes prompts verbatim, so a
 literal `/harness-init` is inert text. The comments in
-`.github/workflows/ci.yml` record earlier CI runs that reported
-`meanDelta: 0` for that reason, not because the plugin makes no difference. No eval case
+`.github/workflows/ci.yml` record two causes of a `meanDelta: 0` that says
+nothing about the plugin: pull-request runs, at about $1.31 and 11 minutes
+each, in which the skill could not fire; and three earlier runs in which
+every arm aborted with `turns=0` before the model was called, because the
+runner lacked the Bash sandbox backend. No eval case
 exists for `harness-learn`. The CI `eval` job runs only on
 `workflow_dispatch`, and shows as skipped, never passed, without a
 credential.

@@ -85,6 +85,28 @@ export function snapshot(dir) {
   return files;
 }
 
+/** Every entry under `dir` by relative path: a file with its bytes, a
+ * directory (empty or not) as `{ dir: true }`, anything else by its kind, so
+ * a new empty directory and a changed file both show. */
+export function treeSnapshot(dir) {
+  const entries = {};
+  const walk = rel => {
+    for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      const path = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) {
+        entries[path] = { dir: true };
+        walk(path);
+      } else if (entry.isFile()) {
+        entries[path] = readFileSync(join(dir, path)).toString('base64');
+      } else {
+        entries[path] = { other: true };
+      }
+    }
+  };
+  walk('');
+  return entries;
+}
+
 export const statusJson = root => {
   const r = runLog(root, 'status', '--json');
   assert.equal(r.status, 0, r.stderr);

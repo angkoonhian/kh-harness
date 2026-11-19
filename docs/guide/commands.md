@@ -182,13 +182,21 @@ generator could have written them. Without `--yes` it is a dry run. The
 repository path is required: there is no default.
 
 - **The two learned files** (`docs/harness/LEARNED.md` and
-  `.claude/kh-harness/gates.json`) are decided together. Each is removed
-  only when it is unmodified, carries the stamp, and every entry in it is a
-  learning the manifest records as landed; if either is kept, so is the
-  other. Removing `gates.json` also clears the manifest's list of landed
-  learnings. Once committed, that takes every landed gate out of the
-  repository for everyone. The ledger is not touched: each of those
-  learnings is still `landed` on this machine.
+  `.claude/kh-harness/gates.json`): each is removed only when it is
+  unmodified, carries the stamp, and every entry in it is a learning the
+  manifest records as landed. Then the two are weighed against each other,
+  so that a committed gate is never left without its registry entry:
+  `LEARNED.md` is kept whenever `gates.json` is kept, for any reason;
+  `gates.json` is kept for its partner only when `LEARNED.md` holds an entry
+  the manifest does not record. So a hand-edited `LEARNED.md` is kept while
+  `gates.json` is removed. Removing `gates.json` also clears the manifest's
+  list of landed learnings, and once committed takes every landed gate out
+  of the repository for everyone.
+- **The ledger** is not touched: each of those learnings is still `landed`
+  on this machine, and the repair keeps a local gate for a landed learning
+  whose committed gate is absent. So the next `learn` command that writes,
+  or `tick`, writes those gates back into `gates.local.json`, and once
+  `apply` has installed the gate hook again they act on this machine.
 - **The session log** and the rest of the data directory are never
   removed; `uninstall` names the directory and its size.
 - **The manifest** is kept whenever anything else is kept.
@@ -398,6 +406,7 @@ inside the repository.
 | Flag | Applies to | What it does |
 |---|---|---|
 | `--json` | `candidates`, `evidence`, `list`, `show`, `policy show`, `tick`, `land`, `revert` | Print the object on stdout and nothing else, with every character outside printable ASCII escaped. |
+| `--firings` | `show` | List every firing of the learning's gate, not only the latest ten. |
 | `--redraft` | `draft` | Draft a recurrence again although the replay rejected an earlier learning for it or its failure kind. The ledger records the redraft. |
 | `--from <file>` | `draft` | The drafted learning, as JSON. |
 | `--sha256 <hash>` | `approve` | The gate's hash, as `show` prints it. |
@@ -552,10 +561,18 @@ LEDGER AND LOCAL GATES
 
 ### learn show
 
-    node scripts/learn.mjs <path-to-repo> show <id> [--json]
+    node scripts/learn.mjs <path-to-repo> show <id> [--firings] [--json]
 
 One learning: its gate as escaped JSON, the gate's sha256, the replay
-result and its firings. Reads only.
+result, its firing counts, and its latest ten firings, each named
+`<session>:<line>` — the reference [learn wrong](#learn-wrong) takes — with
+how many earlier ones are not listed. `--firings` lists every one. With
+`--json` the listed firings are the `listedFirings` field. Reads only.
+
+| Flag | What it does |
+|---|---|
+| `--firings` | List every firing, not only the latest ten. |
+| `--json` | Print the object on stdout and nothing else. |
 
 <details>
 <summary>Example</summary>
@@ -581,7 +598,25 @@ LEARNING L1
       "action": "observe"
     }
   replay: pass: "the gate fired on all 2 mistakes, …"
-  stats: fired 1 time in 1 session; rerouted: 0; marked wrong: 0 since the last promotion or landing, 0 in all
+  stats: fired 12 times in 1 session; rerouted: 0; marked wrong: 0 since the last promotion or landing, 0 in all
+    rerouted: after a warn or block firing, the next call of the same tool in that session succeeded; a firing whose call has no tool use id is not counted
+  firings, the latest 10 of 12, the latest last, each as `wrong` takes it:
+    trial-1:15  observe  at 2026-11-19T17:01:55.437Z
+    trial-1:21  observe  at 2026-11-19T17:01:56.562Z
+…
+    trial-1:69  observe  at 2026-11-19T17:02:07.394Z
+  2 earlier firings not listed: `show L1 --firings` lists every one.
+```
+
+With `--firings` the listing starts at the first:
+
+```
+…
+  firings, all 12, the latest last, each as `wrong` takes it:
+    trial-1:3  observe  at 2026-11-19T15:31:48.851Z
+    trial-1:9  observe  at 2026-11-19T17:01:54.188Z
+    trial-1:15  observe  at 2026-11-19T17:01:55.437Z
+…
 ```
 
 </details>
@@ -606,7 +641,8 @@ terminal.
     node scripts/learn.mjs <path-to-repo> wrong <session>:<line>
 
 **Terminal only.** Marks one recorded firing wrong. The firing is named by
-its session id and its line in that session. Two marks since a promotion or
+its session id and its line in that session, as [learn show](#learn-show)
+lists it (for example `trial-1:15`). Two marks since a promotion or
 landing take the gate back to `observe`, or, for a landed gate, suspend it
 on this machine.
 

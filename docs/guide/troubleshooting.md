@@ -218,7 +218,9 @@ them out, either:
   rest; or
 - edit both files by hand to take out the gates you no longer want, and
   commit. Both files are kit-owned, so `detect`'s `P5.integrity` then
-  reports them as modified, and kh-harness no longer updates them.
+  reports them as modified, and also reports each learning the manifest
+  still records as landed whose gate is no longer there; kh-harness no
+  longer updates either file.
 
 ### tick could not do all of its work
 

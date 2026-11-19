@@ -4,7 +4,7 @@ All notable changes to kh-harness are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-11-19
+## 0.2.0 - 2026-11-19
 
 ### Added
 
@@ -39,6 +39,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   against the log before it can act, tried at `observe`, and promoted to
   `warn` or `block` only by the owner's approval of its hash at a terminal
   or by a policy whose hash the owner recorded in the ledger at a terminal.
+- `learn show <id>` lists a learning's latest ten firings, each as the
+  `session:line` reference `learn wrong` takes, and how many more there
+  are; `--firings` lists every one, and `--json` gives them as
+  `listedFirings`.
 - `learn evidence <signature>`: up to three recorded failures of one
   recurrence, the first in each session, with the next successful call's
   input, printed as escaped JSON between nonce-marked lines that say it is
@@ -97,10 +101,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `apply`: a hook script and the module it imports are updated together
   or not at all; the dry run prints the execution disclosure whenever a
   hook is proposed.
-- `uninstall` also removes the two files `learn land` writes, together and
-  only while they hold nothing but learnings the manifest records, and
-  clears the manifest's landed learnings; the ledger is not changed. It
-  reports the session log's directory and size and never removes it.
+- `uninstall` also removes the two files `learn land` writes, each only
+  while it is unmodified and holds nothing but learnings the manifest
+  records; `LEARNED.md` stays whenever `gates.json` stays, and `gates.json`
+  stays for its partner only when `LEARNED.md` holds an unrecorded
+  learning. Removing `gates.json` clears the manifest's landed learnings;
+  the ledger is not changed. It reports the session log's directory and
+  size and never removes it.
 - The rules brief reads `LEARNED.md` after `RULES.md`, and skips a rule
   that does not fit and keeps going.
 - The `RULES.md` and `FAILURES.md` templates no longer promise an enforcer
