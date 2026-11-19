@@ -50,6 +50,18 @@ export function warnUnknown(unknown) {
   }
 }
 
+/**
+ * Refuses, with exit 2, arguments past the ones a command takes: `extra` is
+ * every positional after them. A command acts on one repository, and
+ * `apply . other --yes` that wrote to `.` and said nothing of `other` would
+ * have done something other than what was typed.
+ */
+export function refuseExtraArguments(extra, usage) {
+  if (extra.length === 0) return;
+  process.stderr.write(`kh-harness: unexpected argument(s): ${extra.join(' ')}\n${usage}\n`);
+  process.exit(2);
+}
+
 // --- The sentences every command shares -----------------------------------
 
 const DISCLOSURE_INDENT = ' '.repeat(33);
@@ -172,8 +184,10 @@ ${indentedList(LOGGED_EVENTS)}
 
 export const EXIT_CODES = `EXIT CODES
   0  did what it said
-  2  could not act (bad path, unreadable settings, a write or removal failed)
-  3  refused to act (default branch, dirty tree, corrupt manifest, no manifest)`;
+  2  could not act (a path or a file it needs is missing or cannot be read, an
+     argument it does not take, a write or a removal that failed)
+  3  refused to act (it could have, and a rule of its own said no: the default
+     branch, uncommitted changes, a manifest that is missing or cannot be read)`;
 
 export const MANIFEST_NOTE = `THE MANIFEST
   \`.claude/kh-harness.manifest.json\` records every file written and every
@@ -209,6 +223,9 @@ FLAGS
   --json     Print the full report to stdout instead of the human summary.
              Unknown-flag warnings go to stderr, so stdout stays parseable.
 
+Here 2 is a path that does not exist, a second path, and a report that could
+not be written. detect refuses nothing, so it never exits 3.
+
 ${EXIT_CODES}`;
 
 export const APPLY_USAGE = `kh-harness apply — write the files and settings \`detect\` proposed
@@ -239,13 +256,20 @@ FLAGS
                            Refused by default for the same reason: a
                            reviewable diff.
 
-Both gates apply to --yes only; a dry run is never refused and prints a
-\`note:\` for what --yes would refuse. If git cannot be consulted at all,
---yes needs both flags, because neither gate could run.
+Both gates apply to --yes only: a dry run prints a \`note:\` for what --yes
+would refuse, and exits 0. If git cannot be consulted at all, --yes needs
+both flags, because neither gate could run. A manifest that is there and
+cannot be read is refused (3) with or without --yes: nothing can be previewed
+against a record that cannot be read.
 
 ${EXECUTION_DISCLOSURE}
 
 ${MANIFEST_NOTE}
+
+Here 3 is --yes on the default branch or with uncommitted changes to tracked
+files, --yes when git cannot say which, and a manifest that cannot be read. 2
+is a path that does not exist, a second path, a settings file that cannot be
+patched (then nothing is written), and a write that failed.
 
 ${EXIT_CODES}`;
 
@@ -267,6 +291,12 @@ beforehand never is.
 
 FLAGS
   --yes   Actually remove. Without it, nothing is removed.
+
+Here 3 is no manifest, or one that cannot be read, with or without --yes. 2
+is no path, one that does not exist or a second one, a removal that failed, a
+file that changed after the plan was made, a recorded path it refused to
+remove, a settings patch it could not revert, a settings file it could not
+read or write, and a manifest it could not update or remove.
 
 ${EXIT_CODES}`;
 

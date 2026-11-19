@@ -12,12 +12,12 @@ import { buildReport, renderSummary, DETECT_REPORT_PATH } from './lib/report.mjs
 import { verifyCommands } from './lib/verify.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { readManifest, replaceFile } from './lib/manifest.mjs';
-import { parseArgv, warnUnknown, wantsHelp, DETECT_USAGE } from './lib/cli.mjs';
+import { parseArgv, refuseExtraArguments, warnUnknown, wantsHelp, DETECT_USAGE } from './lib/cli.mjs';
 import { assertAllowed, assertContained } from './lib/apply-lib.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
-const KNOWN_FLAGS = new Set(['--verify', '--json', '--help', '-h']);
+const KNOWN_FLAGS = new Set(['--verify', '--json']);
 
 const argv = process.argv.slice(2);
 
@@ -28,12 +28,13 @@ if (wantsHelp(argv)) {
 
 // Parsed by the one shared parser all three entry points use — see cli.mjs
 // for why three independent copies of this was itself a finding (F10).
-const { flags, target, unknown } = parseArgv(argv, KNOWN_FLAGS);
+const { flags, target, positionals, unknown } = parseArgv(argv, KNOWN_FLAGS);
 const root = resolve(target ?? process.cwd());
 
 // A typo like `--verfiy` used to be a silent no-op. Say so — on stderr, never
 // on stdout, which --json callers parse.
 warnUnknown(unknown);
+refuseExtraArguments(positionals.slice(1), 'usage: detect <repo-path> [--verify] [--json]   (--help for the full contract)');
 
 if (!existsSync(root)) {
   process.stderr.write(`kh-harness: no such path: ${root}\n`);

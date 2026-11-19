@@ -5,14 +5,14 @@ import { join } from 'node:path';
 import { displayPath, readManifestResult, MANIFEST_PATH } from './lib/manifest.mjs';
 import { planUninstall, runUninstall } from './lib/uninstall-lib.mjs';
 import { settingsReformattedNote } from './lib/apply-lib.mjs';
-import { parseArgv, warnUnknown, wantsHelp, UNINSTALL_USAGE } from './lib/cli.mjs';
+import { parseArgv, refuseExtraArguments, warnUnknown, wantsHelp, UNINSTALL_USAGE } from './lib/cli.mjs';
 
 // Whole-branch review, F10: this was `process.argv[2]` with no flag parsing
 // at all, so `uninstall --yes .` reported `repository not found: --yes` and
 // exited 2, and `uninstall . --yse` silently removed nothing of what was
 // asked — in the one command of the three that deletes files. It uses the
 // same parser and the same unknown-flag warning as `detect` and `apply` now.
-const KNOWN_FLAGS = new Set(['--yes', '--help', '-h']);
+const KNOWN_FLAGS = new Set(['--yes']);
 
 const argv = process.argv.slice(2);
 
@@ -21,8 +21,10 @@ if (wantsHelp(argv)) {
   process.exit(0);
 }
 
-const { flags, target, unknown } = parseArgv(argv, KNOWN_FLAGS);
+const USAGE = 'usage: uninstall <repo-path> [--yes]   (--help for the full contract)';
+const { flags, target, positionals, unknown } = parseArgv(argv, KNOWN_FLAGS);
 warnUnknown(unknown);
+refuseExtraArguments(positionals.slice(1), USAGE);
 
 const root = target;
 const doYes = flags.has('--yes');
@@ -32,7 +34,7 @@ if (!root) {
   // is a refusal to act, not a crash. Deliberately NOT defaulted to
   // `process.cwd()` the way detect/apply do: there is no safe default for a
   // command that removes files.
-  console.error('usage: uninstall <repo-path> [--yes]   (--help for the full contract)');
+  console.error(USAGE);
   process.exit(2);
 }
 
