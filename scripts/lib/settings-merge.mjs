@@ -34,9 +34,16 @@ export function buildMatcherEntry(entry, matcher) {
   return matcher === undefined ? { hooks: [entry] } : { matcher, hooks: [entry] };
 }
 
+/** The hash of one element of `hooks.<event>` as it stands in a settings
+ * file: what a hook patch records as `entrySha256`, and what reverting the
+ * patch looks for. */
+export function matcherEntrySha256(matcherEntry) {
+  return sha256(canon(matcherEntry));
+}
+
 /** The `entrySha256` a hook patch records for `entry` under `matcher`. */
 export function hookEntrySha256(entry, matcher) {
-  return sha256(canon(buildMatcherEntry(entry, matcher)));
+  return matcherEntrySha256(buildMatcherEntry(entry, matcher));
 }
 
 export function addHookEntry(settings, event, entry, matcher) {
@@ -280,7 +287,7 @@ export function revertPatch(settings, patch, { producibleHookScripts, producible
   const event = patch.container.replace('/hooks/', '');
   const list = next?.hooks?.[event];
   if (!Array.isArray(list)) return keep('patch-modified');
-  const idx = list.findIndex(m => sha256(canon(m)) === patch.entrySha256);
+  const idx = list.findIndex(m => matcherEntrySha256(m) === patch.entrySha256);
   if (idx === -1) return keep('patch-modified');
   const hooks = list[idx]?.hooks;
   if (!Array.isArray(hooks) || hooks.length === 0 || !hooks.every(h => producibleHookScripts.has(scriptRunBy(h)))) {

@@ -11,7 +11,7 @@ import { detectHarness } from './detect-harness.mjs';
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, GENERATORS } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { hasEquivalentHook, hookEntrySha256 } from './settings-merge.mjs';
-import { execEntry } from './hook-evidence.mjs';
+import { execEntry, registeredHook } from './hook-evidence.mjs';
 import { UNREADABLE_KIND, splitExposures } from './detect-exposure.mjs';
 
 /** `byEvent` with `entry` appended on every logged event: the logging hook
@@ -1311,6 +1311,14 @@ test('P2.protected says nothing about a top-up when NONE of our rules are presen
 // hand-built manifest recording the patch — the two things `registeredHook`
 // now consults instead of the scan list.
 
+/** A harness whose `event` holds one entry whose script does not resolve
+ * (`.claude/` ignored), known only by the hash of `entry`. */
+function unresolvedOn(event, entry = execEntry(BRIEF_PATH)) {
+  const h = withHooks({ [event]: [null] });
+  h.claudeDir.hookRegistrations[event][0].entrySha256 = hookEntrySha256(entry, undefined);
+  return h;
+}
+
 /** A manifest recording the patch the kit writes for `entry` on `event`. */
 function manifestWithSettingsPatch(event, entry = execEntry(BRIEF_PATH)) {
   return {
@@ -1322,16 +1330,29 @@ function manifestWithSettingsPatch(event, entry = execEntry(BRIEF_PATH)) {
 test('P4.sessionbrief is declared via the install record of the shell form the kit wrote before the exec form', () => {
   const d = tmpRepo();
   writeFile(d, '.claude/scripts/session-brief.mjs', '//');
-  const manifest = manifestWithSettingsPatch('SessionStart', { type: 'command', command: `node ${BRIEF_PATH}` });
-  const c = byId(gaps(fullStack, withHooks({ SessionStart: [null] }), [], undefined, [], d, manifest), 'P4.sessionbrief');
+  const shell = { type: 'command', command: `node ${BRIEF_PATH}` };
+  const c = byId(gaps(fullStack, unresolvedOn('SessionStart', shell), [], undefined, [], d, manifestWithSettingsPatch('SessionStart', shell)), 'P4.sessionbrief');
   assert.equal(c.state, 'declared');
+});
+
+test('registeredHook refuses to judge without the kit\'s hook scripts', () => {
+  assert.throws(() => registeredHook(withHooks({}), 'Stop', VERIFY_TOUCHED_PATH, null, { manifest: null, root: tmpRepo() }), /kitScripts/);
+});
+
+test('P4.sessionbrief is not declared via its install record once its entry is gone from the event', () => {
+  const d = tmpRepo();
+  writeFile(d, '.claude/scripts/session-brief.mjs', '//');
+  // Our entry was deleted by hand; the logging hook's entry remains.
+  const h = unresolvedOn('SessionStart', execEntry(SESSION_LOG_PATH));
+  const c = byId(gaps(fullStack, h, [], undefined, [], d, manifestWithSettingsPatch('SessionStart')), 'P4.sessionbrief');
+  assert.equal(c.state, 'absent');
 });
 
 test('P4.sessionbrief is not declared via an install record of another kit hook on its event', () => {
   const d = tmpRepo();
   writeFile(d, '.claude/scripts/session-brief.mjs', '//');
   const manifest = manifestWithSettingsPatch('SessionStart', execEntry(SESSION_LOG_PATH));
-  const c = byId(gaps(fullStack, withHooks({ SessionStart: [null] }), [], undefined, [], d, manifest), 'P4.sessionbrief');
+  const c = byId(gaps(fullStack, unresolvedOn('SessionStart', execEntry(SESSION_LOG_PATH)), [], undefined, [], d, manifest), 'P4.sessionbrief');
   assert.equal(c.state, 'absent', 'a record of the logging hook says nothing about the session brief');
 });
 
@@ -1342,7 +1363,7 @@ test('P4.sessionbrief is declared via the manifest + existsSync when .claude/ is
   // not include the gitignored script — the exact shape `commandScript`
   // (detect-harness.mjs) produces for a repository that gitignores
   // `.claude/`, reproduced directly rather than via a real git repo.
-  const h = withHooks({ SessionStart: [null] });
+  const h = unresolvedOn('SessionStart');
   const c = byId(gaps(fullStack, h, [], undefined, [], d, manifestWithSettingsPatch('SessionStart')), 'P4.sessionbrief');
   assert.equal(c.state, 'declared');
   assert.match(c.evidence.join(' '), /not visible to the file scan/);
@@ -1350,7 +1371,7 @@ test('P4.sessionbrief is declared via the manifest + existsSync when .claude/ is
 
 test('P4.sessionbrief is NOT declared via manifest + existsSync once the script is actually gone from disk', () => {
   const d = tmpRepo(); // no script written this time
-  const h = withHooks({ SessionStart: [null] });
+  const h = unresolvedOn('SessionStart');
   const c = byId(gaps(fullStack, h, [], undefined, [], d, manifestWithSettingsPatch('SessionStart')), 'P4.sessionbrief');
   assert.equal(c.state, 'absent', 'the manifest alone is not enough — the file must still genuinely exist');
 });

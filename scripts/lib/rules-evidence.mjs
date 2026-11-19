@@ -29,6 +29,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readIfPresent } from './scan.mjs';
 import { parseRules, findLearned, findRules } from '../../assets/scripts/harness-redact.mjs';
+import { runsKitScript } from './hook-evidence.mjs';
+import { SESSION_LOG_PATH } from './propose.mjs';
 
 /** Enforcers that need no pointer: `none` is a claim, `review` is a human. */
 const POINTERLESS = new Set(['none', 'review']);
@@ -38,7 +40,10 @@ const SETTINGS_POINTER = /^settings:(permissions\.deny|hooks\.([A-Za-z]+))$/;
 /**
  * Does `pointer` name something that exists? Three shapes:
  *   settings:permissions.deny     — iff the repository has any deny rule in effect
- *   settings:hooks.<Event>        — iff any hook is registered on that event
+ *   settings:hooks.<Event>        — iff a hook other than the logging hook is
+ *                                   registered on that event: the logging
+ *                                   hook is on every logged event and
+ *                                   enforces nothing
  *   <repository-relative path>    — iff the file or directory exists
  * An absolute path or any `..` segment is refused outright (reported as
  * missing, never resolved): a pointer is meant to name something INSIDE
@@ -49,7 +54,8 @@ function pointerResolves(root, harness, pointer) {
   const m = pointer.match(SETTINGS_POINTER);
   if (m) {
     if (m[1] === 'permissions.deny') return (harness?.claudeDir?.denyRules ?? 0) > 0;
-    return (harness?.claudeDir?.hookEvents?.[m[2]]?.length ?? 0) > 0;
+    const registrations = harness?.claudeDir?.hookRegistrations?.[m[2]] ?? [];
+    return registrations.some(r => !runsKitScript(r, SESSION_LOG_PATH, undefined));
   }
   const p = pointer.split('\\').join('/');
   if (p.startsWith('/') || /^[A-Za-z]:/.test(p)) return false;

@@ -1,12 +1,12 @@
 // scripts/lib/hook-evidence.mjs
 //
-// Shared by gap-model.mjs's hook CHECKS and propose.mjs's session-log
-// GENERATOR, which registers one hook per logged event and must propose
-// exactly the events the P5.sessionlog check finds missing, together with
-// the entry form every generator registers a hook in, which the install
-// record is matched against. A module of its
-// own because gap-model.mjs imports propose.mjs, so propose.mjs cannot
-// import gap-model.mjs.
+// Whether a kit hook is registered, judged once for every caller:
+// gap-model.mjs's hook checks, propose.mjs's session-log generator (which
+// must register exactly the events P5.sessionlog finds missing) and
+// rules-evidence.mjs's hook pointers. The entry form every generator
+// registers a hook in lives here too, because the install record is
+// matched against it. A module of its own because gap-model.mjs imports
+// propose.mjs, so propose.mjs cannot import gap-model.mjs.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { hookEntrySha256, matcherCovers, normalizeMatcher } from './settings-merge.mjs';
@@ -32,6 +32,15 @@ const shellEntry = scriptPath => ({ type: 'command', command: `node ${scriptPath
  * script it registered. */
 function recordedHashes(scriptPath, matcher) {
   return new Set([execEntry, shellEntry].map(form => hookEntrySha256(form(scriptPath), matcher)));
+}
+
+/** True when `registration` (an entry of `hookRegistrations`) runs the kit's
+ * `scriptPath`: by its resolved script, or, when that could not be
+ * resolved, by its hash being one the kit writes for that script under
+ * `matcher`. */
+export function runsKitScript(registration, scriptPath, matcher) {
+  if (registration.script !== null) return registration.script === scriptPath;
+  return recordedHashes(scriptPath, matcher).has(registration.entrySha256);
 }
 
 /**
@@ -79,6 +88,7 @@ function recordedHashes(scriptPath, matcher) {
  * script, and as unknown when it does not resolve.
  */
 export function registeredHook(harness, event, ourPath, proposal, { manifest, root, matcher, kitScripts }) {
+  if (!Array.isArray(kitScripts)) throw new TypeError('registeredHook: `kitScripts` is required, or another kit hook on the event would be named as not this kit\'s.');
   const registrations = harness.claudeDir.hookRegistrations?.[event] ?? [];
   const scripts = registrations.map(r => r.script);
   const ours = registrations.filter(r => r.script === ourPath);
@@ -130,13 +140,16 @@ export function registeredHook(harness, event, ourPath, proposal, { manifest, ro
   // ruling itself ("ours", not "occupied"), applied to the branch THIS
   // fix added.
   //
-  // The record must be for THIS script: every kit hook shares events with
-  // the logging hook, so a patch for any kit hook on the event would
-  // otherwise credit a missing one. A patch names its script only through
-  // its entry's hash, so it is matched against the hash of each form the
-  // kit has registered this script in.
+  // Every kit hook shares its events with the logging hook, so an
+  // unresolvable entry on the event says nothing about which hook it is.
+  // The entry credited is the one whose hash is a recorded patch for THIS
+  // script: a patch names its script only through that hash, matched
+  // against each form the kit has registered the script in, and the entry
+  // must still be on the event, or a hook deleted by hand would be credited
+  // from its leftover record.
   const hashes = recordedHashes(ourPath, matcher);
-  if (scripts.includes(null) && root && manifest?.settingsPatches?.some(p => p.event === event && hashes.has(p.entrySha256)) && existsSync(join(root, ourPath))) {
+  const recorded = new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && hashes.has(p.entrySha256)).map(p => p.entrySha256));
+  if (root && registrations.some(r => r.script === null && recorded.has(r.entrySha256)) && existsSync(join(root, ourPath))) {
     return { state: 'declared', evidence: [`${event} hook: ${ourPath} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] };
   }
   if (scripts.length === 0) return { state: 'absent', proposal, evidence: [] };

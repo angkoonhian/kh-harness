@@ -1,14 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readFileSync as readF } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { emptyManifest } from './manifest.mjs';
-import { buildProposals, GENERATORS } from './propose.mjs';
+import { emptyManifest, sha256 as sha, readManifest, writeManifest } from './manifest.mjs';
+import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH } from './propose.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { listFiles } from './scan.mjs';
+import { parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { markdownRemainder } from './uninstall-lib.mjs';
+import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
+import { applyProposals } from './apply-lib.mjs';
+import { detectHarness } from './detect-harness.mjs';
+import { versionStamp } from './render.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 const root = () => mkdtempSync(join(tmpdir(), 'hk-prop-'));
 const check = (o) => ({ id: 'P4.handoff', step: 16, phase: 4, state: 'absent', decidable: true, evidence: [], proposal: 'create HANDOFF.md', ...o });
@@ -1316,9 +1323,6 @@ test('SECURITY: no generated file contains a package.json script BODY (real dete
 });
 
 // --- Phase 3: the rules-registry scaffold (P3.rules) ----------------------
-import { parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
-import { markdownRemainder } from './uninstall-lib.mjs';
-import { readFileSync } from 'node:fs';
 
 const rulesCheck = (o = {}) => check({ id: 'P3.rules', step: 27, phase: 3, proposal: 'scaffold docs/harness/RULES.md', ...o });
 
@@ -1366,7 +1370,6 @@ test('SECRET: P3.intent has no registered generator — forcing state absent and
 });
 
 // --- Phase 3: the re-injection hook (P3.reinject) --------------------------
-import { RULES_BRIEF_PATH, REDACT_PATH } from './propose.mjs';
 
 const oneRule = { path: 'docs/harness/RULES.md', count: 1, superseded: 0, byEnforcer: { test: 1 }, unenforced: [], missingPointers: [], problems: [], learned: null, injectable: 1 };
 const reinjectCheck = (o = {}) => check({ id: 'P3.reinject', step: 28, phase: 3, proposal: 'register the hook', ...o });
@@ -1415,7 +1418,6 @@ test('P3.reinject proposes for learned rules no gate holds, with no owner\'s rul
 });
 
 // --- The failure taxonomy scaffold (P5.failures) ----------------------------
-import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 
 const failuresCheck = (o = {}) => check({ id: 'P5.failures', step: 29, phase: 5, proposal: `scaffold ${FAILURES_PATH}`, ...o });
 
@@ -1457,8 +1459,6 @@ test('markdownRemainder of the scaffold is empty', () => {
 // spec's own manifest table (§8) says a file that matches its manifest hash
 // is "ours and unmodified — may be updated"; the dedupe never implemented
 // the update half. These pin it.
-import { sha256 as sha } from './manifest.mjs';
-import { readFileSync as readF } from 'node:fs';
 
 function manifestWith(d, relPath, contents, kit = '0.1.0') {
   mkdirSync(join(d, relPath, '..'), { recursive: true });
@@ -1543,11 +1543,6 @@ test('REVIEW-2: a hash-matching recorded file WITHOUT the kit\'s stamp is never 
 // changed upstream reached a repository only through P0.kitskew. The kit's
 // version is in every stamp, so installing with one version and detecting
 // with another is an upgrade with every unmodified kit file out of date.
-import { applyProposals } from './apply-lib.mjs';
-import { detectHarness } from './detect-harness.mjs';
-import { readManifest, writeManifest } from './manifest.mjs';
-import { versionStamp } from './render.mjs';
-import { BRIEF_PATH, LINT_TOUCHED_PATH } from './propose.mjs';
 
 function detectedAt(d, kitVersion) {
   const { files } = listFiles(d);
@@ -1716,7 +1711,6 @@ test('with the kit version unchanged, an update says the repository\'s detected 
 });
 
 // --- The loop warning (P2.loopwatch) ----------------------------------------
-import { LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS } from './propose.mjs';
 
 const loopwatchCheck = (o = {}) => check({ id: 'P2.loopwatch', step: 13, phase: 2, proposal: 'register the hook', ...o });
 const loopwatchHarness = hookRegistrations => ({
@@ -1799,7 +1793,6 @@ test('P2.loopwatch sits directly after P2.stopgate in the checks and in the gene
 });
 
 // --- The gate hook (P5.toolgate) --------------------------------------------
-import { HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, toolGateDenyRules } from './propose.mjs';
 
 const toolgateCheck = (o = {}) => check({ id: 'P5.toolgate', step: 30, phase: 5, proposal: 'register the hook', ...o });
 const toolgateGap = (stack, harness) => loopwatchGaps(stack, harness).find(c => c.id === 'P5.toolgate');
@@ -1876,8 +1869,6 @@ test('P2.protected does not report the protected-surface rules as unrelated deny
 });
 
 // --- The logging hook (P5.sessionlog) ---------------------------------------
-import { HARNESS_SEAL_PATH, SESSION_LOG_PATH } from './propose.mjs';
-import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 const sessionlogCheck = (o = {}) => check({ id: 'P5.sessionlog', step: 31, phase: 5, proposal: 'register the hook', ...o });
 const sessionlogGap = (stack, harness) => loopwatchGaps(stack, harness).find(c => c.id === 'P5.sessionlog');

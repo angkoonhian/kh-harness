@@ -41,7 +41,7 @@ import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
 import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
 import { failuresEvidence } from './failures-evidence.mjs';
-import { normalizeMatcher, hookPathTokens } from './settings-merge.mjs';
+import { normalizeMatcher, hookPathTokens, matcherEntrySha256 } from './settings-merge.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
   'scripts/bootstrap.sh', 'scripts/bootstrap.ps1', 'scripts/setup.sh', 'scripts/setup.ps1',
@@ -231,7 +231,14 @@ function commandScript(entry, files) {
  * Each registered hook contributes ONE entry: its resolved script path (or
  * `null` when none resolves) and its normalised matcher. The command string
  * itself is never recorded — see commandScript below. `hookEvents` is the
- * same registry reduced to paths, for pointer resolution.
+ * same registry reduced to paths.
+ *
+ * Each entry also carries `entrySha256`, the hash of the settings element
+ * that holds it, computed as a hook patch records it: an entry whose script
+ * cannot be resolved is still known to be the one the kit wrote when its
+ * hash is the one the install record holds. It is NON-ENUMERABLE, so it
+ * never reaches docs/harness/detect.json, which is committed: a hash of a
+ * command that embeds a short credential can be tested against guesses.
  *
  * Never throws: a missing file, bad JSON or any malformed shape yields `{}`.
  */
@@ -247,10 +254,13 @@ function hookRegistrations(root, files) {
         // under `Bash` is not a per-edit sensor. Normalised by the same
         // function the write-time dedupe uses. Never the command string.
         const m = normalizeMatcher(typeof matcher?.matcher === 'string' ? matcher.matcher : undefined);
+        const entrySha256 = matcherEntrySha256(matcher);
         for (const entry of Array.isArray(matcher?.hooks) ? matcher.hooks : []) {
           const command = typeof entry?.command === 'string' ? entry.command.trim() : '';
           if (!command) continue;
-          (out[event] ??= []).push({ script: commandScript(entry, files), matcher: m });
+          const registration = { script: commandScript(entry, files), matcher: m };
+          Object.defineProperty(registration, 'entrySha256', { value: entrySha256, enumerable: false });
+          (out[event] ??= []).push(registration);
         }
       }
     }
@@ -258,9 +268,8 @@ function hookRegistrations(root, files) {
   return out;
 }
 
-/** The registry as script paths per event, derived from `hookRegistrations`
- * — what `rules-evidence.mjs` resolves `settings:hooks.<Event>` pointers
- * against. Resolved paths first, in a stable order; one trailing null if
+/** The registry as script paths per event, derived from `hookRegistrations`.
+ * Resolved paths first, in a stable order; one trailing null if
  * any hook on the event could not be resolved to a path. */
 function hookEvents(registrations) {
   const out = {};

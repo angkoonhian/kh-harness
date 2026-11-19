@@ -52,16 +52,17 @@ export function warnUnknown(unknown) {
 // --- The sentences every command shares -----------------------------------
 
 const DISCLOSURE_INDENT = ' '.repeat(33);
+const DISCLOSURE_WIDTH = 46;
 
-/** `items` joined by ", " in lines of at most `width` characters after
- * `DISCLOSURE_INDENT`, so a list read from code sits in the column the
+/** `items` joined by ", " in lines of at most `DISCLOSURE_WIDTH` characters
+ * after `DISCLOSURE_INDENT`, so a list read from code sits in the column the
  * disclosure's prose uses. */
-function indentedList(items, width = 46) {
+function indentedList(items) {
   const lines = [];
   let line = '';
   for (const [i, item] of items.entries()) {
     const word = i < items.length - 1 ? `${item},` : `${item}.`;
-    if (line && line.length + 1 + word.length > width) {
+    if (line && line.length + 1 + word.length > DISCLOSURE_WIDTH) {
       lines.push(line);
       line = word;
     } else {

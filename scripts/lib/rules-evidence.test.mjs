@@ -13,6 +13,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rulesRegistryEvidence, ruleShapedLines, RULE_SHAPED } from './rules-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { SESSION_LOG_PATH, VERIFY_TOUCHED_PATH } from './propose.mjs';
+import { execEntry } from './hook-evidence.mjs';
+import { hookEntrySha256 } from './settings-merge.mjs';
 
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-rules-ev-')); }
 function write(d, rel, text) {
@@ -21,11 +24,11 @@ function write(d, rel, text) {
 }
 const bare = {
   instructions: { path: null, lines: 0 },
-  claudeDir: { denyRules: 0, hookEvents: {}, rules: [] },
+  claudeDir: { denyRules: 0, hookEvents: {}, hookRegistrations: {}, rules: [] },
 };
 const withHooks = {
   instructions: { path: 'CLAUDE.md', lines: 10 },
-  claudeDir: { denyRules: 2, hookEvents: { Stop: ['.claude/scripts/verify-touched.mjs'] }, rules: [] },
+  claudeDir: { denyRules: 2, hookEvents: { Stop: ['.claude/scripts/verify-touched.mjs'] }, hookRegistrations: { Stop: [{ script: '.claude/scripts/verify-touched.mjs', matcher: null }] }, rules: [] },
 };
 
 const REGISTRY = [
@@ -77,6 +80,29 @@ test('settings:hooks.Stop resolves when a Stop hook is registered, and is missin
   write(d, RULES_PATH, '## R4 — r\n- enforced-by: hook\n- pointer: settings:hooks.Stop\n');
   assert.deepEqual(rulesRegistryEvidence(d, withHooks).missingPointers, []);
   assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'R4', pointer: 'settings:hooks.Stop' }]);
+});
+
+/** A harness whose Stop event holds exactly `registrations`. */
+const onStop = registrations => ({ ...bare, claudeDir: { ...bare.claudeDir, hookRegistrations: { Stop: registrations } } });
+const LOGGING = { script: SESSION_LOG_PATH, matcher: null };
+// The logging hook on a repository that ignores .claude/: its script does
+// not resolve, and only its entry's hash says what it is.
+const LOGGING_UNRESOLVED = { script: null, matcher: null, entrySha256: hookEntrySha256(execEntry(SESSION_LOG_PATH), undefined) };
+
+test('a rule pointing at settings:hooks.Stop is reported dead when only the logging hook is on Stop', () => {
+  const d = repo();
+  write(d, RULES_PATH, '## R4 — r\n- enforced-by: hook\n- pointer: settings:hooks.Stop\n');
+  const dead = [{ id: 'R4', pointer: 'settings:hooks.Stop' }];
+  assert.deepEqual(rulesRegistryEvidence(d, onStop([LOGGING])).missingPointers, dead);
+  assert.deepEqual(rulesRegistryEvidence(d, onStop([LOGGING_UNRESOLVED])).missingPointers, dead, 'known by its hash when its script does not resolve');
+});
+
+test('it resolves when the Stop gate is also registered', () => {
+  const d = repo();
+  write(d, RULES_PATH, '## R4 — r\n- enforced-by: hook\n- pointer: settings:hooks.Stop\n');
+  assert.deepEqual(rulesRegistryEvidence(d, onStop([LOGGING, { script: VERIFY_TOUCHED_PATH, matcher: null }])).missingPointers, []);
+  assert.deepEqual(rulesRegistryEvidence(d, onStop([LOGGING_UNRESOLVED, { script: null, matcher: null, entrySha256: 'another entry' }])).missingPointers, [],
+    'an unresolved entry that is not the logging hook may be what enforces the rule');
 });
 
 test('settings:permissions.deny resolves iff denyRules > 0', () => {

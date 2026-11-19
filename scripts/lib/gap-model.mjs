@@ -736,7 +736,7 @@ const CHECKS = [
       if (missing.length === total) {
         return {
           state: 'absent', evidence: occupants,
-          proposal: `install scripts/session-log.mjs with the session log library and sealer it imports, and register it on the ${total} logged events — it records nothing until the log is enabled for this repository on this machine`,
+          proposal: `install scripts/session-log.mjs with the three modules it imports (harness-log.mjs, harness-seal.mjs and harness-redact.mjs), and register it on the ${total} logged events — it records nothing until the log is enabled for this repository on this machine`,
         };
       }
       const n = missing.length;

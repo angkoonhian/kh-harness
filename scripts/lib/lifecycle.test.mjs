@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
@@ -17,8 +17,12 @@ import { sha256, emptyManifest } from './manifest.mjs';
 // contradiction. Membership-tested against the real table rather than a
 // hand-maintained id list, so a capability added later is covered with no
 // test edit (same discipline as propose.test.mjs's coherence test).
-import { GENERATORS, toolGateDenyRules } from './propose.mjs';
+import { GENERATORS, toolGateDenyRules, SESSION_LOG_PATH } from './propose.mjs';
 import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
+import { versionStamp } from './render.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
+import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { EXECUTION_DISCLOSURE } from './cli.mjs';
 
 sandboxDataDir();
 
@@ -891,7 +895,6 @@ test('PHASE 3 LIFECYCLE: scaffold → fill → hook → uninstall keeps the fill
 // The kit that installed the hook script is made older after the fact: the
 // file holds what that kit generated and the manifest records it so. Every
 // check that owns the script stays `declared`.
-import { versionStamp } from './render.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 const SESSION_BRIEF = '.claude/scripts/session-brief.mjs';
@@ -930,11 +933,6 @@ test('a second apply after the update proposes nothing', () => {
 });
 
 // --- The logging hook -------------------------------------------------------
-import { symlinkSync } from 'node:fs';
-import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
-import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
-import { EXECUTION_DISCLOSURE } from './cli.mjs';
-import { SESSION_LOG_PATH } from './propose.mjs';
 
 /** How many registrations of our logging hook each logged event holds. */
 const loggingHookCounts = d => LOGGED_EVENTS.map(e => (settings(d).hooks?.[e] ?? [])
@@ -985,7 +983,7 @@ test('apply then uninstall leaves git status clean', () => {
   assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
 });
 
-test('uninstall prints the log\'s location and size and does not remove it', () => {
+test('uninstall prints the log\'s location and size and does not remove it', t => {
   const d = fixture();
   run(APPLY, d, '--yes');
   const dir = repoDataDir(d);
@@ -998,8 +996,15 @@ test('uninstall prints the log\'s location and size and does not remove it', () 
   writeFileSync(join(dir, 'sessions', 'one.jsonl'), 'y'.repeat(100));
   // A link inside the log is not followed: what it points at is not the log's.
   const elsewhere = mkdtempSync(join(tmpdir(), 'hk-life-elsewhere-'));
+  const link = join(dir, 'linked');
+  // The link goes first, so removing the data directory never reaches
+  // through it.
+  t.after(() => {
+    unlinkSync(link);
+    rmSync(elsewhere, { recursive: true, force: true });
+  });
   writeFileSync(join(elsewhere, 'big'), 'z'.repeat(5000));
-  symlinkSync(elsewhere, join(dir, 'linked'), 'junction');
+  symlinkSync(elsewhere, link, 'junction');
 
   const expected = `  ${dir} (120 bytes)`;
   const dry = run(UNINSTALL, d);
