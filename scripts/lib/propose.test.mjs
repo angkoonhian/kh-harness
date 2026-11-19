@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, sha256 as sha, readManifest, writeManifest } from './manifest.mjs';
-import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, loadedSiblings } from './propose.mjs';
+import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, loadedSiblings } from './propose.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { selectProfile } from './profiles/index.mjs';
@@ -2105,4 +2105,25 @@ test('the logging hook and its three modules are updated together or not at all'
   const ctx2 = detectedAt(e, '0.2.0');
   assert.equal(buildProposals(ctx2).some(p => p.path === SESSION_LOG_PATH), false, 'the hook must not move without the sealer it loads');
   assert.ok(kitskew(ctx2.checks).evidence.includes(`held back at kit 0.1.9: ${SESSION_LOG_PATH} (out of date, but kh-harness keeps ${HARNESS_SEAL_PATH} as it is, and its hook scripts are updated together or not at all)`), JSON.stringify(kitskew(ctx2.checks).evidence));
+});
+
+// --- `log purge` is denied beside the learn subcommands ---------------------
+
+const PURGE_RULES = ['Bash(*log.mjs* purge*)', 'PowerShell(*log.mjs* purge*)'];
+
+test('the command deny rules are one list: the eight learn subcommands and log purge, each for Bash and for PowerShell', () => {
+  assert.deepEqual(commandDenyRules(), [...learnCommandDenyRules(), ...PURGE_RULES]);
+  assert.equal(learnCommandDenyRules().length, 16);
+  assert.deepEqual(toolGateDenyRules().slice(-commandDenyRules().length), commandDenyRules(), 'the gate hook is installed with every one');
+});
+
+test('an install made before log purge was denied is proposed exactly its two rules', () => {
+  const older = toolGateDenyRules().filter(rule => !PURGE_RULES.includes(rule));
+  const harness = gateInstalled(older);
+  const gap = toolgateGap(PROFILE_STACKS.generic, harness);
+  assert.equal(gap.state, 'absent');
+  assert.equal(gap.evidence.at(-1), `2 of the ${toolGateDenyRules().length} deny rules the gate hook is installed with are missing: ${PURGE_RULES.join(', ')}`);
+  const ps = buildProposals({ checks: [gap], manifest: null, kitVersion: '0.2.0', harness, stack: PROFILE_STACKS.generic, files: [] });
+  assert.deepEqual(ps.map(p => [p.kind, p.globs]), [['settings-deny', PURGE_RULES]]);
+  assert.match(ps[0].reason, /and \`log purge\`, which removes this machine's ledger, learnings, policy and local gates/);
 });

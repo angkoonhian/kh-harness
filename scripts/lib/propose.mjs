@@ -265,32 +265,46 @@ export const TOOL_GATE_STEP = 30;
  * also covers Write and the Bash file commands Claude Code recognises, but
  * not a program the agent runs that writes these files itself.
  *
- * They end with `learnCommandDenyRules`, which keep the agent from running
- * what approves or weakens a learned gate.
+ * They end with `commandDenyRules`, which keep the agent from running what
+ * approves, weakens or removes a learned gate.
  */
 export function toolGateDenyRules() {
   const inRepository = ['.claude/scripts/**', '.claude/kh-harness/**', '.claude/kh-harness.manifest.json', LEARNED_PATH].map(p => `Edit(/${p})`);
-  return [...inRepository, 'Edit(~/.claude/kh-harness/**)', ...learnCommandDenyRules()];
+  return [...inRepository, 'Edit(~/.claude/kh-harness/**)', ...commandDenyRules()];
 }
 
 // The `learn` subcommands that approve a gate, weaken one, or change the
 // repository's. `land` and `revert` are denied whole, their dry runs too:
 // the owner runs both.
-const LEARN_TERMINAL_SUBCOMMANDS = ['approve', 'wrong', 'demote', 'retire', 'land', 'revert', 'policy set', 'policy clear'];
+export const LEARN_TERMINAL_SUBCOMMANDS = Object.freeze(['approve', 'wrong', 'demote', 'retire', 'land', 'revert', 'policy set', 'policy clear']);
+
+/** A deny rule for running `subcommand` of the kit script `script`, in the
+ * Bash and in the PowerShell tool. A rule's `*` stands for any text, so
+ * `*learn.mjs* approve*` matches the command with any path to the script,
+ * quoted or not, and any repository path before the subcommand; a deny rule
+ * applies to each part of a compound command. */
+const denyRunning = (script, subcommand) => [`Bash(*${script}* ${subcommand}*)`, `PowerShell(*${script}* ${subcommand}*)`];
 
 /**
  * Deny rules for running the `learn` subcommands that approve a gate,
- * weaken one or change the repository's, in the Bash and the PowerShell
- * tool. A rule's `*` stands for any text, so `*learn.mjs* approve*`
- * matches the command with any path to the script, quoted or not, and any
- * repository path before the subcommand; a
- * deny rule applies to each part of a compound command. It matches the
- * command text Claude writes and not the same program reached another way,
- * so it is a second barrier: the subcommand's own terminal check is the one
- * that holds then.
+ * weaken one or change the repository's. They match the command text Claude
+ * writes and not the same program reached another way, so they are a second
+ * barrier: the subcommand's own terminal check is the one that holds then.
  */
 export function learnCommandDenyRules() {
-  return LEARN_TERMINAL_SUBCOMMANDS.flatMap(name => [`Bash(*learn.mjs* ${name}*)`, `PowerShell(*learn.mjs* ${name}*)`]);
+  return LEARN_TERMINAL_SUBCOMMANDS.flatMap(name => denyRunning('learn.mjs', name));
+}
+
+/**
+ * Every command deny rule the kit installs, the one list `detect` keeps
+ * verbatim, `P5.toolgate` requires, an older install is topped up from and
+ * `uninstall` may revert: the `learn` rules, and `log purge`, which removes
+ * this machine's ledger, learnings, policy and local gates, and with them
+ * every gate promoted here and every local suspension. `log purge` is
+ * denied whole, its dry run too, as `land` and `revert` are.
+ */
+export function commandDenyRules() {
+  return [...learnCommandDenyRules(), ...denyRunning('log.mjs', 'purge')];
 }
 
 /** The deny rules the gate hook is installed with that the settings in
@@ -319,7 +333,7 @@ function toolGateProposal({ kitVersion, check, harness, manifest, root }) {
   const deny = missing.length === 0 ? [] : [{
     kind: 'settings-deny', step: TOOL_GATE_STEP,
     globs: missing,
-    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate, a second barrier behind their own terminal check",
+    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate and \`log purge\`, which removes this machine's ledger, learnings, policy and local gates: a second barrier behind their own terminal check",
   }];
   if (toolGateHookRegistered({ harness, manifest, root })) return deny;
   const files = hookFiles(TOOL_GATE_PATH, kitVersion);

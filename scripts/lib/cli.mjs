@@ -162,9 +162,11 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  ~/.claude/kh-harness/ (this machine's log,
                                  ledger, policy and local gates), and deny
                                  rules for running the \`learn\` subcommands
-                                 that approve or weaken a gate: a second
-                                 barrier, behind their own check for an
-                                 interactive terminal outside Claude Code.
+                                 that approve or weaken a gate, and \`log
+                                 purge\`, which removes them with this
+                                 machine's ledger: a second barrier, behind
+                                 their own check for an interactive terminal
+                                 outside Claude Code.
 
   Session log (per event)        runs on every one of these events:
 ${indentedList(LOGGED_EVENTS)}
