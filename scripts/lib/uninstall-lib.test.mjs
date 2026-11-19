@@ -265,8 +265,9 @@ test('a file the user already deleted is reported, not an error', () => {
   rmSync(join(d, 'HANDOFF.md'));
   const plan = planUninstall({ root: d, manifest });
   assert.deepEqual(plan.remove, []);
-  assert.equal(plan.keep[0].why, 'ours-modified');
-  assert.doesNotThrow(() => runUninstall({ root: d, manifest, plan }));
+  assert.deepEqual(plan.keep, [], 'a file that is not there is not kept');
+  assert.deepEqual(plan.gone, [{ path: 'HANDOFF.md' }]);
+  assert.deepEqual(runUninstall({ root: d, manifest, plan }).alreadyGone, ['HANDOFF.md']);
 });
 
 test('reverts an untouched settings patch and leaves unrelated settings', () => {
@@ -1229,4 +1230,119 @@ test('uninstall says how many landed learnings each kept file holds and that lea
     }
   }
   assert.equal(existsSync(join(d, GATES_PATH)), true);
+});
+
+// --- What the owner already took out by hand is dropped from the record -----
+
+test('a kept file the owner later deletes is dropped from the record, and the manifest and the directory the kit created go with it', () => {
+  const { d, manifest } = installed([ruleProposal()]);
+  writeManifest(d, manifest);
+  writeFileSync(join(d, RULE_PATH), readFileSync(join(d, RULE_PATH), 'utf8') + USER_CONVENTIONS);
+
+  // The first uninstall keeps the edited file and the record of it.
+  const first = runUninstall({ root: d, manifest, plan: planUninstall({ root: d, manifest }) });
+  assert.deepEqual(first.removed, []);
+  const kept = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.deepEqual(kept.files.map(f => f.path), [RULE_PATH]);
+
+  rmSync(join(d, RULE_PATH));
+  const plan = planUninstall({ root: d, manifest: kept });
+  assert.deepEqual(plan.gone, [{ path: RULE_PATH }]);
+  assert.deepEqual([plan.keep, plan.remove], [[], []]);
+  assert.deepEqual(plan.removeDirs, ['.claude/rules', '.claude'], 'the plan predicts the sweep');
+
+  const result = runUninstall({ root: d, manifest: kept, plan });
+  assert.deepEqual(result.alreadyGone, [RULE_PATH]);
+  assert.deepEqual([result.failed, result.changedSincePlan, result.refused], [[], [], []]);
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), false, 'a manifest with nothing left to record is removed');
+  assert.equal(existsSync(join(d, '.claude')), false, 'and the directory the kit created is swept');
+});
+
+test('a file deleted between the plan and the run is already gone, not a change to refuse over', () => {
+  const { d, manifest } = installed();
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.remove, [{ path: 'HANDOFF.md' }]);
+  rmSync(join(d, 'HANDOFF.md'));
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.deepEqual([result.alreadyGone, result.changedSincePlan, result.removed], [['HANDOFF.md'], [], []]);
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), false);
+});
+
+test('a file the plan found gone that is back by the run is kept and recorded, not dropped unseen', () => {
+  const { d, manifest } = installed();
+  rmSync(join(d, 'HANDOFF.md'));
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.gone, [{ path: 'HANDOFF.md' }]);
+  writeFileSync(join(d, 'HANDOFF.md'), HANDOFF_SCAFFOLD);
+  writeManifest(d, manifest);
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.deepEqual(result.changedSincePlan, [{ path: 'HANDOFF.md', why: 'reappeared' }]);
+  assert.deepEqual(JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8')).files.map(f => f.path), ['HANDOFF.md']);
+  assert.equal(existsSync(join(d, 'HANDOFF.md')), true);
+});
+
+test('a recorded path outside the allowlist is still refused and kept on record when nothing is there', () => {
+  const d = repo();
+  const manifest = { ...emptyManifest('0.2.0'), files: [{ path: 'src/gone.ts', sha256: sha256('x'), step: 16 }] };
+  assert.deepEqual(planUninstall({ root: d, manifest }).keep, [{ path: 'src/gone.ts', why: 'outside-allowlist' }]);
+});
+
+test('with the gate file deleted by hand, its record goes and the landed learnings go with it', () => {
+  const { d, manifest } = landedRepo([learnedGate('L1', '--watch')]);
+  rmSync(join(d, GATES_PATH));
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.gone, [{ path: GATES_PATH }]);
+  assert.deepEqual(plan.keep, [{ path: LEARNED_PATH, why: 'holds-landed-learnings', learnings: 1 }]);
+  runUninstall({ root: d, manifest, plan });
+  const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.deepEqual(after.files.map(f => f.path), [LEARNED_PATH]);
+  assert.deepEqual(after.learnings, [], 'no learning is recorded as landed without the record of the gate file');
+});
+
+test('a hook entry the owner removed by hand is dropped from the record; the rest is reverted and the manifest removed', () => {
+  const d = repo();
+  const logHook = { ...hookProposal, event: 'SessionEnd' };
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal, logHook], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeManifest(d, manifest);
+  const settingsPath = join(d, '.claude/settings.json');
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  delete settings.hooks.SessionEnd;
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.gonePatches.map(p => [p.container, p.why]), [['/hooks/SessionEnd', 'entry-gone']]);
+  assert.deepEqual(plan.revert.map(p => p.container), ['/hooks/SessionStart']);
+  assert.deepEqual(plan.keepPatches, []);
+
+  const result = runUninstall({ root: d, manifest, plan });
+  assert.deepEqual(result.patchesGone.map(p => p.container), ['/hooks/SessionEnd']);
+  assert.deepEqual([result.patchesNotReverted, result.patchesKept], [[], []]);
+  assert.equal(existsSync(join(d, MANIFEST_PATH)), false);
+  assert.equal(existsSync(join(d, '.claude')), false, 'the settings file the kit created is empty again and goes, and its directory');
+});
+
+test('a reformat is disclosed only when the reverted settings were written', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), '{"permissions":{"deny":["Edit(x)"]}}');
+  const { manifest } = applyProposals({ root: d, proposals: [hookProposal], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'))));
+  makeUnwritable(join(d, '.claude/settings.json'));
+  const result = runUninstall({ root: d, manifest, plan: planUninstall({ root: d, manifest }) });
+  assert.equal(result.settingsWriteFailed, true);
+  assert.equal(result.settingsReformatted, false, 'nothing was written, so nothing was reformatted');
+});
+
+test('uninstall says docs/harness/detect.json is left in place, before and after', () => {
+  const { d, manifest } = installed();
+  writeManifest(d, manifest);
+  mkdirSync(join(d, 'docs/harness'), { recursive: true });
+  writeFileSync(join(d, 'docs/harness/detect.json'), '{}\n');
+  for (const flags of [[], ['--yes']]) {
+    const r = spawnSync(process.execPath, [fileURLToPath(UNINSTALL_CLI), d, ...flags], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /(Will leave|Left) in place [^\n]*:\n {2}docs\/harness\/detect\.json\n/, r.stdout);
+    assert.doesNotMatch(r.stdout, /nothing was left behind/);
+  }
+  assert.equal(existsSync(join(d, 'docs/harness/detect.json')), true);
 });

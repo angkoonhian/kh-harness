@@ -18,7 +18,7 @@ import { sha256, emptyManifest } from './manifest.mjs';
 // hand-maintained id list, so a capability added later is covered with no
 // test edit (same discipline as propose.test.mjs's coherence test).
 import { GENERATORS, learnCommandDenyRules, toolGateDenyRules, SESSION_LOG_PATH } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, git, run, runResult, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
 import { versionStamp } from './render.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
@@ -1085,4 +1085,39 @@ test('uninstall prints the log\'s location and size and does not remove it', t =
   assert.ok(existsSync(join(dir, 'sessions', 'one.jsonl')), 'the log survives uninstall');
   assert.ok(existsSync(join(dir, 'enabled.json')));
   assert.ok(existsSync(join(elsewhere, 'big')));
+});
+
+test('with every installed file deleted and every settings entry removed by hand, one uninstall leaves no manifest and no directory of the kit\'s', () => {
+  const d = freshFixtureNoClaudeDir();
+  run(APPLY, d, '--yes');
+  const m = manifestOf(d);
+  assert.ok(m.files.length > 5 && m.settingsPatches.length > LOGGED_EVENTS.length, 'fixture sanity: a full install');
+  for (const f of m.files) rmSync(join(d, f.path));
+  writeFileSync(join(d, '.claude/settings.json'), '{}\n');
+
+  const r = runResult(UNINSTALL, d, '--yes');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /Could not revert|Kept:|Changed since plan/);
+  assert.deepEqual(linesAfter(r.stdout, 'Already gone (dropped from the record):').sort(), [
+    ...m.files.map(f => f.path),
+    ...m.settingsPatches.map(p => `${p.container} (no longer in .claude/settings.json)`),
+  ].sort());
+  assert.equal(existsSync(join(d, '.claude')), false, 'the manifest, the emptied settings file and .claude/ itself are gone');
+  assert.equal(existsSync(join(d, 'scripts')), false);
+  assert.equal(git(d, 'status', '--porcelain'), '', 'the repository is as it was before apply');
+});
+
+test('uninstall finishes after the owner removes one kit hook entry by hand', () => {
+  const d = freshFixtureNoClaudeDir();
+  run(APPLY, d, '--yes');
+  const s = settings(d);
+  delete s.hooks.SessionEnd;
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + '\n');
+
+  const r = runResult(UNINSTALL, d, '--yes');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(linesAfter(r.stdout, 'Already gone (dropped from the record):'), ['/hooks/SessionEnd (no longer in .claude/settings.json)']);
+  assert.doesNotMatch(r.stdout, /Could not revert/);
+  assert.equal(existsSync(join(d, '.claude/kh-harness.manifest.json')), false);
+  assert.equal(git(d, 'status', '--porcelain'), '');
 });

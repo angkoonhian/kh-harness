@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { assertAllowed, assertContained, isAllowedDirectory, isCanonicalJson, serializeSettings, settingsReformattedNote } from './apply-lib.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { classify, MANIFEST_PATH, writeManifest } from './manifest.mjs';
-import { revertPatch } from './settings-merge.mjs';
+import { revertPatches } from './settings-merge.mjs';
+import { DETECT_REPORT_PATH } from './report.mjs';
 import { carriesStamp } from './render.mjs';
 import { BOOTSTRAP_PATH, RULES_PATH, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, protectedDenyRules, toolGateDenyRules } from './propose.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
@@ -484,31 +485,33 @@ function ownContentRefusal(root, manifest, relPath) {
   return null;
 }
 
+// What `guardRemoval` answers for a recorded file that is no longer on disk.
+const ALREADY_GONE = 'already-gone';
+
 /**
- * The three gates every removal must clear, and why each is required:
+ * Whether the recorded path may be removed at all, before its content is
+ * read: null when it may, `ALREADY_GONE` when there is nothing there to
+ * remove, otherwise the reason to record against the entry that is kept.
  *
  *   - A manifest naming `src/index.ts` or `package.json` resolves happily
  *     inside the repository. Containment passes it; only the allowlist
  *     refuses it.
  *   - A junction at `docs/harness` pointing outside the repository, with a
  *     manifest entry naming `docs/harness/victim.txt` whose hash still
- *     matches, is on the allowlist — `docs/harness/` is a permitted prefix.
- *     Only containment refuses it. This is not an exotic setup: move
- *     `docs/harness` elsewhere, leave a junction behind, and the contents
- *     are unchanged, so the hashes still match.
- *   - A forged manifest entry for `CLAUDE.md` is allowed AND contained —
- *     it is a real path, inside the repository, exactly where it claims
- *     to be. Only `isGeneratorProducible` refuses it (see that function's
- *     own comment; `carriesStamp` is checked separately, by the
- *     caller, once content is actually being read).
+ *     matches, is on the allowlist. Only containment refuses it. Moving
+ *     `docs/harness` elsewhere and leaving a junction behind is enough: the
+ *     contents are unchanged, so the hashes still match.
+ *   - A forged manifest entry for `CLAUDE.md` is allowed and contained.
+ *     Only `isGeneratorProducible` refuses it.
+ *
+ * A file that is not there is asked about only once the path is known to be
+ * allowed and inside the repository, so nothing outside it is probed. It is
+ * not kept: the owner deleted it, there is nothing left to protect, and a
+ * record of it would keep the manifest in the repository for good.
  *
  * A refusal is returned, never thrown. Uninstall has to finish its work and
  * report honestly even when the state on disk is strange; a throw here would
- * abandon the run between an action and its bookkeeping, which is the one
- * thing this module must never do.
- *
- * @returns {null|string} null when the path may be removed, otherwise the
- *   reason to record against the entry that will be kept instead.
+ * abandon the run between an action and its bookkeeping.
  */
 function guardRemoval(root, relPath) {
   try {
@@ -521,6 +524,7 @@ function guardRemoval(root, relPath) {
   } catch {
     return 'escapes-repository';
   }
+  if (!fs.existsSync(join(root, relPath))) return ALREADY_GONE;
   if (!isGeneratorProducible(relPath)) {
     return 'not-generator-producible';
   }
@@ -544,222 +548,160 @@ function validateSettings(settingsPath) {
   return { valid: false, object: null, reason: 'settings-unreadable', raw: read.text };
 }
 
-/** Read-only. Decides what may be removed; removes nothing. */
+/**
+ * Read-only. Decides what may be removed; removes nothing. `gone` and
+ * `gonePatches` are what the manifest records that is no longer there, a
+ * file or a settings entry: nothing is done about either, and the run drops
+ * both from the record.
+ */
 export function planUninstall({ root, manifest }) {
-  const remove = [], keep = [], revert = [], keepPatches = [], gonePatches = [];
+  const remove = [], keep = [], gone = [], revert = [], keepPatches = [], gonePatches = [];
 
   for (const f of manifest?.files ?? []) {
     const refusal = guardRemoval(root, f.path);
+    if (refusal === ALREADY_GONE) {
+      gone.push({ path: f.path });
+      continue;
+    }
     if (refusal) {
       keep.push({ path: f.path, why: refusal });
       continue;
     }
-    // The three content-level gates, from the one function `runUninstall`
-    // also calls — see `contentRefusal`.
     const content = contentRefusal(root, manifest, f.path);
     if (content) {
       keep.push({ path: f.path, ...content });
       continue;
     }
-    remove.push({ path: f.path, step: f.step });
+    remove.push({ path: f.path });
   }
 
+  // The same revert `runUninstall` performs, done here read-only, so the
+  // prediction of the settings file's final content, below, asks the
+  // question the real run answers.
   const validated = validateSettings(join(root, SETTINGS));
-  // Chained, not re-applied independently per patch: this is the SAME
-  // cumulative revert `runUninstall` performs (see its own step 2), done
-  // here read-only so the PREDICTION of the settings file's final content
-  // — below, `removeSettingsFile` — asks the identical question the real
-  // run answers, rather than guessing from patch count alone.
-  let simulatedSettings = validated.valid ? validated.object : null;
   const patches = manifest?.settingsPatches ?? [];
-  const producible = validated.valid && patches.length > 0 ? producibleSettings(root) : null;
-  for (const p of patches) {
-    if (validated.reason === 'settings-missing') {
-      // No settings file means no hook is registered: there is nothing to
-      // revert and nothing left behind. Treating this as a failure kept the
-      // manifest and exited 2 on every re-run, forever — the repository
-      // became permanently un-uninstallable, which is the opposite of
-      // "always leaves cleanly". Reported, but never a keep and never a
-      // failure.
-      gonePatches.push({ ...p, why: validated.reason });
-    } else if (!validated.valid) {
-      keepPatches.push({ ...p, why: validated.reason });
-    } else {
-      const r = revertPatch(simulatedSettings, p, producible);
-      if (r.kept.length === 0) {
-        simulatedSettings = r.settings;
-        revert.push(p);
-      } else {
-        for (const k of r.kept) keepPatches.push({ ...k.patch, why: k.reason });
-      }
-    }
+  let simulatedSettings = validated.valid ? validated.object : null;
+  if (validated.reason === 'settings-missing') {
+    // No settings file means no hook is registered: there is nothing to
+    // revert and nothing left behind.
+    for (const p of patches) gonePatches.push({ ...p, why: validated.reason });
+  } else if (!validated.valid) {
+    for (const p of patches) keepPatches.push({ ...p, why: validated.reason });
+  } else if (patches.length > 0) {
+    const r = revertPatches(simulatedSettings, patches, producibleSettings(root));
+    simulatedSettings = r.settings;
+    revert.push(...r.reverted);
+    for (const p of r.gone) gonePatches.push({ ...p, why: 'entry-gone' });
+    for (const k of r.kept) keepPatches.push({ ...k.patch, why: k.reason });
   }
 
-  // Task 9b (coordinator round 2, finding 1): the dry-run preview used to
-  // stop at the file/patch level — it never predicted the settings.json
-  // cleanup (finding 4/5) or the directory cleanup (finding 4) that `--yes`
-  // actually performs, so a cautious user approving the PLAN got a
-  // DIFFERENT, larger result than what they reviewed. Both predictions
-  // below ask the exact same questions `runUninstall` asks of its own real
-  // outcome (`settingsCreated` + "is the reverted object now empty";
-  // `sweepRemovableDirs`, the one function both the plan and the real run
-  // call) — never a second, independently-reasoned guess.
+  // The preview is the path a cautious user reaches for first, so it
+  // predicts the settings-file and directory cleanup `--yes` performs, by
+  // the questions the real run asks of its own outcome.
   const removeSettingsFile = Boolean(manifest?.settingsCreated) && validated.valid &&
     typeof simulatedSettings === 'object' && simulatedSettings !== null && !Array.isArray(simulatedSettings) &&
     Object.keys(simulatedSettings).length === 0;
 
-  // Mirrors runUninstall's own `hasKept` (step 4): true when nothing this
-  // run can already see would be left behind. `changedSincePlan` cannot be
-  // predicted here — it only exists once a real run observes the
-  // filesystem changed between plan and run, the same staleness every
-  // other field in this plan already accepts (see `revert`'s own comment
-  // in runUninstall on why it is re-derived, never replayed).
+  // As `runUninstall` decides it: the manifest goes when nothing is kept.
+  // A file that changes between plan and run cannot be predicted here.
   const predictedManifestGone = keep.length === 0 && keepPatches.length === 0;
 
-  const gone = new Set(remove.map(r => r.path));
-  if (removeSettingsFile) gone.add(SETTINGS);
-  if (predictedManifestGone) gone.add(MANIFEST_PATH);
-  const removeDirs = sweepRemovableDirs(root, manifest?.dirsCreated ?? [], gone);
+  const accountedFor = new Set(remove.map(r => r.path));
+  if (removeSettingsFile) accountedFor.add(SETTINGS);
+  if (predictedManifestGone) accountedFor.add(MANIFEST_PATH);
+  const removeDirs = sweepRemovableDirs(root, manifest?.dirsCreated ?? [], accountedFor);
 
   return {
-    remove, keep, revert, keepPatches, gonePatches,
+    remove, keep, gone, revert, keepPatches, gonePatches,
     removeSettingsFile: removeSettingsFile ? SETTINGS : null,
     removeDirs,
+    leftInPlace: fs.existsSync(join(root, DETECT_REPORT_PATH)) ? [DETECT_REPORT_PATH] : [],
     sessionLog: sessionLogUsage(root),
   };
 }
 
 export function runUninstall({ root, manifest, plan }) {
-  // Collect all outcomes before persisting anything.
-  // Compute, then persist, always — no throw between action and bookkeeping.
-  const removed = [], failed = [], refused = [];
+  // Every outcome is collected before anything is persisted, and nothing
+  // throws between an action and its bookkeeping.
+  const removed = [], failed = [], refused = [], alreadyGone = [], changedSincePlan = [];
   let settingsReadFailed = false, settingsMissing = false;
   let settingsWriteFailed = false, manifestWriteFailed = false;
+  let settingsReformatted = false;
   const patchesNotReverted = [];
   // Declined for lack of provenance: a deliberate keep, like a file this run
   // will not delete, and not a failure.
   const patchesKept = [];
-  const changedSincePlan = [];
-  // Task 9b, finding 5: apply.mjs already discloses a settings.json reformat
-  // (see its own `alreadyCanonical`); uninstall rewrites the same file via
-  // the same re-serialisation (at the file's own indentation, see
-  // detectIndent) and used to say nothing about it —
-  // the reformat is the SAME kind of change, so it gets the SAME disclosure.
-  let settingsReformatted = false;
+  const patchesGone = [];
 
-  // 1. Guard, re-classify, re-check the stamp, and remove only if still
-  //    ours-unmodified AND still carries it. The guard (and the stamp
-  //    check) run here as well as in planUninstall because this is the
-  //    call that actually deletes, and `plan` may have been built before
-  //    the junction, entry, or forged file that makes the path unsafe
-  //    existed — or by a caller that is not planUninstall at all.
+  // 1. Guard, re-classify, re-check the stamp, and remove only what still
+  //    passes. `plan` may have been built before the junction, entry or
+  //    edit that makes a path unsafe existed, or by a caller that is not
+  //    `planUninstall`.
   for (const r of plan.remove) {
     const refusal = guardRemoval(root, r.path);
+    if (refusal === ALREADY_GONE) {
+      alreadyGone.push(r.path);
+      continue;
+    }
     if (refusal) {
       refused.push({ path: r.path, why: refusal });
       continue;
     }
     const content = contentRefusal(root, manifest, r.path);
-    if (content === null) {
-      try {
-        fs.rmSync(join(root, r.path));
-        removed.push(r.path);
-      } catch (e) {
-        failed.push({ path: r.path, reason: e?.message ?? 'unknown error' });
-      }
-    } else {
-      // File changed since plan was made — or, same bucket, the content
-      // never carried our stamp, or holds the user's own body, in the first
-      // place and the plan's own check (or a caller that skipped it) let it
-      // through regardless. The reason is computed by the SAME function the
-      // plan used, so the two can never name the same situation differently.
+    if (content !== null) {
       changedSincePlan.push({ path: r.path, ...content });
+      continue;
+    }
+    try {
+      fs.rmSync(join(root, r.path));
+      removed.push(r.path);
+    } catch (e) {
+      failed.push({ path: r.path, reason: e?.message ?? 'unknown error' });
     }
   }
+  // A file the plan found gone is dropped from the record only if it is
+  // still gone: one that is back was never shown to the owner as removable.
+  for (const g of plan.gone ?? []) {
+    if (fs.existsSync(join(root, g.path))) changedSincePlan.push({ path: g.path, why: 'reappeared' });
+    else alreadyGone.push(g.path);
+  }
 
-  // 2. Attempt to revert settings patches, tracking what could not be reverted
-  // Validate settings whenever the manifest has patches (avoids a false failure with no patches)
+  // 2. Revert the settings patches. What can be reverted is derived from
+  //    the manifest and the file as it is now, never replayed from
+  //    `plan.revert`: the owner may have repaired an unparseable file since
+  //    the plan, and a patch the plan never saw must still be accounted for.
   const manifestPatches = manifest?.settingsPatches ?? [];
   if (manifestPatches.length > 0) {
     const validated = validateSettings(join(root, SETTINGS));
 
     if (validated.valid) {
-      let settings = validated.object;
-      let settingsChanged = false;
-      const revertedInMemory = [];
-      const producible = producibleSettings(root);
-
-      // The revertable set is re-derived from the manifest here, exactly as
-      // planUninstall derives it — the file path already works this way, and
-      // the patch path must too. `plan.revert` is a stale candidate list:
-      // it was computed against whatever settings.json looked like at plan
-      // time, and the user may well have repaired an unparseable file in
-      // between. Iterating it then leaves a perfectly revertible hook
-      // registered while the run reports success and exits 0. The fresh
-      // revertPatch result below is what decides.
-      for (const p of manifestPatches) {
-        const r = revertPatch(settings, p, producible);
-        if (r.kept.length === 0) {
-          settings = r.settings;
-          settingsChanged = true;
-          revertedInMemory.push(p);
-        } else {
-          for (const k of r.kept) {
-            (k.reason === 'not-generator-producible' ? patchesKept : patchesNotReverted).push({ ...k.patch, why: k.reason });
-          }
-        }
+      const r = revertPatches(validated.object, manifestPatches, producibleSettings(root));
+      patchesGone.push(...r.gone);
+      for (const k of r.kept) {
+        (k.reason === 'not-generator-producible' ? patchesKept : patchesNotReverted).push({ ...k.patch, why: k.reason });
       }
-
-      // Write reverted settings only if something changed. Without this
-      // guard an uninstall that reverts nothing still rewrites and
-      // re-indents the user's settings.json — a file this run had no
-      // business touching at all.
-      if (settingsChanged) {
-        // Task 9b, finding 5: match the ORIGINAL file's trailing-newline
-        // state (apply-lib.mjs's `serializeSettings`, shared so the two
-        // writers of this file cannot disagree) rather than always
-        // appending one — the single most common line of noise left in
-        // `git status` after an otherwise content-identical round trip.
-        //
-        // `settingsReformatted` asks whether the ORIGINAL file (before THIS
-        // run touched it) was already in the exact form this tool writes —
-        // never whether removing the reverted patch itself changed anything,
-        // which it always does and would make this fire on every revert.
-        //
-        // Whole-branch review, F7: this used to be a second, local copy of
-        // that predicate, and its own comment claimed it "mirrors apply.mjs's
-        // own `alreadyCanonical`" when in fact it CORRECTED it (apply's copy
-        // never got `matchingNewline`). `isCanonicalJson` (apply-lib.mjs) is
-        // the one predicate both callers read now.
-        if (!isCanonicalJson(validated.raw)) settingsReformatted = true;
-        const newContent = serializeSettings(settings, validated.raw);
+      // Written only when something was reverted: a run that reverts
+      // nothing has no business rewriting the owner's settings.json.
+      if (r.reverted.length > 0) {
         try {
-          fs.writeFileSync(join(root, SETTINGS), newContent, 'utf8');
+          fs.writeFileSync(join(root, SETTINGS), serializeSettings(r.settings, validated.raw), 'utf8');
+          // Asked of the file as it was before this run, not of the revert.
+          settingsReformatted = !isCanonicalJson(validated.raw);
         } catch {
           settingsWriteFailed = true;
           // Nothing reached disk, so every patch reverted in memory is still
-          // registered in the user's settings.json. Each is recorded by
-          // identity — NOT deduped by `container`, because two patches under
-          // one event share a container (`/hooks/SessionStart`), and
-          // container-dedupe skips the second: dropped from the manifest,
-          // left registered, with no record of it anywhere. A permanent
-          // orphan. Patches that did not revert are already recorded above
-          // with their own reason, so this list cannot double-count them.
-          for (const p of revertedInMemory) {
-            patchesNotReverted.push({ ...p, why: 'settings-write-failed' });
-          }
+          // registered. Each is recorded by identity: two patches under one
+          // event share a container, and a record dropped here is a hook
+          // left registered with no record of it anywhere.
+          for (const p of r.reverted) patchesNotReverted.push({ ...p, why: 'settings-write-failed' });
         }
       }
     } else if (validated.reason === 'settings-missing') {
-      // Nothing to revert and nothing left behind — reported, not a failure.
-      // See planUninstall.
+      // Nothing to revert and nothing left behind: reported, not a failure.
       settingsMissing = true;
     } else {
-      // Present but unreadable, or not a plain object: as far as we can
-      // tell the patches are still registered, and we must not guess.
-      // Derived from the manifest for the same reason as above: plan.revert
-      // is whatever the plan happened to manage, and a patch the plan never
-      // saw must still be recorded rather than silently dropped.
+      // Present but unreadable, or not a plain object: as far as can be
+      // told the patches are still registered.
       settingsReadFailed = true;
       for (const p of manifestPatches) {
         patchesNotReverted.push({ ...p, why: validated.reason });
@@ -767,13 +709,10 @@ export function runUninstall({ root, manifest, plan }) {
     }
   }
 
-  // 2.5. Remove `.claude/settings.json` itself, but ONLY when the manifest
-  // records that WE created it (apply-lib.mjs's `settingsCreated`, set the
-  // first time a settings write found the file absent) AND it is now
-  // genuinely empty — never a file that existed before us, and never one
-  // still holding content, even content unrelated to anything we ever
-  // patched. An unreadable or unparseable file is left exactly alone:
-  // this never guesses.
+  // 2.5. Remove `.claude/settings.json` itself, but only when the manifest
+  // records that the kit created it and it is now empty: never a file that
+  // existed before, and never one still holding content. An unreadable or
+  // unparseable file is left alone.
   let settingsRemoved = false;
   if (manifest?.settingsCreated) {
     const settingsPath = join(root, SETTINGS);
@@ -789,73 +728,43 @@ export function runUninstall({ root, manifest, plan }) {
     }
   }
 
-  // 3. Build manifest from actual outcomes, not from plan
-  const keptPaths = new Set(plan.keep.map(k => k.path));
-  const changedPaths = new Set(changedSincePlan.map(c => c.path));
-  const failedPaths = new Set(failed.map(f => f.path));
-  const refusedPaths = new Set(refused.map(r => r.path));
+  // 3. The manifest is rebuilt from what happened, not from the plan. A file
+  //    stays recorded when it is kept, was refused, changed since the plan,
+  //    or could not be removed; one removed or already gone does not.
+  const keptPaths = new Set([
+    ...plan.keep.map(k => k.path),
+    ...changedSincePlan.map(c => c.path),
+    ...failed.map(f => f.path),
+    ...refused.map(r => r.path),
+  ]);
+  const keptFiles = (manifest?.files ?? []).filter(f => keptPaths.has(f.path));
 
-  // Files to keep in manifest: kept files, files refused at removal time,
-  // files changed since plan, and files that failed to remove
-  const keptFiles = (manifest?.files ?? []).filter(f =>
-    keptPaths.has(f.path) || changedPaths.has(f.path) || failedPaths.has(f.path) || refusedPaths.has(f.path)
-  );
-
-  // Patches to keep in the manifest: everything the run itself could not
-  // revert. Not plan.keepPatches — that list was computed before the run and
-  // the run re-derives the revertable set from the manifest, so merging the
-  // two records a patch as left behind that this run actually removed.
-  // Each patch carries the reason computed for *it*, at the moment it was
-  // decided: 'patch-modified' for a hook the user edited, whether or not
-  // some other patch later hit a write failure. Overwriting that with a
-  // run-level flag made the durable record disagree with the truth the
-  // caller is handed — and the record is the half that survives the process.
+  // A patch stays recorded when this run could not revert it, each with the
+  // reason computed for it: the record is the half that survives the
+  // process, and it must not disagree with what the caller is told.
   const keptPatches = [...patchesNotReverted, ...patchesKept].map(p => ({ ...p }));
 
-  // 4. Persist the manifest once, from actual outcomes
-  // Guard both write and delete so the outcome is always returned
+  // 4. Persist the manifest once. With no file and no patch left to record
+  //    it is removed, whatever else it holds.
   let manifestDeleteFailed = false;
-  // `refused` needs no clause of its own: every path in plan.remove comes
-  // from manifest.files, so a refused path is already in keptFiles above.
-  // A separate `|| refused.length > 0` here would be a condition no test
-  // could ever distinguish — the kind of line this project has shipped
-  // twelve of.
   const hasKept = keptFiles.length > 0 || keptPatches.length > 0 || changedSincePlan.length > 0;
   const hasFailures = failed.length > 0;
 
-  // 4.5. Directories THIS tool created (apply-lib.mjs's `dirsCreated`),
-  // removed once they are genuinely empty — never before, and never a
-  // directory that existed beforehand (it was never recorded in the first
-  // place) or still holds something. The manifest file itself lives
-  // inside `.claude/`, so whether `.claude/` can become empty depends on
-  // whether THIS run just deleted it — hence the split below rather than
-  // one call made at a single fixed point:
-  //   - "nothing kept": the manifest file is deleted FIRST, so the
-  //     directory sweep right after it sees `.claude/` as it will
-  //     actually be left — no stale manifest bookkeeping to persist,
-  //     because there is no manifest left to persist it in.
-  //   - "something kept": the manifest file's CONTENT changes but its
-  //     PRESENCE in `.claude/` does not — computing the sweep before or
-  //     after writing it makes no difference to `.claude/` itself, so it
-  //     is computed first and its result is folded into that one write,
-  //     rather than writing the manifest twice.
+  // 4.5. Directories the kit created (`dirsCreated`) are removed once they
+  // are empty: never one that existed beforehand, which was never recorded,
+  // and never one that still holds something. The manifest lives in
+  // `.claude/`, so that directory can only empty when this run deletes the
+  // manifest first; when the manifest stays, the sweep runs before the one
+  // write that records its result.
+  //
+  // The set of paths already accounted for starts empty here: everything
+  // this run removed is off the disk, so `readdirSync` already shows it.
   const dirsCreated = manifest?.dirsCreated ?? [];
   let removedDirs = [];
-
-  // `gone` starts empty on the REAL path, deliberately: by this point in
-  // the run, every file this run is going to remove (step 1), the settings
-  // file (step 2.5), and — in the branch below — the manifest file itself
-  // have ALL already been physically removed from disk, so `readdirSync`
-  // already reflects their absence directly. `gone` only needs to carry
-  // directories `sweepRemovableDirs` itself decides are removable WITHIN
-  // this same pass, so a shallower directory correctly sees a deeper one
-  // as accounted for before either is actually touched — see that
-  // function's own comment for why determining the whole set first, then
-  // acting on it in order, is correct and matches `removeEmptyCreatedDirs`.
   if (!hasKept && !hasFailures) {
     try {
       fs.rmSync(join(root, MANIFEST_PATH));
-    } catch (e) {
+    } catch {
       manifestDeleteFailed = true;
     }
     if (dirsCreated.length) removedDirs = removeEmptyCreatedDirs(root, dirsCreated, new Set());
@@ -868,11 +777,12 @@ export function runUninstall({ root, manifest, plan }) {
       dirsCreated: dirsCreated.filter(d => !removedDirs.includes(d)),
       settingsCreated: settingsRemoved ? false : (manifest?.settingsCreated ?? false),
     };
-    // A learning is landed only while the committed gate file holds it.
-    if (removed.includes(GATES_PATH) && manifest?.learnings !== undefined) updatedManifest.learnings = [];
+    // A learning is recorded as landed only beside the record of the gate
+    // file that holds it.
+    if (manifest?.learnings !== undefined && !keptPaths.has(GATES_PATH)) updatedManifest.learnings = [];
     try {
       writeManifest(root, updatedManifest);
-    } catch (e) {
+    } catch {
       manifestWriteFailed = true;
     }
   }
@@ -881,6 +791,7 @@ export function runUninstall({ root, manifest, plan }) {
     removed,
     failed,
     refused,
+    alreadyGone,
     settingsReadFailed,
     settingsMissing,
     settingsWriteFailed,
@@ -890,6 +801,8 @@ export function runUninstall({ root, manifest, plan }) {
     changedSincePlan,
     patchesNotReverted,
     patchesKept,
+    patchesGone,
     removedDirs,
+    leftInPlace: fs.existsSync(join(root, DETECT_REPORT_PATH)) ? [DETECT_REPORT_PATH] : [],
   };
 }
