@@ -47,9 +47,11 @@ any phase reference — see the first-run rule in `SKILL.md`.
      decidable: something detection could not derive and will not guess at,
      or a decision that is the owner's. One such decision: a hook check whose
      script is *held*. The kit's hook scripts load one another, so `apply`
-     writes them at one kit version or not at all, and a file under
-     `.claude/scripts/` that it will not overwrite (edited, not carrying the
-     stamp, or not recorded in the manifest) holds every one of them. The
+     writes them at one kit version or not at all, and a file at one of the
+     kit's own script paths under `.claude/scripts/` that it will not
+     overwrite (edited, not carrying the stamp, or not recorded in the
+     manifest) holds every one of them; a file of any other name there
+     holds nothing. The
      check's evidence names the file and the two choices: restore or move
      it and run `apply` again, or leave it and the hook stays off. Put the
      choice to the owner; never edit, restore or move the file yourself.
