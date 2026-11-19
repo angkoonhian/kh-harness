@@ -12,7 +12,10 @@
 // session's latest index line, beside a sealed file that is absent or
 // matches the line before, is the record that the steps after the index
 // append still have to be done. A crash in the middle of an index append
-// leaves a torn line, which `verifyIndex` reports as a break.
+// leaves the index ending in a line without its newline. The step that line
+// belonged to never completed, so the next run holding the lock removes the
+// line before it appends, and the session is sealed again from its claimed
+// events; until then readers leave the line out and say it is there.
 //
 // Every index append and every step that removes or replaces a file first
 // confirms the index lock is still this run's, so a run that was suspended
@@ -29,7 +32,7 @@
 // it imports only Node built-ins and sibling files and never spawns a child
 // process.
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, closeSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
@@ -174,8 +177,10 @@ function recordLatest(index, record, lineHash) {
 /**
  * The index's lines, each with its bytes and its record (null for a line
  * that is not one); per session the latest record, the SHA-256 of its line
- * and the record before it; and whether the last line lacks its newline.
- * Null when the index exists but cannot be read.
+ * and the record before it; `wholeBytes`, the length of the file up to and
+ * including its last newline; and `tornBytes`, the length of what follows,
+ * an unfinished last line, which is not among the lines. Null when the
+ * index exists but cannot be read.
  */
 function readIndex(root) {
   let buf;
@@ -185,14 +190,29 @@ function readIndex(root) {
     if (error?.code !== 'ENOENT') return null;
     buf = Buffer.alloc(0);
   }
-  const lines = splitLines(buf).map(bytes => {
+  const wholeBytes = buf.lastIndexOf(NEWLINE) + 1;
+  const lines = splitLines(buf.subarray(0, wholeBytes)).map(bytes => {
     const record = parsedObject(bytes.toString('utf8'));
     return { bytes, record: isIndexRecord(record) ? record : null };
   });
-  const index = { lines, latest: new Map(), latestLine: new Map(), previous: new Map(), torn: buf.length > 0 && buf.at(-1) !== NEWLINE, appendFailed: false };
+  const index = { lines, latest: new Map(), latestLine: new Map(), previous: new Map(), wholeBytes, tornBytes: buf.length - wholeBytes, appendFailed: false };
   for (const { bytes, record } of lines) if (record !== null) recordLatest(index, record, sha256Hex(bytes));
   return index;
 }
+
+/** Removes the unfinished last line an interrupted append left, if there is
+ * one. Only a run holding the index lock appends, so under the lock the
+ * line is nobody's work in progress. */
+function dropTornTail(root, index, held) {
+  if (index.tornBytes === 0) return;
+  held();
+  truncateSync(indexPath(root), index.wholeBytes);
+  index.tornBytes = 0;
+}
+
+// Why a run stops before it appends: a line after the unfinished one would
+// join it.
+const TORN_TAIL_KEPT = 'the unfinished last line of the index could not be removed';
 
 /** Appends `record` to the index chained to the last line, and records it as
  * its session's latest. A failed append sets `appendFailed`, since a line
@@ -202,9 +222,8 @@ function appendIndexLine(root, index, record, held) {
   const line = canonicalJson(full);
   held();
   index.appendFailed = true;
-  appendFileSync(indexPath(root), `${index.torn ? '\n' : ''}${line}\n`, { encoding: 'utf8', mode: 0o600 });
+  appendFileSync(indexPath(root), `${line}\n`, { encoding: 'utf8', mode: 0o600 });
   index.appendFailed = false;
-  index.torn = false;
   const bytes = Buffer.from(line, 'utf8');
   index.lines.push({ bytes, record: full });
   recordLatest(index, full, sha256Hex(bytes));
@@ -578,6 +597,13 @@ export function sealClosedSessions(root, {
         notRun = 'the index could not be read';
         return;
       }
+      try {
+        dropTornTail(root, index, held);
+      } catch (error) {
+        rethrowLockLost(error);
+        notRun = TORN_TAIL_KEPT;
+        return;
+      }
       const sessions = listSessions(root);
       recoverInterrupted(root, sessions, index, held);
       for (const [sessionId, kinds] of sessions) {
@@ -749,10 +775,11 @@ function writeVerified(root, verified, held) {
 
 /** Why the index, as `verifyIndex` found it, cannot be trusted to name every
  * blob sealed content references, so the blob sweep removes nothing; null
- * when it can. */
+ * when it can. A session's latest line lists the blobs of exactly the
+ * content it names, so the list holds wherever each sealed file matches its
+ * latest line, whatever the chain between the lines says. */
 export function untrustedBecause(check) {
   if (check.unreadable) return 'the index could not be read';
-  if (check.brokenAt !== null) return `the index chain is broken at line ${check.brokenAt}`;
   const parts = [];
   if (check.sessionsAltered.length > 0) parts.push(`altered: ${check.sessionsAltered.join(', ')}`);
   if (check.sessionsMissing.length > 0) parts.push(`missing: ${check.sessionsMissing.join(', ')}`);
@@ -772,9 +799,10 @@ export function untrustedBecause(check) {
  * past the period whose sealed content was left in place because it has no
  * index line or does not match it; `blobSweep`, `{ skipped, reason }`; and
  * `lockLost`, true when the run stopped because its lock was broken under
- * it. The sweep removes nothing unless the chain is unbroken and every
- * sealed session matches its latest index line, since only then does the
- * index name every blob sealed content references. A sealed file is taken
+ * it. The sweep removes nothing unless every sealed session matches its
+ * latest index line, since only then does the index name every blob sealed
+ * content references; a break in the chain between lines does not stop it.
+ * A sealed file is taken
  * to match without being read when its latest index line, size and
  * modification time are those recorded in `verified.json` when it last
  * matched; the record keeps a run's progress, so runs cut short by the
@@ -806,6 +834,12 @@ export function applyRetention(root, {
     outcome = withIndexLock(root, { now, isAlive }, held => {
       const index = readIndex(root);
       if (index === null) return skip('the index could not be read');
+      try {
+        dropTornTail(root, index, held);
+      } catch (error) {
+        rethrowLockLost(error);
+        return skip(TORN_TAIL_KEPT);
+      }
       const sessions = listSessions(root);
       recoverInterrupted(root, sessions, index, held, gunzip);
       for (const [sessionId, kinds] of sessions) {
@@ -913,7 +947,7 @@ function checkIndex(root, { withinBudget = () => true, gunzip = gunzipSync, veri
     else sessionsMissing.push(sessionId);
   }
   const intact = brokenAt === null && sessionsMissing.length === 0 && sessionsAltered.length === 0;
-  return { result: { intact, brokenAt, sessionsMissing, sessionsAltered, sessionsPending, unreadable: false }, index, sessions };
+  return { result: { intact, brokenAt, sessionsMissing, sessionsAltered, sessionsPending, unreadable: false, tornTail: index.tornBytes > 0 }, index, sessions };
 }
 
 /**
@@ -921,7 +955,9 @@ function checkIndex(root, { withinBudget = () => true, gunzip = gunzipSync, veri
  * the 1-based number of the first index line that is not an index record,
  * whose `prev` is not the SHA-256 of the line before it, or, as the first
  * line, has a `prev`; deleting a line therefore breaks the chain at that
- * line's position, and so does a line torn by a crash. Each session's
+ * line's position. A last line without its newline is what an interrupted
+ * append leaves: it is no line and no break, `tornTail` says it is there,
+ * and the next run holding the lock removes it. Each session's
  * sealed file must match its latest index line. A session between an index
  * append and the rename after it, whose temporary file matches the latest
  * line and whose sealed file is absent or matches the line before, is in
@@ -941,7 +977,7 @@ function checkIndex(root, { withinBudget = () => true, gunzip = gunzipSync, veri
  */
 export function verifyIndex(root) {
   return checkIndex(root)?.result
-    ?? { intact: false, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: true };
+    ?? { intact: false, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: true, tornTail: false };
 }
 
 /** How many lines the index holds, a position `sessionsSealedSince` takes;

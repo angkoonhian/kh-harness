@@ -351,6 +351,7 @@ function indexLines(s) {
     lines.push(`pending: ${index.sessionsPending.join(', ')}`);
     lines.push('  a seal stopped after writing its index line; the next maintenance run finishes it, and it is not damage');
   }
+  if (index.tornTail) lines.push('the index ends in an unfinished line, left by an interrupted append; the next maintenance run removes it, and it is not damage');
   return lines;
 }
 
@@ -402,7 +403,9 @@ export function renderStatus(s) {
       `content is kept ${s.retentionDays} days; structure is kept until the log is purged`,
       ...(s.configUnreadable ? ['config.json beside the log could not be read, so the defaults are in force'] : []),
       `content past the period, kept because it could not be verified: ${s.contentPastRetentionUnverified === null ? NOT_READ : `${s.contentPastRetentionUnverified} sessions`}`,
-      s.blobSweep.skipped ? `blob sweep: skipped, because ${s.blobSweep.reason}` : 'blob sweep: not blocked; the index accounts for every sealed session',
+      s.blobSweep.skipped
+        ? `blob sweep: blocked, so content held in blobs is not being expired: ${s.blobSweep.reason}`
+        : 'blob sweep: not blocked; every sealed session matches its latest index line',
     ]));
     out.push('', 'TRANSCRIPTS');
     out.push(...indent(transcriptLines(s.transcripts)));
