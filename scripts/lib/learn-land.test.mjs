@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
@@ -24,7 +24,7 @@ import { listLearnings, runTrial } from './learn-lib.mjs';
 import { approveLearning, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './learn-promote.mjs';
 import { appendLedger, readLedger } from './ledger.mjs';
 import { APPLY, DETECT, run, UNINSTALL } from './lifecycle-fixtures.mjs';
-import { MANIFEST_PATH, readManifestResult } from './manifest.mjs';
+import { MANIFEST_PATH, readManifestResult, sha256 } from './manifest.mjs';
 import { SUCCESS_EVENT } from './recurrence.mjs';
 import { MIN_CLEAN_CALLS } from './replay.mjs';
 import { requireInteractive } from './tty.mjs';
@@ -145,7 +145,7 @@ test('a trial learning cannot be landed', () => {
   assert.deepEqual(planLand(root, 'L1'), { error: 'L1 is trial; only a learning promoted on this machine is landed', exitCode: 3 });
   assert.deepEqual(landLearning(root, 'L9', YES), { error: 'L9: no such learning', exitCode: 3 });
   assert.deepEqual(landLearning(root, '../L1', YES), { error: 'id: must be L followed by 1 to 9 digits, without a leading zero', exitCode: 3 });
-  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is trial; only a landed or suspended learning, or one whose landing is still in this repository, is reverted', exitCode: 3 });
+  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is trial; only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted', exitCode: 3 });
   assert.deepEqual(mtimes(root), before);
 
   assert.equal(approveLearning(root, 'L1', { sha256: learning.sha256, action: 'block', interactive: AT_TERMINAL }).ok, true);
@@ -218,7 +218,7 @@ test('landing two learnings then reverting the first leaves the second byte-iden
   const dry = revertLearning(root, 'L1', {});
   assert.deepEqual(dry.proposals.map(p => p.path), [GATES_PATH, LEARNED_PATH], 'the gate leaves before its entry');
   const reverted = revertLearning(root, 'L1', YES);
-  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'active-local', action: 'block', written: [GATES_PATH, LEARNED_PATH], repairedGates: [] });
+  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'active-local', action: 'block', written: [GATES_PATH, LEARNED_PATH], notes: [], repairedGates: [] });
 
   assert.equal(sectionOf(text(root, LEARNED_PATH), 'L2'), second.section);
   assert.equal(JSON.stringify(committedFile(root).gates[0], null, 2), second.gate);
@@ -245,13 +245,15 @@ test('a LEARNED.md or gates.json edited by hand stops land and revert, which nam
     const { root } = activeRepo();
     addReadLearning(root);
     assert.equal(landLearning(root, 'L1', YES).ok, true);
-    writeFileSync(join(root, rel), text(root, rel).replace('L1', 'L1 ').concat('\n'));
+    writeFileSync(join(root, rel), text(root, rel).concat('\n'));
     const before = { files: mtimes(root), ledger: kinds(root) };
-    for (const step of [() => landLearning(root, 'L2', YES), () => landLearning(root, 'L2', {}), () => revertLearning(root, 'L1', YES)]) {
-      const result = step();
-      assert.equal(result.exitCode, 3, rel);
-      assert.equal(result.error, `${rel} no longer matches what kh-harness last wrote (a hand edit, a deletion, or a write that stopped before the manifest recorded it), so kh-harness no longer updates it; restore it from git and run again`);
+    const modified = `${rel} no longer matches what kh-harness last wrote (a hand edit, a deletion, or a write that stopped before the manifest recorded it), so kh-harness no longer updates it; restore it from git and run again`;
+    for (const step of [() => landLearning(root, 'L2', YES), () => landLearning(root, 'L2', {})]) {
+      assert.deepEqual(step(), { error: modified, exitCode: 3 }, rel);
     }
+    assert.deepEqual(revertLearning(root, 'L1', YES), {
+      error: `${modified}; or, if it is to stay as it is, take L1 out of it by hand and run the revert again, which then finds nothing of L1 in it and goes on`, exitCode: 3,
+    }, rel);
     assert.deepEqual(mtimes(root), before.files);
     assert.deepEqual(kinds(root), before.ledger);
   }
@@ -381,7 +383,7 @@ test('a landed learning whose uncommitted land was discarded is reverted to this
   assert.deepEqual(dry.proposals, []);
   assert.deepEqual(dry.notes, ['nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block; if another branch holds the landing, the gate is still committed there']);
   const reverted = revertLearning(root, 'L1', YES);
-  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'active-local', action: 'block', written: [], repairedGates: [] });
+  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'active-local', action: 'block', written: [], notes: dry.notes, repairedGates: [] });
   assert.equal(repoStatus(root), before.status);
   assert.deepEqual(snapshot(root), before.files, 'no repository write, not even a manifest');
   assert.equal(statusOf(root), 'active-local');
@@ -396,7 +398,7 @@ test('a suspended learning with no trace in this checkout is reverted to retired
   assert.equal(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'suspended');
   discardLand(root);
   const files = snapshot(root);
-  assert.match(revertLearning(root, 'L1', {}).notes[0], /^nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is retired; if another branch holds the landing, the gate is still committed there$/);
+  assert.match(revertLearning(root, 'L1', {}).notes[0], /^nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is retired; if another branch holds the landing, the gate is still committed there, and there it binds this machine again, since its suspension goes with this revert$/);
   const reverted = revertLearning(root, 'L1', YES);
   assert.equal(reverted.ok, true, reverted.error);
   assert.equal(reverted.status, 'retired');
@@ -463,7 +465,7 @@ test('retiring a suspended learning whose gate is still committed is refused, an
   assert.equal(revertLearning(root, 'L1', { yes: true }).exitCode, 3, 'terminal-only');
 
   const reverted = revertLearning(root, 'L1', YES);
-  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'retired', action: 'observe', written: [GATES_PATH, LEARNED_PATH], repairedGates: [] });
+  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'retired', action: 'observe', written: [GATES_PATH, LEARNED_PATH], notes: [], repairedGates: [] });
   assert.deepEqual(committedFile(root).gates, []);
   assert.deepEqual(manifest(root).learnings, []);
   assert.deepEqual(readLedger(root).slice(-2).map(e => [e.kind, e.approvedBy]), [['reverted', 'owner'], ['retired', 'owner']]);
@@ -506,7 +508,8 @@ test('a land killed between a file write and the manifest is finished by the nex
 
   writeFileSync(join(root, LEARNED_PATH), text(root, LEARNED_PATH) + 'A hand edit.\n');
   assert.deepEqual(revertLearning(root, 'L2', YES), {
-    error: `${LEARNED_PATH} no longer matches what kh-harness last wrote (a hand edit, a deletion, or a write that stopped before the manifest recorded it), so kh-harness no longer updates it; restore it from git and run again`, exitCode: 3,
+    error: `${LEARNED_PATH} no longer matches what kh-harness last wrote (a hand edit, a deletion, or a write that stopped before the manifest recorded it), so kh-harness no longer updates it; restore it from git and run again; `
+      + 'or, if it is to stay as it is, take L2 out of it by hand and run the revert again, which then finds nothing of L2 in it and goes on', exitCode: 3,
   }, 'any other difference is still refused, as before');
 });
 
@@ -538,7 +541,7 @@ test('a revert whose manifest record was left once everything else was recorded 
   assert.equal(finished.ok, true, finished.error);
   assert.deepEqual(manifest(root).learnings, []);
   assert.deepEqual(kinds(root), before, 'nothing more is recorded');
-  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is active-local; only a landed or suspended learning, or one whose landing is still in this repository, is reverted', exitCode: 3 });
+  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is active-local; only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted', exitCode: 3 });
 });
 
 test('a landed learning keeps its gate on a checkout that lacks the committed one', () => {
@@ -726,7 +729,7 @@ test('a suspended landed learning can be reverted at a terminal: its gate leaves
   assert.deepEqual(dry.proposals.map(p => p.path), [GATES_PATH, LEARNED_PATH]);
 
   const reverted = revertLearning(root, 'L1', YES);
-  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'retired', action: 'observe', written: [GATES_PATH, LEARNED_PATH], repairedGates: [] });
+  assert.deepEqual(reverted, { ok: true, id: 'L1', status: 'retired', action: 'observe', written: [GATES_PATH, LEARNED_PATH], notes: [], repairedGates: [] });
   assert.deepEqual(committedFile(root).gates, []);
   assert.deepEqual(parseRules(text(root, LEARNED_PATH)).rules, []);
   assert.deepEqual(manifest(root).learnings, []);
@@ -738,7 +741,7 @@ test('a suspended landed learning can be reverted at a terminal: its gate leaves
   assert.deepEqual([retireEntry.kind, retireEntry.approvedBy], ['retired', 'owner']);
   assert.deepEqual([listLearnings(root).ledgerMismatch, listLearnings(root).gatesToRepair], [[], []]);
   assert.deepEqual(tick(root).repairedGates, []);
-  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is retired; only a landed or suspended learning, or one whose landing is still in this repository, is reverted', exitCode: 3 });
+  assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is retired; only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted', exitCode: 3 });
 
   const integrityAfter = integrity(root);
   assert.equal(integrityAfter.state, 'declared', JSON.stringify(integrityAfter.evidence));
@@ -840,4 +843,166 @@ test('a suspended learning\'s revert stopped between its two ledger entries is f
   assert.equal(finished.ok, true, finished.error);
   assert.deepEqual(readLedger(root).filter(e => e.learningId === 'L1').slice(-3).map(e => e.kind), ['suspended', 'reverted', 'retired'], 'only the missing entry is added');
   assertRevertedAndRetired(root);
+});
+
+/** Appends, as the owner, the ledger entries of `kinds` for L1, each as a
+ * stopped land or revert would have appended it, the approved action named
+ * on the kinds that carry one. */
+function appendAsStopped(root, learning, action, ...kindsToAppend) {
+  const last = readLedger(root).filter(e => e.learningId === 'L1').at(-1);
+  for (const kind of kindsToAppend) {
+    appendLedger(root, {
+      kind, learningId: 'L1', contentSha256: learning.sha256, evidence: last.evidence, base: last.base, learned: last.learned, approvedBy: 'owner',
+      ...(kind === 'retired' ? {} : { action }),
+    });
+  }
+}
+
+/** L1 landed, committed, suspended here and then retired by a hand-written
+ * ledger entry, as an older kit let it be, its gate still committed. */
+function retiredWithGateRepo() {
+  const { root, learning, gate } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  assert.equal(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'suspended');
+  appendAsStopped(root, learning, gate.action, 'retired');
+  editLearning(root, 'L1', { status: 'retired' });
+  assert.equal(statusOf(root), 'retired');
+  return { root, learning, gate };
+}
+
+test('a revert of a retired learning stopped between its two ledger entries is finished by the next revert', () => {
+  const { root, learning, gate } = retiredWithGateRepo();
+  appendAsStopped(root, learning, gate.action, 'reverted');
+  assert.deepEqual(listLearnings(root).ledgerMismatch, ['L1'], 'the learning file says retired, the ledger active-local');
+  const finished = revertLearning(root, 'L1', YES);
+  assert.equal(finished.ok, true, finished.error);
+  assert.deepEqual(readLedger(root).filter(e => e.learningId === 'L1').slice(-3).map(e => e.kind), ['retired', 'reverted', 'retired'], 'only the missing retired is added');
+  assert.deepEqual(committedFile(root).gates, []);
+  assertRevertedAndRetired(root);
+});
+
+test('every revert path stopped after its ledger entries and before the learning file is finished by the next revert', () => {
+  // A landed learning: `reverted` written, the learning file still landed.
+  const landed = activeRepo();
+  assert.equal(landLearning(landed.root, 'L1', YES).ok, true);
+  appendAsStopped(landed.root, landed.learning, landed.gate.action, 'reverted');
+  assert.deepEqual(listLearnings(landed.root).ledgerMismatch, ['L1']);
+  const finishedLanded = revertLearning(landed.root, 'L1', YES);
+  assert.equal(finishedLanded.ok, true, finishedLanded.error);
+  assert.equal(statusOf(landed.root), 'active-local');
+  assert.deepEqual(localGates(landed.root).gates, [landed.gate]);
+  assert.deepEqual(readLedger(landed.root).filter(e => e.learningId === 'L1').map(e => e.kind).filter(k => k === 'reverted'), ['reverted'], 'no second entry');
+  assert.deepEqual([committedFile(landed.root).gates, manifest(landed.root).learnings], [[], []]);
+
+  // A suspended learning: `reverted` and `retired` written, the file still suspended.
+  const suspended = suspendedLandedRepo();
+  const learning = JSON.parse(readFileSync(join(repoDataDir(suspended.root), 'learnings', 'L1.json'), 'utf8'));
+  appendAsStopped(suspended.root, learning, suspended.gate.action, 'reverted', 'retired');
+  const finishedSuspended = revertLearning(suspended.root, 'L1', YES);
+  assert.equal(finishedSuspended.ok, true, finishedSuspended.error);
+  assert.deepEqual(readLedger(suspended.root).filter(e => e.learningId === 'L1').slice(-3).map(e => e.kind), ['suspended', 'reverted', 'retired']);
+  assertRevertedAndRetired(suspended.root);
+
+  // A retired learning: `reverted` and `retired` written, the record and files not yet.
+  const retired = retiredWithGateRepo();
+  appendAsStopped(retired.root, retired.learning, retired.gate.action, 'reverted', 'retired');
+  const before = kinds(retired.root);
+  const finishedRetired = revertLearning(retired.root, 'L1', YES);
+  assert.equal(finishedRetired.ok, true, finishedRetired.error);
+  assert.deepEqual(kinds(retired.root), before, 'its entries are all written, so none is added');
+  assertRevertedAndRetired(retired.root);
+});
+
+/** Removes L1 from the working tree as an agent could: the gate and the
+ * entry taken out, and the manifest's hashes and learnings rewritten to
+ * match, so no trace of L1 is left in the working tree. */
+function removeByHand(root) {
+  const proposals = revertLearning(root, 'L1', {}).proposals;
+  for (const proposal of proposals) writeFileSync(join(root, proposal.path), proposal.contents);
+  const raw = JSON.parse(text(root, MANIFEST_PATH));
+  const files = raw.files.map(f => {
+    const proposal = proposals.find(p => p.path === f.path);
+    return proposal === undefined ? f : { ...f, sha256: sha256(proposal.contents) };
+  });
+  writeFileSync(join(root, MANIFEST_PATH), JSON.stringify({ ...raw, files, learnings: [] }, null, 2) + '\n');
+}
+
+test('a gate removed from the working tree while the commit still holds it is refused, dry and real; once the removal is committed the revert goes on', () => {
+  const { root, gate } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  removeByHand(root);
+  const refusal = {
+    error: `L1: the commit this branch is on still holds its gate in ${GATES_PATH}, and the working tree's copy was removed without a revert; `
+      + `either restore ${GATES_PATH}, ${LEARNED_PATH} and ${MANIFEST_PATH} from that commit and run the revert, which then takes the gate out, `
+      + 'or commit their removal and run the revert again',
+    exitCode: 3,
+  };
+  assert.deepEqual(revertLearning(root, 'L1', {}), refusal);
+  const real = revertLearning(root, 'L1', YES);
+  assert.deepEqual([real.error, real.exitCode], [refusal.error, 3]);
+  assert.equal(statusOf(root), 'landed');
+
+  commitAll(root);
+  const reverted = revertLearning(root, 'L1', YES);
+  assert.equal(reverted.ok, true, reverted.error);
+  assert.deepEqual(reverted.written, []);
+  assert.deepEqual(reverted.notes, ['nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block; if another branch holds the landing, the gate is still committed there']);
+  assert.deepEqual(localGates(root).gates, [gate]);
+});
+
+test('outside git a revert with no trace goes on, saying the commit could not be checked', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  discardLand(root);
+  const data = repoDataDir(root);
+  rmSync(join(root, '.git'), { recursive: true, force: true });
+  cpSync(data, repoDataDir(root), { recursive: true });
+  const note = 'nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block; '
+    + 'whether a commit still holds its gate could not be checked (it is not a git repository); if another branch holds the landing, the gate is still committed there';
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [note]);
+  const reverted = revertLearning(root, 'L1', YES);
+  assert.equal(reverted.ok, true, reverted.error);
+  assert.deepEqual(reverted.notes, [note], 'the real run carries the dry run\'s notes');
+});
+
+test('a hand-edited gate file names the hand removal that lets a revert go on, and that sequence works', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  assert.equal(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'suspended');
+  const edited = text(root, GATES_PATH).replace('"schema": 1', '"schema": 1 ');
+  writeFileSync(join(root, GATES_PATH), edited);
+  assert.match(retireLearning(root, 'L1', { interactive: AT_TERMINAL }).error, /reverting L1 takes it out of the repository and retires it$/);
+  const refusal = revertLearning(root, 'L1', YES);
+  assert.equal(refusal.exitCode, 3);
+  assert.match(refusal.error, /^\.claude\/kh-harness\/gates\.json no longer matches what kh-harness last wrote .*restore it from git and run again; or, if it is to stay as it is, take L1 out of it by hand and run the revert again, which then finds nothing of L1 in it and goes on$/);
+
+  const handFile = JSON.parse(edited);
+  writeFileSync(join(root, GATES_PATH), JSON.stringify({ ...handFile, gates: handFile.gates.filter(g => g.id !== 'L1') }, null, 4) + '\n');
+  const handText = text(root, GATES_PATH);
+  const reverted = revertLearning(root, 'L1', YES);
+  assert.equal(reverted.ok, true, reverted.error);
+  assert.deepEqual(reverted.written, [LEARNED_PATH], 'the hand-edited file is never written');
+  assert.equal(text(root, GATES_PATH), handText);
+  assert.equal(statusOf(root), 'retired');
+  assert.deepEqual(parseRules(text(root, LEARNED_PATH)).rules, []);
+  assert.deepEqual(manifest(root).learnings, []);
+});
+
+test('a learning no revert can take is refused on its status before any file', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  writeFileSync(join(root, LEARNED_PATH), text(root, LEARNED_PATH) + 'A hand edit.\n');
+  logReadMistakes(root);
+  for (const id of ['clean-read-0', 'clean-read-1']) {
+    log(root, id, HARNESS, ...Array.from({ length: MIN_CLEAN_CALLS / 2 }, (_, i) => call(SUCCESS_EVENT, id, 'Read', { file_path: `src/f-${i}.mjs` })));
+  }
+  const trial = drafted(root, { gate: READ_GATE });
+  assert.equal(runTrial(root, trial.id).status, 'trial');
+  assert.deepEqual(revertLearning(root, 'L2', YES), {
+    error: 'L2 is trial; only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted',
+    exitCode: 3,
+  });
 });

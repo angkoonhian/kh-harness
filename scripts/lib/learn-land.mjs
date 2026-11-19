@@ -15,9 +15,16 @@
 // recorded hash, its registry entry, its manifest record). A landed or
 // suspended learning with no trace in this checkout, as after an
 // uncommitted land was discarded, is still reverted, on this machine only:
-// no file is written, and the dry run says so. A learning that has since
-// moved on, retired or demoted, is reverted only to remove a trace it left;
-// a trace under its id at another hash is refused, never removed.
+// no file is written, and the dry run and the result say so. The working
+// tree is not the only witness, though: a gate at the learning's hash in the
+// commit HEAD names means its copy was removed without a revert, and that is
+// refused, naming the two ways on; when that commit cannot be read, the note
+// says so. A learning that has since moved on, retired or demoted, is
+// reverted only to remove a trace it left; a trace under its id at another
+// hash is refused, never removed. A learned file hand-edited away from the
+// kit's copy is never written; a revert leaves it alone once nothing of the
+// learning is left in it, and until then says that taking the learning out
+// of it by hand lets the revert go on.
 //
 // A gate in the repository binds other people's agents, so landing and
 // reverting take a person at an interactive terminal, as approval does: a
@@ -74,7 +81,10 @@
 //     written, so until then a trace is always left for the next revert to
 //     find. One whose ledger entries are written in part or whole, its
 //     learning file not yet, is recognised from the ledger's last entries
-//     for the learning (`revertStage`). A record left once every entry is
+//     for the learning (`revertStage`): `reverted` alone after a landed,
+//     suspended or retired learning's last entry, or `reverted` and
+//     `retired` after a suspended one's, and only what is missing is
+//     written. A record left once every entry is
 //     written is removed by the next revert whatever the learning's status
 //     has become since, the ledger holding a `reverted` for its content
 //     after its last `landed`.
@@ -98,7 +108,7 @@ import { GATE_LIMITS, gateSha256, parseGates } from '../../assets/scripts/harnes
 import { GATES_PATH, harnessIdentity } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules } from '../../assets/scripts/harness-redact.mjs';
 import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
-import { applyProposals, renderDiff, writeGateRefusals } from './apply-lib.mjs';
+import { applyProposals, committedText, renderDiff, writeGateRefusals } from './apply-lib.mjs';
 import { gitInfo } from './git-info.mjs';
 import {
   committedGates, holdLocalGate, ID_ERROR, isId, learningIn, planTransition, readFailure, readState, refuse, repairedStep,
@@ -319,7 +329,7 @@ function landStage(state, learning) {
   return refused(`${learning.id} is ${learning.status}; ${LAND_REFUSAL}`);
 }
 
-const REVERT_REFUSAL = 'only a landed or suspended learning, or one whose landing is still in this repository, is reverted';
+const REVERT_REFUSAL = 'only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted';
 
 /**
  * Where reverting `learning` stands: `{ updated, entries, action,
@@ -336,9 +346,9 @@ const REVERT_REFUSAL = 'only a landed or suspended learning, or one whose landin
  * to this machine only.
  *
  * Otherwise the ledger's last entries for it say how far a revert got: its
- * `reverted` written and the learning file not yet, or a suspended
- * learning's `reverted` written and `retired` not yet, and the rest is
- * written. A learning that is neither landed nor suspended any more, with a
+ * `reverted` written and the learning file not yet, or a suspended or
+ * retired learning's `reverted` written and `retired` not yet, and the rest
+ * is written. A learning that is neither landed nor suspended any more, with a
  * trace left, has the trace removed: with no new entry when a `reverted`
  * for its content follows its last `landed`, whatever status it reached
  * since; and recorded `reverted` then `retired` when it was retired
@@ -364,6 +374,7 @@ function revertStage(state, learning, traced) {
   if (status === 'landed' && ends(['landed', 'reverted'])) return stage(toActive, []);
   if (status === 'suspended' && ends(['suspended', 'reverted'])) return stage(toRetired, [retired]);
   if (status === 'suspended' && ends(['suspended', 'reverted', 'retired'])) return stage(toRetired, []);
+  if (status === 'retired' && ends(['retired', 'reverted'])) return stage(learning, [retired]);
   if (status === 'active-local' && ends(['landed'])) {
     return refused(`${id}: a land of it stopped before its learning file was written; running land for ${id} again finishes it`);
   }
@@ -441,21 +452,32 @@ function landing(root, state, manifest, id) {
  * What reverting `id` writes, from `state` and `manifest`: `{ learning,
  * proposals, transition, adopted, record, notes }`, as `landing` returns
  * them, `record` whether the manifest still records the learning and
- * `notes` what the dry run says besides the diffs, or `{ error, exitCode }`.
+ * `notes` what the step does besides the diffs, or `{ error, exitCode }`.
  * Whatever trace of the learning is left (its gate at its content hash, its
  * registry entry, its manifest record) is removed; whether the revert goes
- * ahead is `revertStage`'s to say. A gate, entry or record under its id
+ * ahead is `revertStage`'s to say, and a learning no revert can take is
+ * refused before any file is read. A gate, entry or record under its id
  * that is not this learning's is refused, never removed.
+ *
+ * A learned file the kit may not write any more, a hand edit for one, is
+ * left alone when it holds nothing under the learning's id; one that does
+ * is refused, saying that taking the learning out of it by hand lets the
+ * revert go on. With no trace in this checkout, the commit HEAD names is
+ * read too (`committedText`): a gate there at the learning's hash means
+ * the working tree's copy was removed without a revert, and is refused.
  */
 function reverting(root, state, manifest, id) {
   const found = learningIn(state, id);
   if (found.error) return refused(found.error);
   const { learning } = found;
+  const early = revertStage(state, learning, true);
+  if (early.error) return early;
   const gateOf = committedGateOf(learning, approvedAction(state, learning));
 
-  const gates = ownedFile(root, manifest, GATES_PATH, gateFileRevert(gateOf));
+  const gates = revertFile(root, manifest, GATES_PATH, gateFileRevert(gateOf), text => holdsGateId(text, id), id);
   if (gates.error) return refused(gates.error);
-  const learned = ownedFile(root, manifest, LEARNED_PATH, registryRevert(learnedEntry(learning, learning.sha256)));
+  const learned = revertFile(root, manifest, LEARNED_PATH, registryRevert(learnedEntry(learning, learning.sha256)),
+    text => parseRules(text).rules.some(r => r.id === id), id);
   if (learned.error) return refused(learned.error);
   const committed = baseGates(root, gates);
   if (committed.error) return refused(committed.error);
@@ -475,11 +497,16 @@ function reverting(root, state, manifest, id) {
 
   const transition = revertStage(state, learning, gate !== undefined || rule !== undefined || record !== undefined);
   if (transition.error) return transition;
-  const notes = transition.alone ? [
-    `nothing in this checkout holds ${id}, so reverting it writes no file and changes it on this machine only: `
-      + (transition.updated.status === 'retired' ? 'it is retired' : `it is active-local again, its local gate at ${transition.action}`)
-      + '; if another branch holds the landing, the gate is still committed there',
-  ] : [];
+  let notes = [];
+  if (transition.alone) {
+    const head = committedText(root, GATES_PATH);
+    if (head.text !== undefined && gatesIn(head.text).some(g => g.id === id && gateSha256(g) === learning.sha256)) {
+      return refused(`${id}: the commit this branch is on still holds its gate in ${GATES_PATH}, and the working tree's copy was removed without a revert; `
+        + `either restore ${GATES_PATH}, ${LEARNED_PATH} and ${MANIFEST_PATH} from that commit and run the revert, which then takes the gate out, `
+        + 'or commit their removal and run the revert again');
+    }
+    notes = [aloneNote(id, transition, head.unknown)];
+  }
 
   const proposals = [];
   if (gate !== undefined) {
@@ -493,6 +520,49 @@ function reverting(root, state, manifest, id) {
     proposals.push(fileProposal(LEARNED_PATH, removed.text, `revert learning ${id}: remove its entry`));
   }
   return { learning, proposals, transition, adopted: [gates.adopt, learned.adopt].filter(a => a !== null), record: record !== undefined, notes };
+}
+
+/** Whether a gate file's text has an entry under `id`; text that is not a
+ * gate file may, as far as anyone can tell. */
+function holdsGateId(text, id) {
+  try {
+    const file = JSON.parse(text);
+    return !isPlainObject(file) || !Array.isArray(file.gates) || file.gates.some(e => !isPlainObject(e) || e.id === id);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * A learned file for a revert, as `ownedFile` reads it; or, when the kit
+ * may not write it and it holds nothing under `id` (`holdsId`), or it is
+ * gone, no file to touch, since there is nothing of the learning in it to
+ * take out. A file that does hold something under `id` is refused, saying
+ * what lets the revert go on.
+ */
+function revertFile(root, manifest, rel, step, holdsId, id) {
+  const file = ownedFile(root, manifest, rel, step);
+  if (!file.error) return file;
+  let text;
+  try {
+    text = readFileSync(join(root, rel), 'utf8');
+  } catch (error) {
+    return error?.code === 'ENOENT' ? { text: null, adopt: null } : file;
+  }
+  if (!holdsId(text)) return { text: null, adopt: null };
+  return { error: `${file.error}; or, if it is to stay as it is, take ${id} out of it by hand and run the revert again, which then finds nothing of ${id} in it and goes on` };
+}
+
+/** What a revert with no trace in this checkout tells the owner it does. */
+function aloneNote(id, transition, unknown) {
+  const unchecked = unknown === undefined ? '' : `; whether a commit still holds its gate could not be checked (${unknown})`;
+  const outcome = transition.updated.status === 'retired'
+    ? 'it is retired'
+    : `it is active-local again, its local gate at ${transition.action}`;
+  const elsewhere = transition.updated.status === 'retired'
+    ? 'if another branch holds the landing, the gate is still committed there, and there it binds this machine again, since its suspension goes with this revert'
+    : 'if another branch holds the landing, the gate is still committed there';
+  return `nothing in this checkout holds ${id}, so reverting it writes no file and changes it on this machine only: ${outcome}${unchecked}; ${elsewhere}`;
 }
 
 /** The dry run: each proposal with its diff against the repository, what
@@ -641,13 +711,13 @@ function landUnguarded(root, id, options) {
  * `reverted` with `approvedBy: 'owner'` and that action. A learning
  * suspended on this machine ends `retired` with no local gate, the ledger
  * getting `reverted` and then `retired`, both the owner's. Either with no
- * trace in this checkout writes no file, and its dry run's `notes` say so.
- * A learning that moved on since its landing has the trace it left
- * removed. A revert that stopped partway is finished, as `revertStage`
- * recognises it. `options`
+ * trace in this checkout writes no file, and `notes` say so, unless the
+ * commit HEAD names still holds the gate, which is refused. A learning that
+ * moved on since its landing has the trace it left removed. A revert that
+ * stopped partway is finished, as `revertStage` recognises it. `options`
  * and the results are as `landLearning`'s; success is `{ ok: true, id,
- * status, action, written, repairedGates }`, `action` the one its gate now
- * carries.
+ * status, action, written, notes, repairedGates }`, `action` the one its
+ * gate now carries and `notes` the dry run's.
  */
 export function revertLearning(root, id, options) {
   try {
@@ -702,6 +772,6 @@ function revertUnguarded(root, id, options) {
         return failed(`${id}: its revert is recorded, and ${MANIFEST_PATH} could not drop its record (${codeOf(error)}); run the same command again to finish it`);
       }
     }
-    return { ok: true, id, status: transition.updated.status, action: transition.action, written };
+    return { ok: true, id, status: transition.updated.status, action: transition.action, written, notes: planned.notes };
   });
 }

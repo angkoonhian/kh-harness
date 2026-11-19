@@ -14,7 +14,7 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { defaultBranches } from './git-info.mjs';
+import { defaultBranches, gitInfo } from './git-info.mjs';
 import { classify, emptyManifest, MANIFEST_PATH, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
@@ -141,6 +141,37 @@ export function writeGateRefusals({ root, git, manifestResult, allowDefaultBranc
     }
   }
   return refusals;
+}
+
+/**
+ * The file `rel` as the commit HEAD names holds it: `{ text }`, `{ absent:
+ * true }` when that commit has no such file, or `{ unknown }`, a sentence
+ * saying why it could not be read: not a git repository, a branch with no
+ * commit yet, or git failing. The working tree and the index are not
+ * consulted, so a removal not yet committed does not hide what the commit
+ * holds. Runs git with its arguments as an array, never through a shell.
+ */
+export function committedText(root, rel) {
+  const info = gitInfo(root);
+  if (info.error) return { unknown: info.error };
+  if (!info.isRepo) return { unknown: 'it is not a git repository' };
+  const git = args => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+  } catch {
+    return { unknown: 'the branch has no commit yet' };
+  }
+  try {
+    git(['cat-file', '-e', `HEAD:${rel}`]);
+  } catch {
+    return { absent: true };
+  }
+  try {
+    return { text: git(['show', `HEAD:${rel}`]) };
+  } catch (err) {
+    const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
+    return { unknown: stderr || 'git could not show the committed file' };
+  }
 }
 
 // A hand-rolled O(n·m) LCS diff is fine for the kit's own small template and
