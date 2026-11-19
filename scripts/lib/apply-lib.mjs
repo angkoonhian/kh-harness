@@ -975,10 +975,9 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   return { written, patched, skipped, failed, manifest: nextManifest };
 }
 
-// `ALLOWED_PREFIXES`/`ALLOWED_EXACT` are exported for exactly one purpose:
-// a test proving `assertAllowed` and `isAllowedDirectory` read the SAME
-// list, not two that happen to agree today — see apply-lib.test.mjs. No
-// production caller should import these to re-derive its own allowlist
-// logic; `assertAllowed`/`isAllowedDirectory` are the two sanctioned
-// readers of them.
-export { SETTINGS_PATH, ALLOWED_PREFIXES, ALLOWED_EXACT };
+// `ALLOWED_PREFIXES` is exported for exactly one purpose: a test proving
+// `assertAllowed` and `isAllowedDirectory` read the SAME list, not two that
+// happen to agree today — see apply-lib.test.mjs. No production caller
+// should import it to re-derive its own allowlist logic;
+// `assertAllowed`/`isAllowedDirectory` are the two sanctioned readers.
+export { SETTINGS_PATH, ALLOWED_PREFIXES };
