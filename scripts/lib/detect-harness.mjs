@@ -3,7 +3,7 @@ import { join, relative } from 'node:path';
 import { readIfPresent, existsAny } from './scan.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { git, isNotRepository } from './git-info.mjs';
-import { commandDenyRules } from './propose.mjs';
+import { toolGateDenyRules } from './propose.mjs';
 // THIS IMPORT DIRECTION IS DELIBERATE. DO NOT "FIX" IT BY COPYING THE
 // FUNCTION BACK INTO scripts/lib/.
 //
@@ -140,16 +140,24 @@ function denyRulesInEffect(root) {
 // shown" convention `hookEvents`' unresolvable commands already use.
 const DENY_RULE_SAFE_PREFIXES = ['Edit(', 'Read(', 'Write(', 'Glob(', 'Grep(', 'NotebookEdit('];
 
-// The command rules the kit itself proposes, against its `learn`
-// subcommands and `log purge`, kept verbatim so `P5.toolgate` can tell
-// which are present. Only these exact strings, which the kit wrote and which
-// hold nothing of the user's: any other command rule may carry an argument
-// of theirs.
-const KIT_COMMAND_RULES = new Set(commandDenyRules());
+// The rules the kit installs with its gate hook, kept verbatim so
+// `P5.toolgate` can tell which are present: its command rules, against the
+// `learn` subcommands and `log purge`, and its rule for the data directory
+// under the home directory. Only these exact strings, which the kit wrote
+// and which hold nothing of the user's: any other command rule may carry an
+// argument of theirs.
+const KIT_DENY_RULES = new Set(toolGateDenyRules());
+
+// A path rule whose argument starts at the filesystem root (`//`), the
+// home directory (`~`) or a drive names a place on this machine, outside
+// the repository: a user name, at the least. Such a rule can come from the
+// gitignored settings.local.json, and the report is committed.
+const OUTSIDE_REPOSITORY = /^\w+\((?:\/\/|~|[A-Za-z]:)/;
 
 function redactDenyRule(rule) {
   if (typeof rule !== 'string') return null;
-  return DENY_RULE_SAFE_PREFIXES.some(p => rule.startsWith(p)) || KIT_COMMAND_RULES.has(rule) ? rule : null;
+  if (KIT_DENY_RULES.has(rule)) return rule;
+  return DENY_RULE_SAFE_PREFIXES.some(p => rule.startsWith(p)) && !OUTSIDE_REPOSITORY.test(rule) ? rule : null;
 }
 
 /**

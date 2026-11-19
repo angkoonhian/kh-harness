@@ -613,3 +613,14 @@ test("denyRuleList keeps the kit's log purge rules verbatim, and no purge rule t
   write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: [...purge, ...lookalikes] } }));
   assert.deepEqual(run(d).claudeDir.denyRuleList, [...purge, null, null]);
 });
+
+test('a path rule that names a place outside the repository is counted and not shown, but for the kit\'s own', () => {
+  const d = repo();
+  const outside = ['Read(//c/Users/someone/private/**)', 'Edit(~/notes/**)', 'Read(//home/someone/.ssh/**)', 'Write(C:\\Users\\someone\\x)'];
+  const kit = 'Edit(~/.claude/kh-harness/**)';
+  write(d, '.claude/settings.local.json', JSON.stringify({ permissions: { deny: [...outside, kit, 'Edit(/secrets/**)', 'Read(./.env)'] } }));
+  const h = run(d);
+  assert.equal(h.claudeDir.denyRules, 7, 'every rule is counted');
+  assert.deepEqual(h.claudeDir.denyRuleList, [null, null, null, null, kit, 'Edit(/secrets/**)', 'Read(./.env)']);
+  assert.equal(JSON.stringify(h).includes('someone'), false, 'a path on this machine never reaches the committed report');
+});
