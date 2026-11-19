@@ -58,7 +58,9 @@ directory (including any script of the owner's kept there),
 `~/.claude/kh-harness/`, and running the eight `learn` subcommands that
 approve a gate, weaken one or change the repository's (`approve`, `wrong`,
 `demote`, `retire`, `land`, `revert`, `policy set`, `policy clear`; `land`
-and `revert` whole, their dry runs included). The step is `declared` only when the hook and every one
+and `revert` whole, their dry runs included), and running `log purge`,
+which removes this machine's ledger, learnings, policy and local gates
+(whole, its dry run included). The step is `declared` only when the hook and every one
 of these rules are present; an existing install missing some is proposed
 exactly those.
 
@@ -85,8 +87,11 @@ manifest records under `.claude/scripts/` (or the gate file or the learned
 registry, when recorded) is modified or missing, when a committed gate has
 no `docs/harness/LEARNED.md` entry approving its hash, when the gate file
 holds entries the gate language rejects, or when a landed learning has no
-gate behind it; `declared` otherwise; `n/a` with no manifest. It reads only
-the repository and proposes nothing: restoring a file or approving a gate
+gate behind it; `declared` otherwise. With no manifest it still checks the
+committed gates against their approvals, and is `failing` on one nobody
+approved or on a kit hook that is registered with nothing recording what was
+installed; `n/a` only when it finds neither. It reads only the repository
+and proposes nothing: restoring a file or approving a gate
 is the owner's decision. Report each failing line as `detect` printed it.
 
 ## The gate

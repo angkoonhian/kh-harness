@@ -44,7 +44,15 @@ any phase reference — see the first-run rule in `SKILL.md`.
      drafts it (`P0.recon`, `P1.instructions`, `P1.architecture`,
      `P3.intent`); `human` when only the user can (`P4.remote`).
    - `question` — present only on a check that is `absent` AND NOT
-     decidable: something detection could not derive and will not guess at.
+     decidable: something detection could not derive and will not guess at,
+     or a decision that is the owner's. One such decision: a hook check whose
+     script is *held*. The kit's hook scripts load one another, so `apply`
+     writes them at one kit version or not at all, and a file under
+     `.claude/scripts/` that it will not overwrite (edited, not carrying the
+     stamp, or not recorded in the manifest) holds every one of them. The
+     check's evidence names the file and the two choices: restore or move
+     it and run `apply` again, or leave it and the hook stays off. Put the
+     choice to the owner; never edit, restore or move the file yourself.
    - `advice` — independent of the proposal/question split: a gap that is
      fully known but that this tool deliberately never writes itself (for
      example, a missing `lint` script — adding one means editing a
