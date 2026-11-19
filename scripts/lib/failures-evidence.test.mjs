@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { appendEvent, setEnabled } from '../../assets/scripts/harness-log.mjs';
+import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { failureSignature, FAILURE_EVENT, findRecurrences } from './recurrence.mjs';
 import { FAILURES_PATH, failuresEvidence, parseFailures, unlabelledRecurrences } from './failures-evidence.mjs';
 import { buildGaps } from './gap-model.mjs';
@@ -41,9 +42,10 @@ function write(d, rel, text) {
 }
 
 const HARNESS = { type: 'harness', base: 'base-canary', learned: 'learned-canary', model: 'model-canary' };
-const failure = (sessionId, firstErrorLine) => ({
-  type: FAILURE_EVENT, tool_name: 'Bash', inputHash: 'input-canary', firstErrorLine,
-  session_id: sessionId, tool_use_id: `${sessionId}-use`,
+/** A failure as the logging hook records it. */
+const failure = (sessionId, error) => toLogEvent({
+  hook_event_name: FAILURE_EVENT, session_id: sessionId, tool_use_id: `${sessionId}-use`,
+  tool_name: 'Bash', tool_input: { command: 'input-canary' }, error,
 });
 const LABELLED_LINE = 'Error: zebra-canary-labelled went wrong';
 const UNLABELLED_LINE = 'Error: zebra-canary-unlabelled went wrong';
