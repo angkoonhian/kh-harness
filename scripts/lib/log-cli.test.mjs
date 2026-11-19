@@ -12,7 +12,7 @@ import { gzipSync } from 'node:zlib';
 import { appendEvent, isEnabled, repoDataDir, setEnabled, storeBlob } from '../../assets/scripts/harness-log.mjs';
 import { EXIT_CODES, LOG_USAGE } from './cli.mjs';
 import {
-  CANARY, DATA_ROOT, DAY_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, writeSession,
+  CANARY, DATA_ROOT, DAY_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeSession,
 } from './log-fixtures.mjs';
 import { logStatus, SESSION_LOG_SCRIPT } from './log-lib.mjs';
 
@@ -40,7 +40,11 @@ test('enable says the scrub is best-effort and names the retention period', () =
   assert.match(r.stdout, /best-effort/);
   assert.match(r.stdout, /may be missed/);
   assert.match(r.stdout, /every tool call's input and output/);
-  assert.match(r.stdout, /90 days/);
+  assert.match(r.stdout, /is removed once a session's last event is 90 days old/);
+  assert.match(r.stdout, /only from a session that has been sealed and still matches the index/);
+  assert.match(r.stdout, /only when a session starts while the log is enabled or `maintain` is run/);
+  assert.match(r.stdout, /`status` counts the sessions past the period and says why/);
+  assert.doesNotMatch(r.stdout, /is kept for 90 days and then removed/, 'the unconditional promise is gone');
   assert.match(r.stdout, /structure is kept until/i);
   assert.match(r.stdout, /log\.mjs .* disable/);
   assert.match(r.stdout, /log\.mjs .* purge/);
@@ -303,12 +307,58 @@ function oldSealedSession(root, id) {
   writeFileSync(sealedFile(root, id), gzipSync(Buffer.from(`${JSON.stringify({ type: 'UserPromptSubmit', ts: old, prompt: CANARY })}\n`)));
 }
 
+const NONE_PAST = { sessions: 0, notSealed: 0, awaitingMaintenance: 0, unverifiable: 0, unreadable: 0 };
+
 test('status counts content past the retention period that could not be verified', () => {
   const root = project();
   oldSealedSession(root, 'unindexed');
   const json = statusJson(root);
   assert.equal(json.retentionDays, 1);
-  assert.equal(json.contentPastRetentionUnverified, 1);
+  assert.deepEqual(json.contentPastRetention, { ...NONE_PAST, sessions: 1, unverifiable: 1 });
+});
+
+test('status counts every session holding content past the period, sealed or not, with the reason, on a disabled log too', () => {
+  const root = project();
+  const old = new Date(Date.now() - 3 * DAY_MS).toISOString();
+  const prompt = (ts, text = CANARY) => `${JSON.stringify({ schema: 1, ...(ts === null ? {} : { ts }), pid: 1, type: 'UserPromptSubmit', prompt: text })}\n`;
+  mkdirSync(join(repoDataDir(root), 'sessions'), { recursive: true });
+  writeFileSync(sessionFile(root, 'sealed-old'), prompt(old));
+  sealAll(root);
+  oldSealedSession(root, 'unindexed');
+  writeFileSync(sessionFile(root, 'plain-old'), prompt(old));
+  writeFileSync(sessionFile(root, 'resumed'), prompt(old) + prompt(new Date().toISOString()));
+  writeFileSync(sessionFile(root, 'timeless'), prompt(null));
+  writeFileSync(sessionFile(root, 'structure-only'), `${JSON.stringify({ schema: 1, ts: old, pid: 1, type: 'Stop' })}\n`);
+  writeFileSync(sealedFile(root, 'bad-gz'), 'not gzip');
+  touchAgo(sealedFile(root, 'bad-gz'), 3 * DAY_MS);
+  writeSession(root, 'fresh');
+
+  const json = statusJson(root);
+  assert.equal(json.enabled, false);
+  assert.deepEqual(json.contentPastRetention, { sessions: 4, notSealed: 1, awaitingMaintenance: 1, unverifiable: 1, unreadable: 1 });
+  assert.equal(json.contentWithoutTime, 1);
+  const text = runLog(root, 'status').stdout;
+  assert.match(text, /content is removed once a session's last event is 1 days old/);
+  assert.match(text, /the log is disabled, so no session start seals or expires anything; `maintain` still does/);
+  assert.match(text, /sessions holding content past the period: 4/);
+  assert.match(text, /not yet sealed, which `maintain` seals and then expires: 1/);
+  assert.match(text, /sealed, waiting for a session start or `maintain`: 1/);
+  assert.match(text, /kept, because the sealed file does not match the index or the index cannot be read: 1/);
+  assert.match(text, /unreadable, judged by the file's age: 1/);
+  assert.match(text, /sessions holding content whose events carry no time, which never expire: 1/);
+  assert.equal(text.includes(CANARY), false);
+});
+
+test('status says nothing is past the period when nothing is', () => {
+  const root = project();
+  setEnabled(root, true);
+  writeSession(root, 'fresh');
+  const json = statusJson(root);
+  assert.deepEqual(json.contentPastRetention, NONE_PAST);
+  assert.equal(json.contentWithoutTime, 0);
+  const text = runLog(root, 'status').stdout;
+  assert.match(text, /sessions holding content past the period: 0/);
+  assert.doesNotMatch(text, /the log is disabled/);
 });
 
 test('an unreadable index is reported as unreadable, not as a broken chain, and its old content as unverified', () => {
@@ -319,7 +369,7 @@ test('an unreadable index is reported as unreadable, not as a broken chain, and 
   const json = statusJson(root);
   assert.equal(json.index.unreadable, true);
   assert.equal(json.index.brokenAt, null);
-  assert.equal(json.contentPastRetentionUnverified, 1);
+  assert.deepEqual(json.contentPastRetention, { ...NONE_PAST, sessions: 1, unverifiable: 1 });
   assert.equal(json.blobSweep.reason, 'the index could not be read');
   const text = runLog(root, 'status').stdout;
   assert.match(text, /index: could not be read/);
@@ -456,4 +506,17 @@ test('log --help prints its usage on stdout, names every flag and subcommand, an
   }
   assert.ok(LOG_USAGE.includes(EXIT_CODES));
   for (const word of ['enable', 'disable', 'status', 'report', 'maintain', 'purge', '--yes', '--json']) assert.ok(LOG_USAGE.includes(word), word);
+});
+
+test('the usage text states retention with its conditions, and what maintain needs and returns', () => {
+  const usage = LOG_USAGE.replace(/\s+/g, ' ');
+  assert.match(usage, /Content is removed once a session's last event is older than the retention period/);
+  assert.match(usage, /only from a session that has been sealed and still matches the index/);
+  assert.match(usage, /only when a session starts while the log is enabled or `maintain` is run/);
+  assert.doesNotMatch(usage, /Content is kept for the retention period/);
+  assert.match(usage, /It runs on a disabled log too/);
+  assert.doesNotMatch(usage, /Needs the log enabled|run to the end/);
+  assert.match(usage, /up to five minutes for each step/);
+  assert.match(usage, /2 is also `maintain` when sealing, retention or the blob sweep did not run or stopped/);
+  assert.doesNotMatch(usage, /`maintain` on a log that is not enabled/);
 });

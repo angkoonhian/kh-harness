@@ -72,7 +72,7 @@ test('maintain says why the blob sweep was skipped', () => {
   sealAll(root);
   writeFileSync(sealedFile(root, 'edited'), gzipSync(Buffer.from('{"type":"Stop"}\n')));
   const r = runLog(root, 'maintain');
-  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.status, 2, 'a step that could not run is not a clean exit');
   assert.match(r.stdout, /blob sweep skipped: sealed sessions do not match the index \(altered: edited\)/);
 });
 
@@ -87,6 +87,8 @@ test('maintain says when sealing did not run because another process holds the l
   assert.equal(r.status, 2);
   assert.match(r.stdout, /sealing did not run: the index lock could not be taken/);
   assert.match(r.stdout, /sessions sealed: 0/);
+  assert.match(r.stdout, /content was not expired, because retention did not run: the index lock could not be taken/);
+  assert.doesNotMatch(r.stdout, /content expired: 0 sessions/, 'a step that did not run expired nothing it can count');
 });
 
 test('maintain says when sealing did not run because the index could not be read', () => {
@@ -101,10 +103,25 @@ test('maintain says when sealing did not run because the index could not be read
   assert.match(r.stdout, /blob sweep skipped: the index could not be read/);
 });
 
-test('maintain refuses while the log is not enabled', () => {
+test('maintain seals and expires on a disabled log, so what was recorded does not outlive its period', () => {
   const root = project();
-  writeSession(root, 's1');
+  const old = new Date(Date.now() - 100 * DAY_MS).toISOString();
+  mkdirSync(join(repoDataDir(root), 'sessions'), { recursive: true });
+  writeFileSync(sessionFile(root, 'aged'), `${JSON.stringify({ schema: 1, ts: old, pid: 1, type: 'UserPromptSubmit', prompt: CANARY })}\n`);
+  touchAgo(sessionFile(root, 'aged'), SEAL_IDLE_MS + MINUTE_MS);
+  assert.equal(statusJson(root).enabled, false);
   const r = runLog(root, 'maintain');
-  assert.equal(r.status, 3);
-  assert.match(r.stderr, /not enabled/);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /sessions sealed: 1/);
+  assert.match(r.stdout, /content expired: 1 sessions/);
+  assert.equal(statusJson(root).contentPastRetention.sessions, 0);
+  assert.equal(statusJson(root).enabled, false, 'maintaining does not turn the log on');
+});
+
+test('maintain with no log on this machine says so and writes nothing', () => {
+  const root = project();
+  const r = runLog(root, 'maintain');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /No log for this repository on this machine; nothing to maintain/);
+  assert.equal(existsSync(repoDataDir(root)), false);
 });

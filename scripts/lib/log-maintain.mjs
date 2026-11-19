@@ -1,8 +1,10 @@
 // scripts/lib/log-maintain.mjs
 //
 // `log maintain`: the sealing and retention the hook runs at session start
-// within 150 ms, run here for minutes, for a log that has outgrown that.
-// It reports counts and reasons only, never a logged event's content.
+// within 150 ms and on sessions up to 2 MiB, run here for minutes and on
+// every session a reader can read, for a log that has outgrown that or is
+// disabled, which no session start maintains. It reports counts and reasons
+// only, never a logged event's content.
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -47,10 +49,16 @@ function unsealedAfter(root, now) {
   return { recent, other };
 }
 
+// The one reason the blob sweep is skipped that the next run settles by
+// itself.
+const BUDGET_SPENT = 'the time budget was spent';
+
 /**
  * Seals closed sessions and applies retention, as the hook does at session
  * start, with a budget of minutes rather than milliseconds, and says what was
- * done, what was left, and why sealing did not run when it did not.
+ * done, what was left, and why each step did not run or stopped when it did.
+ * `stepNotDone` is true when sealing, retention or the blob sweep did not
+ * run to its end for a reason other than the time limit.
  */
 export function maintainLog(root) {
   const started = performance.now();
@@ -58,14 +66,20 @@ export function maintainLog(root) {
   const seal = sealClosedSessions(root, { budgetMs: MAINTAIN_BUDGET_MS });
   const retention = applyRetention(root, { budgetMs: MAINTAIN_BUDGET_MS - (performance.now() - started) });
   const blobsAfter = new Set(blobNames(root));
+  const lockLost = seal.lockLost || retention.lockLost;
+  const sweepBlocked = retention.blobSweep.skipped && retention.blobSweep.reason !== BUDGET_SPENT;
   return {
     sealed: seal.sealed.length,
     sealingNotRun: seal.notRun,
+    sealingStopped: seal.stopped,
+    retentionNotRun: retention.notRun,
+    retentionStopped: retention.stopped,
+    stepNotDone: lockLost || sweepBlocked || [seal.notRun, seal.stopped, retention.notRun, retention.stopped].some(reason => reason !== null),
     contentRemoved: retention.contentRemoved,
     contentUnverifiable: retention.contentUnverifiable,
     blobsRemoved: blobsBefore.filter(name => !blobsAfter.has(name)).length,
     blobSweep: retention.blobSweep,
-    lockLost: seal.lockLost || retention.lockLost,
+    lockLost,
     timeLimitReached: performance.now() - started >= MAINTAIN_BUDGET_MS,
     unsealed: unsealedAfter(root, Date.now()),
   };
@@ -74,11 +88,13 @@ export function maintainLog(root) {
 export function renderMaintain(r) {
   const out = [];
   if (r.sealingNotRun !== null) out.push(`sealing did not run: ${r.sealingNotRun}`);
-  out.push(
-    `sessions sealed: ${r.sealed}`,
-    `content expired: ${r.contentRemoved} sessions`,
-    `blobs removed: ${r.blobsRemoved}`,
-  );
+  out.push(`sessions sealed: ${r.sealed}`);
+  if (r.sealingStopped !== null) out.push(`sealing stopped before the last session: ${r.sealingStopped}`);
+  out.push(r.retentionNotRun === null
+    ? `content expired: ${r.contentRemoved} sessions`
+    : `content was not expired, because retention did not run: ${r.retentionNotRun}`);
+  if (r.retentionStopped !== null) out.push(`retention stopped before the last session: ${r.retentionStopped}`);
+  out.push(`blobs removed: ${r.blobsRemoved}`);
   if (r.blobSweep.skipped) out.push(`blob sweep skipped: ${r.blobSweep.reason}`);
   if (r.contentUnverifiable > 0) out.push(`content past the period left in place, because it could not be verified: ${r.contentUnverifiable} sessions`);
   if (r.unsealed.recent > 0) out.push(`not sealed: ${r.unsealed.recent} sessions appended to in the last ${SEAL_IDLE_MS / 60_000} minutes, which may still be running`);
