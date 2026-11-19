@@ -56,21 +56,25 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Imported in dependency order, so a missing module is named rather than the
-// module that imports it.
+// module that imports it. Each entry holds the exports this hook uses, then
+// the ones the modules after it import from it: a copy lacking one of those
+// makes the later module fail to link, and the copy is the one to name.
 const SIBLINGS = [
-  ['./harness-redact.mjs', ['markerPath', 'projectRoot', 'safeSessionId']],
-  ['./harness-log.mjs', ['appendEvent', 'GATES_PATH', 'isEnabled', 'LOCAL_GATES_FILE', 'repoDataDir']],
-  ['./harness-gates.mjs', ['gateSha256', 'matchGate', 'parseGates']],
+  ['./harness-redact.mjs', ['markerPath', 'projectRoot', 'safeSessionId'], ['canonicalJson', 'maskText', 'SCRUB_MARK', 'stripUnsafe']],
+  ['./harness-log.mjs', ['appendEvent', 'GATES_PATH', 'isEnabled', 'LOCAL_GATES_FILE', 'repoDataDir'], []],
+  ['./harness-gates.mjs', ['gateSha256', 'matchGate', 'parseGates'], []],
 ];
+const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
 
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 
 /** The exports this hook uses, from every sibling that provided them, and
- * `problem` naming the first sibling that could not; the ones after it are
- * not imported. */
+ * `problem` naming the first sibling that could not provide all that is
+ * needed of it; the ones after it are not imported. A sibling that is too
+ * old still gives the names it has, so a session can be told once. */
 async function loadSiblings() {
   const loaded = {};
-  for (const [specifier, names] of SIBLINGS) {
+  for (const [specifier, names, forLater] of SIBLINGS) {
     const shown = `.claude/scripts/${specifier.slice(2)}`;
     let module;
     try {
@@ -78,8 +82,8 @@ async function loadSiblings() {
     } catch {
       return { loaded, problem: `${shown} is missing or cannot be loaded` };
     }
-    if (names.some(name => !(name in module))) return { loaded, problem: `${shown} is older than this hook and lacks what it needs` };
-    for (const name of names) loaded[name] = module[name];
+    for (const name of names) if (name in module) loaded[name] = module[name];
+    if ([...names, ...forLater].some(name => !(name in module))) return { loaded, problem: `${shown} is older than this hook and lacks what it needs` };
   }
   return { loaded };
 }
@@ -87,7 +91,7 @@ async function loadSiblings() {
 const siblings = await loadSiblings();
 const lib = siblings.loaded;
 // The once-per-session markers come from harness-redact.mjs.
-const canMark = 'markerPath' in lib;
+const canMark = MARKING.every(name => name in lib);
 
 export const GATES_PATH = lib.GATES_PATH;
 export const LOCAL_GATES_FILE = lib.LOCAL_GATES_FILE;

@@ -14,9 +14,10 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
 import { readEvents, setEnabled } from '../../assets/scripts/harness-log.mjs';
@@ -148,6 +149,58 @@ for (const hook of HOOKS) {
     assert.match(line ?? '', /^kh-harness[^:]*: .*is missing or cannot be loaded/, hook);
   });
 }
+
+/** The names the installed script `importer` imports from its sibling
+ * `from`, read from its source. */
+function importedFrom(importer, from) {
+  const source = readFileSync(join(ASSETS, importer), 'utf8');
+  const found = new RegExp(`import \\{([^}]*)\\} from '\\./${from.replaceAll('.', '\\.')}';`).exec(source);
+  assert.ok(found, `${importer} imports from ${from}`);
+  return found[1].split(',').map(name => name.trim()).filter(name => name !== '');
+}
+
+/** Every installed script in a directory of its own, where the module
+ * `name` lacks the export `missing`: the whole module stands beside it under
+ * another name and is exported again without that one. */
+async function installedWithout(name, missing) {
+  const all = Object.keys(await import(pathToFileURL(join(ASSETS, name)).href));
+  assert.ok(all.includes(missing), `${name} exports ${missing}`);
+  const dir = installed({});
+  renameSync(join(dir, name), join(dir, `whole-${name}`));
+  writeFileSync(join(dir, name), `export { ${all.filter(n => n !== missing).join(', ')} } from './whole-${name}';\n`);
+  return dir;
+}
+
+const SESSION_START = session => ({ session_id: session, hook_event_name: 'SessionStart', source: 'startup', model: 'm' });
+
+// A hook that loads a chain of siblings names the stale one, not the sibling
+// that then fails to link against it.
+for (const [hook, importers, payload] of [
+  ['tool-gate.mjs', ['harness-log.mjs', 'harness-gates.mjs'], PAYLOADS['tool-gate.mjs']],
+  ['session-log.mjs', ['harness-log.mjs', 'harness-seal.mjs'], SESSION_START],
+]) {
+  test(`${hook} beside a harness-redact.mjs lacking a name another sibling imports names harness-redact.mjs`, async () => {
+    const names = [...new Set(importers.flatMap(importer => importedFrom(importer, 'harness-redact.mjs')))];
+    assert.ok(names.length > 0);
+    for (const name of names) {
+      const dir = await installedWithout('harness-redact.mjs', name);
+      const root = project();
+      setEnabled(root, true);
+      const notice = said(runHook(dir, hook, root, payload(`lacks-${name}`)), hook);
+      assert.match(notice ?? '', /\.claude\/scripts\/harness-redact\.mjs is older than this hook and lacks what it needs/, `${hook} without ${name}`);
+    }
+  });
+}
+
+test('session-log beside a harness-log.mjs lacking a name harness-seal.mjs imports names harness-log.mjs', async () => {
+  for (const name of importedFrom('harness-seal.mjs', 'harness-log.mjs')) {
+    const dir = await installedWithout('harness-log.mjs', name);
+    const root = project();
+    setEnabled(root, true);
+    const notice = said(runHook(dir, 'session-log.mjs', root, SESSION_START(`log-lacks-${name}`)), 'session-log.mjs');
+    assert.match(notice ?? '', /\.claude\/scripts\/harness-log\.mjs is older than this hook and lacks what it needs/, `without ${name}`);
+  }
+});
 
 test('session-log beside a harness-redact.mjs without the marker helpers is silent on every event but a session start', () => {
   // Without the marker helpers a notice cannot be made once-only, and this

@@ -37,19 +37,26 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Imported in dependency order, so a missing module is named rather than the
-// module that imports it.
+// module that imports it. Each entry holds the exports this hook uses, then
+// the ones the modules after it import from it: a copy lacking one of those
+// makes the later module fail to link, and the copy is the one to name.
 const SIBLINGS = [
-  ['./harness-redact.mjs', ['canonicalJson', 'markerPath', 'maskText', 'projectRoot', 'readJSONMarker', 'safeSessionId', 'writeJSONMarker']],
-  ['./harness-log.mjs', ['appendEvent', 'harnessIdentity', 'isEnabled', 'LAST_TICK_FILE', 'parsedObject', 'readConfig', 'readSmallFile', 'repoDataDir']],
+  ['./harness-redact.mjs', ['canonicalJson', 'markerPath', 'maskText', 'projectRoot', 'readJSONMarker', 'safeSessionId', 'writeJSONMarker'], ['SCRUB_MARK']],
+  ['./harness-log.mjs', ['appendEvent', 'harnessIdentity', 'isEnabled', 'LAST_TICK_FILE', 'parsedObject', 'readConfig', 'readSmallFile', 'repoDataDir'], []],
 ];
-// Loaded at a session start only, so no other event parses it.
-const SEAL_SIBLING = ['./harness-seal.mjs', ['applyRetention', 'sealClosedSessions', 'sessionsSealedSince']];
+// Loaded at a session start only, so no other event parses the sealing
+// module. harness-log.mjs comes first, probed for what the sealing module
+// imports from it, on the same ground as above.
+const SEAL_SIBLINGS = [
+  ['./harness-log.mjs', [], ['BLOBS_DIR', 'gunzipBounded', 'logDirProblem', 'maxLogFileBytes', 'parsedObject', 'readBounded', 'readConfig', 'repoDataDir', 'sessionFileName', 'SESSIONS_DIR']],
+  ['./harness-seal.mjs', ['applyRetention', 'sealClosedSessions', 'sessionsSealedSince'], []],
+];
 const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
 
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 
 /** The sibling's module and null, or null and what is wrong with it. */
-async function loadSibling([specifier, names]) {
+async function loadSibling([specifier, names, forLater]) {
   const shown = `.claude/scripts/${specifier.slice(2)}`;
   let module;
   try {
@@ -57,7 +64,7 @@ async function loadSibling([specifier, names]) {
   } catch {
     return { module: null, problem: `${shown} is missing or cannot be loaded` };
   }
-  const older = names.some(name => !(name in module));
+  const older = [...names, ...forLater].some(name => !(name in module));
   return { module, problem: older ? `${shown} is older than this hook and lacks what it needs` : null };
 }
 
@@ -312,10 +319,14 @@ function firstTelling(root, sessionId, sentence) {
  * for the model and the sentence for the person when the sealing module
  * cannot do its work, each null when there is none. */
 async function sessionStart(root, currentSessionId, source) {
-  const { module: seal, problem } = await loadSibling(SEAL_SIBLING);
-  if (problem !== null) {
-    const sentence = `kh-harness session-log: ${problem}, so sessions are not sealed and old content is not expired — ${REMEDY}`;
-    return { context: null, notice: firstTelling(root, currentSessionId, sentence) ? sentence : null };
+  let seal;
+  for (const sibling of SEAL_SIBLINGS) {
+    const { module, problem } = await loadSibling(sibling);
+    if (problem !== null) {
+      const sentence = `kh-harness session-log: ${problem}, so sessions are not sealed and old content is not expired — ${REMEDY}`;
+      return { context: null, notice: firstTelling(root, currentSessionId, sentence) ? sentence : null };
+    }
+    seal = module;
   }
   maintain(seal, root, currentSessionId);
   return { context: source === NOTICE_SOURCE ? learnNotice(seal, root) : null, notice: null };
