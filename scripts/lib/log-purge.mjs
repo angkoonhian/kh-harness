@@ -8,9 +8,8 @@
 import { lstatSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { sessionIds } from './recurrence.mjs';
-import { assertDataDirSafe, checkDataDir, diskUsage, formatBytes, logCommand } from './log-lib.mjs';
+import { assertDataDirSafe, checkDataDir, diskUsage, formatBytes, logCommand, recordEnabled } from './log-lib.mjs';
 
 const sizeOf = path => {
   try {
@@ -66,7 +65,7 @@ export function renderPurgePlan(root, target) {
  * otherwise what the removal throws. */
 export function purgeLog(root, target) {
   assertDataDirSafe(root);
-  setEnabled(root, false);
+  recordEnabled(root, false);
   assertDataDirSafe(root);
   rmSync(target.dir, { recursive: true });
 }

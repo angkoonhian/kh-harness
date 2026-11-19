@@ -5,7 +5,7 @@
 // nothing here reads or writes the real `~/.claude`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
@@ -118,6 +118,33 @@ test('disable and enable refuse a data directory that is a link, and write nothi
     assert.match(r.stderr, /link/);
   }
   assert.deepEqual(snapshot(elsewhere), {});
+});
+
+test('disable replaces an enabled record hard-linked to another file, and refuses one that is a symbolic link', t => {
+  const root = project();
+  setEnabled(root, true);
+  const elsewhere = tempDir('hk-log-elsewhere-');
+  const record = join(repoDataDir(root), 'enabled.json');
+  const other = join(elsewhere, 'other.json');
+  writeFileSync(other, '{"enabled":true}');
+  rmSync(record);
+  linkSync(other, record);
+  const replaced = runLog(root, 'disable');
+  assert.equal(replaced.status, 0, replaced.stderr);
+  assert.equal(readFileSync(other, 'utf8'), '{"enabled":true}', 'the other file is not written through');
+  assert.equal(isEnabled(root), false);
+
+  rmSync(record);
+  try {
+    symlinkSync(other, record, 'file');
+  } catch (error) {
+    t.skip(`this account cannot create a file link (${error.code})`);
+    return;
+  }
+  const refused = runLog(root, 'disable');
+  assert.equal(refused.status, 3, refused.stdout);
+  assert.match(refused.stderr, /enabled\.json is a link/);
+  assert.equal(readFileSync(other, 'utf8'), '{"enabled":true}');
 });
 
 test('status reports sessions, size and the date range it read', () => {

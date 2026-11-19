@@ -6,7 +6,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -18,6 +18,7 @@ import {
   GATES_PATH,
   harnessIdentity,
   isEnabled,
+  LINK_REFUSED,
   LOCAL_GATES_FILE,
   LOG_SCHEMA,
   readConfig,
@@ -128,6 +129,47 @@ test('nothing is enabled by default', () => {
   assert.ok(existsSync(join(repoDataDir(d), 'enabled.json')));
   setEnabled(d, false);
   assert.equal(isEnabled(d), false);
+});
+
+test('the enabled record is replaced whole, so a file it was hard-linked to is not written through', () => {
+  const d = gitRepo();
+  setEnabled(d, true);
+  const other = join(tempDir('hk-log-elsewhere-'), 'other.json');
+  rmSync(join(repoDataDir(d), 'enabled.json'));
+  writeFileSync(other, '{"enabled":true,"mine":1}');
+  linkSync(other, join(repoDataDir(d), 'enabled.json'));
+  setEnabled(d, false);
+  assert.equal(readFileSync(other, 'utf8'), '{"enabled":true,"mine":1}');
+  assert.equal(isEnabled(d), false);
+  assert.deepEqual(readdirSync(repoDataDir(d)), ['enabled.json'], 'no temporary file is left');
+});
+
+test('setEnabled refuses a record or a log directory that is a symbolic link, and writes nothing', t => {
+  const d = gitRepo();
+  const elsewhere = tempDir('hk-log-elsewhere-');
+  symlinkSync(elsewhere, repoDataDir(d), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => setEnabled(d, true), { code: LINK_REFUSED });
+  assert.deepEqual(readdirSync(elsewhere), []);
+
+  const e = gitRepo();
+  mkdirSync(repoDataDir(e), { recursive: true });
+  const target = join(elsewhere, 'target.json');
+  writeFileSync(target, '{"enabled":false}');
+  try {
+    symlinkSync(target, join(repoDataDir(e), 'enabled.json'), 'file');
+  } catch (error) {
+    t.skip(`this account cannot create a file link (${error.code})`);
+    return;
+  }
+  assert.throws(() => setEnabled(e, true), { code: LINK_REFUSED });
+  assert.equal(readFileSync(target, 'utf8'), '{"enabled":false}');
+});
+
+test('the log directory is created for its owner alone', { skip: process.platform === 'win32' }, () => {
+  const d = gitRepo();
+  setEnabled(d, true);
+  assert.equal(statSync(repoDataDir(d)).mode & 0o777, 0o700);
+  assert.equal(statSync(join(repoDataDir(d), 'enabled.json')).mode & 0o777, 0o600);
 });
 
 test('an unreadable enabled.json means disabled', () => {
