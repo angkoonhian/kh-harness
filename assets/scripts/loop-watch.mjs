@@ -50,7 +50,7 @@ import { closeSync, constants, fstatSync, readSync, writeFileSync, writeSync } f
 // session when the copy still has the marker helpers, on every failure when
 // it does not. The asset cannot hold this text: it is the file that may be
 // missing.
-const NEEDED = ['markerPath', 'openMarker', 'projectRoot', 'safeSessionId', 'stripAnsi'];
+const NEEDED = ['canonicalJson', 'markerPath', 'openMarker', 'projectRoot', 'safeSessionId', 'stripAnsi'];
 const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
 let asset = {};
@@ -61,7 +61,7 @@ try {
 } catch {
   assetProblem = 'is missing or cannot be loaded';
 }
-const { markerPath, openMarker, projectRoot, safeSessionId, stripAnsi } = asset;
+const { canonicalJson, markerPath, openMarker, projectRoot, safeSessionId, stripAnsi } = asset;
 
 const WARN_AT = 3;
 const WARNING = 'The same call has failed 3 times in a row with the same error. Stop repeating it and change approach.';
@@ -101,18 +101,6 @@ function readStdin(timeoutMs) {
       finish('');
     }
   });
-}
-
-/** JSON with object keys sorted recursively and no whitespace, for a value
- * that came from `JSON.parse`. Kept here rather than imported from
- * harness-log.mjs: the only sibling the kit installs beside this hook is
- * harness-redact.mjs. */
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function firstLine(text) {

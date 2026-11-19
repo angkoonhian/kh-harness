@@ -15,11 +15,12 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
-import { maskText, safeSessionId, SCRUB_MARK } from './harness-redact.mjs';
+import { canonicalJson, maskText, safeSessionId, SCRUB_MARK } from './harness-redact.mjs';
 
-/** What a scrubbed event holds in place of every value the scrub hid, by the
- * mask or by a credential-named key or flag. */
-export { SCRUB_MARK };
+/** `SCRUB_MARK` is what a scrubbed event holds in place of every value the
+ * scrub hid, by the mask or by a credential-named key or flag. Both are
+ * harness-redact.mjs's, re-exported for the kit's readers of the log. */
+export { canonicalJson, SCRUB_MARK };
 
 export const GATES_PATH = '.claude/kh-harness/gates.json';
 export const LOCAL_GATES_FILE = 'gates.local.json';
@@ -158,26 +159,6 @@ export function readConfig(root) {
     config[field] = raw[field];
   }
   return config;
-}
-
-function serialiseSorted(value) {
-  if (Array.isArray(value)) return `[${value.map(serialiseSorted).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const members = Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${serialiseSorted(value[k])}`);
-    return `{${members.join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-/**
- * JSON with object keys sorted recursively and no whitespace, so equal
- * values hash equally whatever order their keys were written in. Keys are
- * sorted as strings, so `"10"` precedes `"9"`; arrays keep their order.
- * `value` is first passed through `JSON.stringify`'s own rules (`toJSON`,
- * dropped `undefined`), and must therefore be JSON-serialisable.
- */
-export function canonicalJson(value) {
-  return serialiseSorted(JSON.parse(JSON.stringify(value)));
 }
 
 const MANIFEST_PATH = '.claude/kh-harness.manifest.json';

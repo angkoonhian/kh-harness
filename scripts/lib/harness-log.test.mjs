@@ -183,6 +183,15 @@ test('canonicalJson: key order does not change the output', () => {
   assert.equal(canonicalJson({ b: 1, a: 2, 10: 3, 9: 4 }), '{"10":3,"9":4,"a":2,"b":1}');
 });
 
+test('canonical JSON has one implementation, in harness-redact.mjs, which every installed script uses', async () => {
+  const redact = await import('../../assets/scripts/harness-redact.mjs');
+  assert.equal(typeof redact.canonicalJson, 'function');
+  assert.equal(canonicalJson, redact.canonicalJson, 'harness-log.mjs re-exports it for the kit\'s readers');
+  const scripts = join(import.meta.dirname, '..', '..', 'assets', 'scripts');
+  const defining = readdirSync(scripts).filter(name => /function (canonicalJson|serialiseSorted)\b/.test(readFileSync(join(scripts, name), 'utf8')));
+  assert.deepEqual(defining, ['harness-redact.mjs']);
+});
+
 test('canonicalJson: arrays keep their order', () => {
   assert.equal(canonicalJson([3, 1, 2]), '[3,1,2]');
   assert.notEqual(canonicalJson([1, 2]), canonicalJson([2, 1]));

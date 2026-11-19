@@ -39,8 +39,8 @@ import { fileURLToPath } from 'node:url';
 // Imported in dependency order, so a missing module is named rather than the
 // module that imports it.
 const SIBLINGS = [
-  ['./harness-redact.mjs', ['markerPath', 'maskText', 'projectRoot', 'readJSONMarker', 'safeSessionId', 'writeJSONMarker']],
-  ['./harness-log.mjs', ['appendEvent', 'canonicalJson', 'harnessIdentity', 'isEnabled', 'LAST_TICK_FILE', 'parsedObject', 'readConfig', 'repoDataDir']],
+  ['./harness-redact.mjs', ['canonicalJson', 'markerPath', 'maskText', 'projectRoot', 'readJSONMarker', 'safeSessionId', 'writeJSONMarker']],
+  ['./harness-log.mjs', ['appendEvent', 'harnessIdentity', 'isEnabled', 'LAST_TICK_FILE', 'parsedObject', 'readConfig', 'repoDataDir']],
 ];
 // Loaded at a session start only, so no other event parses it.
 const SEAL_SIBLING = ['./harness-seal.mjs', ['applyRetention', 'sealClosedSessions', 'sessionsSealedSince']];
@@ -77,8 +77,8 @@ async function loadSiblings() {
 
 const siblings = await loadSiblings();
 const {
-  appendEvent, canonicalJson, harnessIdentity, isEnabled, LAST_TICK_FILE, parsedObject, readConfig, repoDataDir,
-  markerPath, maskText, projectRoot, readJSONMarker, safeSessionId, writeJSONMarker,
+  appendEvent, harnessIdentity, isEnabled, LAST_TICK_FILE, parsedObject, readConfig, repoDataDir,
+  canonicalJson, markerPath, maskText, projectRoot, readJSONMarker, safeSessionId, writeJSONMarker,
 } = siblings.loaded;
 const canMark = MARKING.every(name => name in siblings.loaded);
 
