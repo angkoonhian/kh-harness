@@ -1491,3 +1491,93 @@ test('REVIEW-2: a hash-matching recorded file WITHOUT the kit\'s stamp is never 
   const ps = buildProposals(reinjectArgsAt(d, manifest, [check({ id: 'P3.reinject', step: 28, phase: 3, proposal: 'register the hook' })]));
   assert.equal(ps.find(p => p.path === REDACT_PATH), undefined, 'no stamp on disk → not ours to update, whatever the manifest claims');
 });
+
+// --- An installed harness can be upgraded ------------------------------------
+//
+// A check that is `declared` never reaches its generator, so a kit file that
+// changed upstream reached a repository only through P0.kitskew. The kit's
+// version is in every stamp, so installing with one version and detecting
+// with another is an upgrade with every unmodified kit file out of date.
+import { applyProposals } from './apply-lib.mjs';
+import { detectHarness } from './detect-harness.mjs';
+import { readManifest, writeManifest } from './manifest.mjs';
+import { versionStamp } from './render.mjs';
+import { BRIEF_PATH } from './propose.mjs';
+
+function detectedAt(d, kitVersion) {
+  const { files } = listFiles(d);
+  const stack = detectStack(d, files);
+  const harness = detectHarness(d, files);
+  const manifest = readManifest(d);
+  const checks = buildGaps({ stack, harness, exposures: [], profile: selectProfile(stack), git: { branch: 'chore/harness', isRepo: true }, files, root: d, manifest, kitVersion });
+  return { checks, manifest, kitVersion, harness, root: d, stack, files };
+}
+
+function installedAt(kitVersion) {
+  const d = root();
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app' }));
+  const ctx = detectedAt(d, kitVersion);
+  const result = applyProposals({ root: d, proposals: buildProposals(ctx), manifest: ctx.manifest, kitVersion });
+  assert.deepEqual(result.failed, []);
+  writeManifest(d, result.manifest);
+  return d;
+}
+
+const kitskew = checks => checks.find(c => c.id === 'P0.kitskew');
+
+test('a changed hook asset is offered as an update when its check is declared', () => {
+  const d = installedAt('0.1.9');
+  const ctx = detectedAt(d, '0.2.0');
+  assert.equal(ctx.checks.find(c => c.id === 'P4.sessionbrief').state, 'declared', 'fixture sanity: the hook is installed and registered');
+
+  const skew = kitskew(ctx.checks);
+  assert.equal(skew.state, 'absent');
+  assert.equal(skew.via, 'apply');
+  assert.ok(skew.evidence.some(e => e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+
+  const update = buildProposals(ctx).find(p => p.path === BRIEF_PATH);
+  assert.ok(update, 'the out-of-date hook script must be offered as an update');
+  assert.equal(update.checkId, 'P0.kitskew');
+  assert.match(update.reason, /^update \.claude\/scripts\/session-brief\.mjs — unmodified since kh-harness wrote it/);
+  assert.match(update.contents, /kh-harness 0\.2\.0/);
+});
+
+test('a file the user edited is reported as kept and never updated', () => {
+  const d = installedAt('0.2.0');
+  // What an older kit wrote, recorded as such, and then edited by the user.
+  const older = `#!/usr/bin/env node\n${versionStamp('0.1.9', 16, '//')}\nexport {};\n`;
+  writeFileSync(join(d, BRIEF_PATH), older);
+  const m = readManifest(d);
+  m.files.find(f => f.path === BRIEF_PATH).sha256 = sha(older);
+  writeManifest(d, m);
+  writeFileSync(join(d, BRIEF_PATH), older + '// my own tweak\n');
+
+  const ctx = detectedAt(d, '0.2.0');
+  const skew = kitskew(ctx.checks);
+  assert.equal(skew.state, 'declared', 'an edited file alone does not make the check absent');
+  assert.ok(skew.evidence.some(e => e.startsWith('kept: ') && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+  assert.equal(skew.proposal, null);
+  assert.equal(buildProposals(ctx).find(p => p.path === BRIEF_PATH), undefined);
+});
+
+test('a recorded file no generator produces any more is reported and left alone', () => {
+  const d = installedAt('0.2.0');
+  const retired = '.claude/scripts/retired.mjs';
+  const contents = `${versionStamp('0.1.9', 16, '//')}\nexport {};\n`;
+  writeFileSync(join(d, retired), contents);
+  const m = readManifest(d);
+  m.files.push({ path: retired, sha256: sha(contents), step: 16, writtenAt: 'then' });
+  writeManifest(d, m);
+
+  const ctx = detectedAt(d, '0.2.0');
+  const skew = kitskew(ctx.checks);
+  assert.equal(skew.state, 'declared');
+  assert.ok(skew.evidence.some(e => e.includes(retired)), JSON.stringify(skew.evidence));
+  assert.equal(buildProposals(ctx).find(p => p.path === retired), undefined);
+});
+
+test('P0.kitskew is n/a when there is no manifest', () => {
+  const d = root();
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app' }));
+  assert.equal(kitskew(detectedAt(d, '0.2.0').checks).state, 'n/a');
+});

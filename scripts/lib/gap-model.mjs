@@ -17,7 +17,8 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // one source of truth, so the check and the generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, SENSOR_MATCHER, GENERATORS } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, SENSOR_MATCHER, GENERATORS, kitSkew } from './propose.mjs';
+import { MANIFEST_PATH } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 
@@ -1005,6 +1006,29 @@ const CHECKS = [
     check: ({ harness, manifest, root }) => registeredHook(harness, 'SessionStart', BRIEF_PATH,
       'install scripts/session-brief.mjs and register a SessionStart hook', { manifest, root }),
   },
+  // Last, so the generators it runs are given every other check, as
+  // `buildProposals` gives them.
+  {
+    id: 'P0.kitskew', step: 2, phase: 0,
+    lookedFor: [`the files ${MANIFEST_PATH} records, against what this kit generates for them`],
+    check: ({ manifest, kitVersion, harness, root, stack, checks, files }) => {
+      if (!manifest?.files.length) return { state: 'n/a', evidence: [`${MANIFEST_PATH} records no installed file`] };
+      if (kitVersion === undefined || root === undefined) {
+        throw new TypeError('buildGaps: P0.kitskew needs `kitVersion` and `root` once the manifest records a file — without them every recorded file would be judged against a kit that was never named.');
+      }
+      const skew = kitSkew({ kitVersion, harness, root, stack, checks, files, manifest });
+      const evidence = [
+        skew.versions,
+        ...skew.updates.map(p => `out of date: ${p.path}`),
+        ...skew.kept.map(k => `kept: ${k.path} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
+        ...skew.unproduced.map(path => `left alone: ${path} (this kit no longer generates it for this repository)`),
+        ...(skew.current.length ? [`${skew.current.length} kit-owned file${skew.current.length === 1 ? '' : 's'} match what this kit generates`] : []),
+      ];
+      if (!skew.updates.length) return { state: 'declared', evidence };
+      const n = skew.updates.length;
+      return { state: 'absent', evidence, proposal: `update ${n} unmodified kit-owned file${n === 1 ? '' : 's'} to kit ${kitVersion}` };
+    },
+  },
 ];
 
 // Review Minor: `files` used to default to `[]`, on the claim that
@@ -1024,12 +1048,14 @@ const CHECKS = [
 // only ever uses it to read a yarn.lock's own header, falling back to the
 // honest plain form when it is not given — never the dangerous direction of
 // a false positive, so no caller is forced to supply it.
-export function buildGaps({ stack, harness, exposures, profile, git, files, root, manifest = null, checkDefs = CHECKS }) {
+export function buildGaps({ stack, harness, exposures, profile, git, files, root, manifest = null, kitVersion, checkDefs = CHECKS }) {
   if (files === undefined) {
     throw new TypeError('buildGaps: `files` is required — P1.bootstrap and P2.protected both decide a capability\'s reported state from it, and a silently-defaulted `[]` used to flip P2.protected to `n/a` for a caller that merely forgot to pass it.');
   }
   const applicable = new Set(profile.appliesToSteps());
-  return checkDefs.map(def => {
+  // Each check is given the checks evaluated before it.
+  const checks = [];
+  const gapFor = def => {
     if (!applicable.has(def.step)) {
       // The three-way split for P1.bootstrap (and, in principle, any future
       // check with the same shape):
@@ -1068,7 +1094,7 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
         decidable: true, question: null, proposal: null, via: null, advice: [] };
     }
-    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest });
+    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion, checks });
     // The second axis, enforced in the same place and for the same reason.
     // `absent` means two incompatible things: "I enumerated the complete space
     // and it is not there" (decidable — the bootstrap script, the deny rules,
@@ -1094,5 +1120,7 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
       proposal,
       via: proposal ? proposalVia(def) : null,
     };
-  });
+  };
+  for (const def of checkDefs) checks.push(gapFor(def));
+  return checks;
 }

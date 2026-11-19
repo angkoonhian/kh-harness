@@ -58,7 +58,7 @@ const profile = selectProfile(stack);
 // plus a direct file check when a gitignored `.claude/` makes it invisible
 // to the file scan (see registeredHook's own comment).
 const manifest = readManifest(root);
-const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest });
+const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion: KIT_VERSION });
 
 const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested });
 
