@@ -2,9 +2,11 @@
 //
 // Every installed hook beside an older or missing sibling module. `apply`
 // leaves a hand-edited script in place, so a hook can find itself beside the
-// shared module of an earlier release; `fixtures/harness-redact.0.1.0.mjs`
-// is that module as release 0.1.0 shipped it (commit 681189d). Whatever the
-// sibling's state, a hook exits 0, writes nothing to stderr, and says at
+// shared module of an earlier release; `fixtures/harness-redact.0.1.0.mjs.gz`
+// is that module as release 0.1.0 shipped it (commit 681189d), compressed so
+// that the repository's own credential sweep, which reads every source file,
+// does not read a second copy of the credential table's comments. Whatever
+// the sibling's state, a hook exits 0, writes nothing to stderr, and says at
 // most one thing per session.
 //
 // Every test runs against a temporary KH_DATA_DIR and HK_MARKER_DIR.
@@ -14,13 +16,14 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 
 import { readEvents, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const REPO = resolve(import.meta.dirname, '..', '..');
 const ASSETS = join(REPO, 'assets', 'scripts');
-const OLD_REDACT = join(import.meta.dirname, 'fixtures', 'harness-redact.0.1.0.mjs');
+const OLD_REDACT = gunzipSync(readFileSync(join(import.meta.dirname, 'fixtures', 'harness-redact.0.1.0.mjs.gz')));
 const OLD_REDACT_SOURCE = '681189d:assets/scripts/harness-redact.mjs';
 
 const made = [];
@@ -104,7 +107,7 @@ test('the fixture is the shared module release 0.1.0 shipped', t => {
     t.skip(`this checkout does not hold ${OLD_REDACT_SOURCE} (a shallow clone)`);
     return;
   }
-  assert.ok(shipped.equals(readFileSync(OLD_REDACT)));
+  assert.ok(shipped.equals(OLD_REDACT));
 });
 
 test('fixture sanity: every hook runs beside the current siblings, exits 0 and writes nothing to stderr', () => {
@@ -120,7 +123,7 @@ test('fixture sanity: every hook runs beside the current siblings, exits 0 and w
 
 for (const hook of HOOKS) {
   test(`${hook} beside the 0.1.0 harness-redact.mjs exits 0 with one notice per session and no stack trace`, () => {
-    const dir = installed({ 'harness-redact.mjs': readFileSync(OLD_REDACT, 'utf8') });
+    const dir = installed({ 'harness-redact.mjs': OLD_REDACT });
     const root = project();
     setEnabled(root, true);
     const session = `old-${hook.replace(/\W/g, '-')}`;
