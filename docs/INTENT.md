@@ -71,7 +71,9 @@ Mechanics live in `scripts/` and are unit-tested; judgement lives in
   `--yes` writes nothing. Shown by: `scripts/lib/lifecycle.test.mjs`,
   every stage 2.
 - Apply then uninstall leaves `git status` as it was, except for files the
-  user edited, which are listed. Shown by: `scripts/lib/lifecycle.test.mjs`
+  user edited and the two learned files while they hold a landed learning,
+  which are listed, and `detect`'s own report, which uninstall says it
+  leaves. Shown by: `scripts/lib/lifecycle.test.mjs`
   "apply then uninstall leaves git status clean".
 - The kit passes its own checks: its own credential sweep, its own intent
   document, its own rules registry. Shown by: the DOGFOOD tests in
