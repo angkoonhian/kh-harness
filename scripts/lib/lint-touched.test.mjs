@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, sep } from 'node:path';
 import { markerPath } from '../../assets/scripts/harness-redact.mjs';
+import { assertNoSurvivor, killRecorded, writeCanary } from './canary-fixtures.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 // Session markers go in a per-run directory that is removed afterwards, so
@@ -320,50 +321,18 @@ test('a lint script with a pipeline or a command substitution runs unmodified', 
 });
 
 test('ORPHAN CANARY: a timed-out lint run kills the whole process tree, not just the shell', async () => {
-  // Mirrors verify-touched.test.mjs's canary: a grandchild heartbeat that
-  // must stop advancing once the hook has returned. The teardown kills both
-  // pids itself, whatever the hook managed, so a regression here never
+  // Mirrors verify-touched.test.mjs's canary: nothing the timed-out command
+  // started may survive the hook. The teardown kills every pid the tree
+  // recorded itself, whatever the hook managed, so a regression here never
   // leaks a process on the machine running this suite.
   const d = repo('node canary.cjs');
-  const heartbeat = join(d, 'heartbeat.txt');
-  const pidsFile = join(d, 'pids.txt');
-  writeFileSync(
-    join(d, 'canary.cjs'),
-    [
-      "const { spawn } = require('child_process');",
-      `const heartbeatPath = ${JSON.stringify(heartbeat)};`,
-      `const pidsPath = ${JSON.stringify(pidsFile)};`,
-      "const grandchild = spawn(process.execPath, ['-e', 'let n=0; setInterval(() => { n++; require(\"fs\").writeFileSync(process.argv[1], String(n)); }, 50);', heartbeatPath], { stdio: 'ignore' });",
-      "require('fs').writeFileSync(pidsPath, process.pid + '\\n' + grandchild.pid + '\\n');",
-      "console.error('src/a.ts:1 launched canary');",
-      'setInterval(() => {}, 1000);',
-    ].join('\n'),
-  );
+  const { heartbeat, pidsFile } = writeCanary(d, 'src/a.ts:1 launched canary');
   try {
     const r = run(d, edit, { HK_LINT_TIMEOUT_MS: '300' });
     assert.equal(r.code, 0, 'a timeout is not a lint failure');
-    await new Promise(res => setTimeout(res, 400));
-    const afterKill = existsSync(heartbeat) ? readFileSync(heartbeat, 'utf8') : null;
-    assert.ok(afterKill !== null, 'sanity: the canary grandchild actually started');
-    await new Promise(res => setTimeout(res, 400));
-    assert.equal(readFileSync(heartbeat, 'utf8'), afterKill, 'the heartbeat must stop advancing — no grandchild survived the timeout kill');
+    await assertNoSurvivor(pidsFile, heartbeat);
   } finally {
-    // Only a positive integer may reach process.kill: the file ends in a
-    // newline, so the split yields a trailing '' and Number('') is 0 — and
-    // on POSIX kill(0) signals the CALLER's whole process group, i.e. the
-    // test runner. That SIGKILLed node --test on Linux (and left the
-    // grandchild holding CI's stdout pipe, so the job hung) while win32,
-    // which has no process groups, never noticed.
-    let pids = [];
-    try {
-      if (existsSync(pidsFile)) pids = readFileSync(pidsFile, 'utf8').split(/\s+/).map(Number).filter(n => Number.isInteger(n) && n > 0);
-    } catch { /* best-effort teardown */ }
-    for (const pid of pids) {
-      try {
-        if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
-        else process.kill(pid, 'SIGKILL');
-      } catch { /* already gone */ }
-    }
+    killRecorded(pidsFile);
   }
 });
 
