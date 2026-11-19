@@ -26,8 +26,9 @@ you are running.
 | 0 | 4 | prompt | [references/phase-0-recon.md](references/phase-0-recon.md) |
 | 1 | 5, 6, 7a, 7b | script, prompt, prompt, script | [references/phase-1-legible.md](references/phase-1-legible.md) |
 | 3 | 26, 27, 28 | prompt, script+prompt, script | [references/phase-3-intent.md](references/phase-3-intent.md) |
-| 2 | 8, 9, 10, 11, 12 | advise, script, script, script, advise | [references/phase-2-sensors.md](references/phase-2-sensors.md) |
+| 2 | 8, 9, 10, 11, 12, 13 | advise, script, script, script, advise, script | [references/phase-2-sensors.md](references/phase-2-sensors.md) |
 | 4 | 15, 16 | advise, script | [references/phase-4-continuity.md](references/phase-4-continuity.md) |
+| 5 | 29, 30, 31, 32 | script, script, script, advise | [references/phase-5-learning.md](references/phase-5-learning.md) |
 
 ## The gate rule
 

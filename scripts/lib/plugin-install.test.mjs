@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { APPLY_USAGE, DETECT_USAGE, LEARN_USAGE, LOG_USAGE, UNINSTALL_USAGE } from './cli.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
 const readme = () => readFileSync(join(ROOT, 'README.md'), 'utf8');
@@ -70,4 +71,56 @@ test('the plugin ships the skill and declares no hooks', () => {
     'the skill is found by convention; declaring the path adds a way to break validate');
   assert.ok(existsSync(join(ROOT, 'skills', 'harness-init', 'SKILL.md')),
     'convention-based discovery means this exact path is what makes the skill load');
+});
+
+/**
+ * The subcommand names a usage text lists under SUBCOMMANDS: each line
+ * indented by exactly two spaces, up to the first argument, flag or
+ * two-space gap.
+ */
+function subcommandsOf(usage) {
+  const block = usage.split('\nSUBCOMMANDS\n')[1].split(/\n(?=\S)/)[0];
+  return [...block.matchAll(/^ {2}(\S.*)$/gm)].map(m => {
+    const words = [];
+    for (const word of m[1].split(/\s{2,}/)[0].split(' ')) {
+      if (/^[<[-]/.test(word)) break;
+      words.push(word);
+    }
+    return words.join(' ');
+  });
+}
+
+const flagsOf = text => [...new Set(text.match(/--[a-z][a-z-]*[a-z]/g))];
+
+test('the README documents the log and learn commands and every flag in their usage text', () => {
+  const t = readme();
+  const commands = { log: subcommandsOf(LOG_USAGE), learn: subcommandsOf(LEARN_USAGE) };
+  assert.ok(commands.log.length >= 6 && commands.learn.length >= 14, 'the usage texts were read');
+  for (const [command, names] of Object.entries(commands)) {
+    for (const name of names) {
+      const synopsis = new RegExp(`node scripts/${command}\\.mjs +<path-to-repo> +${name.replace(/ /g, ' +')}(?![\\w-])`);
+      assert.ok(synopsis.test(t), `the README's ${command} synopsis lists \`${command} ${name}\``);
+    }
+  }
+  for (const flag of flagsOf([DETECT_USAGE, APPLY_USAGE, UNINSTALL_USAGE, LOG_USAGE, LEARN_USAGE].join('\n'))) {
+    assert.ok(new RegExp(`${flag}(?![a-z-])`).test(t), `the README names ${flag}`);
+  }
+});
+
+test('the README names all five commands', () => {
+  const t = readme();
+  for (const script of ['detect', 'apply', 'uninstall', 'log', 'learn']) {
+    assert.ok(existsSync(join(ROOT, 'scripts', `${script}.mjs`)), `scripts/${script}.mjs exists`);
+    assert.ok(new RegExp(`node scripts/${script}\\.mjs +<path-to-repo>`).test(t), `the README shows \`${script}\``);
+  }
+});
+
+test("the README's Limits section names the ledger, the local gate file, the deny rules and the terminal check", () => {
+  const t = readme();
+  const at = t.indexOf('\n## Limits\n');
+  assert.ok(at >= 0, 'the README has a Limits section');
+  const limits = t.slice(at + 1).split(/\n## /)[0];
+  for (const [re, what] of [[/ledger/, 'the ledger'], [/gates\.local\.json/, 'the local gate file'], [/deny\s+rules/, 'the deny rules'], [/terminal/, 'the terminal check'], [/not\s+isolation/, 'that these controls are not isolation']]) {
+    assert.ok(re.test(limits), `the Limits section names ${what}`);
+  }
 });

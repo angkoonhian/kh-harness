@@ -4,7 +4,7 @@
   kh-harness's own rules registry — the one it asks every repository to
   keep. Each rule names the mechanism that holds it. The kit's doctrine
   lives in its tests, so almost every rule here is `enforced-by: test` with
-  a pointer at the test file; the two that only a human can hold say so.
+  a pointer at the test file; the one that only a human can hold says so.
   `detect` on this repository reads this file and reports any pointer that
   stops resolving.
 -->
@@ -91,3 +91,39 @@
 - pointer: scripts/lib/propose.test.mjs
 - verify: node --test scripts/lib/propose.test.mjs
 - last-verified: 2026-11-02
+
+## R11 — A learned enforcer is data, never code
+
+- why: a gate is JSON read by one kit hook that builds no RegExp from it and spawns nothing, so it can be validated, replayed and reviewed; model-written code could do anything
+- enforced-by: test
+- pointer: scripts/lib/harness-gates.test.mjs
+- verify: node --test scripts/lib/harness-gates.test.mjs scripts/lib/tool-gate.test.mjs scripts/lib/learn-lib.test.mjs
+- priority: high
+- last-verified: 2026-11-19
+
+## R12 — The log never stores an agent claim as an observed event
+
+- why: the loop learns only from what hooks observed; the agent's own account of its work (its last message, a compaction summary) is a claim, and a claim stored as an event would be learned from as fact
+- enforced-by: test
+- pointer: scripts/lib/session-log.test.mjs
+- verify: node --test scripts/lib/session-log.test.mjs
+- priority: high
+- last-verified: 2026-11-19
+
+## R13 — No learning is promoted without a terminal-typed approval or a recorded policy hash, and none is landed without a person at a terminal
+
+- why: a gate that warns or blocks changes what the agent may do; only a hash approved at an interactive terminal outside Claude Code, or a policy whose hash the owner recorded in the ledger there, moves one past observe, and only a person at a terminal puts one into the repository
+- enforced-by: test
+- pointer: scripts/lib/learn-promote.test.mjs
+- verify: node --test scripts/lib/learn-promote.test.mjs scripts/lib/learn-land.test.mjs scripts/lib/tty.test.mjs scripts/lib/learn-cli.test.mjs
+- priority: high
+- last-verified: 2026-11-19
+
+## R14 — Unattended, the loop writes nothing inside the repository and never alters a rule it did not learn
+
+- why: the hooks, `learn tick`, draft and replay write only to this machine's data directory and the temp marker directory; they act only on learnings the ledger records, never on RULES.md or the kit's base hooks, and a local gate entry the ledger does not vouch for is removed as forged
+- enforced-by: test
+- pointer: scripts/lib/learn-promote.test.mjs
+- verify: node --test scripts/lib/learn-promote.test.mjs scripts/lib/learn-lib.test.mjs scripts/lib/session-log.test.mjs
+- priority: high
+- last-verified: 2026-11-19
