@@ -22,7 +22,6 @@ import {
   repo, storedLearning, trialRepo, useId, withoutProseHashes, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { landLearning, revertLearning } from './learn-land.mjs';
-import { approvedActions } from './learned-registry.mjs';
 import { listLearnings, proseSha256Of, refused, runTrial } from './learn-lib.mjs';
 import { approveLearning, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './learn-promote.mjs';
 import { appendLedger, readLedger } from './ledger.mjs';
@@ -35,6 +34,7 @@ import { requireInteractive, TERMINAL_CHECK } from './tty.mjs';
 const AT_TERMINAL = requireInteractive({ stdin: { isTTY: true }, stdout: { isTTY: true }, env: {} });
 const NOT_AT_TERMINAL = requireInteractive({ stdin: { isTTY: true }, stdout: { isTTY: true }, env: { CLAUDECODE: '1' } });
 const HOOK = join(import.meta.dirname, '..', '..', 'assets', 'scripts', 'tool-gate.mjs');
+const RULES_BRIEF = join(import.meta.dirname, '..', '..', 'assets', 'scripts', 'rules-brief.mjs');
 const YES = { yes: true, interactive: AT_TERMINAL };
 
 /** What a land or a revert reports having done, without the proposals it
@@ -73,6 +73,8 @@ function hookOn(root, command) {
 const blocks = (root, command = MISTAKE) => hookOn(root, command)?.hookSpecificOutput?.permissionDecision === 'deny';
 
 const text = (root, rel) => readFileSync(join(root, rel), 'utf8');
+/** Each rule's id and the action its entry records its gate as approved at. */
+const actionsIn = registry => parseRules(registry).rules.map(r => [r.id, r.approvedAction]);
 const committedFile = root => JSON.parse(text(root, GATES_PATH));
 const manifest = root => readManifestResult(root).manifest;
 const statusOf = (root, id = 'L1') => listLearnings(root).learnings.find(l => l.id === id)?.status;
@@ -178,7 +180,7 @@ test('landing puts the gate in the repository at its approved action and takes i
   assert.match(registry, /a hand edit makes kh-harness stop updating it/);
   const [rule] = parseRules(registry).rules;
   assert.deepEqual([rule.id, rule.origin, rule.enforcedBy, rule.pointer, rule.approvedSha256], ['L1', 'learned', 'hook', GATES_PATH, gateSha256(gate)]);
-  assert.deepEqual([...approvedActions(registry)], [['L1', 'block']], 'the entry names the action approved, which the hash leaves out');
+  assert.deepEqual(actionsIn(registry), [['L1', 'block']], 'the entry names the action approved, which the hash leaves out');
   assert.equal(existsSync(join(root, RULES_PATH)), false, 'the owner\'s registry is never written');
 
   assert.deepEqual(localGates(root).gates, [], 'the committed gate is in force, so the local one goes');
@@ -297,6 +299,19 @@ test('landing a learning drafted before the ledger kept a hash of its text recor
   assert.deepEqual(listLearnings(root).ledgerMismatch, ['L1']);
 });
 
+test('the prompt hook re-tells a landed rule whose gate warns and not one whose gate blocks, from the entries land wrote', () => {
+  const { root } = activeRepo();
+  addReadLearning(root);
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  assert.equal(landLearning(root, 'L2', YES).ok, true);
+  assert.deepEqual(actionsIn(text(root, LEARNED_PATH)), [['L1', 'block'], ['L2', 'warn']], 'fixture: one landed at each action');
+
+  const out = execFileSync(process.execPath, [RULES_BRIEF], { cwd: root, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root } });
+  const told = JSON.parse(out).hookSpecificOutput.additionalContext.split('\n').filter(l => l.startsWith('- '));
+  assert.equal(told.length, 1, out);
+  assert.match(told[0], /^- L2: .* \[enforced-by: hook\]$/, 'the warned rule can still be broken, so it is told');
+});
+
 /** Rewrites L1's registry entry as a kit that named no approved action
  * wrote it, with the manifest recording the file so, and commits. */
 function asLandedByAnOlderKit(root) {
@@ -322,7 +337,7 @@ test('an entry landed before entries named their action is reported as not appro
   assert.equal(landLearning(root, 'L2', YES).ok, true);
   const both = text(root, LEARNED_PATH);
   assert.ok(both.startsWith(older), 'landing L2 leaves every byte that was there, L1\'s entry among them');
-  assert.deepEqual([...approvedActions(both)], [['L1', null], ['L2', 'warn']]);
+  assert.deepEqual(actionsIn(both), [['L1', null], ['L2', 'warn']]);
   assert.deepEqual(integrityEvidence(root, manifest(root)).problems, [notForItsAction], 'L2 is approved for its action; L1 is still named');
   commitAll(root);
 
@@ -330,7 +345,7 @@ test('an entry landed before entries named their action is reported as not appro
   assert.equal(reverted.ok, true, reverted.error);
   assert.deepEqual(parseRules(text(root, LEARNED_PATH)).rules.map(r => r.id), ['L2']);
   assert.equal(landLearning(root, 'L1', YES).ok, true);
-  assert.deepEqual([...approvedActions(text(root, LEARNED_PATH))].sort(), [['L1', 'block'], ['L2', 'warn']]);
+  assert.deepEqual(actionsIn(text(root, LEARNED_PATH)).sort(), [['L1', 'block'], ['L2', 'warn']]);
   assert.deepEqual(integrityEvidence(root, manifest(root)).problems, []);
 });
 

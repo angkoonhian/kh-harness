@@ -170,6 +170,7 @@ const LEARNED = [
   '- status: active',
   '- evidence: signature 3f9a0c2e7b14d856, seen in 3 sessions from 2026-11-01 to 2026-11-18',
   `- approved-sha256: ${'ab'.repeat(32)}`,
+  '- approved-action: block',
   '## L2 — Keep the money test green',
   '- enforced-by: test',
   '- pointer: tests/money.test.mjs',
@@ -195,7 +196,15 @@ test('detect counts learned rules separately from the owner\'s', () => {
     path: LEARNED_PATH, count: 2, superseded: 1,
     byEnforcer: { hook: 1, test: 1 }, unenforced: [], missingPointers: [], problems: [],
   });
-  assert.equal(ev.injectable, 3, 'two owner\'s rules and the one learned rule no gate enforces');
+  assert.equal(ev.injectable, 3, 'two owner\'s rules and the one learned rule no gate blocks');
+});
+
+test('a learned rule whose gate warns, or whose entry records no action, is counted as injected', () => {
+  const d = repo();
+  write(d, LEARNED_PATH, LEARNED.replace('- approved-action: block', '- approved-action: warn'));
+  assert.equal(rulesRegistryEvidence(d, bare).injectable, 2);
+  write(d, LEARNED_PATH, LEARNED.replace('- approved-action: block\n', ''));
+  assert.equal(rulesRegistryEvidence(d, bare).injectable, 2);
 });
 
 test('a learned entry whose pointer does not resolve is reported the way an owner\'s is', () => {

@@ -28,9 +28,9 @@
 // An entry approves a gate twice over: `approved-sha256` is the hash of the
 // gate's content, which leaves its action out, and `approved-action` is the
 // action it was approved at, `warn` or `block`. The prompt hook reads the
-// second to tell a rule its gate blocks from one it only warns about. An
-// entry written before the kit recorded the action has no such line, and
-// `approvedActions` reads it as approving none.
+// second, as `parseRules` gives it (`approvedAction`), to tell a rule its
+// gate blocks from one it only warns about. An entry written before the kit
+// recorded the action has no such line, and reads as approving none.
 //
 // A new file starts from `assets/templates/LEARNED.md.tmpl`, rendered with
 // the kit's version as `kitVersion`.
@@ -56,11 +56,6 @@ export const WHY_MAX = 300;
 
 /** The actions an entry may record its gate as approved at. */
 export const APPROVED_ACTIONS = Object.freeze(['warn', 'block']);
-
-// A key line as `parseRules` reads one, and the `approved-action` key as it
-// compares keys: lowercased, with every `-` and `_` removed.
-const KEY_LINE = /^\s*[-*]\s*([A-Za-z][\w-]*)\s*:\s*(.*)$/;
-const ACTION_KEY = 'approvedaction';
 
 /**
  * Untrusted prose as the one line the registry writes: invisible and
@@ -155,35 +150,6 @@ export function renderLearnedEntry(entry) {
 }
 
 /**
- * The action each rule in registry `text` records its gate as approved at,
- * by rule id: `warn`, `block`, or null for a rule with no `approved-action`
- * line or one that names anything else. Read as `parseRules` reads a key:
- * from the parser's own lines, inside the section of the first heading with
- * the id, the last such line winning.
- */
-export function approvedActions(text) {
-  const actions = new Map();
-  const seen = new Set();
-  let current = null;
-  for (const line of registryLines(text)) {
-    if (ANY_H2.test(line)) {
-      const id = RULE_HEADING.exec(line)?.[1];
-      current = id === undefined || seen.has(id) ? null : id;
-      if (current !== null) {
-        seen.add(current);
-        actions.set(current, null);
-      }
-      continue;
-    }
-    const key = current === null ? null : KEY_LINE.exec(line);
-    if (key === null || key[1].toLowerCase().replace(/[-_]/g, '') !== ACTION_KEY) continue;
-    const value = key[2].trim().toLowerCase();
-    actions.set(current, APPROVED_ACTIONS.includes(value) ? value : null);
-  }
-  return actions;
-}
-
-/**
  * The `[start, end)` offsets in `text` of the section `parseRules` reads as
  * the rule `id`: from its heading's line to the next level-2 heading's line
  * or the end of the text. The first heading with the id wins, as in the
@@ -211,22 +177,18 @@ const reading = ({ line: _line, ...rule }) => JSON.stringify(rule);
 const headingsFor = (text, id) => registryLines(text).filter(l => RULE_HEADING.exec(l)?.[1] === id).length;
 
 /**
- * `{ text: after }` when `after` reads, to the parser and to
- * `approvedActions`, exactly as `before` does in every rule but `id`, and as
- * `expected` in rule `id`: the rendered entry read alone, with its approved
- * action, under the one heading with that id, or no rule and no heading
- * with that id when `expected` is null. Otherwise an error, and nothing
- * changes.
+ * `{ text: after }` when `after` reads, to the parser, exactly as `before`
+ * does in every rule but `id`, and as `expected` in rule `id`: the rendered
+ * entry read alone, its approved action included, under the one heading
+ * with that id, or no rule and no heading with that id when `expected` is
+ * null. Otherwise an error, and nothing changes.
  */
 function guarded(before, after, id, expected) {
-  const others = text => {
-    const actions = approvedActions(text);
-    return parseRules(text).rules.filter(r => r.id !== id).map(r => `${reading(r)} ${actions.get(r.id)}`).join('\n');
-  };
+  const others = text => parseRules(text).rules.filter(r => r.id !== id).map(reading).join('\n');
   const own = parseRules(after).rules.find(r => r.id === id);
   const ok = others(after) === others(before)
     && headingsFor(after, id) === (expected === null ? 0 : 1)
-    && (expected === null ? own === undefined : own !== undefined && `${reading(own)} ${approvedActions(after).get(id)}` === expected);
+    && (expected === null ? own === undefined : own !== undefined && reading(own) === expected);
   const verb = expected === null ? 'removed' : 'rendered';
   return ok
     ? { text: after }
@@ -245,7 +207,7 @@ export function upsertLearnedEntry(text, entry) {
   if (rendered.error) return rendered;
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const section = rendered.text.replace(/\n/g, eol);
-  const expected = `${reading(parseRules(rendered.text).rules[0])} ${approvedActions(rendered.text).get(entry.id)}`;
+  const expected = reading(parseRules(rendered.text).rules[0]);
   const at = sectionOf(text, entry.id);
   if (at === null) {
     const base = text === '' || text.endsWith('\n') ? text : text + eol;

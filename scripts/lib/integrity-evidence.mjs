@@ -22,7 +22,6 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { approvedActions } from './learned-registry.mjs';
 import { classify, MANIFEST_PATH } from './manifest.mjs';
 import { GATE_ID, gateSha256, parseGates } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
@@ -142,8 +141,7 @@ function registryEntries(root, problems) {
     problems.push(`${LEARNED_PATH} exists but could not be read`);
     return null;
   }
-  const actions = approvedActions(read.text);
-  return parseRules(read.text).rules.map(rule => ({ ...rule, approvedAction: actions.get(rule.id) ?? null }));
+  return parseRules(read.text).rules;
 }
 
 /** Pushes a line for each gate no entry approves as it stands: its hash

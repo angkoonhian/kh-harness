@@ -712,7 +712,7 @@ const CHECKS = [
     // the gate carries it.
     //
     // What there is to inject is `injectable`: the owner's rules and the
-    // learned rules no gate holds, as the hook selects them.
+    // learned rules no blocking gate holds, as the hook selects them.
     check: ({ harness, manifest, root, heldScript }) => {
       const reg = harness.rulesRegistry ?? null;
       if (!reg || (reg.path === null && reg.injectable === 0)) return { state: 'absent', decidable: false, evidence: [`no ${RULES_PATH} yet — nothing to inject`] };

@@ -702,8 +702,8 @@ export function parseRules(text) {
       else problems.push(`${current.id}: last-verified is not a YYYY-MM-DD date — recorded as unknown`);
     } else if (field === 'approvedAction') {
       const v = value.toLowerCase();
-      if (APPROVED_ACTIONS.includes(v)) current.approvedAction = v;
-      else problems.push(`${current.id}: approved-action is not ${APPROVED_ACTIONS.slice(0, -1).join(', ')} or ${APPROVED_ACTIONS.at(-1)} — recorded as unknown`);
+      current.approvedAction = APPROVED_ACTIONS.includes(v) ? v : null;
+      if (current.approvedAction === null) problems.push(`${current.id}: approved-action is not ${APPROVED_ACTIONS.slice(0, -1).join(', ')} or ${APPROVED_ACTIONS.at(-1)} — recorded as unknown`);
     } else {
       current[field] = value.length ? value : null;
     }

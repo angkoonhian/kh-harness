@@ -204,6 +204,18 @@ test('approved-action is observe, warn or block, or null when absent or anything
   const odd = parseRules('## L1 — r\n- enforced-by: hook\n- approved-action: deny everything\n');
   assert.equal(odd.rules[0].approvedAction, null);
   assert.deepEqual(odd.problems, ['L1: approved-action is not observe, warn or block — recorded as unknown']);
+  const replaced = parseRules('## L1 — r\n- enforced-by: hook\n- approved-action: block\n- approved-action: deny everything\n');
+  assert.equal(replaced.rules[0].approvedAction, null, 'the last line wins, so an entry is not read as blocking from a line a later one replaced');
+  assert.equal(parseRules('## L1 — r\n- enforced-by: hook\n- approved-action: warn\n- approved-action: block\n').rules[0].approvedAction, 'block');
+  const several = parseRules([
+    '## L1 — r', '- enforced-by: hook', '* Approved_Action :  WARN  ',
+    '## L2 — r', '- enforced-by: hook', '<!-- - approved-action: block -->',
+    '## L1 — again', '- approved-action: block',
+    '## 9 lives, which is no rule heading', '- approved-action: block',
+    '',
+  ].join('\n'));
+  assert.deepEqual(several.rules.map(r => [r.id, r.approvedAction]), [['L1', 'warn'], ['L2', null]],
+    'a line in a comment, under a second heading with the id, or under no rule heading names no action');
 });
 
 test('a learned rule is held by a blocking gate only when its entry says a hook enforces it and the approved action is block', () => {

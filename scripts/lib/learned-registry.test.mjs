@@ -13,7 +13,7 @@ import { LEARNED_PATH, parseRules } from '../../assets/scripts/harness-redact.mj
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 import { render, STAMP_MARKER } from './render.mjs';
 import * as learnedRegistry from './learned-registry.mjs';
-import { approvedActions, registryLine, removeLearnedEntry, renderLearnedEntry, TITLE_MAX, upsertLearnedEntry, WHY_MAX } from './learned-registry.mjs';
+import { registryLine, removeLearnedEntry, renderLearnedEntry, TITLE_MAX, upsertLearnedEntry, WHY_MAX } from './learned-registry.mjs';
 
 const cp = n => String.fromCodePoint(n);
 
@@ -21,6 +21,8 @@ const TEMPLATE = readFileSync(resolve(import.meta.dirname, '..', '..', 'assets',
 const head = () => render(TEMPLATE, { kitVersion: '0.0.0-test' });
 
 const SHA = 'ab'.repeat(32);
+/** Each rule's id and the action its entry records its gate as approved at. */
+const actionsIn = registry => parseRules(registry).rules.map(r => [r.id, r.approvedAction]);
 const entry = (overrides = {}) => ({
   id: 'L1',
   title: 'Run the test suite with npm test, not node --test directly',
@@ -81,36 +83,15 @@ test('an entry round-trips through render and parseRules', () => {
   assert.equal(r.status, 'active');
   assert.equal(r.evidence, 'signature 3f9a0c2e7b14d856, seen in 3 sessions from 2026-11-01 to 2026-11-18');
   assert.equal(r.approvedSha256, SHA);
-  assert.deepEqual([...approvedActions(text(upsertLearnedEntry(head(), entry())))], [['L1', 'warn']]);
-});
-
-test('approvedActions reads the action each entry records, as the parser reads a key line', () => {
-  const section = (id, ...lines) => [`## ${id} — a rule`, '- enforced-by: hook', ...lines, ''].join('\n');
-  const t = [
-    head(),
-    section('L1', '- approved-action: block'),
-    section('L2', `- approved-sha256: ${SHA}`),
-    section('L3', '* Approved_Action :  WARN  '),
-    section('L4', '- approved-action: observe'),
-    section('L5', '- approved-action: warn', '- approved-action: block'),
-    section('L6', '<!-- - approved-action: block -->'),
-    section('L1', '- approved-action: warn'),
-    '## 9 lives, which is no rule heading',
-    '- approved-action: block',
-  ].join('\n');
-  assert.deepEqual([...approvedActions(t)], [
-    ['L1', 'block'], ['L2', null], ['L3', 'warn'], ['L4', null], ['L5', 'block'], ['L6', null],
-  ], 'the first heading with an id is the rule; the last key line wins; anything but warn or block is no action');
-  assert.deepEqual([...approvedActions(t).keys()], parseRules(t).rules.map(r => r.id), 'exactly the rules the parser reads');
-  assert.deepEqual([...approvedActions(head())], []);
+  assert.deepEqual(actionsIn(text(upsertLearnedEntry(head(), entry()))), [['L1', 'warn']]);
 });
 
 test('landing another learning leaves an entry written before entries named their action byte-identical, and still naming none', () => {
   const old = text(upsertLearnedEntry(head(), entry({ approvedAction: undefined })));
-  assert.equal(approvedActions(old).get('L1'), null);
+  assert.equal(parseRules(old).rules[0].approvedAction, null);
   const both = text(upsertLearnedEntry(old, entry({ id: 'L2', title: 'Second', approvedAction: 'block' })));
   assert.ok(both.startsWith(old), 'the older entry is not rewritten');
-  assert.deepEqual([...approvedActions(both)], [['L1', null], ['L2', 'block']]);
+  assert.deepEqual(actionsIn(both), [['L1', null], ['L2', 'block']]);
   const without = removeLearnedEntry(both, 'L2');
   assert.equal(without.text, old + '\n');
 });
@@ -281,7 +262,7 @@ test('a title and a why carrying line and paragraph separators, next-line, a no-
   assert.equal(rules[0].approvedSha256, SHA, 'the why\'s forged key is text on the why line, not a key');
   for (const s of SEPARATORS) assert.equal(r.includes(s), false, `U+${s.codePointAt(0).toString(16)}`);
   assert.equal(r.split('\n').length, 10, 'nine lines and the final newline, nothing more');
-  assert.equal(approvedActions(r).get('L1'), 'warn');
+  assert.equal(parseRules(r).rules[0].approvedAction, 'warn');
 });
 
 const hostileFile = () => {
@@ -333,7 +314,7 @@ test('for every hostile title or why, the rendered entry parses to exactly one r
           assert.equal(rules[0].id, 'L3', where);
           assert.equal(rules[0].approvedSha256, SHA, where);
           assert.equal(rules[0].status, 'active', where);
-          assert.deepEqual([...approvedActions(r.text)], [['L3', 'warn']], where);
+          assert.deepEqual(actionsIn(r.text), [['L3', 'warn']], where);
           checked++;
         }
       }
@@ -412,8 +393,7 @@ test('the module imports no file-writing function and none of its exports takes 
     return s.slice(s.indexOf('(') + 1, s.indexOf(')')).split(',').map(p => p.trim());
   };
   assert.deepEqual(Object.keys(learnedRegistry).sort(),
-    ['APPROVED_ACTIONS', 'SIGNATURE', 'TITLE_MAX', 'WHY_MAX', 'approvedActions', 'registryLine', 'removeLearnedEntry', 'renderLearnedEntry', 'upsertLearnedEntry']);
-  assert.deepEqual(params(learnedRegistry.approvedActions), ['text']);
+    ['APPROVED_ACTIONS', 'SIGNATURE', 'TITLE_MAX', 'WHY_MAX', 'registryLine', 'removeLearnedEntry', 'renderLearnedEntry', 'upsertLearnedEntry']);
   assert.deepEqual(params(learnedRegistry.registryLine), ['raw']);
   assert.deepEqual(params(learnedRegistry.renderLearnedEntry), ['entry']);
   assert.deepEqual(params(learnedRegistry.upsertLearnedEntry), ['text', 'entry']);

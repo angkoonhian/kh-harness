@@ -326,8 +326,9 @@ test('a warned learned rule shares the byte bound with every other rule', () => 
 test('detect\'s injectable count is the number of rules the hook injects', () => {
   const d = repo();
   registry(d, TWO_RULES + '## R3 — old\n- enforced-by: none\n- status: superseded\n');
-  registry(d, LEARNED, LEARNED_PATH);
+  registry(d, LEARNED + '## L4 — a learned rule the gate only warns about\n- enforced-by: hook\n- approved-action: warn\n', LEARNED_PATH);
   const lines = injected(run(d)).split('\n').filter(l => l.startsWith('- '));
+  assert.deepEqual(lines.map(l => l.slice(2, 4)), ['R1', 'R2', 'L2', 'L4'], 'the blocked L1 is left out and the warned L4 is told');
   assert.equal(rulesRegistryEvidence(d, { claudeDir: {} }).injectable, lines.length);
 });
 

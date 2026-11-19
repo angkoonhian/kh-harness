@@ -28,7 +28,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readIfPresent } from './scan.mjs';
-import { parseRules, findLearned, findRules } from '../../assets/scripts/harness-redact.mjs';
+import { findLearned, findRules, heldByBlockingGate, parseRules } from '../../assets/scripts/harness-redact.mjs';
 import { runsKitScript } from './hook-evidence.mjs';
 import { SESSION_LOG_PATH, toolGateDenyRules } from './propose.mjs';
 
@@ -118,7 +118,7 @@ function fileEvidence(root, harness, rel) {
  * `missingPointers` is `[{ id, pointer }]` — `pointer: null` when an
  * enforcer other than none/review was declared with no pointer at all.
  * `injectable` counts every active owner's rule and every active learned
- * rule whose enforcer is not `hook`, since a gate already holds those.
+ * rule but those `heldByBlockingGate`, the test the rules brief applies.
  */
 export function rulesRegistryEvidence(root, harness) {
   const owner = fileEvidence(root, harness, findRules(root));
@@ -128,7 +128,7 @@ export function rulesRegistryEvidence(root, harness) {
   return {
     ...ownerEvidence,
     learned: learned?.evidence ?? null,
-    injectable: ownerEvidence.count + (learned?.active.filter(r => r.enforcedBy !== 'hook').length ?? 0),
+    injectable: ownerEvidence.count + (learned?.active.filter(r => !heldByBlockingGate(r)).length ?? 0),
   };
 }
 
