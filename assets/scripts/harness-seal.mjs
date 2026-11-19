@@ -8,10 +8,15 @@
 // `s-<id>.jsonl.gz.tmp`, appends the index line naming that content's hash,
 // removes the claimed file and renames the temporary file into place.
 // `readEvents` reads neither the claimed nor the temporary file, so no state
-// shows an event twice, and a temporary file whose content matches the
-// session's latest index line is the record that the steps after the index
+// shows an event twice. A temporary file whose content matches the
+// session's latest index line, beside a sealed file that is absent or
+// matches the line before, is the record that the steps after the index
 // append still have to be done. A crash in the middle of an index append
 // leaves a torn line, which `verifyIndex` reports as a break.
+//
+// Every index append and every step that removes or replaces a file first
+// confirms the index lock is still this run's, so a run that was suspended
+// while its lock was broken stops instead of writing beside the new holder.
 //
 // Two windows are left open. A hook that opened the plain file just before
 // it was claimed and writes just after the sealer read it loses that line.
@@ -42,28 +47,64 @@ export const SEAL_TEMP_SUFFIX = '.gz.tmp';
  * neither claimed from under it nor sealed again on every session start. */
 export const SEAL_IDLE_MS = 10 * 60_000;
 
+const IDENTITY = ['type', 'session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
+const TOOL_CALL = ['tool', 'inputHash', 'inputBytes'];
+const TOOL_RESULT = [...TOOL_CALL, 'status', 'outputBytes', 'durationMs'];
+
+const frozenByType = entries => Object.freeze(Object.fromEntries(Object.entries(entries).map(([type, fields]) => [type, Object.freeze(fields)])));
+
+/**
+ * Every field, by event type, that the hook writes and retention keeps: an
+ * identifier, a path, a name from a fixed set, a hash, a size, a time, a
+ * flag or a failure's first error line. The first error line is masked and
+ * cut to 300 characters when written, and with the tool and the input hash
+ * it is a failure's signature, which recurrence detection and replay need
+ * for as long as structure is kept. The writer's own `schema`, `ts` and
+ * `pid` are kept on every event.
+ */
+export const KEPT_FIELDS = frozenByType({
+  SessionStart: [...IDENTITY, 'source', 'transcriptPath'],
+  UserPromptSubmit: IDENTITY,
+  PreToolUse: [...IDENTITY, ...TOOL_CALL],
+  PermissionRequest: [...IDENTITY, ...TOOL_CALL],
+  PermissionDenied: [...IDENTITY, ...TOOL_CALL],
+  PostToolUse: [...IDENTITY, ...TOOL_RESULT],
+  PostToolUseFailure: [...IDENTITY, ...TOOL_RESULT, 'firstErrorLine'],
+  SubagentStart: [...IDENTITY, 'agentType'],
+  SubagentStop: [...IDENTITY, 'agentType', 'stopHookActive'],
+  Stop: [...IDENTITY, 'stopHookActive'],
+  StopFailure: IDENTITY,
+  InstructionsLoaded: [...IDENTITY, 'path', 'reason', 'memoryType'],
+  PreCompact: [...IDENTITY, 'trigger'],
+  PostCompact: [...IDENTITY, 'trigger'],
+  PostModelSwitch: [...IDENTITY, 'fromModel', 'toModel', 'source'],
+  SessionEnd: [...IDENTITY, 'reason'],
+  harness: [...IDENTITY, 'base', 'learned', 'kitVersion', 'model'],
+  external_content: [...IDENTITY, 'tool'],
+});
+
 /**
  * The fields, by event type, that carry a payload body rather than
- * structure: what retention removes. Every other field the hook writes is
- * an identifier, a path, a name from a fixed set, a hash, a size, a time, a
- * flag or a failure's first error line, and is kept. The first error line
- * is masked and cut to 300 characters when written, and with the tool and
- * the input hash it is a failure's signature, which recurrence detection
- * and replay need for as long as structure is kept.
+ * structure: what retention removes. A type `KEPT_FIELDS` does not name
+ * loses `UNKNOWN_TYPE_CONTENT`, so an event the classification has not
+ * decided on fails closed.
  */
-export const CONTENT_FIELDS = Object.freeze({
-  UserPromptSubmit: Object.freeze(['prompt']),
-  PermissionDenied: Object.freeze(['reason']),
-  PostToolUse: Object.freeze(['input', 'output']),
-  PostToolUseFailure: Object.freeze(['input', 'output']),
-  StopFailure: Object.freeze(['error', 'errorDetails']),
+export const CONTENT_FIELDS = frozenByType({
+  UserPromptSubmit: ['prompt'],
+  PermissionDenied: ['reason'],
+  PostToolUse: ['input', 'output'],
+  PostToolUseFailure: ['input', 'output'],
+  StopFailure: ['error', 'errorDetails'],
 });
+
+const UNKNOWN_TYPE_CONTENT = Object.freeze(['input', 'output', 'prompt']);
 
 const sha256Hex = data => createHash('sha256').update(data).digest('hex');
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 const INDEX_FILE = 'index.jsonl';
 const LOCK_FILE = 'index.jsonl.lock';
+const VERIFIED_FILE = 'verified.json';
 const DAY_MS = 86_400_000;
 const NEWLINE = 0x0a;
 
@@ -120,10 +161,21 @@ function splitLines(buf) {
 
 const indexPath = root => join(repoDataDir(root), INDEX_FILE);
 
+/** Records `record`, whose line hashes to `lineHash`, as its session's
+ * latest, keeping the one it replaces as the previous. */
+function recordLatest(index, record, lineHash) {
+  const replaced = index.latest.get(record.sessionId);
+  if (replaced === undefined) index.previous.delete(record.sessionId);
+  else index.previous.set(record.sessionId, replaced);
+  index.latest.set(record.sessionId, record);
+  index.latestLine.set(record.sessionId, lineHash);
+}
+
 /**
  * The index's lines, each with its bytes and its record (null for a line
- * that is not one), the latest record per session, and whether the last
- * line lacks its newline. Null when the index exists but cannot be read.
+ * that is not one); per session the latest record, the SHA-256 of its line
+ * and the record before it; and whether the last line lacks its newline.
+ * Null when the index exists but cannot be read.
  */
 function readIndex(root) {
   let buf;
@@ -137,23 +189,25 @@ function readIndex(root) {
     const record = parsedObject(bytes.toString('utf8'));
     return { bytes, record: isIndexRecord(record) ? record : null };
   });
-  const latest = new Map();
-  for (const { record } of lines) if (record !== null) latest.set(record.sessionId, record);
-  return { lines, latest, torn: buf.length > 0 && buf.at(-1) !== NEWLINE, appendFailed: false };
+  const index = { lines, latest: new Map(), latestLine: new Map(), previous: new Map(), torn: buf.length > 0 && buf.at(-1) !== NEWLINE, appendFailed: false };
+  for (const { bytes, record } of lines) if (record !== null) recordLatest(index, record, sha256Hex(bytes));
+  return index;
 }
 
 /** Appends `record` to the index chained to the last line, and records it as
  * its session's latest. A failed append sets `appendFailed`, since a line
  * may have been torn and the in-memory chain is then no longer the file's. */
-function appendIndexLine(root, index, record) {
+function appendIndexLine(root, index, record, held) {
   const full = { ...record, prev: index.lines.length === 0 ? null : sha256Hex(index.lines.at(-1).bytes) };
   const line = canonicalJson(full);
+  held();
   index.appendFailed = true;
   appendFileSync(indexPath(root), `${index.torn ? '\n' : ''}${line}\n`, { encoding: 'utf8', mode: 0o600 });
   index.appendFailed = false;
   index.torn = false;
-  index.lines.push({ bytes: Buffer.from(line, 'utf8'), record: full });
-  index.latest.set(record.sessionId, full);
+  const bytes = Buffer.from(line, 'utf8');
+  index.lines.push({ bytes, record: full });
+  recordLatest(index, full, sha256Hex(bytes));
 }
 
 /** Each session found in the sessions directory, by id in sorted order, with
@@ -179,19 +233,43 @@ const sessionFile = (root, sessionId, kind) => `${join(repoDataDir(root), SESSIO
 
 /** The uncompressed bytes of a gzip file, or null when it is absent; any
  * other failure, a file that is not gzip included, throws. */
-function readCompressed(path) {
+function readCompressed(path, gunzip = gunzipSync) {
+  let bytes;
   try {
-    return gunzipSync(readFileSync(path));
+    bytes = readFileSync(path);
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
     throw error;
   }
+  return gunzip(bytes);
 }
+
+/** Whether `bytes` is the content `record` names. */
+const matchesRecord = (bytes, record) => bytes !== null && record !== undefined && sha256Hex(bytes) === record.sha256;
 
 /** Whether `bytes` (null for no sealed file) is what the session's latest
  * index line names. */
-const matchesIndex = (bytes, latest) =>
-  latest === undefined ? bytes === null : bytes !== null && sha256Hex(bytes) === latest.sha256;
+const matchesIndex = (bytes, latest) => (latest === undefined ? bytes === null : matchesRecord(bytes, latest));
+
+/** Whether the session's temporary file holds what its latest index line
+ * names; false when either is absent or the file cannot be read. */
+function tempMatchesIndex(root, sessionId, latest, gunzip = gunzipSync) {
+  if (latest === undefined) return false;
+  try {
+    return matchesRecord(readCompressed(sessionFile(root, sessionId, SEAL_TEMP_SUFFIX), gunzip), latest);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a session is between its index append and the rename that
+ * follows: its temporary file holds what the latest index line names, and
+ * its sealed file (`sealed`, null when absent) is absent or holds what the
+ * line before named. */
+function isPending(root, sessionId, index, sealed, gunzip) {
+  return tempMatchesIndex(root, sessionId, index.latest.get(sessionId), gunzip)
+    && (sealed === null || matchesRecord(sealed, index.previous.get(sessionId)));
+}
 
 /** Every blob hash a `{ blob, truncated: true }` reference in `value`
  * names, added to `into`. */
@@ -235,40 +313,44 @@ function writeTemp(path, bytes) {
   writeFileSync(path, gzipSync(bytes), { flag: 'wx', mode: 0o600 });
 }
 
-/** Whether the session's temporary file holds what its latest index line
- * names; false when either is absent or the file cannot be read. */
-function tempMatchesIndex(root, sessionId, latest) {
-  if (latest === undefined) return false;
-  try {
-    return sha256Hex(gunzipSync(readFileSync(sessionFile(root, sessionId, SEAL_TEMP_SUFFIX)))) === latest.sha256;
-  } catch {
-    return false;
-  }
-}
+/** Thrown by a run's `held` check once the index lock is no longer its own. */
+class LockLost extends Error {}
+
+const rethrowLockLost = error => {
+  if (error instanceof LockLost) throw error;
+};
 
 /**
- * Finishes or discards each temporary file an interrupted run left. One
- * whose content is the session's latest index line was indexed, so any
- * claimed file it was built from is removed and it is renamed into place;
- * any other was never indexed and is removed. `sessions` is updated to
- * match; a file that cannot be finished keeps its entry, and its session is
- * left alone until a later run.
+ * Finishes or discards each temporary file an interrupted run left. A
+ * pending session (`isPending`) has any claimed file it was built from
+ * removed and its temporary file renamed into place. A temporary file the
+ * index does not name, or one beside a sealed file that already holds the
+ * latest line's content, is removed. One the index names beside a sealed
+ * file holding anything else is left, and so is that sealed file, for
+ * `verifyIndex` to report. `sessions` is updated to match; a session whose
+ * temporary file remains is left alone by the rest of the run.
  */
-function recoverInterrupted(root, sessions, index) {
+function recoverInterrupted(root, sessions, index, held, gunzip = gunzipSync) {
   for (const [sessionId, kinds] of sessions) {
     if (!kinds.has(SEAL_TEMP_SUFFIX)) continue;
     const temp = sessionFile(root, sessionId, SEAL_TEMP_SUFFIX);
     try {
-      if (tempMatchesIndex(root, sessionId, index.latest.get(sessionId))) {
+      const sealed = readCompressed(sessionFile(root, sessionId, SEALED), gunzip);
+      if (isPending(root, sessionId, index, sealed, gunzip)) {
+        held();
         rmSync(sessionFile(root, sessionId, CLAIMED_SUFFIX), { force: true });
         kinds.delete(CLAIMED_SUFFIX);
+        held();
         renameSync(temp, sessionFile(root, sessionId, SEALED));
         kinds.add(SEALED);
-      } else {
+        kinds.delete(SEAL_TEMP_SUFFIX);
+      } else if (!tempMatchesIndex(root, sessionId, index.latest.get(sessionId), gunzip) || matchesIndex(sealed, index.latest.get(sessionId))) {
+        held();
         rmSync(temp, { force: true });
+        kinds.delete(SEAL_TEMP_SUFFIX);
       }
-      kinds.delete(SEAL_TEMP_SUFFIX);
-    } catch {
+    } catch (error) {
+      rethrowLockLost(error);
       // left for a later run
     }
   }
@@ -289,7 +371,7 @@ function joined(sealed, claimed) {
  * sealed over. A claimed file an interrupted run left is sealed before the
  * plain file, which then waits for a later run.
  */
-function sealSession(root, sessionId, kinds, index, now) {
+function sealSession(root, sessionId, kinds, index, now, held) {
   if (kinds.has(SEAL_TEMP_SUFFIX) || !(kinds.has(PLAIN) || kinds.has(CLAIMED_SUFFIX))) return false;
   const plainPath = sessionFile(root, sessionId, PLAIN);
   const sealedPath = sessionFile(root, sessionId, SEALED);
@@ -299,21 +381,25 @@ function sealSession(root, sessionId, kinds, index, now) {
   const sealed = readCompressed(sealedPath);
   if (!matchesIndex(sealed, index.latest.get(sessionId))) return false;
   if (!kinds.has(CLAIMED_SUFFIX)) {
+    held();
     renameSync(plainPath, claimedPath);
     kinds.delete(PLAIN);
     kinds.add(CLAIMED_SUFFIX);
   }
   const claimed = readFileSync(claimedPath);
   if (claimed.length === 0) {
+    held();
     rmSync(claimedPath, { force: true });
     kinds.delete(CLAIMED_SUFFIX);
     return false;
   }
   const content = joined(sealed, claimed);
   writeTemp(tempPath, content);
-  appendIndexLine(root, index, sealRecord(sessionId, content));
+  appendIndexLine(root, index, sealRecord(sessionId, content), held);
+  held();
   rmSync(claimedPath, { force: true });
   kinds.delete(CLAIMED_SUFFIX);
+  held();
   renameSync(tempPath, sealedPath);
   kinds.add(SEALED);
   return true;
@@ -385,10 +471,14 @@ function createLock(path) {
   return written ? token : null;
 }
 
+const ownsLock = (path, token) => {
+  const lock = readLock(path);
+  return lock !== null && lockOwner(lock.bytes)?.token === token;
+};
+
 /** Removes the lock only while it is still the one `token` owns. */
 function releaseLock(path, token) {
-  const lock = readLock(path);
-  if (lock !== null && lockOwner(lock.bytes)?.token === token) unlinkQuietly(path);
+  if (ownsLock(path, token)) unlinkQuietly(path);
 }
 
 function removeIfUnchanged(path, judged, judge) {
@@ -416,21 +506,30 @@ function breakLock(path, judge) {
   }
 }
 
-/** Runs `fn` holding the index lock and says whether it ran; it does not
- * while another live process holds the lock or the repository has no data
- * directory. `judge` is `{ now, isAlive }`, what a lock's breakability is
- * judged by. */
+/**
+ * Runs `fn(held)` holding the index lock and says how it went: `'ran'`,
+ * `'locked'` when another live process holds the lock or the repository has
+ * no data directory, or `'lost'` when `held()`, which `fn` calls before each
+ * write that must be this run's alone, found the lock no longer its own.
+ * `judge` is `{ now, isAlive }`, what a lock's breakability is judged by.
+ */
 function withIndexLock(root, judge, fn) {
   const path = join(repoDataDir(root), LOCK_FILE);
   let token = createLock(path);
   if (token === null && breakLock(path, judge)) token = createLock(path);
-  if (token === null) return false;
+  if (token === null) return 'locked';
+  const held = () => {
+    if (!ownsLock(path, token)) throw new LockLost();
+  };
   try {
-    fn();
+    fn(held);
+    return 'ran';
+  } catch (error) {
+    if (error instanceof LockLost) return 'lost';
+    throw error;
   } finally {
     releaseLock(path, token);
   }
-  return true;
 }
 
 const defaultClock = () => performance.now();
@@ -453,28 +552,31 @@ function budget(clock, budgetMs) {
  * on a later run.
  *
  * Runs under an exclusive lock and does nothing while another process holds
- * it. Stops before the next session once `budgetMs` of `clock` time has
- * passed; the rest are sealed on a later call. `now` is milliseconds since
- * the epoch; `isAlive(pid)` says whether a lock's owner still runs. Never
+ * it; `lockLost` says the run stopped because its lock was broken under it.
+ * Stops before the next session once `budgetMs` of `clock` time has passed;
+ * the rest are sealed on a later call. `now` is milliseconds since the
+ * epoch; `isAlive(pid)` says whether a lock's owner still runs. Never
  * throws.
  */
 export function sealClosedSessions(root, {
   now = Date.now(), currentSessionId, budgetMs = Infinity, clock = defaultClock, isAlive = processIsAlive,
 } = {}) {
   const sealed = [];
+  let outcome = 'ran';
   const withinBudget = budget(clock, budgetMs);
   try {
-    withIndexLock(root, { now, isAlive }, () => {
+    outcome = withIndexLock(root, { now, isAlive }, held => {
       const index = readIndex(root);
       if (index === null) return;
       const sessions = listSessions(root);
-      recoverInterrupted(root, sessions, index);
+      recoverInterrupted(root, sessions, index, held);
       for (const [sessionId, kinds] of sessions) {
         if (sessionId === currentSessionId) continue;
         if (!withinBudget()) return;
         try {
-          if (sealSession(root, sessionId, kinds, index, now)) sealed.push(sessionId);
-        } catch {
+          if (sealSession(root, sessionId, kinds, index, now, held)) sealed.push(sessionId);
+        } catch (error) {
+          rethrowLockLost(error);
           // this session is left for a later run
         }
         if (index.appendFailed) return;
@@ -483,10 +585,16 @@ export function sealClosedSessions(root, {
   } catch {
     // nothing more is sealed this run
   }
-  return { sealed };
+  return { sealed, lockLost: outcome === 'lost' };
 }
 
-/** `bytes` with each event's `CONTENT_FIELDS` removed and `contentExpired:
+/** The fields retention removes from an event of `type`. */
+const contentFieldsOf = type => {
+  if (!Object.hasOwn(KEPT_FIELDS, type)) return UNKNOWN_TYPE_CONTENT;
+  return Object.hasOwn(CONTENT_FIELDS, type) ? CONTENT_FIELDS[type] : [];
+};
+
+/** `bytes` with each event's content fields removed and `contentExpired:
  * true` set on each event that lost one. A line that does not parse cannot
  * be expired field by field, so it is dropped. `removed` says whether
  * anything changed; unchanged lines keep their bytes. */
@@ -499,8 +607,7 @@ function withoutContent(bytes) {
       removed = true;
       continue;
     }
-    const fields = Object.hasOwn(CONTENT_FIELDS, event.type) ? CONTENT_FIELDS[event.type] : [];
-    const present = fields.filter(f => Object.hasOwn(event, f));
+    const present = contentFieldsOf(event.type).filter(f => Object.hasOwn(event, f));
     if (present.length === 0) {
       lines.push(line, Buffer.from('\n'));
       continue;
@@ -518,12 +625,12 @@ function withoutContent(bytes) {
  * `'absent'` when there is no sealed file. The new index line carries
  * `contentExpired: true`, so the session is not read again until a later
  * seal adds events to it. */
-function expireSession(root, sessionId, index) {
+function expireSession(root, sessionId, index, held, gunzip) {
   const sealedPath = sessionFile(root, sessionId, SEALED);
   const tempPath = sessionFile(root, sessionId, SEAL_TEMP_SUFFIX);
   let sealed;
   try {
-    sealed = readCompressed(sealedPath);
+    sealed = readCompressed(sealedPath, gunzip);
   } catch {
     return 'unverifiable';
   }
@@ -531,8 +638,11 @@ function expireSession(root, sessionId, index) {
   if (!matchesIndex(sealed, index.latest.get(sessionId))) return 'unverifiable';
   const { content, removed } = withoutContent(sealed);
   if (removed) writeTemp(tempPath, content);
-  appendIndexLine(root, index, { ...sealRecord(sessionId, content), contentExpired: true });
-  if (removed) renameSync(tempPath, sealedPath);
+  appendIndexLine(root, index, { ...sealRecord(sessionId, content), contentExpired: true }, held);
+  if (removed) {
+    held();
+    renameSync(tempPath, sealedPath);
+  }
   return removed ? 'removed' : 'unchanged';
 }
 
@@ -553,7 +663,7 @@ function referencedBlobs(root, sessions, index) {
 /** Removes every file in the blob store that no session references and that
  * is over a day old by `now`; the age floor spares a blob whose event has
  * not been appended yet. */
-function removeUnreferencedBlobs(root, sessions, index, now) {
+function removeUnreferencedBlobs(root, sessions, index, now, held) {
   const referenced = referencedBlobs(root, sessions, index);
   const dir = join(repoDataDir(root), BLOBS_DIR);
   let names;
@@ -566,10 +676,44 @@ function removeUnreferencedBlobs(root, sessions, index, now) {
     const m = /^([0-9a-f]{64})\.gz$/.exec(name);
     if (m !== null && referenced.has(m[1])) continue;
     try {
-      if (now - statSync(join(dir, name)).mtimeMs > DAY_MS) rmSync(join(dir, name));
-    } catch {
+      if (now - statSync(join(dir, name)).mtimeMs <= DAY_MS) continue;
+      held();
+      rmSync(join(dir, name));
+    } catch (error) {
+      rethrowLockLost(error);
       // left for a later run
     }
+  }
+}
+
+const verifiedPath = root => join(repoDataDir(root), VERIFIED_FILE);
+
+const isVerifiedEntry = v => isPlainObject(v) && isSha256(v.line) && Number.isSafeInteger(v.size) && v.size >= 0 && Number.isFinite(v.mtimeMs);
+
+/** The sweep's record of which sealed files were found to match which index
+ * line, by session; an absent or unreadable record is empty. */
+function readVerified(root) {
+  const record = (() => {
+    try {
+      return parsedObject(readFileSync(verifiedPath(root), 'utf8'));
+    } catch {
+      return null;
+    }
+  })();
+  const entries = record !== null && record.schema === 1 && isPlainObject(record.sessions) ? Object.entries(record.sessions) : [];
+  return new Map(entries.filter(([sessionId, entry]) => safeSessionId(sessionId) === sessionId && isVerifiedEntry(entry)));
+}
+
+/** Writes the record to a temporary sibling and renames it into place. */
+function writeVerified(root, verified, held) {
+  const path = verifiedPath(root);
+  const temp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(temp, JSON.stringify({ schema: 1, sessions: Object.fromEntries(verified) }), { flag: 'wx', mode: 0o600 });
+    held();
+    renameSync(temp, path);
+  } finally {
+    rmSync(temp, { force: true });
   }
 }
 
@@ -594,29 +738,38 @@ function untrustedBecause(check) {
  * Returns `contentRemoved`, the number of sessions that lost content this
  * run (sessions, not events); `contentUnverifiable`, the number of sessions
  * past the period whose sealed content was left in place because it has no
- * index line or does not match it; and `blobSweep`, `{ skipped, reason }`.
- * The sweep removes nothing unless `verifyIndex` would find the chain
- * unbroken and no sealed session altered or missing, since only then does
- * the index name every blob sealed content references.
+ * index line or does not match it; `blobSweep`, `{ skipped, reason }`; and
+ * `lockLost`, true when the run stopped because its lock was broken under
+ * it. The sweep removes nothing unless the chain is unbroken and every
+ * sealed session matches its latest index line, since only then does the
+ * index name every blob sealed content references. A sealed file is taken
+ * to match without being read when its latest index line, size and
+ * modification time are those recorded in `verified.json` when it last
+ * matched; the record keeps a run's progress, so runs cut short by the
+ * budget converge.
  *
  * Runs under the index lock and does nothing while another process holds
  * it. A session with events being sealed is left for a later run, as is
  * everything once `budgetMs` of `clock` time has passed. `isAlive(pid)`
- * says whether a lock's owner still runs. Never throws.
+ * says whether a lock's owner still runs; `gunzip` decompresses sealed
+ * files. Never throws.
  */
-export function applyRetention(root, { now = Date.now(), budgetMs = Infinity, clock = defaultClock, isAlive = processIsAlive } = {}) {
+export function applyRetention(root, {
+  now = Date.now(), budgetMs = Infinity, clock = defaultClock, isAlive = processIsAlive, gunzip = gunzipSync,
+} = {}) {
   let contentRemoved = 0;
   let contentUnverifiable = 0;
   let blobSweep = { skipped: true, reason: 'the run stopped before the sweep' };
+  let outcome = 'ran';
   const withinBudget = budget(clock, budgetMs);
   const skip = reason => { blobSweep = { skipped: true, reason }; };
   try {
     const cutoff = now - readConfig(root).contentRetentionDays * DAY_MS;
-    const ran = withIndexLock(root, { now, isAlive }, () => {
+    outcome = withIndexLock(root, { now, isAlive }, held => {
       const index = readIndex(root);
       if (index === null) return skip('the index could not be read');
       const sessions = listSessions(root);
-      recoverInterrupted(root, sessions, index);
+      recoverInterrupted(root, sessions, index, held, gunzip);
       for (const [sessionId, kinds] of sessions) {
         if (!kinds.has(SEALED) || kinds.has(CLAIMED_SUFFIX) || kinds.has(SEAL_TEMP_SUFFIX)) continue;
         const latest = index.latest.get(sessionId);
@@ -631,32 +784,46 @@ export function applyRetention(root, { now = Date.now(), budgetMs = Infinity, cl
         if (latest.contentExpired === true || latest.lastTs === null || !(Date.parse(latest.lastTs) < cutoff)) continue;
         if (!withinBudget()) return skip('the time budget was spent');
         try {
-          const outcome = expireSession(root, sessionId, index);
-          if (outcome === 'removed') contentRemoved++;
-          if (outcome === 'unverifiable') contentUnverifiable++;
-        } catch {
+          const expired = expireSession(root, sessionId, index, held, gunzip);
+          if (expired === 'removed') contentRemoved++;
+          if (expired === 'unverifiable') contentUnverifiable++;
+        } catch (error) {
+          rethrowLockLost(error);
           // this session is left for a later run
         }
         if (index.appendFailed) return skip('an index append failed');
       }
-      const check = checkIndex(root, withinBudget);
+      const verified = readVerified(root);
+      const check = checkIndex(root, { withinBudget, gunzip, verified });
+      try {
+        writeVerified(root, verified, held);
+      } catch (error) {
+        rethrowLockLost(error);
+        // the record is an optimisation: the next run hashes again
+      }
       if (check === null) return skip('the time budget was spent');
       const untrusted = untrustedBecause(check.result);
       if (untrusted !== null) return skip(untrusted);
-      removeUnreferencedBlobs(root, check.sessions, check.index, now);
+      removeUnreferencedBlobs(root, check.sessions, check.index, now, held);
       blobSweep = { skipped: false, reason: null };
     });
-    if (!ran) skip('another process holds the index lock');
   } catch {
     // nothing more is expired this run
   }
-  return { contentRemoved, contentUnverifiable, blobSweep };
+  if (outcome === 'locked') skip('the index lock could not be taken');
+  if (outcome === 'lost') skip('the index lock was lost');
+  return { contentRemoved, contentUnverifiable, blobSweep, lockLost: outcome === 'lost' };
 }
 
-/** `verifyIndex`'s result, with the index and sessions it was computed
+/**
+ * `verifyIndex`'s result, with the index and sessions it was computed
  * from; null when the index cannot be read or `withinBudget` turns false
- * before every sealed file is checked. */
-function checkIndex(root, withinBudget) {
+ * before every sealed file is checked. With `verified`, a sealed file whose
+ * latest index line, size and modification time equal its entry there is
+ * taken to match without being read, and every file found to match is
+ * entered, so the progress of a run cut short is kept.
+ */
+function checkIndex(root, { withinBudget = () => true, gunzip = gunzipSync, verified = null } = {}) {
   const sessionsMissing = [];
   const sessionsAltered = [];
   const sessionsPending = [];
@@ -669,6 +836,9 @@ function checkIndex(root, withinBudget) {
     if (record === null || record.prev !== expected) brokenAt = i + 1;
   }
   const sessions = listSessions(root);
+  if (verified !== null) {
+    for (const sessionId of verified.keys()) if (!index.latest.has(sessionId)) verified.delete(sessionId);
+  }
   for (const sessionId of [...new Set([...index.latest.keys(), ...sessions.keys()])].sort()) {
     const latest = index.latest.get(sessionId);
     const kinds = sessions.get(sessionId) ?? new Set();
@@ -676,15 +846,30 @@ function checkIndex(root, withinBudget) {
       if (kinds.has(SEALED)) sessionsAltered.push(sessionId);
       continue;
     }
-    if (!withinBudget()) return null;
-    let matches = false;
+    const sealedPath = sessionFile(root, sessionId, SEALED);
+    let st = null;
     try {
-      matches = matchesIndex(readCompressed(sessionFile(root, sessionId, SEALED)), latest);
+      st = statSync(sealedPath);
     } catch {
-      // unreadable: judged below as not matching
+      // absent or unreadable: judged below
     }
-    if (matches) continue;
-    if (kinds.has(SEAL_TEMP_SUFFIX) && tempMatchesIndex(root, sessionId, latest)) sessionsPending.push(sessionId);
+    const seen = st === null ? null : { line: index.latestLine.get(sessionId), size: st.size, mtimeMs: st.mtimeMs };
+    const cached = verified?.get(sessionId);
+    if (seen !== null && cached !== undefined && cached.line === seen.line && cached.size === seen.size && cached.mtimeMs === seen.mtimeMs) continue;
+    if (!withinBudget()) return null;
+    let sealed = null;
+    let readable = true;
+    try {
+      sealed = readCompressed(sealedPath, gunzip);
+    } catch {
+      readable = false;
+    }
+    if (readable && matchesIndex(sealed, latest)) {
+      if (verified !== null && seen !== null) verified.set(sessionId, seen);
+      continue;
+    }
+    verified?.delete(sessionId);
+    if (readable && isPending(root, sessionId, index, sealed, gunzip)) sessionsPending.push(sessionId);
     else if (kinds.has(SEALED)) sessionsAltered.push(sessionId);
     else sessionsMissing.push(sessionId);
   }
@@ -698,15 +883,21 @@ function checkIndex(root, withinBudget) {
  * whose `prev` is not the SHA-256 of the line before it, or, as the first
  * line, has a `prev`; deleting a line therefore breaks the chain at that
  * line's position, and so does a line torn by a crash. Each session's
- * sealed file must match its latest index line. A session whose sealed file
- * does not, but whose temporary file does, is in `sessionsPending`: an
- * interrupted seal or rewrite the next run finishes. Otherwise one whose
- * sealed file is absent is in `sessionsMissing`, and one whose file
- * differs, cannot be read, or has no index line is in `sessionsAltered`.
- * `intact` is true only when the chain is unbroken and no session is
- * missing or altered. Events not yet sealed are not checked. Never throws.
+ * sealed file must match its latest index line. A session between an index
+ * append and the rename after it, whose temporary file matches the latest
+ * line and whose sealed file is absent or matches the line before, is in
+ * `sessionsPending`, which the next run finishes. Otherwise one whose
+ * sealed file is absent is in `sessionsMissing`, and one whose file holds
+ * anything else, cannot be read, or has no index line is in
+ * `sessionsAltered`. `intact` is true only when the chain is unbroken and
+ * no session is missing or altered. Events not yet sealed are not checked.
+ *
+ * Every sealed file is read and hashed. The sweep's `verified.json` record
+ * is never consulted: it is an optimisation for the sweep's gate, judged by
+ * size and modification time, which anyone can preserve, and so is not
+ * tamper evidence. Never throws.
  */
 export function verifyIndex(root) {
-  return checkIndex(root, () => true)?.result
+  return checkIndex(root)?.result
     ?? { intact: false, brokenAt: 1, sessionsMissing: [], sessionsAltered: [], sessionsPending: [] };
 }

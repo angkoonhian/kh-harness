@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { canonicalJson, readEvents, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
-import { CONTENT_FIELDS, SEAL_IDLE_MS, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
+import { CONTENT_FIELDS, KEPT_FIELDS, SEAL_IDLE_MS, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { stripAnsi } from '../../assets/scripts/harness-redact.mjs';
 import { LOGGED_EVENTS, toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -438,46 +438,37 @@ test('the hook never spawns a child process', () => {
   ]);
 });
 
-// Every field each handler writes that is kept when content expires, beside
-// the identity fields: an identifier, a path, a name from a fixed set, a
-// hash, a size, a flag, or a failure's first error line, which with the
-// tool and input hash is its recurrence signature. A field that is neither here nor in
-// `CONTENT_FIELDS` fails the test below until it is classified.
-const IDENTITY = ['type', 'session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
-const TOOL = ['tool', 'inputHash', 'inputBytes'];
-const KEPT_FIELDS = {
-  SessionStart: ['source', 'transcriptPath'],
-  UserPromptSubmit: [],
-  PreToolUse: TOOL,
-  PermissionRequest: TOOL,
-  PermissionDenied: TOOL,
-  PostToolUse: [...TOOL, 'status', 'outputBytes', 'durationMs'],
-  PostToolUseFailure: [...TOOL, 'status', 'outputBytes', 'durationMs', 'firstErrorLine'],
-  SubagentStart: ['agentType'],
-  SubagentStop: ['agentType', 'stopHookActive'],
-  Stop: ['stopHookActive'],
-  StopFailure: [],
-  InstructionsLoaded: ['path', 'reason', 'memoryType'],
-  PreCompact: ['trigger'],
-  PostCompact: ['trigger'],
-  PostModelSwitch: ['fromModel', 'toModel', 'source'],
-  SessionEnd: ['reason'],
-};
-
 /** A payload that answers every field the hook reads with `value`, so each
  * handler writes every field it can. */
 const everyField = (name, value) =>
   new Proxy({}, { get: (_, key) => (key === 'hook_event_name' ? name : typeof key === 'symbol' ? undefined : value) });
 
+/** The fields the classification gives an event type, content and kept. */
+function classified(type) {
+  const content = CONTENT_FIELDS[type] ?? [];
+  for (const field of content) assert.equal(KEPT_FIELDS[type].includes(field), false, `${type}.${field} is both`);
+  return [...new Set([...KEPT_FIELDS[type], ...content])].sort();
+}
+
+const ENVELOPE = new Set(['schema', 'ts', 'pid']);
+
 test('every field the hook writes is classified as content or kept', () => {
-  assert.deepEqual(Object.keys(KEPT_FIELDS).sort(), [...LOGGED_EVENTS].sort());
-  for (const type of Object.keys(CONTENT_FIELDS)) assert.ok(LOGGED_EVENTS.includes(type), type);
+  assert.deepEqual(Object.keys(KEPT_FIELDS).sort(), [...LOGGED_EVENTS, 'external_content', 'harness'].sort());
+  for (const type of Object.keys(CONTENT_FIELDS)) assert.ok(Object.hasOwn(KEPT_FIELDS, type), type);
   for (const name of LOGGED_EVENTS) {
     const written = new Set(['text', 7].flatMap(value => Object.keys(toLogEvent(everyField(name, value)))));
-    const content = CONTENT_FIELDS[name] ?? [];
-    const classified = [...IDENTITY, ...KEPT_FIELDS[name], ...content];
-    assert.deepEqual([...written].sort(), [...new Set(classified)].sort(), name);
-    for (const field of content) assert.equal(KEPT_FIELDS[name].includes(field), false, `${name}.${field} is both`);
+    assert.deepEqual([...written].sort(), classified(name), name);
+  }
+});
+
+test('the harness and outside-content lines the hook writes are classified too', () => {
+  const root = enabledProject();
+  const identity = { prompt_id: 'prompt-1', tool_use_id: 'toolu_01', agent_id: 'agent-1', cwd: '/work' };
+  assertSilentSuccess(runHook(root, { session_id: 'writers-1', hook_event_name: 'SessionStart', source: 'startup', model: 'claude-opus-5', ...identity }));
+  assertSilentSuccess(runHook(root, toolPayload('PostToolUse', 'writers-1', { tool_name: 'mcp__srv__get', tool_response: 'x', ...identity })));
+  for (const type of ['harness', 'external_content']) {
+    const [line] = events(root, 'writers-1').filter(e => e.type === type);
+    assert.deepEqual(Object.keys(line).filter(k => !ENVELOPE.has(k)).sort(), classified(type), type);
   }
 });
 
