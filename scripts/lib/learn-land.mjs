@@ -169,6 +169,12 @@ const failed = error => ({ error, exitCode: FAILED });
  * could not act. */
 const withCode = result => (result.error !== undefined && result.exitCode === undefined ? { ...result, exitCode: FAILED } : result);
 
+/** `result`, an error met before the lock is taken, as the step returns
+ * it: on the `--yes` path after the repair every step that writes owes
+ * (`refuse`), and as it is on a dry run, which writes nothing anywhere, the
+ * data directory included. */
+const beforeLock = (root, options, result) => (options.yes === true ? { ...refuse(root, result.error), exitCode: result.exitCode } : result);
+
 /** `{ gates }`, the committed file's gates, none for a file not yet
  * written, or `{ error }` when the gate hook would not load every entry it
  * holds: a rewrite would drop what it does not load. */
@@ -426,7 +432,7 @@ const learnedEntry = (learning, approvedSha256) => ({
  */
 function landing(root, state, manifest, id) {
   const found = learningIn(state, id);
-  if (found.error) return refused(found.error);
+  if (found.error) return failed(found.error);
   const { learning } = found;
   const transition = landStage(state, learning);
   if (transition.error) return transition;
@@ -485,7 +491,7 @@ function landing(root, state, manifest, id) {
  */
 function reverting(root, state, manifest, id) {
   const found = learningIn(state, id);
-  if (found.error) return refused(found.error);
+  if (found.error) return failed(found.error);
   const { learning } = found;
   const early = revertStage(state, learning, true);
   if (early.error) return early;
@@ -666,7 +672,7 @@ function recordStep(root, write, { updated, entries }, identity) {
  * Reads only. */
 export function planLand(root, id) {
   try {
-    if (!isId(id)) return refused(ID_ERROR);
+    if (!isId(id)) return failed(ID_ERROR);
     const base = manifestToBuildOn(root);
     if (base.error) return base;
     const planned = landing(root, readState(root), base.manifest, id);
@@ -698,9 +704,9 @@ export function landLearning(root, id, options) {
 }
 
 function landUnguarded(root, id, options) {
-  if (!isId(id)) return { ...refuse(root, ID_ERROR), exitCode: REFUSED };
+  if (!isId(id)) return beforeLock(root, options, failed(ID_ERROR));
   const base = manifestToBuildOn(root);
-  if (base.error) return { ...refuse(root, base.error), exitCode: REFUSED };
+  if (base.error) return beforeLock(root, options, base);
   const refusals = gateRefusalsFor(root, base.result, options, 'land');
   if (options.yes !== true) {
     const planned = landing(root, readState(root), base.manifest, id);
@@ -755,9 +761,9 @@ export function revertLearning(root, id, options) {
 }
 
 function revertUnguarded(root, id, options) {
-  if (!isId(id)) return { ...refuse(root, ID_ERROR), exitCode: REFUSED };
+  if (!isId(id)) return beforeLock(root, options, failed(ID_ERROR));
   const base = manifestToBuildOn(root);
-  if (base.error) return { ...refuse(root, base.error), exitCode: REFUSED };
+  if (base.error) return beforeLock(root, options, base);
   const refusals = gateRefusalsFor(root, base.result, options, 'revert');
   if (options.yes !== true) {
     const planned = reverting(root, readState(root), base.manifest, id);

@@ -713,7 +713,7 @@ test('apply proposes deny rules for each terminal-only subcommand, in Bash and P
   }
 });
 
-// --- land and revert ------------------------------------------------------------
+// --- land and revert --------------------------------------------------------
 
 /** Every file under `dir` outside `.git`, with its bytes: what a run may
  * not write in the repository. */
@@ -827,9 +827,32 @@ test('land or revert of an unknown id is one line and exit 2', () => {
   }
 });
 
-test('land --yes on the default branch at a terminal meets the same refusal apply does, which the dry run names', () => {
+test('a dry run of land on the default branch names the refusal --yes would meet, and --allow-default-branch drops it', () => {
   const { root } = promotedRepo('block');
   const dry = runLearn(root, 'land', 'L1');
   assert.equal(dry.status, 0, dry.stderr);
   assert.match(dry.stdout, /^note: --yes would be refused — refusing to land on the default branch "[^"]+"/m);
+  const waived = runLearn(root, 'land', 'L1', '--allow-default-branch');
+  assert.equal(waived.status, 0, waived.stderr);
+  assert.doesNotMatch(waived.stdout, /would be refused/);
+});
+
+test('land and revert exit with the library\'s code: 3 for a refusal to act, 2 for an id that names no learning', () => {
+  const { root } = landableRepo();
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'kh-harness.manifest.json'), '{ not a manifest');
+  for (const name of ['land', 'revert']) {
+    const corrupt = runLearn(root, name, 'L1');
+    assert.equal(corrupt.status, 3, `${name}: ${corrupt.stderr}`);
+    assert.match(corrupt.stderr, new RegExp(`^kh-harness: ${name}: .*could not be read as a valid kh-harness manifest`));
+  }
+  rmSync(join(root, '.claude', 'kh-harness.manifest.json'));
+  mkdirSync(join(root, 'docs', 'harness'), { recursive: true });
+  writeFileSync(join(root, LEARNED_PATH), "# Someone else's learned rules\n");
+  const unowned = runLearn(root, 'land', 'L1');
+  assert.equal(unowned.status, 3, unowned.stderr);
+  assert.match(unowned.stderr, /the manifest does not record kh-harness writing it/);
+  for (const name of ['land', 'revert']) {
+    for (const id of ['L9', '../L1']) assert.equal(runLearn(root, name, id).status, 2, `${name} ${id}`);
+  }
 });

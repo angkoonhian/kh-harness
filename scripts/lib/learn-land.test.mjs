@@ -15,11 +15,11 @@ import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
-import { committedText } from './apply-lib.mjs';
+import { commitReadEnv, committedText } from './apply-lib.mjs';
 import { integrityEvidence } from './integrity-evidence.mjs';
 import {
   call, drafted, editLearning, git, HARNESS, kinds, localGates, localGatesPath, log, logFiring, logReadMistakes, MISTAKE, mtimes, READ_GATE,
-  trialRepo, useId,
+  repo, trialRepo, useId, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { landLearning, planLand, revertLearning } from './learn-land.mjs';
 import { listLearnings, runTrial } from './learn-lib.mjs';
@@ -145,8 +145,8 @@ test('a trial learning cannot be landed', () => {
     assert.deepEqual(landLearning(root, 'L1', options), { error: 'L1 is trial; only a learning promoted on this machine is landed', exitCode: 3 });
   }
   assert.deepEqual(planLand(root, 'L1'), { error: 'L1 is trial; only a learning promoted on this machine is landed', exitCode: 3 });
-  assert.deepEqual(landLearning(root, 'L9', YES), { error: 'L9: no such learning', exitCode: 3 });
-  assert.deepEqual(landLearning(root, '../L1', YES), { error: 'id: must be L followed by 1 to 9 digits, without a leading zero', exitCode: 3 });
+  assert.deepEqual(landLearning(root, 'L9', YES), { error: 'L9: no such learning', exitCode: 2 });
+  assert.deepEqual(landLearning(root, '../L1', YES), { error: 'id: must be L followed by 1 to 9 digits, without a leading zero', exitCode: 2 });
   assert.deepEqual(revertLearning(root, 'L1', YES), { error: 'L1 is trial; only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted', exitCode: 3 });
   assert.deepEqual(mtimes(root), before);
 
@@ -938,7 +938,8 @@ const STILL_COMMITTED_RETIRING = `${STILL_COMMITTED}; restoring .claude/kh-harne
   + 'since its suspension goes with this revert';
 const ALONE = 'nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block; '
   + 'if another branch holds the landing, the gate is still committed there';
-// One note for both facts: no trace in this checkout, and the commit still holding the gate.
+// One note for both facts: no trace in this checkout, and the commit still
+// holding the gate.
 const ALONE_STILL_COMMITTED = 'nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block. '
   + `T${STILL_COMMITTED.slice(1)}`;
 
@@ -1003,17 +1004,7 @@ test('outside git a revert with no trace goes on, saying the commit could not be
   rmSync(join(root, '.git'), { recursive: true, force: true });
   cpSync(data, repoDataDir(root), { recursive: true });
   const notes = ['whether the commit this branch is on still holds L1\'s gate could not be checked (it is not a git repository)', ALONE];
-  // git's messages are read in the C locale whatever the owner's is.
-  const locale = { LC_ALL: process.env.LC_ALL, LANG: process.env.LANG };
-  Object.assign(process.env, { LC_ALL: 'de_DE.UTF-8', LANG: 'de_DE.UTF-8' });
-  try {
-    assert.deepEqual(revertLearning(root, 'L1', {}).notes, notes);
-  } finally {
-    for (const [name, value] of Object.entries(locale)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  }
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, notes);
   const reverted = revertLearning(root, 'L1', YES);
   assert.equal(reverted.ok, true, reverted.error);
   assert.deepEqual(reverted.notes, notes, 'the real run carries the dry run\'s notes');
@@ -1051,7 +1042,8 @@ test('a symbolic link committed at the gate file path is not read as the gate fi
   const { root } = activeRepo();
   assert.equal(landLearning(root, 'L1', YES).ok, true);
   commitAll(root);
-  // The link is put in the commit with plumbing, so no file system link is needed.
+  // The link is put in the commit with plumbing, so no file system link is
+  // needed.
   const target = execFileSync('git', ['-C', root, 'hash-object', '-w', '--stdin'], { input: 'elsewhere.json', encoding: 'utf8' }).trim();
   git(root, 'update-index', '--cacheinfo', `120000,${target},${GATES_PATH}`);
   git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'link');
@@ -1122,4 +1114,66 @@ test('a learning no revert can take is refused on its status before any file', (
     error: 'L2 is trial; only a learning landed or suspended on this machine, or one this machine landed that has left its gate, registry entry or manifest record in this repository, is reverted',
     exitCode: 3,
   });
+});
+
+test('the git calls reading a commit run in the C locale, with every variable that would point git elsewhere removed', () => {
+  const base = {
+    PATH: '/bin', LANG: 'de_DE.UTF-8', LC_ALL: 'de_DE.UTF-8',
+    GIT_DIR: 'x', GIT_WORK_TREE: 'x', GIT_INDEX_FILE: 'x', GIT_COMMON_DIR: 'x', GIT_OBJECT_DIRECTORY: 'x',
+  };
+  assert.deepEqual(commitReadEnv(base), { PATH: '/bin', LANG: 'de_DE.UTF-8', LC_ALL: 'C' });
+});
+
+/** A repository whose HEAD commit holds `bytes` at the gate file path. */
+function committedBytes(bytes) {
+  const root = repo();
+  mkdirSync(join(root, GATES_PATH, '..'), { recursive: true });
+  writeFileSync(join(root, GATES_PATH), bytes);
+  commitAll(root);
+  return root;
+}
+
+test('the committed gate file is bounded by its bytes, as the gate hook bounds the file', () => {
+  const max = 64;
+  assert.deepEqual(committedText(committedBytes(Buffer.alloc(max + 1, 0x61)), GATES_PATH, max), { tooLarge: true }, 'one byte past the bound');
+  assert.deepEqual(committedText(committedBytes(Buffer.alloc(max, 0x61)), GATES_PATH, max), { text: 'a'.repeat(max) }, 'exactly the bound');
+  const invalid = Buffer.concat([Buffer.alloc(max - 8, 0x61), Buffer.alloc(8, 0xff)]);
+  const read = committedText(committedBytes(invalid), GATES_PATH, max);
+  assert.equal(typeof read.text, 'string', 'bytes that are not UTF-8 within the bound are read, not taken for too many');
+});
+
+test('a dry run of land or revert that is refused writes nothing, the data directory included; with --yes the repair runs', () => {
+  const { root, learning } = trialRepo();
+  git(root, 'checkout', '-q', '-b', 'harness/learned');
+  // A gate the repair would remove, as an unapproved block.
+  writeLocalGates(root, [{ ...learning.gate, action: 'block' }]);
+  const data = () => {
+    const out = {};
+    for (const [rel] of Object.entries(mtimes(repoDataDir(root)))) out[rel] = readFileSync(join(repoDataDir(root), rel)).toString('base64');
+    return out;
+  };
+  const before = data();
+  for (const step of [() => landLearning(root, '../L1', {}), () => revertLearning(root, 'L1x', {})]) {
+    assert.equal(step().exitCode, 2);
+    assert.deepEqual(data(), before, 'a malformed id');
+  }
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, MANIFEST_PATH), '{ not a manifest');
+  for (const step of [() => landLearning(root, 'L1', {}), () => revertLearning(root, 'L1', {})]) {
+    const refused = step();
+    assert.equal(refused.exitCode, 3);
+    assert.match(refused.error, /could not be read as a valid kh-harness manifest/);
+    assert.deepEqual(data(), before, 'a corrupt manifest');
+  }
+  const real = landLearning(root, '../L1', YES);
+  assert.deepEqual([real.exitCode, real.repairedGates], [2, ['L1']], 'the --yes path runs the repair every step that writes owes');
+  assert.notDeepEqual(data(), before);
+});
+
+test('land --yes on the default branch at a terminal is refused with the code apply exits', () => {
+  const { root } = activeRepo({ featureBranch: false });
+  const refused = landLearning(root, 'L1', YES);
+  assert.equal(refused.exitCode, 3);
+  assert.equal(refused.refusals.length, 1);
+  assert.match(refused.refusals[0], /^refusing to land on the default branch/);
 });
