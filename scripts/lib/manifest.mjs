@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, readdirSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename, resolve, relative } from 'node:path';
 import { readJsonFile } from './read-json.mjs';
 import { GATE_ID } from '../../assets/scripts/harness-gates.mjs';
@@ -69,31 +69,53 @@ export function readManifest(root) {
 }
 
 /**
- * Written to a temporary sibling and renamed into place, so the manifest on
- * disk is always either the previous one or the new one, whole. Audit Tier
- * 2, finding 8: an in-place write killed midway left a truncated file that
- * read back as `corrupt` — and `apply` refuses on a corrupt manifest, so
- * every file that run had written was orphaned behind a refusal. On any
- * failure the temporary file is removed and the error propagates; the
- * caller (apply.mjs) already reports a manifest write failure by path. A
- * temporary left by a hard kill (nothing else would ever remove it, and the
- * prefix is unambiguously ours) is cleared before the next write.
+ * Replaces the file at `path` with `text`, whole: written to a temporary
+ * sibling and renamed into place, so a reader, or a run killed at any point,
+ * finds the previous file or the new one and never part of one. The kit's
+ * one way of rewriting a file in a repository: the manifest, the owner's
+ * settings file and `detect`'s report.
+ *
+ * What a write in place would have kept is kept: the file's permission
+ * bits, and a link at `path`, whose target is what is replaced. A target the
+ * owner made read-only is refused, as a write in place would be, though a
+ * rename could replace it. A missing directory is created.
+ *
+ * On any failure the temporary file is removed, the target is as it was and
+ * the error is thrown. A temporary file left by a hard kill carries this
+ * function's own suffix, and nothing else would ever remove it, so those are
+ * cleared before the next write.
  */
-export function writeManifest(root, manifest) {
-  const p = join(root, MANIFEST_PATH);
-  mkdirSync(dirname(p), { recursive: true });
-  const stalePrefix = `${basename(MANIFEST_PATH)}.tmp-`;
-  for (const name of readdirSync(dirname(p))) {
-    if (name.startsWith(stalePrefix)) rmSync(join(dirname(p), name), { force: true });
-  }
-  const tmp = `${p}.tmp-${process.pid}`;
+export function replaceFile(path, text) {
+  let target = path;
+  let mode;
   try {
-    writeFileSync(tmp, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
-    renameSync(tmp, p);
+    target = realpathSync(path);
+    mode = statSync(target).mode & 0o777;
+    accessSync(target, constants.W_OK);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  const dir = dirname(target);
+  mkdirSync(dir, { recursive: true });
+  const stalePrefix = `${basename(target)}.tmp-`;
+  for (const name of readdirSync(dir)) {
+    if (name.startsWith(stalePrefix)) rmSync(join(dir, name), { force: true });
+  }
+  const tmp = `${target}.tmp-${process.pid}`;
+  try {
+    writeFileSync(tmp, text, { encoding: 'utf8', mode });
+    renameSync(tmp, target);
   } catch (err) {
     try { rmSync(tmp, { force: true }); } catch { /* the error below is the one to report */ }
     throw err;
   }
+}
+
+/** Writes the manifest whole (`replaceFile`): one truncated by a kill would
+ * read back as corrupt, and `apply` refuses on a corrupt manifest, so every
+ * file that run had written would be orphaned behind the refusal. */
+export function writeManifest(root, manifest) {
+  replaceFile(join(root, MANIFEST_PATH), JSON.stringify(manifest, null, 2) + '\n');
 }
 
 /** CRLF → LF, nothing else. A lone CR is left alone: git never writes one. */

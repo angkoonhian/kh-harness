@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings, MANIFEST_PATH } from './manifest.mjs';
+import { sha256, emptyManifest, readManifest, readManifestResult, writeManifest, classify, normalizeLineEndings, replaceFile, MANIFEST_PATH } from './manifest.mjs';
 import { APPLY, UNINSTALL, fixture, sandboxDataDir } from './lifecycle-fixtures.mjs';
 
 sandboxDataDir();
@@ -316,4 +316,72 @@ test('apply exits 3 and uninstall refuses on each', () => {
     assert.equal(readFileSync(join(d, MANIFEST_PATH), 'utf8'), text, `${label}: the manifest is left exactly as it was`);
     assert.equal(existsSync(join(d, 'HANDOFF.md')), false, `${label}: nothing is written`);
   }
+});
+
+// --- replaceFile: a repository file is the old one or the new one, whole ----
+
+test('replaceFile writes the new content whole, leaves no temporary file, and creates the directory', () => {
+  const d = repo();
+  const target = join(d, 'a', 'settings.json');
+  replaceFile(target, '{"a":1}\n');
+  assert.equal(readFileSync(target, 'utf8'), '{"a":1}\n');
+  replaceFile(target, '{"a":2}\n');
+  assert.equal(readFileSync(target, 'utf8'), '{"a":2}\n');
+  assert.deepEqual(readdirSync(join(d, 'a')), ['settings.json']);
+});
+
+test('replaceFile that cannot rename over the target leaves it as it was and no temporary file', () => {
+  const d = repo();
+  const target = join(d, 'settings.json');
+  // A directory at the path is one thing `rename` cannot replace.
+  mkdirSync(target);
+  assert.throws(() => replaceFile(target, 'new\n'));
+  assert.equal(statSync(target).isDirectory(), true);
+  assert.deepEqual(readdirSync(d), ['settings.json']);
+});
+
+test('replaceFile refuses a target the owner made read-only, as a write in place would', () => {
+  const d = repo();
+  const target = join(d, 'settings.json');
+  writeFileSync(target, 'old\n');
+  chmodSync(target, 0o444);
+  assert.throws(() => writeFileSync(target, 'probe'), /EPERM|EACCES/, 'precondition: the OS refuses a write in place');
+  assert.throws(() => replaceFile(target, 'new\n'), /EPERM|EACCES/);
+  assert.equal(readFileSync(target, 'utf8'), 'old\n');
+  assert.deepEqual(readdirSync(d), ['settings.json']);
+});
+
+test('replaceFile clears a temporary file an interrupted run left, and only its own', () => {
+  const d = repo();
+  const target = join(d, 'settings.json');
+  writeFileSync(target, 'old\n');
+  writeFileSync(`${target}.tmp-424242`, '{ "half":');
+  writeFileSync(join(d, 'settings.json.bak'), 'the owner\'s own copy\n');
+  replaceFile(target, 'new\n');
+  assert.deepEqual(readdirSync(d).sort(), ['settings.json', 'settings.json.bak']);
+});
+
+test('replaceFile keeps the file\'s permission bits', { skip: process.platform === 'win32' && 'Windows reports no permission bits to keep' }, () => {
+  const d = repo();
+  const target = join(d, 'settings.json');
+  writeFileSync(target, 'old\n');
+  chmodSync(target, 0o600);
+  replaceFile(target, 'new\n');
+  assert.equal(statSync(target).mode & 0o777, 0o600);
+});
+
+test('replaceFile writes through a link at the path, leaving the link in place', (t) => {
+  const d = repo();
+  const real = join(d, 'real.json');
+  const link = join(d, 'settings.json');
+  writeFileSync(real, 'old\n');
+  try {
+    symlinkSync(real, link);
+  } catch {
+    t.skip('this account cannot create a symbolic link');
+    return;
+  }
+  replaceFile(link, 'new\n');
+  assert.equal(lstatSync(link).isSymbolicLink(), true);
+  assert.equal(readFileSync(real, 'utf8'), 'new\n');
 });

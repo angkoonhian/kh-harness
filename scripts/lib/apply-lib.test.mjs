@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
-import { assertAllowed, applyProposals, renderDiff, isAllowedDirectory, isCanonicalJson, isWellFormedHooks, detectIndent, ALLOWED_PREFIXES, settingsReformattedNote, unusableSettingsReason } from './apply-lib.mjs';
+import { assertAllowed, applyProposals, diffRenderer, renderDiff, isAllowedDirectory, isCanonicalJson, isWellFormedHooks, detectIndent, ALLOWED_PREFIXES, settingsReformattedNote, unusableSettingsReason } from './apply-lib.mjs';
 import { APPLY, fixture, git } from './lifecycle-fixtures.mjs';
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
@@ -860,4 +860,108 @@ test('a hook whose required files hold this kit\'s bytes, CRLF or LF, is registe
   writeFileSync(join(d, '.claude/scripts/x.mjs'), 'a\r\nb\r\n');
   const r = applyProposals({ root: d, proposals: [hookRequiring([{ path: '.claude/scripts/x.mjs', sha256: sha256('a\nb\n') }])], manifest: null, kitVersion: '0.2.0' });
   assert.deepEqual(r.patched.map(p => p.event), ['Stop']);
+});
+
+// --- The settings patches of one run are one write --------------------------
+
+const batchHook = event => ({ kind: 'settings-hook', event, step: 31, checkId: 'P5.sessionlog', reason: 'r', entry: { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/session-log.mjs'] } });
+const batchDeny = globs => ({ kind: 'settings-deny', step: 30, checkId: 'P5.toolgate', reason: 'r', globs });
+const OWNERS_SETTINGS = JSON.stringify({ env: { KEEP: 'me' }, permissions: { deny: ['Edit(secrets/**)'] } }, null, 2) + '\n';
+
+function repoWithSettings() {
+  const d = repo();
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude/settings.json'), OWNERS_SETTINGS);
+  return d;
+}
+
+test('every settings patch of a run reaches .claude/settings.json in one write, and each is recorded', () => {
+  const d = repoWithSettings();
+  let writes = 0;
+  const counted = (path, text) => { writes += 1; writeFileSync(path, text); };
+  const proposals = [batchHook('SessionStart'), batchDeny(['Edit(a)']), batchHook('Stop'), batchDeny(['Edit(b)'])];
+  const r = applyProposals({ root: d, proposals, manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0', replaceSettings: counted });
+  assert.equal(writes, 1);
+  assert.deepEqual(r.patched.map(p => p.event), ['SessionStart', 'permissions.deny', 'Stop', 'permissions.deny']);
+  assert.deepEqual(r.manifest.settingsPatches.map(p => p.container), ['/hooks/SessionStart', '/permissions/deny', '/hooks/Stop', '/permissions/deny']);
+  const after = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+  assert.deepEqual(after.env, { KEEP: 'me' });
+  assert.deepEqual(after.permissions.deny, ['Edit(secrets/**)', 'Edit(a)', 'Edit(b)']);
+  assert.deepEqual(Object.keys(after.hooks), ['SessionStart', 'Stop']);
+});
+
+test('a settings write that dies midway leaves the owner\'s file as it was, and the manifest records no patch the file does not hold', () => {
+  const d = repoWithSettings();
+  // What a kill partway through the write leaves: part of the new text in
+  // the temporary file, and the file itself not yet replaced.
+  const dies = (path, text) => {
+    writeFileSync(`${path}.tmp-1`, text.slice(0, Math.floor(text.length / 2)));
+    throw new Error('ENOSPC: no space left on device');
+  };
+  const proposals = [fileProposal(), batchHook('SessionStart'), batchDeny(['Edit(a)']), batchHook('Stop')];
+  const r = applyProposals({ root: d, proposals, manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0', replaceSettings: dies });
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), OWNERS_SETTINGS, 'byte for byte the old content');
+  assert.deepEqual(r.manifest.settingsPatches, [], 'nothing reached the file, so nothing is recorded');
+  assert.deepEqual(r.patched, []);
+  assert.deepEqual(r.failed.map(f => f.path), ['.claude/settings.json']);
+  assert.match(r.failed[0].error, /failed to write \.claude\/settings\.json: ENOSPC/);
+  assert.deepEqual(r.manifest.files.map(f => f.path), ['HANDOFF.md'], 'the file written before it is recorded');
+});
+
+test('after a run the file holds every entry the manifest records and no kit entry it does not', () => {
+  const d = repoWithSettings();
+  const proposals = [batchHook('SessionStart'), batchHook('Stop'), batchDeny(['Edit(a)', 'Edit(b)'])];
+  const r = applyProposals({ root: d, proposals, manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  const text = readFileSync(join(d, '.claude/settings.json'), 'utf8');
+  const after = JSON.parse(text);
+  assert.ok(text.endsWith('}\n'), 'the complete new content');
+  const hookRecords = r.manifest.settingsPatches.filter(p => p.container.startsWith('/hooks/'));
+  const kitEntries = Object.values(after.hooks).flat().filter(m => m.hooks.some(h => h.args?.[0]?.endsWith('session-log.mjs')));
+  assert.equal(kitEntries.length, hookRecords.length);
+  for (const p of hookRecords) assert.equal(after.hooks[p.event].length, 1, p.event);
+  const denyRecord = r.manifest.settingsPatches.find(p => p.container === '/permissions/deny');
+  assert.deepEqual(denyRecord.rules, ['Edit(a)', 'Edit(b)']);
+  assert.deepEqual(after.permissions.deny.filter(rule => rule !== 'Edit(secrets/**)'), denyRecord.rules);
+  assert.deepEqual(readdirSync(join(d, '.claude')).sort(), ['settings.json'], 'and no temporary file');
+});
+
+test('a file write that fails still leaves the settings patches staged before it written and recorded', () => {
+  const d = repoWithSettings();
+  mkdirSync(join(d, 'docs'), { recursive: true });
+  writeFileSync(join(d, 'docs/harness'), 'a plain file where a directory must go\n');
+  const blocked = { kind: 'file', path: 'docs/harness/x.json', step: 1, contents: '{}\n', checkId: 'x', reason: 'r' };
+  const r = applyProposals({ root: d, proposals: [batchHook('SessionStart'), blocked, batchHook('Stop')], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.deepEqual(r.patched.map(p => p.event), ['SessionStart'], 'nothing after the failure is attempted');
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks), ['SessionStart']);
+  assert.deepEqual(r.manifest.settingsPatches.map(p => p.event), ['SessionStart']);
+  assert.equal(r.failed.length, 1);
+});
+
+test('a settings file the run creates is recorded as created only once it is written', () => {
+  const d = repo();
+  const refuses = () => { throw new Error('EACCES: permission denied'); };
+  const failed = applyProposals({ root: d, proposals: [batchHook('Stop')], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0', replaceSettings: refuses });
+  assert.equal(failed.manifest.settingsCreated, undefined);
+  const ok = applyProposals({ root: d, proposals: [batchHook('Stop')], manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0' });
+  assert.equal(ok.manifest.settingsCreated, true);
+});
+
+// --- A dry run's previews count what the previews before them add -----------
+
+test('the second deny preview of one dry run counts the rules the first would add', () => {
+  const d = repoWithSettings();
+  const preview = diffRenderer(d);
+  assert.match(preview(batchDeny(['Edit(a)', 'Edit(b)'])), /appended after 1 existing permissions\.deny entry,/);
+  const second = preview(batchDeny(['Edit(b)', 'Edit(c)']));
+  assert.match(second, /appended after 3 existing permissions\.deny entries,/);
+  assert.deepEqual(second.split('\n').filter(l => l.startsWith('+"')), ['+"Edit(c)"'], 'and does not offer again a rule the first adds');
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), OWNERS_SETTINGS, 'a preview writes nothing');
+});
+
+test('the second hook preview on one event counts the entry the first would add', () => {
+  const d = repoWithSettings();
+  const preview = diffRenderer(d);
+  assert.doesNotMatch(preview(batchHook('Stop')), /appended after/);
+  assert.match(preview({ ...batchHook('Stop'), matcher: 'Bash' }), /appended after 1 existing hooks\.Stop entry,/);
+  assert.doesNotMatch(renderDiff(d, batchHook('Stop')), /appended after/, 'a preview on its own starts from the file');
 });

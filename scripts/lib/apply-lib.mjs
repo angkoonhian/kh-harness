@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { defaultBranches } from './git-info.mjs';
-import { classify, contentMatches, emptyManifest, MANIFEST_PATH, sha256 } from './manifest.mjs';
+import { classify, contentMatches, emptyManifest, MANIFEST_PATH, replaceFile, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
 import { readJsonFile, stripBom, UTF8_BOM } from './read-json.mjs';
@@ -622,36 +622,23 @@ function unusableSettingsPreview(reason) {
 }
 
 /**
- * Preview of a settings-hook proposal: the added entry, and nothing else.
+ * Preview of a settings-hook proposal against `settings`: the added entry,
+ * and nothing else.
  *
- * `.claude/settings.json` is the single most credential-dense file this tool
- * ever touches — this codebase's own detect-exposure treats it and hook
- * command bodies as credential carriers — and a dry run is the *default*,
- * so whatever this function emits is printed to a terminal without anyone
- * asking for it. Serialising the whole settings object and diffing it with
- * full context printed the user's `env` block and every unrelated hook
- * command verbatim, secrets included.
+ * `.claude/settings.json` is the most credential-dense file this tool
+ * touches, and a dry run is the default, so whatever this emits is printed
+ * to a terminal without anyone asking for it. `addHookEntry` only ever
+ * appends one matcher entry to `hooks[event]`, so the entire change is that
+ * one entry, and nothing outside it is read into the preview: a full diff
+ * would print the owner's `env` block and every unrelated hook command.
  *
- * `addHookEntry` only ever appends one matcher entry to `hooks[event]`, so
- * the entire change is that one entry. Showing the user's own lines to
- * present a one-entry addition was gratuitous even before it leaked
- * anything: nothing outside the added entry is read into this preview.
+ * The entry shown is built by `buildMatcherEntry`, the function
+ * `addHookEntry` pushes with, so the preview cannot differ from the write.
  */
-function renderSettingsHookDiff(root, proposal) {
-  const result = readSettingsResult(root);
-  if (!result.ok) return unusableSettingsPreview(result.reason);
-
+function settingsHookPreview(settings, proposal) {
   const container = `hooks.${proposal.event}`;
-  const siblings = Array.isArray(result.settings?.hooks?.[proposal.event])
-    ? result.settings.hooks[proposal.event].length
-    : 0;
-
-  // The EXACT element addHookEntry will push — built by the SAME function
-  // (buildMatcherEntry), not a second independently-maintained copy of its
-  // ternary, so a preview/write mismatch is structurally impossible rather
-  // than merely commented against.
-  const matcherEntry = buildMatcherEntry(proposal.entry, proposal.matcher);
-  const added = JSON.stringify(matcherEntry, null, 2);
+  const siblings = Array.isArray(settings?.hooks?.[proposal.event]) ? settings.hooks[proposal.event].length : 0;
+  const added = JSON.stringify(buildMatcherEntry(proposal.entry, proposal.matcher), null, 2);
 
   const lines = [`--- a/${SETTINGS_PATH}`, `+++ b/${SETTINGS_PATH}`, `@@ ${container} @@`];
   for (const line of splitLines(added)) lines.push(`+${line}`);
@@ -663,23 +650,14 @@ function renderSettingsHookDiff(root, proposal) {
 }
 
 /**
- * Preview of a settings-deny proposal: the rules that would actually be
- * added, and nothing else — mirrors renderSettingsHookDiff immediately
- * above, and for the same reason. `permissions.deny` can hold the user's own
- * rules, which can themselves embed a credential (a `Bash(curl ... TOKEN ...)`
- * pattern is a deny rule shape as valid as any other), so diffing the whole
- * array would leak exactly like diffing the whole file would.
- *
- * `addDenyRules` already computes exactly which proposed rules are new —
- * `added` — so this never needs to look at anything else in the file.
+ * Preview of a settings-deny proposal against `settings`: the rules that
+ * would be added, `added` as `addDenyRules` computes them, and nothing
+ * else. `permissions.deny` can hold the owner's own rules, and a
+ * `Bash(curl ... TOKEN ...)` pattern is as valid a deny rule as any other,
+ * so diffing the whole array would leak as diffing the whole file would.
  */
-function renderSettingsDenyDiff(root, proposal) {
-  const result = readSettingsResult(root);
-  if (!result.ok) return unusableSettingsPreview(result.reason);
-
-  const existing = Array.isArray(result.settings?.permissions?.deny) ? result.settings.permissions.deny.length : 0;
-  const { added } = addDenyRules(result.settings, proposal.globs);
-
+function settingsDenyPreview(settings, added) {
+  const existing = Array.isArray(settings?.permissions?.deny) ? settings.permissions.deny.length : 0;
   const lines = [`--- a/${SETTINGS_PATH}`, `+++ b/${SETTINGS_PATH}`, `@@ permissions.deny @@`];
   if (added.length === 0) {
     lines.push(`(every proposed rule is already present — nothing would be added)`);
@@ -693,34 +671,53 @@ function renderSettingsDenyDiff(root, proposal) {
   return lines.join('\n');
 }
 
-/**
- * Unified-style diff of a proposal against what is on disk today (or
- * nothing).
- */
-export function renderDiff(root, proposal) {
-  if (proposal.kind === 'settings-hook') {
-    return renderSettingsHookDiff(root, proposal);
-  }
-  if (proposal.kind === 'settings-deny') {
-    return renderSettingsDenyDiff(root, proposal);
-  }
-
+/** Unified-style diff of a file proposal against what is on disk today (or
+ * nothing). */
+function fileDiff(root, proposal) {
   const targetPath = proposal.path;
   const target = join(root, targetPath);
-  // A NEW file that is a verbatim copy of a shipped asset (`assetSource`, set
-  // only by the kit's own generators and pinned against the asset on disk in
-  // propose.test.mjs) is summarised in one line: audit Tier 3, finding 19 —
-  // a first-run dry run printed 1,570 lines of the kit's own hook scripts.
-  // An UPDATE of an installed asset still shows the real diff, since what
-  // changes in a file on disk is exactly what the reader needs to see.
+  // A new file that is a verbatim copy of a shipped asset (`assetSource`,
+  // set only by the kit's own generators and pinned against the asset on
+  // disk in propose.test.mjs) is summarised in one line: a first dry run
+  // would otherwise print every hook script in full. An update of an
+  // installed asset still shows the real diff, since what changes in a file
+  // on disk is what the reader needs to see.
   if (proposal.assetSource && !existsSync(target)) {
     const lines = splitLines(proposal.contents).length;
     return `+${lines} lines — a verbatim copy of assets/${proposal.assetSource} plus the kit's stamp line at the top; nothing of yours is changed`;
   }
   const before = existsSync(target) ? readFileSync(target, 'utf8') : '';
-  const body = unifiedDiff(before, proposal.contents, targetPath);
+  return unifiedDiff(before, proposal.contents, targetPath);
+}
 
-  return body;
+/**
+ * A function that previews one proposal of a run at a time, in the order
+ * `apply` will act on them. The settings file is read once, and each
+ * settings preview is made against what the previews before it would leave,
+ * as the write is: so the second deny preview of a run counts, and does not
+ * offer again, the rules the first adds.
+ */
+export function diffRenderer(root) {
+  let staged = null;
+  return proposal => {
+    if (proposal.kind === 'file') return fileDiff(root, proposal);
+    staged ??= readSettingsResult(root);
+    if (!staged.ok) return unusableSettingsPreview(staged.reason);
+    if (proposal.kind === 'settings-hook') {
+      const preview = settingsHookPreview(staged.settings, proposal);
+      staged.settings = addHookEntry(staged.settings, proposal.event, proposal.entry, proposal.matcher).settings;
+      return preview;
+    }
+    const { settings, added } = addDenyRules(staged.settings, proposal.globs);
+    const preview = settingsDenyPreview(staged.settings, added);
+    staged.settings = settings;
+    return preview;
+  };
+}
+
+/** The preview of one proposal on its own, against what is on disk today. */
+export function renderDiff(root, proposal) {
+  return diffRenderer(root)(proposal);
 }
 
 /**
@@ -859,43 +856,38 @@ function unmetDependencies(root, proposal) {
   return stale.length ? `dependency-not-this-kit-version: ${stale.join(', ')}` : null;
 }
 
-function applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped }) {
-  const settingsPath = join(root, SETTINGS_PATH);
+/**
+ * `.claude/settings.json` as one run patches it: read once, patched in
+ * memory by each settings proposal in turn, and written once at the end
+ * (`writeSettingsBatch`). `records` are the manifest's patch records for
+ * what has been staged, `patched` what the caller is told of each.
+ */
+function openSettingsBatch(root) {
+  const read = readSettingsResult(root);
+  return { read, settings: read.ok ? read.settings : null, records: [], patched: [] };
+}
 
+function stageSettingsHook({ root, proposal, batch, skipped }) {
   const unmet = unmetDependencies(root, proposal);
   if (unmet !== null) {
     skipped.push({ path: SETTINGS_PATH, why: unmet, checkId: proposal.checkId });
     return;
   }
-
-  const result = readSettingsResult(root);
-
-  if (!result.ok) {
-    // The single most security-relevant file in the repository. An
-    // unparseable settings.json (trailing commas, comments, a JSON array
-    // instead of an object, ...) must never be silently replaced with `{}` —
-    // that destroys whatever the user had. Write nothing; report it.
+  if (!batch.read.ok) {
+    // An unparseable settings.json (trailing commas, comments, a JSON array
+    // instead of an object) must never be replaced with `{}`: that destroys
+    // whatever the owner had. Nothing is written; it is reported.
     skipped.push({ path: SETTINGS_PATH, why: 'unparseable', checkId: proposal.checkId });
     return;
   }
-
-  const settings = result.settings;
-  if (hasEquivalentHook(settings, proposal.event, proposal.entry, proposal.matcher)) {
+  if (hasEquivalentHook(batch.settings, proposal.event, proposal.entry, proposal.matcher)) {
     skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
     return;
   }
 
-  const { settings: next, patch } = addHookEntry(settings, proposal.event, proposal.entry, proposal.matcher);
-  // Task 9b, finding 4: recorded only once, the first time this run (or any
-  // prior one — `nextManifest` starts from a clone of the existing
-  // manifest) finds the file absent right before writing it. Never reset
-  // back to false: once the file was ours to create, it stays ours to
-  // clean up even across later runs that only patch it further.
-  if (result.raw === null) nextManifest.settingsCreated = true;
-  recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
-  writeFileDeep(settingsPath, serializeSettings(next, result.raw), SETTINGS_PATH);
-
-  nextManifest.settingsPatches.push({
+  const { settings, patch } = addHookEntry(batch.settings, proposal.event, proposal.entry, proposal.matcher);
+  batch.settings = settings;
+  batch.records.push({
     event: proposal.event,
     container: patch.container,
     entrySha256: patch.entrySha256,
@@ -903,36 +895,26 @@ function applySettingsHookProposal({ root, proposal, nextManifest, patched, skip
     checkId: proposal.checkId,
     appliedAt: new Date().toISOString(),
   });
-  patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId });
+  batch.patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId });
 }
 
-function applySettingsDenyProposal({ root, proposal, nextManifest, patched, skipped }) {
-  const settingsPath = join(root, SETTINGS_PATH);
-  const result = readSettingsResult(root);
-
-  if (!result.ok) {
-    // Same reasoning as applySettingsHookProposal: never silently replace an
-    // unparseable settings.json with {}.
+function stageSettingsDeny({ proposal, batch, skipped }) {
+  if (!batch.read.ok) {
     skipped.push({ path: SETTINGS_PATH, why: 'unparseable', checkId: proposal.checkId });
     return;
   }
 
-  const { settings: next, patch } = addDenyRules(result.settings, proposal.globs);
-
-  // addDenyRules returns patch: null when every proposed rule is already
-  // present — a patch describing an empty change is a lie the manifest would
-  // later act on (e.g. uninstall trying to revert rules that were never
-  // ours to begin with), so only a non-null patch may ever be recorded.
+  const { settings, patch } = addDenyRules(batch.settings, proposal.globs);
+  // `addDenyRules` returns no patch when every proposed rule is already
+  // present. A record of an empty change would have uninstall revert rules
+  // that were never the kit's, so only a real patch is recorded.
   if (!patch) {
     skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
     return;
   }
 
-  if (result.raw === null) nextManifest.settingsCreated = true;
-  recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
-  writeFileDeep(settingsPath, serializeSettings(next, result.raw), SETTINGS_PATH);
-
-  nextManifest.settingsPatches.push({
+  batch.settings = settings;
+  batch.records.push({
     event: 'permissions.deny',
     container: patch.container,
     entrySha256: patch.entrySha256,
@@ -941,7 +923,35 @@ function applySettingsDenyProposal({ root, proposal, nextManifest, patched, skip
     checkId: proposal.checkId,
     appliedAt: new Date().toISOString(),
   });
-  patched.push({ event: 'permissions.deny', step: proposal.step, checkId: proposal.checkId });
+  batch.patched.push({ event: 'permissions.deny', step: proposal.step, checkId: proposal.checkId });
+}
+
+/**
+ * Writes what the batch staged, in one whole-file replacement, and records
+ * its patches only once that write has returned: so the file on disk is
+ * the owner's old one or the complete new one, and the manifest never
+ * records a patch the file does not hold. A failed write is reported in
+ * `failed` and records nothing. The caller writes the manifest next; a run
+ * killed between the two leaves entries in the file with no record, the one
+ * gap two files cannot close.
+ *
+ * `settingsCreated` is set the first time a run finds the file absent and
+ * writes it, and never reset: once the file was the kit's to create, it
+ * stays the kit's to remove when empty.
+ */
+function writeSettingsBatch({ root, batch, nextManifest, patched, failed, replaceSettings }) {
+  if (batch === null || batch.records.length === 0) return;
+  // Before the write, whose own mkdir would hide which directories are new.
+  recordCreatedDirs(root, nextManifest, SETTINGS_PATH);
+  try {
+    replaceSettings(join(root, SETTINGS_PATH), serializeSettings(batch.settings, batch.read.raw));
+  } catch (err) {
+    failed.push({ path: SETTINGS_PATH, error: `failed to write ${SETTINGS_PATH}: ${err?.message ?? String(err)}` });
+    return;
+  }
+  if (batch.read.raw === null) nextManifest.settingsCreated = true;
+  nextManifest.settingsPatches.push(...batch.records);
+  patched.push(...batch.patched);
 }
 
 /**
@@ -961,8 +971,10 @@ function applySettingsDenyProposal({ root, proposal, nextManifest, patched, skip
  * assert the call itself, platform-independently, rather than its OS-level
  * effect (see `writeFileDeep`'s own comment on why that effect is not
  * observable on every platform this project is developed on).
+ * `replaceSettings` is `replaceFile` in production, and overridable for the
+ * same reason: so a test can make the one settings write fail partway.
  */
-export function applyProposals({ root, proposals, manifest, kitVersion, chmod = chmodSync }) {
+export function applyProposals({ root, proposals, manifest, kitVersion, chmod = chmodSync, replaceSettings = replaceFile }) {
   // Pass 1: validate. No write happens until every proposal in the batch has
   // cleared both the allowlist and the containment check.
   //
@@ -1000,21 +1012,25 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   nextManifest.settingsPatches ??= [];
 
   // Pass 2: apply. Every path in this batch already cleared validation; what
-  // remains is what validation cannot predict — actual I/O.
+  // remains is what validation cannot predict — actual I/O. Files are
+  // written as they come; settings patches are staged in memory and written
+  // once, after the loop, whether it ended or was stopped by a failure.
+  let batch = null;
   for (const proposal of proposals) {
     try {
       if (proposal.kind === 'file') {
         applyFileProposal({ root, proposal, nextManifest, written, skipped, chmod });
-      } else if (proposal.kind === 'settings-hook') {
-        applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped });
       } else {
-        applySettingsDenyProposal({ root, proposal, nextManifest, patched, skipped });
+        batch ??= openSettingsBatch(root);
+        if (proposal.kind === 'settings-hook') stageSettingsHook({ root, proposal, batch, skipped });
+        else stageSettingsDeny({ proposal, batch, skipped });
       }
     } catch (err) {
       failed.push({ path: err?.path ?? proposal.path ?? SETTINGS_PATH, error: err?.message ?? String(err) });
       break;
     }
   }
+  writeSettingsBatch({ root, batch, nextManifest, patched, failed, replaceSettings });
 
   // The version that last WROTE, not the one that first created the
   // manifest (audit Tier 2, finding 8): a 0.2.0 asset on disk under a

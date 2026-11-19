@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/detect.mjs
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { listFiles } from './lib/scan.mjs';
 import { detectStack } from './lib/detect-stack.mjs';
 import { detectHarness } from './lib/detect-harness.mjs';
@@ -11,7 +11,7 @@ import { buildGaps } from './lib/gap-model.mjs';
 import { buildReport, renderSummary, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { verifyCommands } from './lib/verify.mjs';
 import { gitInfo } from './lib/git-info.mjs';
-import { readManifest } from './lib/manifest.mjs';
+import { readManifest, replaceFile } from './lib/manifest.mjs';
 import { parseArgv, warnUnknown, wantsHelp, DETECT_USAGE } from './lib/cli.mjs';
 import { assertAllowed, assertContained } from './lib/apply-lib.mjs';
 
@@ -68,31 +68,15 @@ if (flags.has('--verify')) {
 
 // The one and only write. Containment is checked before anything touches the
 // filesystem: even the mkdir would land outside the repository through a
-// junction. The report goes to a temporary sibling and is renamed into place,
-// so the file on disk is the previous report or the new one, whole. A
-// temporary left by a hard kill carries our prefix and is cleared first. Any
-// failure — `docs` as a file, a read-only tree, a refused path — exits 2 with
-// the path and the reason, never a stack trace; nothing else was written.
+// junction. The report replaces the previous one whole. Any failure —
+// `docs` as a file, a read-only tree, a refused path — exits 2 with the path
+// and the reason, never a stack trace; nothing else was written.
 const outPath = join(root, DETECT_REPORT_PATH);
-const outDir = dirname(outPath);
-const tmpPrefix = `${basename(outPath)}.tmp-`;
-const tmpPath = `${outPath}.tmp-${process.pid}`;
-let contained = false;
 try {
   assertAllowed(DETECT_REPORT_PATH);
   assertContained(root, DETECT_REPORT_PATH);
-  contained = true;
-  mkdirSync(outDir, { recursive: true });
-  for (const name of readdirSync(outDir)) {
-    if (name.startsWith(tmpPrefix)) rmSync(join(outDir, name), { force: true });
-  }
-  writeFileSync(tmpPath, JSON.stringify(report, null, 2) + '\n', 'utf8');
-  renameSync(tmpPath, outPath);
+  replaceFile(outPath, JSON.stringify(report, null, 2) + '\n');
 } catch (err) {
-  // Only a contained path may be cleaned up; a refused one is never touched.
-  if (contained) {
-    try { rmSync(tmpPath, { force: true }); } catch { /* the error below is the one to report */ }
-  }
   process.stderr.write(`kh-harness: could not write ${outPath} (${err?.code ?? err?.message ?? 'unknown error'}) — the report was not saved, and nothing else is written by detect.\n`);
   process.exit(2);
 }

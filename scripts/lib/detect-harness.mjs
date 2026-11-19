@@ -131,7 +131,7 @@ function denyRulesInEffect(root) {
 // a raw hook COMMAND, only a resolved script path. A `permissions.deny`
 // rule is ordinarily a path-shaped permission pattern (the shape every
 // rule this tool itself ever writes takes), but apply-lib.mjs's own
-// comment on `renderSettingsDenyDiff` already flags that a `Bash(...)`
+// comment on `settingsDenyPreview` already flags that a `Bash(...)`
 // deny rule can embed a literal credential as its argument. So each entry
 // here is kept verbatim ONLY when it starts with one of the tools whose
 // argument is a path, never a command or URL — `Bash(...)`, `WebFetch(...)`
