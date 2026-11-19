@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, sep } from 'node:path';
@@ -16,15 +16,11 @@ sandboxMarkerDir();
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'lint-touched.mjs');
 
 function run(cwd, payload, extraEnv = {}) {
-  try {
-    const stdout = execFileSync(process.execPath, [HOOK], {
-      cwd, input: JSON.stringify(payload), encoding: 'utf8',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: cwd, ...extraEnv },
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (e) {
-    return { code: e.status, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
-  }
+  const r = spawnSync(process.execPath, [HOOK], {
+    cwd, input: JSON.stringify(payload), encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: cwd, ...extraEnv },
+  });
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
 function repo(script = 'exit 0') {
@@ -817,7 +813,7 @@ test('BOUND: more than 60 attributable lines are truncated with a notice, not du
 // theoretical in production — but "never hang" is this file's own
 // invariant, and HK_STDIN_TIMEOUT_MS lets this test prove it holds even
 // when the caller never closes stdin at all, rather than taking it on
-// faith. Uses `spawn` (not `execFileSync`) specifically so the test can
+// faith. Uses `spawn` (not `spawnSync`) specifically so the test can
 // leave stdin open deliberately.
 test('STDIN: a caller that never closes stdin still gets exit 0 within the bound, not a hang', async () => {
   const d = repo();

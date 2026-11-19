@@ -32,7 +32,9 @@ export function sandboxDataDir() {
 }
 
 export const git = (d, ...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-export const run = (script, d, ...a) => execFileSync(process.execPath, [script, d, ...a], { encoding: 'utf8' });
+/** Runs a kit CLI and returns its stdout. Its stderr is captured, not
+ * printed: a run that fails carries it on the thrown error's `stderr`. */
+export const run = (script, d, ...a) => execFileSync(process.execPath, [script, d, ...a], { encoding: 'utf8', stdio: 'pipe' });
 export const settings = d => JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
 export const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/kh-harness.manifest.json'), 'utf8'));
 

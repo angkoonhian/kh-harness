@@ -83,14 +83,12 @@ const cli = (d, ...args) => execFileSync(process.execPath, [CLI, d, ...args], { 
 test('detect exits 2 with one stderr line when docs/harness/detect.json cannot be written', () => {
   const d = bare();
   writeFileSync(join(d, 'docs'), 'a file where the docs directory should be');
-  let err;
-  try { cli(d); } catch (e) { err = e; }
-  assert.ok(err, 'the report could not be written, so the run cannot succeed');
-  assert.equal(err.status, 2, `exit 1 is a crash, and the README says a crash is a bug: ${err.stderr}`);
-  assert.match(String(err.stderr), /could not write/i);
-  assert.match(String(err.stderr), /detect\.json/);
-  assert.doesNotMatch(String(err.stderr), /\n\s+at /, 'no stack trace');
-  assert.equal(String(err.stdout ?? ''), '', 'no half-report on stdout');
+  const r = spawnSync(process.execPath, [CLI, d], { encoding: 'utf8' });
+  assert.equal(r.status, 2, `the report could not be written, so the run cannot succeed; exit 1 is a crash, and the README says a crash is a bug: ${r.stderr}`);
+  assert.match(r.stderr, /could not write/i);
+  assert.match(r.stderr, /detect\.json/);
+  assert.doesNotMatch(r.stderr, /\n\s+at /, 'no stack trace');
+  assert.equal(r.stdout, '', 'no half-report on stdout');
 });
 
 test('detect refuses to write its report through a junction out of the repository', (t) => {
@@ -205,7 +203,7 @@ test('writes NOTHING else', () => {
   // Must COMMIT, not just stage: `git add -A` leaves every file as "A " in
   // porcelain output, which would swamp the assertion.
   execFileSync('git', ['init', '-q', d]);
-  execFileSync('git', ['-C', d, 'add', '-A']);
+  execFileSync('git', ['-C', d, 'add', '-A'], { stdio: 'pipe' });
   execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
   cli(d);
   // --untracked-files=all: without it, git collapses a wholly-new directory
@@ -466,7 +464,7 @@ test('END-TO-END (Task 5b): a pip-tools repo (requirements.in AND requirements.t
   execFileSync('git', ['init', '-q', d]);
   execFileSync('git', ['-C', d, 'checkout', '-q', '-b', 'chore/harness']);
   execFileSync('git', ['-C', d, 'remote', 'add', 'origin', 'https://example.invalid/x.git']);
-  execFileSync('git', ['-C', d, 'add', '-A']);
+  execFileSync('git', ['-C', d, 'add', '-A'], { stdio: 'pipe' });
   execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
   const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
   const out = execFileSync(process.execPath, [APPLY, d, '--yes'], { encoding: 'utf8' });
@@ -489,7 +487,7 @@ test('END-TO-END (Task 5b): requirements.in + requirements.txt + requirements-de
   execFileSync('git', ['init', '-q', d]);
   execFileSync('git', ['-C', d, 'checkout', '-q', '-b', 'chore/harness']);
   execFileSync('git', ['-C', d, 'remote', 'add', 'origin', 'https://example.invalid/x.git']);
-  execFileSync('git', ['-C', d, 'add', '-A']);
+  execFileSync('git', ['-C', d, 'add', '-A'], { stdio: 'pipe' });
   execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
   const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
   const out = execFileSync(process.execPath, [APPLY, d, '--yes'], { encoding: 'utf8' });
