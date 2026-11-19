@@ -12,8 +12,8 @@ import { pathToFileURL } from 'node:url';
 
 import { appendEvent, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
-import { failureSignature, FAILURE_EVENT, findRecurrences } from './recurrence.mjs';
-import { FAILURES_PATH, failuresEvidence, parseFailures, unlabelledRecurrences } from './failures-evidence.mjs';
+import { failureSignature, FAILURE_EVENT } from './recurrence.mjs';
+import { FAILURES_PATH, failuresEvidence, parseFailures } from './failures-evidence.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { detectStack } from './detect-stack.mjs';
@@ -170,26 +170,6 @@ test('parseFailures never throws', () => {
     assert.ok(Array.isArray(parseFailures(input)));
   }
   assert.deepEqual(parseFailures('## F1'), [{ id: 'F1', title: '', signatures: [] }]);
-});
-
-test('unlabelledRecurrences keeps, in order, the recurrences no failure kind lists', () => {
-  const recurrences = [{ signature: 'aaaaaaaaaaaaaaaa', n: 1 }, { signature: 'bbbbbbbbbbbbbbbb', n: 2 }, { signature: 'cccccccccccccccc', n: 3 }];
-  const kinds = [
-    { id: 'F1', title: 'one', signatures: ['bbbbbbbbbbbbbbbb'] },
-    { id: 'F2', title: 'two', signatures: [] },
-  ];
-  assert.deepEqual(unlabelledRecurrences(recurrences, kinds), [recurrences[0], recurrences[2]]);
-  assert.deepEqual(unlabelledRecurrences(recurrences, []), recurrences);
-  assert.deepEqual(unlabelledRecurrences([], kinds), []);
-});
-
-test('unlabelledRecurrences over a real log and a parsed taxonomy', () => {
-  const d = tempDir('hk-fail-repo-');
-  const labelled = logRecurrences(d);
-  const { recurrences } = findRecurrences(d);
-  assert.equal(recurrences.length, 2, 'fixture sanity');
-  const left = unlabelledRecurrences(recurrences, parseFailures(`## F1 — one\n- signatures: ${labelled}\n`));
-  assert.deepEqual(left.map(r => r.errorLine), [UNLABELLED_LINE]);
 });
 
 test('with no taxonomy, P5.failures is absent and decidable, and apply scaffolds it', () => {

@@ -19,11 +19,11 @@ import { escapeDelimiters, stripUnsafe } from '../../assets/scripts/harness-reda
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { gateStats, REROUTED_MEANS } from './gate-stats.mjs';
 import { readLedger, verifyLedger } from './ledger.mjs';
-import { checkDataDir } from './log-lib.mjs';
+import { checkDataDir, NOT_READ } from './log-lib.mjs';
 import { findRecurrences } from './recurrence.mjs';
 import { readIfPresent } from './scan.mjs';
 
-export { FIRING_EVENT as GATE_FIRING_EVENT, REROUTED_MEANS } from './gate-stats.mjs';
+export { NOT_READ, REROUTED_MEANS };
 
 /** The fixed words of the two lines put around everything a command prints
  * from the log. Each line also carries a nonce drawn for the run, which no
@@ -166,7 +166,6 @@ export function buildLogReport(root) {
   return { ...report, ...counts, groups: groupRecurrences(recurrences, taxonomy), gates };
 }
 
-export const NOT_READ = 'not read, because the sessions directory could not be listed';
 const indent = lines => lines.map(l => `  ${l}`);
 const times = n => (n === 1 ? '1 time' : `${n} times`);
 const sessionsWord = n => (n === 1 ? '1 session' : `${n} sessions`);
