@@ -44,7 +44,7 @@ const rejectsWith = (g, pattern) => {
 };
 
 test('GATE_LIMITS holds the stated bounds', () => {
-  assert.deepEqual(GATE_LIMITS, { valueMax: 200, messageMax: 300, gatesMax: 200, inputMax: 262144 });
+  assert.deepEqual(GATE_LIMITS, { valueMax: 200, messageMax: 300, gatesMax: 100, inputMax: 65536 });
   assert.ok(Object.isFrozen(GATE_LIMITS));
 });
 
@@ -243,10 +243,11 @@ test('a gate inspects only the first inputMax characters of its field', () => {
 // The adversarial shape for each kind, on a field four times `inputMax`: the
 // reviewer's glob (one star, then 198 `a` and a `b`) against all `a`, and a
 // 200-character value that occurs, or almost occurs, at every position.
-// Measured on the development machine (Windows 11, Node 24.0): the slowest
-// shape, a token of 200 `a`, took about 5 ms for one gate and 0.65 s for
-// `gatesMax` gates alone, about 1.1 s while the full suite ran in parallel;
-// a literal about 1 ms and 0.18 s; the glob under 0.1 ms and 1 ms.
+// Measured on the development machine (Windows 11, Node 24.0), one gate and
+// then `gatesMax` gates, run alone: glob 0.01 ms and 0.2 ms; literal of 199
+// `a` and a `b` 0.2 ms and 23 ms, literal of a `b` and 199 `a` 0.02 ms and
+// 1 ms; token of 200 `a` 2-3 ms and 86-94 ms, token of 199 `a` and a `b`
+// 0.2-0.3 ms and 23 ms.
 const ADVERSARIAL = [
   ['glob', '*' + 'a'.repeat(198) + 'b'],
   ['literal', 'a'.repeat(199) + 'b'],
@@ -370,7 +371,7 @@ test('entries beyond gatesMax are rejected, never silently dropped', () => {
   const parsed = parseGates(file(many));
   assert.equal(parsed.gates.length, GATE_LIMITS.gatesMax);
   assert.deepEqual(parsed.rejected.map(r => r.index), [GATE_LIMITS.gatesMax, GATE_LIMITS.gatesMax + 1]);
-  for (const r of parsed.rejected) assert.match(r.reason, /200/);
+  for (const r of parsed.rejected) assert.match(r.reason, /100/);
 });
 
 test('gatesMax bounds the gates returned, not the suspensions', () => {
