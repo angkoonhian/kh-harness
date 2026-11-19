@@ -94,6 +94,32 @@ removed from the manifest. Nothing to do. A manifest left with no record is
 removed. `docs/harness/detect.json` is always left, and listed under
 `Left in place`; delete it by hand if you do not want it.
 
+### uninstall could not revert a hook entry, and kept its script
+
+    Could not revert:
+      /hooks/PreCompact (patch-modified: the entry kh-harness recorded is not there as written while one that runs a kit script is, so that one is taken to be it, edited, and is left registered with its script kept; put it back as written or delete it, then run uninstall again)
+    Kept:
+      .claude/scripts/session-log.mjs (hook-still-registered: a hook entry left in .claude/settings.json still runs it, or a script that loads it, and with the script gone that hook would fail on every event; put the entry back as kh-harness wrote it or delete it, then run uninstall again)
+    .claude/kh-harness.manifest.json remains: it records what was kept, and running uninstall again acts on it.
+
+Exit 2. A kit hook entry in `.claude/settings.json` was changed since
+kh-harness wrote it, by adding a `timeout` for instance, so `uninstall`
+does not take it for its own and leaves it registered. Claude Code goes on
+running that entry, so the script it runs stays on disk, with every script
+that one loads; every other kit file and entry is removed. Open
+`.claude/settings.json`, delete the entry under the event named (or put it
+back as kh-harness wrote it), and run `uninstall --yes` again: the kept
+scripts and the manifest then go.
+
+The same `hook-still-registered` line appears, with exit 0, for a hook
+entry of your own that runs a kit script. While `.claude/settings.json`
+cannot be read, every hook script is kept, and the exit code is 2:
+
+      .claude/scripts/tool-gate.mjs (hook-still-registered: .claude/settings.json could not be read, so a hook entry in it may still run it, or a script that loads it; mend the file, then run uninstall again)
+
+The other reason words `uninstall` prints are listed under
+[uninstall](commands.md#uninstall).
+
 ### A hook script is kept, so no hook script is written
 
 `detect` prints, under each hook check that is not yet installed:

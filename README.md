@@ -240,12 +240,17 @@ Removed:
 …
 Kept:
   docs/harness/FAILURES.md (ours-modified)
+.claude/kh-harness.manifest.json remains: it records what was kept, and running uninstall again acts on it.
 Left in place (written by `detect`, which records nothing as installed; delete it by hand if you do not want it):
   docs/harness/detect.json
 ```
 
 - A file you edited is kept and named, and then the manifest is kept with
   it.
+- A kit hook entry you edited in `.claude/settings.json` is left
+  registered, and the script it runs is kept with every script that one
+  loads, so no registered hook points at a removed file. `uninstall` names
+  each and exits 2; put the entry back or delete it, and run it again.
 - The two files `learn land` writes, `docs/harness/LEARNED.md` and
   `.claude/kh-harness/gates.json`, are both kept while either holds a
   landed learning. `uninstall` says how many, and that

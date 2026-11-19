@@ -282,6 +282,18 @@ so a hook of your own added above ours is never the one removed. Empty
 directories this tool itself created are removed; a directory that existed
 beforehand never is.
 
+The settings are reverted first. A kit hook entry you edited is left
+registered, and the script it runs is kept with every script that one loads,
+as is every hook script while the settings file cannot be read: nothing left
+registered points at a removed script. Each kept file and patch is listed
+with its reason, and the manifest stays to record it.
+
+The two files \`learn land\` writes are kept while either holds a landed
+learning; \`learn revert <id>\` takes each out. The record of a file or
+settings entry you already removed by hand is dropped. A manifest left with
+nothing to record is removed. \`docs/harness/detect.json\` is left in place:
+\`detect\` wrote it and recorded nothing as installed.
+
 FLAGS
   --yes   Actually remove. Without it, nothing is removed.
 

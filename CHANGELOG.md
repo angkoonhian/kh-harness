@@ -187,6 +187,14 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   two leaves entries the manifest does not record.
 - `detect`, `apply` and `uninstall` reject a second path (exit 2). A
   dry-run `apply` over a manifest that cannot be read exits 3.
+- `uninstall` reverts the settings before it removes a file, and keeps a
+  hook script that an entry left in `.claude/settings.json` still runs,
+  with every script that one loads: an entry the owner edited, one of the
+  owner's own, one whose revert could not be written, and every hook
+  script while the settings file cannot be read. Each is listed as
+  `hook-still-registered` with what to do, and `uninstall` says when the
+  manifest remains. Before, the scripts were removed and the entry left
+  registered, so its hook failed on every event.
 - `uninstall` keeps the two files `learn land` writes while either holds a
   landed learning, prints the count and names `learn revert <id>`; once
   they hold none it removes both. If either is kept, both are. It drops

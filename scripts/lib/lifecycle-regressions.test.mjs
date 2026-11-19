@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
-import { GENERATORS, LINT_TOUCHED_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH } from './propose.mjs';
+import { everyLoadedSibling, GENERATORS, INSTALLED_SCRIPT_PATHS, LINT_TOUCHED_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH } from './propose.mjs';
 import { DETECT, APPLY, UNINSTALL, git, run, runResult, settings, manifestOf, fixture, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
 
 sandboxDataDir();
@@ -416,4 +416,73 @@ test('a manifest path that holds terminal control characters reaches no terminal
   const evidence = report.checks.flatMap(c => c.evidence);
   assert.ok(evidence.some(e => e.includes(shown)), 'detect.json names the path, cleaned');
   assert.ok(evidence.every(e => !/[\u0000-\u001f]/.test(e)), 'and holds no control character in any evidence line');
+});
+
+// A kit hook entry the owner edited is not reverted, so Claude Code still
+// runs it on its event: the script it runs, and every script that one loads,
+// must stay on disk, or the hook fails on every such event.
+
+/** Every installed script a hook entry in `settings.json` names that is not
+ * on disk. */
+function registeredButMissing(d) {
+  const missing = [];
+  for (const matchers of Object.values(settings(d).hooks ?? {})) {
+    for (const hook of matchers.flatMap(m => m.hooks ?? [])) {
+      const script = hook.args?.[0]?.replace('${CLAUDE_PROJECT_DIR}/', '');
+      if (script?.startsWith('.claude/scripts/') && !existsSync(join(d, script))) missing.push(script);
+    }
+  }
+  return [...new Set(missing)];
+}
+
+test('uninstall keeps the script an edited kit hook entry still runs, with every sibling it loads, and says so', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const s = settings(d);
+  const entry = s.hooks.PreCompact.find(m => m.hooks.some(h => h.args?.[0]?.endsWith(SESSION_LOG_PATH)));
+  entry.hooks[0].timeout = 5;
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + '\n');
+  const loaded = [SESSION_LOG_PATH, ...everyLoadedSibling(SESSION_LOG_PATH)];
+  const notLoaded = INSTALLED_SCRIPT_PATHS.filter(p => !loaded.includes(p));
+  assert.ok(loaded.length > 1 && notLoaded.length > 0, 'fixture: the logging hook loads some of the installed scripts, not all');
+
+  const dry = run(UNINSTALL, d);
+  for (const path of loaded) {
+    assert.ok(dry.includes(`\n  ${path} (hook-still-registered: a hook entry left in .claude/settings.json still runs it, or a script that loads it`), `the plan keeps ${path}`);
+  }
+
+  const result = runResult(UNINSTALL, d, '--yes');
+  assert.equal(result.status, 2, 'an entry is still registered');
+  assert.deepEqual(registeredButMissing(d), [], 'nothing registered points at a removed script');
+  for (const path of loaded) assert.ok(existsSync(join(d, path)), `${path} is kept`);
+  for (const path of notLoaded) assert.equal(existsSync(join(d, path)), false, `${path} is removed`);
+  assert.deepEqual(Object.keys(settings(d).hooks), ['PreCompact'], 'every unedited entry is reverted');
+  assert.ok(result.stdout.includes('Could not revert:\n  /hooks/PreCompact (patch-modified: the entry kh-harness recorded is not there as written while one that runs a kit script is, so that one is taken to be it, edited, and is left registered with its script kept'), result.stdout);
+  const kept = result.stdout.slice(result.stdout.indexOf('\nKept:\n'));
+  for (const path of loaded) {
+    assert.ok(kept.includes(`\n  ${path} (hook-still-registered: a hook entry left in .claude/settings.json still runs it, or a script that loads it`), `the result names ${path} as kept`);
+  }
+  assert.match(result.stdout, /^\.claude\/kh-harness\.manifest\.json remains: it records what was kept, and running uninstall again acts on it\.$/m);
+  assert.deepEqual(manifestOf(d).files.map(f => f.path).sort(), [...loaded].sort(), 'the kept scripts stay on record');
+
+  // The owner deletes the edited entry; the rest then goes.
+  const left = settings(d);
+  delete left.hooks;
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(left, null, 2) + '\n');
+  const again = runResult(UNINSTALL, d, '--yes');
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  for (const path of loaded) assert.equal(existsSync(join(d, path)), false, `${path} is removed once nothing runs it`);
+  assert.equal(existsSync(join(d, '.claude/kh-harness.manifest.json')), false);
+});
+
+test('uninstall keeps every hook script while settings.json cannot be read, since its hooks remain registered', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  writeFileSync(join(d, '.claude/settings.json'), '{ not json');
+  const scripts = manifestOf(d).files.map(f => f.path).filter(path => INSTALLED_SCRIPT_PATHS.includes(path));
+  assert.ok(scripts.length > 1, 'fixture: hook scripts are installed');
+  const result = runResult(UNINSTALL, d, '--yes');
+  assert.equal(result.status, 2);
+  for (const path of scripts) assert.ok(existsSync(join(d, path)), `${path} is kept`);
+  assert.ok(result.stdout.includes('\n  .claude/scripts/tool-gate.mjs (hook-still-registered: .claude/settings.json could not be read, so a hook entry in it may still run it'), result.stdout);
 });

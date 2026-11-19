@@ -11,10 +11,12 @@ import { join } from 'node:path';
 import { assertAllowed, assertContained, isAllowedDirectory, isCanonicalJson, serializeSettings, SETTINGS_PATH } from './apply-lib.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { classify, MANIFEST_PATH, replaceFile, writeManifest } from './manifest.mjs';
-import { revertPatches } from './settings-merge.mjs';
+import { hookPathTokens, revertPatches } from './settings-merge.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { carriesStamp } from './render.mjs';
-import { BOOTSTRAP_PATH, RULES_PATH, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, protectedDenyRules, toolGateDenyRules } from './propose.mjs';
+import {
+  BOOTSTRAP_PATH, everyLoadedSibling, RULES_PATH, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS, protectedDenyRules, toolGateDenyRules,
+} from './propose.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
@@ -71,9 +73,9 @@ function sessionLogUsage(root) {
  * guessed at. The protected-surface rules rest on no evidence, so they are
  * always producible.
  *
- * No candidate glob may ever match a file the kit itself generates: those
- * files are deleted before `runUninstall` rebuilds this set, so a rule
- * resting on one would stop being producible and be kept.
+ * No candidate glob may ever match a file the kit itself generates: a later
+ * run, once those files are removed, rebuilds this set, and a rule resting
+ * on one would stop being producible and be kept.
  */
 function producibleSettings(root) {
   const { files } = listFiles(root);
@@ -492,32 +494,50 @@ function validateSettings(settingsPath) {
   return { valid: false, object: null, reason: 'settings-unreadable', raw: read.text };
 }
 
+// Why an installed script is kept while a hook entry may still run it.
+const STILL_REGISTERED = 'hook-still-registered';
+
+/**
+ * The installed scripts a hook entry in the settings file may still run, as
+ * `{ paths, unread }`; `validated` is that file as `validateSettings` read
+ * it. Claude Code runs every registered entry on
+ * its event whatever this command removes, and a script that is gone fails
+ * there, on every tool call for the gate hook. So each kit hook script an
+ * entry names stays on disk, with every installed script it loads.
+ * `settings` is the settings as they stand once this run's reverts are
+ * written. With no settings file nothing is registered; with one that
+ * cannot be read every recorded entry may still be, so every installed
+ * script is kept and `unread` says why.
+ */
+function scriptsStillRegistered(validated, settings) {
+  if (validated.reason === 'settings-missing') return { paths: new Set(), unread: false };
+  if (!validated.valid) return { paths: new Set(INSTALLED_SCRIPT_PATHS), unread: true };
+  const paths = new Set();
+  const events = settings?.hooks !== null && typeof settings?.hooks === 'object' ? Object.values(settings.hooks) : [];
+  for (const matchers of events) {
+    if (!Array.isArray(matchers)) continue;
+    for (const hook of matchers.flatMap(m => (Array.isArray(m?.hooks) ? m.hooks : []))) {
+      for (const script of hookPathTokens(hook).filter(token => GENERATOR_SCRIPT_PATHS.includes(token))) {
+        paths.add(script);
+        for (const sibling of everyLoadedSibling(script)) paths.add(sibling);
+      }
+    }
+  }
+  return { paths, unread: false };
+}
+
+/** The entry that keeps `path` because a hook may still run it, or null. */
+const registeredRefusal = (registered, path) => (registered.paths.has(path) ? { why: STILL_REGISTERED, settingsUnread: registered.unread } : null);
+
 /**
  * Read-only. Decides what may be removed; removes nothing. `gone` and
  * `gonePatches` are what the manifest records that is no longer there, a
  * file or a settings entry: nothing is done about either, and the run drops
- * both from the record.
+ * both from the record. The settings are decided first, since a script a
+ * hook entry stays registered for is kept (`scriptsStillRegistered`).
  */
 export function planUninstall({ root, manifest }) {
   const remove = [], keep = [], gone = [], revert = [], keepPatches = [], gonePatches = [];
-
-  for (const f of manifest?.files ?? []) {
-    const refusal = guardRemoval(root, f.path);
-    if (refusal === ALREADY_GONE) {
-      gone.push({ path: f.path });
-      continue;
-    }
-    if (refusal) {
-      keep.push({ path: f.path, why: refusal });
-      continue;
-    }
-    const content = contentRefusal(root, manifest, f.path);
-    if (content) {
-      keep.push({ path: f.path, ...content });
-      continue;
-    }
-    remove.push({ path: f.path });
-  }
 
   // The same revert `runUninstall` performs, done here read-only, so the
   // prediction of the settings file's final content, below, asks the
@@ -537,6 +557,25 @@ export function planUninstall({ root, manifest }) {
     revert.push(...r.reverted);
     for (const p of r.gone) gonePatches.push({ ...p, why: 'entry-gone' });
     for (const k of r.kept) keepPatches.push({ ...k.patch, why: k.reason });
+  }
+
+  const registered = scriptsStillRegistered(validated, simulatedSettings);
+  for (const f of manifest?.files ?? []) {
+    const refusal = guardRemoval(root, f.path);
+    if (refusal === ALREADY_GONE) {
+      gone.push({ path: f.path });
+      continue;
+    }
+    if (refusal) {
+      keep.push({ path: f.path, why: refusal });
+      continue;
+    }
+    const content = contentRefusal(root, manifest, f.path) ?? registeredRefusal(registered, f.path);
+    if (content) {
+      keep.push({ path: f.path, ...content });
+      continue;
+    }
+    remove.push({ path: f.path });
   }
 
   // The preview is the path a cautious user reaches for first, so it
@@ -577,45 +616,12 @@ export function runUninstall({ root, manifest, plan }) {
   const patchesKept = [];
   const patchesGone = [];
 
-  // 1. Guard, re-classify, re-check the stamp, and remove only what still
-  //    passes. `plan` may have been built before the junction, entry or
-  //    edit that makes a path unsafe existed, or by a caller that is not
-  //    `planUninstall`.
-  for (const r of plan.remove) {
-    const refusal = guardRemoval(root, r.path);
-    if (refusal === ALREADY_GONE) {
-      alreadyGone.push(r.path);
-      continue;
-    }
-    if (refusal) {
-      refused.push({ path: r.path, why: refusal });
-      continue;
-    }
-    const content = contentRefusal(root, manifest, r.path);
-    if (content !== null) {
-      changedSincePlan.push({ path: r.path, ...content });
-      continue;
-    }
-    try {
-      fs.rmSync(join(root, r.path));
-      removed.push(r.path);
-    } catch (e) {
-      // The code, not the message: the message repeats the path, which is
-      // the manifest's and is not printed raw.
-      failed.push({ path: r.path, reason: e?.code ?? 'unknown error' });
-    }
-  }
-  // A file the plan found gone is dropped from the record only if it is
-  // still gone: one that is back was never shown to the owner as removable.
-  for (const g of plan.gone ?? []) {
-    if (fs.existsSync(join(root, g.path))) changedSincePlan.push({ path: g.path, why: 'reappeared' });
-    else alreadyGone.push(g.path);
-  }
-
-  // 2. Revert the settings patches. What can be reverted is derived from
-  //    the manifest and the file as it is now, never replayed from
-  //    `plan.revert`: the owner may have repaired an unparseable file since
-  //    the plan, and a patch the plan never saw must still be accounted for.
+  // 1. Revert the settings patches, before any file is removed: which
+  //    scripts may go depends on which entries stay registered. What can be
+  //    reverted is derived from the manifest and the file as it is now,
+  //    never replayed from `plan.revert`: the owner may have repaired an
+  //    unparseable file since the plan, and a patch the plan never saw must
+  //    still be accounted for.
   const manifestPatches = manifest?.settingsPatches ?? [];
   if (manifestPatches.length > 0) {
     const validated = validateSettings(join(root, SETTINGS_PATH));
@@ -653,6 +659,45 @@ export function runUninstall({ root, manifest, plan }) {
         patchesNotReverted.push({ ...p, why: validated.reason });
       }
     }
+  }
+
+  // 2. Guard, re-classify, re-check the stamp, and remove only what still
+  //    passes. `plan` may have been built before the junction, entry or
+  //    edit that makes a path unsafe existed, or by a caller that is not
+  //    `planUninstall`. What is registered is read back from the settings
+  //    file as step 1 left it, so a revert that did not reach disk, or an
+  //    entry added since the plan, still keeps its script.
+  const settingsNow = validateSettings(join(root, SETTINGS_PATH));
+  const registered = scriptsStillRegistered(settingsNow, settingsNow.object);
+  for (const r of plan.remove) {
+    const refusal = guardRemoval(root, r.path);
+    if (refusal === ALREADY_GONE) {
+      alreadyGone.push(r.path);
+      continue;
+    }
+    if (refusal) {
+      refused.push({ path: r.path, why: refusal });
+      continue;
+    }
+    const content = contentRefusal(root, manifest, r.path) ?? registeredRefusal(registered, r.path);
+    if (content !== null) {
+      changedSincePlan.push({ path: r.path, ...content });
+      continue;
+    }
+    try {
+      fs.rmSync(join(root, r.path));
+      removed.push(r.path);
+    } catch (e) {
+      // The code, not the message: the message repeats the path, which is
+      // the manifest's and is not printed raw.
+      failed.push({ path: r.path, reason: e?.code ?? 'unknown error' });
+    }
+  }
+  // A file the plan found gone is dropped from the record only if it is
+  // still gone: one that is back was never shown to the owner as removable.
+  for (const g of plan.gone ?? []) {
+    if (fs.existsSync(join(root, g.path))) changedSincePlan.push({ path: g.path, why: 'reappeared' });
+    else alreadyGone.push(g.path);
   }
 
   // 2.5. Remove `.claude/settings.json` itself, but only when the manifest
@@ -749,6 +794,7 @@ export function runUninstall({ root, manifest, plan }) {
     patchesKept,
     patchesGone,
     removedDirs,
+    manifestRemains: hasKept || hasFailures || manifestDeleteFailed,
     leftInPlace: fs.existsSync(join(root, DETECT_REPORT_PATH)) ? [DETECT_REPORT_PATH] : [],
   };
 }

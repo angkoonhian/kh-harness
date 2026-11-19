@@ -64,7 +64,21 @@ function keptWhy(k) {
     return `holds ${k.learnings} landed learning${one ? '' : 's'}, which ${one ? 'is' : 'are'} yours: \`learn revert <id>\` takes each out of the repository, and uninstall removes this file once it holds none`;
   }
   if (k.why === 'learned-partner-kept') return `kept because ${k.partner} is: the learned registry and the gate file stay or go together`;
+  if (k.why === 'hook-still-registered') {
+    return k.settingsUnread
+      ? `${k.why}: .claude/settings.json could not be read, so a hook entry in it may still run it, or a script that loads it; mend the file, then run uninstall again`
+      : `${k.why}: a hook entry left in .claude/settings.json still runs it, or a script that loads it, and with the script gone that hook would fail on every event; put the entry back as kh-harness wrote it or delete it, then run uninstall again`;
+  }
   return k.why;
+}
+
+/** Why a settings patch is kept: the reason's code, with a sentence for the
+ * one whose remedy is in the settings file. */
+function patchWhy(p) {
+  if (p.why === 'patch-modified') {
+    return `${p.why}: the entry kh-harness recorded is not there as written while one that runs a kit script is, so that one is taken to be it, edited, and is left registered with its script kept; put it back as written or delete it, then run uninstall again`;
+  }
+  return p.why;
 }
 
 // Every path and container printed below is the manifest's, a file in the
@@ -98,7 +112,7 @@ if (plan.keep.length) {
 if (plan.keepPatches.length) {
   console.log('Will keep settings patches:');
   for (const p of plan.keepPatches) {
-    console.log(`  ${patchLabel(p)} (${p.why})`);
+    console.log(`  ${patchLabel(p)} (${patchWhy(p)})`);
   }
 }
 
@@ -250,7 +264,7 @@ if (result.manifestDeleteFailed) {
 if (result.patchesNotReverted.length > 0) {
   console.log('Could not revert:');
   for (const p of result.patchesNotReverted) {
-    console.log(`  ${patchLabel(p)} (${p.why})`);
+    console.log(`  ${patchLabel(p)} (${patchWhy(p)})`);
   }
 }
 
@@ -262,8 +276,14 @@ if (plan.keep.length > 0 || result.patchesKept.length > 0) {
     console.log(`  ${displayPath(k.path)} (${keptWhy(k)})`);
   }
   for (const p of result.patchesKept) {
-    console.log(`  ${patchLabel(p)} (${p.why})`);
+    console.log(`  ${patchLabel(p)} (${patchWhy(p)})`);
   }
+}
+
+// What was kept stays on record, so a later run can finish: said, since a
+// manifest left in the repository is otherwise unexplained.
+if (result.manifestRemains && !result.manifestDeleteFailed) {
+  console.log(`${MANIFEST_PATH} remains: it records what was kept, and running uninstall again acts on it.`);
 }
 
 printLeftInPlace('Left in place (written by `detect`, which records nothing as installed; delete it by hand if you do not want it):', result.leftInPlace);
