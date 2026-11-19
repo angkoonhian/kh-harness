@@ -166,7 +166,10 @@ approver. A rolled-forward learning shows its replay's verdict and reason
 without the counts, which no ledger entry holds. Two kinds are left to
 their own command: a `landed` or `reverted` entry is finished by
 `learn land` or `learn revert`, since each is half of a change to the
-repository. A learning the ledger names that has no file at all is
+repository; each finishes its own stopped step only when the ledger
+vouches for the file as that entry leaves it, title, why and evidence
+included, and refuses (3) a file whose text was changed since. A learning
+the ledger names that has no file at all is
 recorded retired by `tick` only when the ledger last records it at
 `observe` and no entry for it names an approver, after which its
 recurrence can be drafted again; any other is reported and left as the

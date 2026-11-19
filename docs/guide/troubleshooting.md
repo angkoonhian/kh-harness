@@ -198,7 +198,11 @@ refused the same way:
 
     <id>: a land of it stopped before its learning file was written; running `learn land <id> --yes` again at a terminal finishes it
 
-From `learn revert`. Run the land again, as it says.
+From `learn revert`. Run the land again, as it says. The land finishes
+only a file the ledger vouches for: if its title, why or evidence was
+changed since the landing, the land refuses with
+`the ledger records another title, why or evidence for this learning`, and
+`learn show <id>` says what mends it (put the file back as it was).
 
 ### retire is refused while the gate is committed
 
