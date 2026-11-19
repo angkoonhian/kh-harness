@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { canonicalJson, readEvents, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
+import { canonicalJson, readEvents, repoDataDir, setEnabled, verifyIndex } from '../../assets/scripts/harness-log.mjs';
 import { stripAnsi } from '../../assets/scripts/harness-redact.mjs';
 import { LOGGED_EVENTS, toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -435,6 +435,33 @@ test('the hook never spawns a child process', () => {
     'SessionStart', 'harness', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'external_content',
     'PostToolUseFailure', 'PostModelSwitch', 'harness', 'SessionEnd',
   ]);
+});
+
+const sessionsDir = root => join(repoDataDir(root), 'sessions');
+
+test('a session start seals the other sessions, silently and without spawning', () => {
+  const root = enabledProject();
+  assertSilentSuccess(runHook(root, toolPayload('PostToolUse', 'earlier-1', { tool_response: 'ok' })));
+  assertSilentSuccess(runHook(root, { session_id: 'earlier-1', hook_event_name: 'SessionEnd', reason: 'other' }));
+  const trap = join(tempDir('hk-slog-trap-'), 'calls');
+  assertSilentSuccess(runHook(root, { session_id: 'next-1', hook_event_name: 'SessionStart', source: 'startup' }, {
+    nodeArgs: ['--require', FORBID_SPAWN], env: { KH_SPAWN_TRAP: trap },
+  }));
+  assert.equal(existsSync(trap), false);
+  assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-earlier-1.jsonl.gz', 's-next-1.jsonl']);
+  assert.deepEqual(events(root, 'earlier-1').map(e => e.type), ['PostToolUse', 'SessionEnd']);
+  const index = readFileSync(join(repoDataDir(root), 'index.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+  assert.deepEqual(index.map(l => l.sessionId), ['earlier-1']);
+  assert.deepEqual(verifyIndex(root), { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [] });
+});
+
+test('with the log disabled a session start seals nothing', () => {
+  const root = enabledProject();
+  assertSilentSuccess(runHook(root, toolPayload('PostToolUse', 'off-earlier', { tool_response: 'ok' })));
+  setEnabled(root, false);
+  assertSilentSuccess(runHook(root, { session_id: 'off-next', hook_event_name: 'SessionStart', source: 'startup' }));
+  assert.deepEqual(readdirSync(sessionsDir(root)), ['s-off-earlier.jsonl']);
+  assert.equal(existsSync(join(repoDataDir(root), 'index.jsonl')), false);
 });
 
 // Measured on the development machine (win32, Node 24) on 2026-11-19, on a
