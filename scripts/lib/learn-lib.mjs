@@ -232,20 +232,23 @@ function proseField(field, value, max) {
   const text = stripUnsafe(value).trim();
   if (LINE_BREAK.test(text)) return { error: `${field}: must be a single line` };
   if (text.length === 0) return { error: `${field}: must not be empty` };
-  const stored = maskText(text);
+  // The sweep's floors, as `validateGate` uses for a gate's message: a title
+  // or why is prose the model is told, where a word after `Basic` or
+  // `Bearer` is an instruction, while a real token exceeds every floor.
+  const stored = maskText(text, { floors: 'sweep' });
   if (registryLine(stored).length > max) return { error: `${field}: must be at most ${max} characters, each < and > counting as four` };
   return { text: stored };
 }
 
-/** The gate's model-written strings, by the name an error gives each. A
- * gate is stored and later shown to the model as written, and masking
- * `match.value` would change what it matches, so a credential in any of
- * them refuses the draft. */
+/** The gate's model-written strings other than its message, by the name an
+ * error gives each. A gate is stored and later shown to the model as
+ * written, and masking `match.value` would change what it matches, so a
+ * credential in any of them refuses the draft. The message is prose, which
+ * `validateGate` refuses when it holds a credential by the sweep's floors. */
 const gateStrings = gate => [
   ['tool', gate.tool],
   ['field', gate.field],
   ['match.value', gate.match.value],
-  ['message', gate.message],
   ...(gate.cites ?? []).map(cite => ['cites', cite]),
 ];
 

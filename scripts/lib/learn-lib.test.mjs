@@ -136,6 +136,16 @@ test('a title and why are stripped of what cannot be seen and masked before they
   assert.ok(!readFileSync(learningFile(root, 'L1'), 'utf8').includes(token));
 });
 
+test('a draft whose prose names a credential scheme is taken as written, as the gate language takes its message', () => {
+  const root = loggedRepo();
+  const message = 'Use Basic authentication or a Bearer token, never a password on the command line.';
+  const title = 'Use Basic authentication for the registry';
+  const why = 'The registry accepts Bearer tokens only from the credential helper.';
+  const result = draftLearning(root, draftFor(root, { title, why, gate: { ...WATCH_GATE, message } }));
+  assert.equal(result.error, undefined, 'a word after a scheme name is not a credential');
+  assert.deepEqual([result.learning.gate.message, result.learning.title, result.learning.why], [message, title, why]);
+});
+
 test('a learning from a recurrence with outside content is marked external', () => {
   const root = repo();
   logMistakes(root);
