@@ -140,9 +140,14 @@ export function classify(root, manifest, relPath) {
   } catch {
     return 'ours-modified';
   }
-  if (sha256(current) === entry.sha256) return 'ours-unmodified';
-  if (current.includes(0x0d) && sha256(normalizeLineEndings(current)) === entry.sha256) return 'ours-unmodified';
-  return 'ours-modified';
+  return contentMatches(current, entry.sha256) ? 'ours-unmodified' : 'ours-modified';
+}
+
+/** True when `bytes` hash to `expected`, as they are or, when they hold a
+ * CR, with CRLF read as LF (see `classify`). */
+export function contentMatches(bytes, expected) {
+  if (sha256(bytes) === expected) return true;
+  return bytes.includes(0x0d) && sha256(normalizeLineEndings(bytes)) === expected;
 }
 
 export { MANIFEST_PATH };

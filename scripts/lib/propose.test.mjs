@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readFileSync as readF } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, readFileSync as readF } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, sha256 as sha, readManifest, writeManifest } from './manifest.mjs';
-import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH } from './propose.mjs';
+import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, loadedSiblings } from './propose.mjs';
 import { buildGaps } from './gap-model.mjs';
+import { deriveCouldNotDerive } from './report.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { listFiles } from './scan.mjs';
@@ -14,7 +15,7 @@ import { markdownRemainder } from './uninstall-lib.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { applyProposals } from './apply-lib.mjs';
 import { detectHarness } from './detect-harness.mjs';
-import { versionStamp } from './render.mjs';
+import { machineryStamp, versionStamp } from './render.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 const root = () => mkdtempSync(join(tmpdir(), 'hk-prop-'));
@@ -105,8 +106,11 @@ test('the session-brief check proposes the script, the shared module it imports,
     ['.claude/scripts/harness-redact.mjs', '.claude/scripts/session-brief.mjs'],
   );
   const hook = ps.find(p => p.kind === 'settings-hook');
-  assert.deepEqual(hook.requiresFiles.sort(), ['.claude/scripts/harness-redact.mjs', '.claude/scripts/session-brief.mjs'],
+  assert.deepEqual(hook.requiresFiles.map(f => f.path).sort(), ['.claude/scripts/harness-redact.mjs', '.claude/scripts/session-brief.mjs'],
     'the hook must not be registered unless everything the script imports is on disk');
+  for (const { path, sha256 } of hook.requiresFiles) {
+    assert.equal(sha256, sha(ps.find(p => p.path === path).contents), `${path} is required holding what this kit writes there`);
+  }
 });
 
 // The brief fires on every repository; the two process hooks do not. This is
@@ -1385,7 +1389,7 @@ test('P3.reinject proposes script + redact asset + UserPromptSubmit hook, with r
   assert.equal(redact.path, REDACT_PATH);
   assert.equal(hook.event, 'UserPromptSubmit');
   assert.deepEqual(hook.entry, { type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${RULES_BRIEF_PATH}`] }, 'exec form, rooted at the project');
-  assert.deepEqual(hook.requiresFiles, [RULES_BRIEF_PATH, REDACT_PATH]);
+  assert.deepEqual(hook.requiresFiles.map(f => f.path), [RULES_BRIEF_PATH, REDACT_PATH]);
   assert.equal(hook.reason, 'no UserPromptSubmit hook registered in .claude/settings.json');
   for (const p of ps) assert.equal(p.checkId, 'P3.reinject');
 });
@@ -1596,7 +1600,8 @@ test('a file the user edited is reported as kept and never updated', () => {
   const ctx = detectedAt(d, '0.2.0');
   const skew = kitskew(ctx.checks);
   assert.equal(skew.state, 'declared', 'an edited file alone does not make the check absent');
-  assert.ok(skew.evidence.some(e => e.startsWith('kept: ') && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+  assert.ok(skew.evidence.some(e => e.startsWith('kept at kit 0.1.9: ') && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+  assert.equal(skew.evidence[0], 'current kit 0.2.0; of 11 installed files that carry a stamp, 1 from kit 0.1.9', 'the versions on disk are counted, not the manifest\'s one');
   assert.equal(skew.proposal, null);
   assert.equal(buildProposals(ctx).find(p => p.path === BRIEF_PATH), undefined);
 });
@@ -1642,8 +1647,9 @@ test('a user-edited hook script holds back the shared asset it imports, and the 
 
   const ctx = detectedAt(d, '0.2.0');
   const skew = kitskew(ctx.checks);
-  assert.ok(skew.evidence.some(e => e.startsWith('held back: ') && e.includes(REDACT_PATH) && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
-  assert.ok(skew.evidence.some(e => e.startsWith('kept: ') && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+  assert.ok(skew.evidence.some(e => e.startsWith('held back at kit 0.1.9: ') && e.includes(REDACT_PATH) && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+  assert.ok(skew.evidence.some(e => e.startsWith('kept at kit 0.1.9: ') && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
+  assert.equal(skew.evidence[0], 'installed kit 0.1.9, current kit 0.2.0');
   const paths = buildProposals(ctx).map(p => p.path);
   assert.equal(paths.includes(REDACT_PATH), false, `the shared asset must not change under a script that is not updated with it: ${JSON.stringify(paths)}`);
   assert.equal(paths.includes(BRIEF_PATH), false);
@@ -1671,8 +1677,8 @@ test('an edited session brief holds back the shared asset and every other hook s
   assert.equal(paths.includes(REDACT_PATH), false, JSON.stringify(paths));
   assert.equal(paths.includes(LINT_TOUCHED_PATH), false, `a sibling importer must not move without the module it imports: ${JSON.stringify(paths)}`);
   const evidence = kitskew(ctx.checks).evidence;
-  assert.ok(evidence.includes(`held back: ${REDACT_PATH} (out of date, but ${BRIEF_PATH} imports it and is not being updated with it)`), JSON.stringify(evidence));
-  assert.ok(evidence.includes(`held back: ${LINT_TOUCHED_PATH} (out of date, but it imports ${REDACT_PATH}, which is not being updated with it)`), JSON.stringify(evidence));
+  assert.ok(evidence.includes(`held back at kit 0.1.9: ${REDACT_PATH} (out of date, but kh-harness keeps ${BRIEF_PATH} as it is, and its hook scripts are updated together or not at all)`), JSON.stringify(evidence));
+  assert.ok(evidence.includes(`held back at kit 0.1.9: ${LINT_TOUCHED_PATH} (out of date, but kh-harness keeps ${BRIEF_PATH} as it is, and its hook scripts are updated together or not at all)`), JSON.stringify(evidence));
 });
 
 test('a hook script on disk with no manifest entry holds back the shared asset', () => {
@@ -1681,7 +1687,7 @@ test('a hook script on disk with no manifest entry holds back the shared asset',
 
   const ctx = detectedAt(d, '0.2.0');
   assert.equal(buildProposals(ctx).find(p => p.path === REDACT_PATH), undefined);
-  assert.ok(kitskew(ctx.checks).evidence.includes(`held back: ${REDACT_PATH} (out of date, but ${LINT_TOUCHED_PATH} imports it and is not being updated with it)`));
+  assert.ok(kitskew(ctx.checks).evidence.includes(`held back at kit 0.1.9: ${REDACT_PATH} (out of date, but kh-harness keeps ${LINT_TOUCHED_PATH} as it is, and its hook scripts are updated together or not at all)`), JSON.stringify(kitskew(ctx.checks).evidence));
 });
 
 test('a recorded kit file without the stamp is reported as kept and never updated', () => {
@@ -1741,7 +1747,7 @@ test('P2.loopwatch proposes the script, the shared module and a matcher-less Pos
   assert.equal(hook.step, 13);
   assert.equal('matcher' in hook, false, 'a failure of any tool counts');
   assert.deepEqual(hook.entry, { type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${LOOP_WATCH_PATH}`] });
-  assert.deepEqual(hook.requiresFiles, [LOOP_WATCH_PATH, REDACT_PATH]);
+  assert.deepEqual(hook.requiresFiles.map(f => f.path), [LOOP_WATCH_PATH, REDACT_PATH]);
   assert.equal(hook.reason, 'no PostToolUseFailure hook registered in .claude/settings.json');
   for (const p of ps) assert.equal(p.checkId, 'P2.loopwatch');
 });
@@ -1806,21 +1812,128 @@ test('P5.toolgate proposes the hook, its three modules, a matcher-less PreToolUs
   assert.equal(script.step, 30);
   assert.match(script.contents, /^#!\/usr\/bin\/env node\n\/\/ Generated by kh-harness 0\.2\.0 \(runbook step 30\)/);
   for (const m of [gates, log]) {
-    assert.match(m.contents, /^\/\/ Generated by kh-harness 0\.2\.0 \(shared module imported by the kit's hook scripts\)\. /, `${m.path} names no step`);
+    assert.match(m.contents, /^\/\/ Generated by kh-harness 0\.2\.0 \(shared module loaded by the kit's hook scripts\)\. /, `${m.path} names no step`);
   }
   assert.equal(hook.event, 'PreToolUse');
   assert.equal(hook.step, 30);
   assert.equal('matcher' in hook, false, 'a gate may name any tool');
   assert.deepEqual(hook.entry, { type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${TOOL_GATE_PATH}`] });
-  assert.deepEqual(hook.requiresFiles, [TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH]);
+  assert.deepEqual(hook.requiresFiles.map(f => f.path), [TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH]);
   assert.equal(hook.reason, 'no PreToolUse hook registered in .claude/settings.json');
   assert.deepEqual(deny.globs, toolGateDenyRules());
   assert.equal(deny.step, 30);
   for (const p of ps) assert.equal(p.checkId, 'P5.toolgate');
 });
 
-test('the shared modules a hook lists are the gate language, the session log library and the log sealer', () => {
-  assert.deepEqual(HOOK_MODULE_PATHS, [HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH]);
+test('the modules the kit installs are the gate language, the session log library, the log sealer and the redaction module', () => {
+  assert.deepEqual(HOOK_MODULE_PATHS, [HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, REDACT_PATH]);
+});
+
+// --- Which script loads which is read from the scripts ----------------------
+
+const ASSET_SCRIPTS = new URL('../../assets/scripts/', import.meta.url);
+const assetOf = path => readFileSync(new URL(path.split('/').pop(), ASSET_SCRIPTS), 'utf8');
+
+test('every script the kit ships under assets/scripts/ is one it installs, so none can be left out of a version unit', () => {
+  const shipped = readdirSync(ASSET_SCRIPTS).map(name => `.claude/scripts/${name}`).sort();
+  assert.deepEqual([...INSTALLED_SCRIPT_PATHS].sort(), shipped);
+  assert.deepEqual(INSTALLED_SCRIPT_PATHS, [...GENERATOR_SCRIPT_PATHS, ...HOOK_MODULE_PATHS]);
+});
+
+test('every sibling an installed script imports, statically or dynamically, is among the scripts it is installed with', () => {
+  // Read with patterns of this test's own, not the generator's.
+  const IMPORTS = [/\bfrom\s+['"]\.\/([\w.-]+\.mjs)['"]/g, /\bimport\(\s*['"]\.\/([\w.-]+\.mjs)['"]\s*\)/g];
+  let found = 0;
+  for (const path of INSTALLED_SCRIPT_PATHS) {
+    for (const pattern of IMPORTS) {
+      for (const [, name] of assetOf(path).matchAll(pattern)) {
+        found += 1;
+        assert.ok(loadedSiblings(path).includes(`.claude/scripts/${name}`), `${path} imports ./${name}`);
+        assert.ok(everyLoadedSibling(path).includes(`.claude/scripts/${name}`), `${path} is installed with ./${name}`);
+      }
+    }
+  }
+  assert.ok(found >= INSTALLED_SCRIPT_PATHS.length - 1, 'fixture sanity: the patterns find imports');
+});
+
+test('a script is installed with what its modules load in turn, and the gate hook with the table of siblings it imports by name', () => {
+  assert.deepEqual(everyLoadedSibling(SESSION_LOG_PATH), [HARNESS_LOG_PATH, HARNESS_SEAL_PATH, REDACT_PATH]);
+  assert.deepEqual(everyLoadedSibling(TOOL_GATE_PATH), [HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH]);
+  assert.deepEqual(everyLoadedSibling(REDACT_PATH), [], 'the redaction module loads nothing');
+  for (const path of GENERATOR_SCRIPT_PATHS) assert.ok(everyLoadedSibling(path).includes(REDACT_PATH), `${path} loads the redaction module`);
+});
+
+test('a hook script and a module carry the machinery stamp, which says an edit stops updates; a scaffold still says edit freely', () => {
+  const ps = buildProposals(args([toolgateCheck(), check({})]));
+  const byPath = path => ps.find(p => p.path === path).contents;
+  assert.ok(byPath(TOOL_GATE_PATH).split('\n')[1] === machineryStamp('0.2.0', 'runbook step 30', '//'));
+  assert.ok(byPath(REDACT_PATH).split('\n')[0] === machineryStamp('0.2.0', "shared module loaded by the kit's hook scripts", '//'));
+  for (const path of [TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH]) {
+    assert.doesNotMatch(byPath(path), /Edit freely/, path);
+    assert.match(byPath(path), /Do not edit: kh-harness never overwrites an edited copy, so an edit stops its hook scripts being updated, and the integrity check reports it\./, path);
+  }
+  assert.match(byPath('HANDOFF.md'), /Edit freely/);
+});
+
+// --- A held script ----------------------------------------------------------
+
+test('a script the kit has never written is held by an edited sibling, with every other script, and a deleted file holds nothing', () => {
+  const d = installedAt('0.1.9');
+  assert.deepEqual([...heldScripts(d, readManifest(d), '0.2.0').keys()], [], 'an unmodified older install holds nothing: every file is updated');
+
+  writeFileSync(join(d, BRIEF_PATH), readF(join(d, BRIEF_PATH), 'utf8') + '// my own tweak\n');
+  const held = heldScripts(d, readManifest(d), '0.2.0');
+  assert.deepEqual([...held.keys()], INSTALLED_SCRIPT_PATHS, 'every installed script is in the one unit the edited file holds');
+  assert.deepEqual(held.get(TOOL_GATE_PATH), [{ path: BRIEF_PATH, why: 'edited' }], 'a script not yet on disk is held too');
+
+  // A check forced open: the sensor is not installed here, and its
+  // generator would write the script and register it.
+  const forced = () => buildProposals({ ...detectedAt(d, '0.2.0'), stack: lintStack, checks: [sensorCheck()] });
+  assert.deepEqual(forced(), [], 'no script is written and no hook registered, whatever the check says');
+
+  rmSync(join(d, BRIEF_PATH));
+  assert.deepEqual([...heldScripts(d, readManifest(d), '0.2.0').keys()], []);
+  assert.deepEqual(forced().map(p => p.path ?? p.event), [LINT_TOUCHED_PATH, REDACT_PATH, 'PostToolUse'], 'with nothing held, the same check is proposed in full');
+});
+
+test('a file at an installed path that already holds what this kit writes there holds nothing, recorded or not', () => {
+  const d = installedAt('0.2.0');
+  const m = readManifest(d);
+  m.files = m.files.filter(f => f.path !== BRIEF_PATH);
+  assert.deepEqual([...heldScripts(d, m, '0.2.0').keys()], []);
+  writeFileSync(join(d, BRIEF_PATH), readF(join(d, BRIEF_PATH), 'utf8').replaceAll('\n', '\r\n'));
+  assert.deepEqual([...heldScripts(d, m, '0.2.0').keys()], [], 'line endings aside');
+  assert.deepEqual(heldScripts(d, m, '0.2.1').get(REDACT_PATH), [{ path: BRIEF_PATH, why: 'unrecorded' }], 'but not what another kit version writes');
+});
+
+test('a hook check whose script is held stays absent, proposes nothing and says what holds it and what the owner can do', () => {
+  const d = installedAt('0.1.9', TS_FILES);
+  // The repository gains the scripts the sensor and the Stop gate run.
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'eslint .', test: 'vitest' } }));
+  writeFileSync(join(d, BRIEF_PATH), readF(join(d, BRIEF_PATH), 'utf8') + '// my own tweak\n');
+  const { checks } = detectedAt(d, '0.2.0');
+  const question = `kh-harness keeps ${BRIEF_PATH} (edited since kh-harness wrote it) as it is, and so writes and updates none of its hook scripts. Restore each edited file to what kh-harness wrote (git holds it, in the commit that installed it), then run apply again; or leave it, and the hooks not yet installed stay off. Which?`;
+  for (const [id, script] of [['P2.sensor', LINT_TOUCHED_PATH], ['P2.stopgate', VERIFY_TOUCHED_PATH]]) {
+    const c = checks.find(x => x.id === id);
+    assert.equal(c.state, 'absent', id);
+    assert.equal(c.decidable, false, id);
+    assert.equal(c.proposal, null, id);
+    assert.equal(c.evidence.at(-1), `${script} is not written or registered while kh-harness keeps ${BRIEF_PATH} (edited since kh-harness wrote it) as it is: its hook scripts load one another, so they are installed at one kit version or not at all. To install this hook, restore each edited file to what kh-harness wrote (git holds it, in the commit that installed it), then run apply again; left as it is, this hook stays off.`);
+    assert.equal(c.question, question, id);
+  }
+  assert.equal(checks.find(c => c.id === 'P4.sessionbrief').state, 'declared', 'a hook already registered is not touched by the hold');
+  assert.deepEqual(deriveCouldNotDerive({ stack: { packages: [], packageManager: 'npm' }, checks }).filter(q => q === question), [question], 'the reports ask it once');
+});
+
+test('a file kh-harness did not write at an installed path is said to be movable, not restorable', () => {
+  const d = installedAt('0.2.0', TS_FILES);
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'eslint .' } }));
+  writeFileSync(join(d, LINT_TOUCHED_PATH), '// my own lint hook\n');
+  const sensor = detectedAt(d, '0.2.0').checks.find(c => c.id === 'P2.sensor');
+  assert.equal(sensor.state, 'absent');
+  assert.equal(sensor.proposal, null);
+  assert.match(sensor.evidence.at(-1), /lint-touched\.mjs \(not recorded in the manifest as written by kh-harness\)/);
+  assert.match(sensor.evidence.at(-1), /To install this hook, move each file kh-harness did not write out of \.claude\/scripts\/, then run apply again/);
 });
 
 test('the gate hook is the last hook script the kit knows, so uninstall can revert its registration', () => {
@@ -1906,13 +2019,13 @@ test('a repository with no logging hook is proposed one registration per logged 
   assert.equal(script.step, 31);
   assert.match(script.contents, /^#!\/usr\/bin\/env node\n\/\/ Generated by kh-harness 0\.2\.0 \(runbook step 31\)/);
   for (const m of [log, seal]) {
-    assert.match(m.contents, /^\/\/ Generated by kh-harness 0\.2\.0 \(shared module imported by the kit's hook scripts\)\. /, `${m.path} names no step`);
+    assert.match(m.contents, /^\/\/ Generated by kh-harness 0\.2\.0 \(shared module loaded by the kit's hook scripts\)\. /, `${m.path} names no step`);
   }
   assert.deepEqual(hooks.map(h => h.event), [...LOGGED_EVENTS]);
   for (const h of hooks) {
     assert.equal('matcher' in h, false, `${h.event}: no matcher, so it fires for every tool`);
     assert.deepEqual(h.entry, { type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_PATH}`] });
-    assert.deepEqual(h.requiresFiles, SESSION_LOG_FILES, `${h.event} requires the script and its three modules`);
+    assert.deepEqual(h.requiresFiles.map(f => f.path), SESSION_LOG_FILES, `${h.event} requires the script and its three modules`);
     assert.equal(h.step, 31);
     assert.equal(h.reason, `no ${h.event} hook registered in .claude/settings.json`);
   }
@@ -1985,11 +2098,11 @@ test('the logging hook and its three modules are updated together or not at all'
   for (const module of [HARNESS_LOG_PATH, HARNESS_SEAL_PATH, REDACT_PATH]) {
     assert.equal(paths.includes(module), false, `${module} must not change under an edited logging hook: ${JSON.stringify(paths)}`);
   }
-  assert.ok(kitskew(ctx.checks).evidence.includes(`held back: ${HARNESS_SEAL_PATH} (out of date, but ${SESSION_LOG_PATH} imports it and is not being updated with it)`), JSON.stringify(kitskew(ctx.checks).evidence));
+  assert.ok(kitskew(ctx.checks).evidence.includes(`held back at kit 0.1.9: ${HARNESS_SEAL_PATH} (out of date, but kh-harness keeps ${SESSION_LOG_PATH} as it is, and its hook scripts are updated together or not at all)`), JSON.stringify(kitskew(ctx.checks).evidence));
 
   const e = installedAt('0.1.9');
   writeFileSync(join(e, HARNESS_SEAL_PATH), readF(join(e, HARNESS_SEAL_PATH), 'utf8') + '// my own tweak\n');
   const ctx2 = detectedAt(e, '0.2.0');
   assert.equal(buildProposals(ctx2).some(p => p.path === SESSION_LOG_PATH), false, 'the hook must not move without the sealer it loads');
-  assert.ok(kitskew(ctx2.checks).evidence.includes(`held back: ${SESSION_LOG_PATH} (out of date, but it imports ${HARNESS_SEAL_PATH}, which is not being updated with it)`), JSON.stringify(kitskew(ctx2.checks).evidence));
+  assert.ok(kitskew(ctx2.checks).evidence.includes(`held back at kit 0.1.9: ${SESSION_LOG_PATH} (out of date, but kh-harness keeps ${HARNESS_SEAL_PATH} as it is, and its hook scripts are updated together or not at all)`), JSON.stringify(kitskew(ctx2.checks).evidence));
 });

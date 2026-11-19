@@ -826,3 +826,38 @@ test('apply --yes with unreadable settings writes no hook script and exits 2', (
   assert.equal(existsSync(join(d, '.claude/kh-harness.manifest.json')), false);
   assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), broken);
 });
+
+// --- A hook is registered only beside the bytes this kit writes -------------
+
+const hookRequiring = requiresFiles => ({
+  kind: 'settings-hook', event: 'Stop', step: 10, checkId: 'P2.stopgate', reason: 'r', requiresFiles,
+  entry: { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/x.mjs'] },
+});
+
+test('a hook whose required file is missing is not registered, and the skip names the file', () => {
+  const d = repo();
+  const r = applyProposals({ root: d, proposals: [hookRequiring([{ path: '.claude/scripts/x.mjs', sha256: sha256('x\n') }])], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual(r.patched, []);
+  assert.deepEqual(r.skipped.map(s => s.why), ['missing-dependency: .claude/scripts/x.mjs']);
+  assert.equal(existsSync(join(d, '.claude/settings.json')), false);
+});
+
+test('a hook whose required file holds another kit version\'s bytes is not registered, and the skip names the file', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude/scripts'), { recursive: true });
+  writeFileSync(join(d, '.claude/scripts/x.mjs'), 'x\n');
+  writeFileSync(join(d, '.claude/scripts/lib.mjs'), 'export const OLD = 1;\n');
+  const requires = [{ path: '.claude/scripts/x.mjs', sha256: sha256('x\n') }, { path: '.claude/scripts/lib.mjs', sha256: sha256('export const NEW = 1;\n') }];
+  const r = applyProposals({ root: d, proposals: [hookRequiring(requires)], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual(r.patched, []);
+  assert.deepEqual(r.skipped.map(s => s.why), ['dependency-not-this-kit-version: .claude/scripts/lib.mjs']);
+  assert.equal(existsSync(join(d, '.claude/settings.json')), false);
+});
+
+test('a hook whose required files hold this kit\'s bytes, CRLF or LF, is registered', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude/scripts'), { recursive: true });
+  writeFileSync(join(d, '.claude/scripts/x.mjs'), 'a\r\nb\r\n');
+  const r = applyProposals({ root: d, proposals: [hookRequiring([{ path: '.claude/scripts/x.mjs', sha256: sha256('a\nb\n') }])], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual(r.patched.map(p => p.event), ['Stop']);
+});

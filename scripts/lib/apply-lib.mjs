@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { defaultBranches } from './git-info.mjs';
-import { classify, emptyManifest, MANIFEST_PATH, sha256 } from './manifest.mjs';
+import { classify, contentMatches, emptyManifest, MANIFEST_PATH, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook } from './settings-merge.mjs';
 import { readJsonFile, stripBom, UTF8_BOM } from './read-json.mjs';
@@ -830,37 +830,41 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, chm
 }
 
 /**
- * Review finding 5: a settings patch that ACTIVATES a script must not be
- * applied unless that script, and everything it depends on, is actually
- * present on disk — checked against the real filesystem, after the write
- * phase, never merely trusted because the batch's PLAN said it would
- * write them. Without this, a hook that shares a dependency with another
- * (e.g. lint-touched.mjs and verify-touched.mjs both importing
- * harness-redact.mjs) could get registered in one run while the shared
- * file was never (re)written in that same run — propose.mjs never
- * re-proposes a recorded file the user DELETED (a deletion classifies
- * `ours-modified`; only an `ours-unmodified`, stamped file is ever offered
- * as an update), so exactly this happens once a user deletes the shared
- * file and only ONE of the two hooks' checks is absent on a later run.
- * The result without this
- * check: a `Stop`/`PostToolUse` hook registered, exiting 0 or 2 as far as
- * settings.json is concerned, that actually dies with
- * `ERR_MODULE_NOT_FOUND` on every turn or every edit.
+ * Why a settings patch that activates a script must not be applied, or null
+ * when it may: each file in `requiresFiles`, `{ path, sha256 }`, must be on
+ * disk holding the bytes this kit writes there (line endings aside). A hook
+ * registered beside a missing module dies with `ERR_MODULE_NOT_FOUND` on
+ * every event, and one registered beside a module another kit version wrote
+ * can die at import for a name that module lacks.
  *
- * `existsSync`, not the manifest: the manifest only records what a PRIOR
- * run believed it wrote, which is exactly the stale information this
- * check exists to not trust.
+ * Read from the files themselves, after the write phase, never from the
+ * batch's plan or the manifest: propose.mjs never proposes again a recorded
+ * file the owner deleted or edited, so the plan can lack a file the hook
+ * loads, and the manifest records only what an earlier run believed it wrote.
  */
-function missingDependencies(root, proposal) {
-  return (proposal.requiresFiles ?? []).filter(f => !existsSync(join(root, f)));
+function unmetDependencies(root, proposal) {
+  const missing = [];
+  const stale = [];
+  for (const { path, sha256: expected } of proposal.requiresFiles ?? []) {
+    let bytes;
+    try {
+      bytes = readFileSync(join(root, path));
+    } catch {
+      missing.push(path);
+      continue;
+    }
+    if (!contentMatches(bytes, expected)) stale.push(path);
+  }
+  if (missing.length) return `missing-dependency: ${missing.join(', ')}`;
+  return stale.length ? `dependency-not-this-kit-version: ${stale.join(', ')}` : null;
 }
 
 function applySettingsHookProposal({ root, proposal, nextManifest, patched, skipped }) {
   const settingsPath = join(root, SETTINGS_PATH);
 
-  const missing = missingDependencies(root, proposal);
-  if (missing.length > 0) {
-    skipped.push({ path: SETTINGS_PATH, why: `missing-dependency: ${missing.join(', ')}`, checkId: proposal.checkId });
+  const unmet = unmetDependencies(root, proposal);
+  if (unmet !== null) {
+    skipped.push({ path: SETTINGS_PATH, why: unmet, checkId: proposal.checkId });
     return;
   }
 

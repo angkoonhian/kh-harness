@@ -65,7 +65,8 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   }
   // Questions routed by buildGaps from checks that could not decide. These are
   // the `absent` results that may not propose: asking is what they do instead.
-  for (const c of checks) if (c.question) out.push(c.question);
+  // Checks that are held by one cause ask one question, listed once.
+  for (const c of checks) if (c.question && !out.includes(c.question)) out.push(c.question);
   return out;
 }
 
