@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { appendEvent, applyRetention, canonicalJson, harnessIdentity, isEnabled, sealClosedSessions } from './harness-log.mjs';
+import { appendEvent, canonicalJson, harnessIdentity, isEnabled } from './harness-log.mjs';
 import { markerPath, projectRoot, readJSONMarker, safeSessionId, stripAnsi, writeJSONMarker } from './harness-redact.mjs';
 
 const IDENTITY_FIELDS = ['session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
@@ -184,13 +184,22 @@ function recordHarness(root, sessionId, payload) {
 // expiring old content; what is left over is done on a later session start.
 const MAINTENANCE_BUDGET_MS = 150;
 
-function maintain(root, currentSessionId) {
+/** Seals the other sessions and expires old content. The module is loaded
+ * here, not at the top, so no other event parses it; a module that cannot
+ * be loaded means nothing is done. */
+async function maintain(root, currentSessionId) {
   const started = performance.now();
-  sealClosedSessions(root, { currentSessionId, budgetMs: MAINTENANCE_BUDGET_MS });
-  applyRetention(root, { budgetMs: MAINTENANCE_BUDGET_MS - (performance.now() - started) });
+  let seal;
+  try {
+    seal = await import('./harness-seal.mjs');
+  } catch {
+    return;
+  }
+  seal.sealClosedSessions(root, { currentSessionId, budgetMs: MAINTENANCE_BUDGET_MS });
+  seal.applyRetention(root, { budgetMs: MAINTENANCE_BUDGET_MS - (performance.now() - started) });
 }
 
-function record(payload) {
+async function record(payload) {
   if (!isPlainObject(payload) || !isLoggedEvent(payload.hook_event_name)) return;
   const sessionId = safeSessionId(payload.session_id);
   if (sessionId === null) return;
@@ -201,7 +210,7 @@ function record(payload) {
   if (!written) return;
   if (HARNESS_EVENTS.has(event.type)) recordHarness(root, sessionId, payload);
   if (EXTERNAL_TOOL_EVENTS.has(event.type) && fetchesOutsideContent(event.tool)) recordExternal(root, sessionId, payload, event.tool);
-  if (event.type === 'SessionStart') maintain(root, sessionId);
+  if (event.type === 'SessionStart') await maintain(root, sessionId);
 }
 
 async function readStdin() {
@@ -217,7 +226,7 @@ async function main() {
   } catch {
     return;
   }
-  record(payload);
+  await record(payload);
 }
 
 /** True when this file is the process's entry point rather than an import.

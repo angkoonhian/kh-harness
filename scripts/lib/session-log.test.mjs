@@ -11,7 +11,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { canonicalJson, readEvents, repoDataDir, setEnabled, verifyIndex } from '../../assets/scripts/harness-log.mjs';
+import { canonicalJson, readEvents, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
+import { verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { stripAnsi } from '../../assets/scripts/harness-redact.mjs';
 import { LOGGED_EVENTS, toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -461,6 +462,57 @@ test('with the log disabled a session start seals nothing', () => {
   setEnabled(root, false);
   assertSilentSuccess(runHook(root, { session_id: 'off-next', hook_event_name: 'SessionStart', source: 'startup' }));
   assert.deepEqual(readdirSync(sessionsDir(root)), ['s-off-earlier.jsonl']);
+  assert.equal(existsSync(join(repoDataDir(root), 'index.jsonl')), false);
+});
+
+const ASSETS = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts');
+const HOOK_MODULES = ['session-log.mjs', 'harness-log.mjs', 'harness-redact.mjs'];
+
+/** A copy of the hook and its siblings as they are installed. With
+ * `sealLoads` set, the sealing module is copied too and appends a line to
+ * that file when it is loaded; without it, the sealing module is absent. */
+function installedHook({ sealLoads } = {}) {
+  const dir = tempDir('hk-slog-installed-');
+  for (const name of HOOK_MODULES) writeFileSync(join(dir, name), readFileSync(join(ASSETS, name)));
+  if (sealLoads !== undefined) {
+    const recordLoad = `import { appendFileSync as recordLoad } from 'node:fs';\nrecordLoad(${JSON.stringify(sealLoads)}, 'loaded\\n');\n`;
+    writeFileSync(join(dir, 'harness-seal.mjs'), recordLoad + readFileSync(join(ASSETS, 'harness-seal.mjs'), 'utf8'));
+  }
+  return join(dir, 'session-log.mjs');
+}
+
+function runInstalled(hook, root, payload) {
+  return spawnSync(process.execPath, [hook], {
+    input: JSON.stringify(payload), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+  });
+}
+
+test('only a session start loads the sealing module', () => {
+  const root = enabledProject();
+  const loads = join(tempDir('hk-slog-loads-'), 'loads');
+  const hook = installedHook({ sealLoads: loads });
+  const others = [
+    { session_id: 'lazy-1', hook_event_name: 'UserPromptSubmit', prompt: 'go' },
+    toolPayload('PreToolUse', 'lazy-1'),
+    toolPayload('PostToolUse', 'lazy-1', { tool_name: 'mcp__srv__get', tool_response: 'x' }),
+    toolPayload('PostToolUseFailure', 'lazy-1', { error: 'Exit code 1' }),
+    { session_id: 'lazy-1', hook_event_name: 'SessionEnd', reason: 'other' },
+  ];
+  for (const payload of others) assertSilentSuccess(runInstalled(hook, root, payload));
+  assert.equal(existsSync(loads), false);
+
+  assertSilentSuccess(runInstalled(hook, root, { session_id: 'lazy-2', hook_event_name: 'SessionStart', source: 'startup' }));
+  assert.equal(readFileSync(loads, 'utf8'), 'loaded\n');
+  assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-lazy-1.jsonl.gz', 's-lazy-2.jsonl']);
+});
+
+test('a session start with the sealing module missing records the event and does nothing more', () => {
+  const root = enabledProject();
+  const hook = installedHook();
+  assertSilentSuccess(runInstalled(hook, root, toolPayload('PostToolUse', 'nomod-1', { tool_response: 'ok' })));
+  assertSilentSuccess(runInstalled(hook, root, { session_id: 'nomod-2', hook_event_name: 'SessionStart', source: 'startup' }));
+  assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-nomod-1.jsonl', 's-nomod-2.jsonl']);
+  assert.deepEqual(events(root, 'nomod-2').map(e => e.type), ['SessionStart', 'harness']);
   assert.equal(existsSync(join(repoDataDir(root), 'index.jsonl')), false);
 });
 
