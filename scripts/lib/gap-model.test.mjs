@@ -8,7 +8,7 @@ import { selectProfile } from './profiles/index.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, GENERATORS } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, GENERATORS, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { hasEquivalentHook, hookEntrySha256 } from './settings-merge.mjs';
 import { execEntry, registeredHook } from './hook-evidence.mjs';
@@ -30,7 +30,7 @@ const bareHarness = {
 };
 const richHarness = {
   instructions: { path: 'CLAUDE.md', lines: 153 }, agentsMd: null, reconPresent: true,
-  claudeDir: { settings: true, localSettings: true, denyRules: 2, hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs', '.claude/scripts/loop-watch.mjs', '.claude/scripts/tool-gate.mjs', SESSION_LOG_PATH],
+  claudeDir: { settings: true, localSettings: true, denyRules: toolGateDenyRules().length, denyRuleList: toolGateDenyRules(), hooks: ['.claude/scripts/lint-touched.mjs', '.claude/scripts/verify-touched.mjs', '.claude/scripts/session-brief.mjs', '.claude/scripts/loop-watch.mjs', '.claude/scripts/tool-gate.mjs', SESSION_LOG_PATH],
     // hookEvents entries are RESOLVED SCRIPT PATHS, never command strings.
     hookEvents: withSessionLog({ PostToolUse: ['.claude/scripts/lint-touched.mjs'], Stop: ['.claude/scripts/verify-touched.mjs'], SessionStart: ['.claude/scripts/session-brief.mjs'], UserPromptSubmit: ['.claude/scripts/rules-brief.mjs'], PostToolUseFailure: ['.claude/scripts/loop-watch.mjs'], PreToolUse: ['.claude/scripts/tool-gate.mjs'] }, SESSION_LOG_PATH),
     // The same registrations with their matchers — what registeredHook decides from.

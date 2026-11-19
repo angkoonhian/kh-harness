@@ -10,20 +10,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { EXIT_CODES, LEARN_USAGE, learnHelp } from './cli.mjs';
 import {
-  draftFor, drafted, learningFile, logFiring, loggedRepo, logReadMistakes, signatureOf, tempDir, trialRepo, useId, writeLocalGates,
+  draftFor, drafted, learningFile, logClean, logFiring, loggedRepo, logReadMistakes, signatureOf, tempDir, trialRepo, useId, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { LEARN_SUBCOMMANDS, TERMINAL_ONLY } from './learn-cli.mjs';
 import { listLearnings } from './learn-lib.mjs';
 import { approveLearning, setPolicy } from './learn-promote.mjs';
 import { appendLedger } from './ledger.mjs';
-import { buildLogReport } from './log-report.mjs';
+import { buildLogReport, REROUTED_MEANS } from './log-report.mjs';
 import { learnCommandDenyRules } from './propose.mjs';
 import { requireInteractive } from './tty.mjs';
 
@@ -185,10 +185,11 @@ test('show prints the gate, its hash, the replay and the stats', () => {
   assert.ok(text.includes(JSON.stringify(learning.gate, null, 2).split('\n').map(l => `    ${l}`).join('\n')), text);
   assert.ok(text.includes(`gateSha256: ${learning.sha256}`));
   assert.match(text, /replay: pass: "the gate fired on all 2 mistakes/);
-  assert.match(text, /stats: fired 1 time in 1 session; warn or block firings followed by a successful call of its tool: 0; marked wrong since its last promotion: 0/);
+  assert.match(text, /stats: fired 1 time in 1 session; rerouted: 0; marked wrong: 0 since the last promotion, 0 in all/);
+  assert.ok(text.includes(REROUTED_MEANS), 'what rerouted counts is stated beside it');
   const view = json(root, 'show', 'L1');
   assert.equal(view.gateSha256, learning.sha256);
-  assert.deepEqual(view.stats, { firings: 1, sessions: 1, rerouted: 0, wrong: 0, sessionsUnreadable: 0 });
+  assert.deepEqual(view.stats, { firings: 1, sessions: 1, rerouted: 0, wrong: 0, wrongTotal: 0, sessionsUnreadable: 0 });
   assert.equal(view.replay.verdict, 'pass');
   const missing = runLearn(root, 'show', 'L9');
   assert.equal(missing.status, 2);
@@ -303,12 +304,64 @@ test('tick prints what it promoted, demoted and retired', () => {
   for (const field of ['policyUnrecorded', 'gateFileRewritten', 'ledgerIntact']) assert.equal(typeof retired[field], 'boolean', field);
 });
 
-test('tick lists what it could not do', () => {
+test('tick lists what it could not do and exits 2, after printing all it did', () => {
   const { root } = trialRepo();
   writeFileSync(join(repoDataDir(root), 'policy.json'), JSON.stringify({ minTrialFirings: 1, minTrialSessions: 1, maxAction: 'block' }));
-  const text = ok(runLearn(root, 'tick'));
-  assert.match(text, /policy file is not the one in force: yes/);
-  assert.match(text, /NOT DONE\n {2}the policy file is not the policy in force/);
+  const r = runLearn(root, 'tick');
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stdout, /^TICK\n {2}promoted: none/);
+  assert.match(r.stdout, /policy file is not the one in force: yes/);
+  assert.match(r.stdout, /NOT DONE\n {2}the policy file is not the policy in force/);
+  assert.equal(r.stderr.trim().split('\n').length, 1, r.stderr);
+  assert.match(r.stderr, /tick could not do all of its work: 1 step not done/);
+  const json = runLearn(root, 'tick', '--json');
+  assert.equal(json.status, 2);
+  assert.equal(JSON.parse(json.stdout).errors.length, 1, '--json still prints the whole result');
+  assert.equal(runLearn(trialRepo().root, 'tick').status, 0, 'a tick with nothing it could not do exits 0');
+});
+
+test('replay tries a candidate again, and it becomes a trial once the log holds enough clean calls', () => {
+  const root = loggedRepo({ clean: false });
+  assert.match(ok(runLearn(root, 'draft', '--from', draftFile(JSON.stringify(draftFor(root))))), /run `replay L1` once the log holds more history/);
+  assert.match(ok(runLearn(root, 'replay', 'L1')), /replay: not-checkable: .*\nstatus: candidate/);
+  logClean(root);
+  const text = ok(runLearn(root, 'replay', 'L1'));
+  assert.match(text, /replay: pass: "the gate fired on all 2 mistakes/);
+  assert.match(text, /status: trial/);
+  assert.equal(listLearnings(root).learnings[0].status, 'trial');
+});
+
+test('replay of a learning that is not a candidate is one line and exit 2', () => {
+  const { root } = trialRepo();
+  const before = snapshot(repoDataDir(root));
+  for (const [id, reason] of [['L1', /L1 is trial; only a candidate is replayed/], ['L9', /L9: no such learning/], ['../L1', /id: must be L/]]) {
+    const r = runLearn(root, 'replay', id);
+    assert.equal(r.status, 2, id);
+    assert.equal(r.stderr.trim().split('\n').length, 1, r.stderr);
+    assert.match(r.stderr, reason);
+    assert.equal(r.stdout, '');
+  }
+  assert.deepEqual(snapshot(repoDataDir(root)), before);
+});
+
+test('draft and tick refuse a data directory that is a link, and write nothing through it', () => {
+  const root = loggedRepo();
+  const path = draftFile(JSON.stringify(draftFor(root)));
+  const moved = tempDir('hk-learn-moved-');
+  const dataDir = repoDataDir(root);
+  // The log so far moves elsewhere, and the data directory becomes a link to it.
+  rmSync(moved, { recursive: true });
+  renameSync(dataDir, moved);
+  symlinkSync(moved, dataDir, 'junction');
+  const before = snapshot(moved);
+  for (const args of [['draft', '--from', path], ['tick'], ['replay', 'L1']]) {
+    const r = runLearn(root, ...args);
+    assert.equal(r.status, 3, `${args[0]}: ${r.stderr}`);
+    assert.match(r.stderr, /refusing to write to .*: it is a link/);
+    assert.match(r.stderr, /Nothing was written\./);
+    assert.deepEqual(snapshot(moved), before, args[0]);
+  }
+  assert.equal(runLearn(root, 'list').status, 0, 'a subcommand that only reads still runs');
 });
 
 test('an unknown subcommand exits 2', () => {

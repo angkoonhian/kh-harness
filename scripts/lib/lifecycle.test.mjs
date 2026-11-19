@@ -994,6 +994,42 @@ test('apply denies the terminal-only learn subcommands, and uninstall removes th
   assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
 });
 
+test('an install made before the learn deny rules existed is given exactly those, a second apply proposes nothing, and uninstall still leaves git status clean', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  // Rewrite the install as one made before these rules existed: they leave
+  // the settings and the patch that recorded the deny rules.
+  const added = new Set(learnCommandDenyRules());
+  const s = settings(d);
+  s.permissions.deny = s.permissions.deny.filter(rule => !added.has(rule));
+  const ending = readFileSync(join(d, '.claude/settings.json'), 'utf8').endsWith('\n') ? '\n' : '';
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + ending);
+  const manifest = manifestOf(d);
+  const patch = manifest.settingsPatches.find(p => p.checkId === 'P5.toolgate' && p.event === 'permissions.deny');
+  patch.rules = patch.rules.filter(rule => !added.has(rule));
+  patch.entrySha256 = sha256(JSON.stringify(patch.rules));
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+
+  const before = JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P5.toolgate');
+  assert.equal(before.state, 'absent');
+  assert.match(before.evidence.at(-1), new RegExp(`^${added.size} of the ${toolGateDenyRules().length} deny rules the gate hook is installed with are missing`));
+  const dry = run(APPLY, d);
+  for (const rule of added) assert.ok(dry.includes(JSON.stringify(rule)), rule);
+  assert.doesNotMatch(dry, /\(hook: PreToolUse\)  \[P5\.toolgate\]/, 'the registered hook is not proposed again');
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.deepEqual(settings(d).permissions.deny.filter(rule => added.has(rule)), [...added]);
+
+  const after = JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P5.toolgate');
+  assert.equal(after.state, 'declared');
+  assert.doesNotMatch(run(APPLY, d), /P5\.toolgate/, 'a second apply then proposes nothing for it');
+
+  run(UNINSTALL, d, '--yes');
+  // Written by the `detect` runs above, not by apply.
+  rmSync(join(d, 'docs/harness/detect.json'));
+  const status = execFileSync('git', ['-C', d, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' });
+  assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
+});
+
 test('uninstall prints the log\'s location and size and does not remove it', t => {
   const d = fixture();
   run(APPLY, d, '--yes');

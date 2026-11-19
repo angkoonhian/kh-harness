@@ -138,8 +138,14 @@ function denyRulesInEffect(root) {
 // shown" convention `hookEvents`' unresolvable commands already use.
 const DENY_RULE_SAFE_PREFIXES = ['Edit(', 'Read(', 'Write(', 'Glob(', 'Grep(', 'NotebookEdit('];
 
+// The shape of the command rules the kit itself proposes against its `learn`
+// subcommands (propose.mjs's `learnCommandDenyRules`): lowercase words only,
+// which no credential fits, so `P5.toolgate` can tell which are present.
+const KIT_COMMAND_RULE = /^(Bash|PowerShell)\(\*learn\.mjs\* [a-z]+( [a-z]+)?\*\)$/;
+
 function redactDenyRule(rule) {
-  return typeof rule === 'string' && DENY_RULE_SAFE_PREFIXES.some(p => rule.startsWith(p)) ? rule : null;
+  if (typeof rule !== 'string') return null;
+  return DENY_RULE_SAFE_PREFIXES.some(p => rule.startsWith(p)) || KIT_COMMAND_RULE.test(rule) ? rule : null;
 }
 
 /**

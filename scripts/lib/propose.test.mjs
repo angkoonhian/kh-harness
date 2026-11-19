@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readFileSync as re
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, sha256 as sha, readManifest, writeManifest } from './manifest.mjs';
-import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH } from './propose.mjs';
+import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH } from './propose.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { detectStack } from './detect-stack.mjs';
@@ -1838,8 +1838,27 @@ test('P5.toolgate is absent and decidable under every profile when no hook of ou
   }
 });
 
-test('P5.toolgate is declared, never verified, when our hook is registered on PreToolUse; a foreign one is disclosed, not credited', () => {
-  const ours = toolgateGap(PROFILE_STACKS.generic, loopwatchHarness({ PreToolUse: [{ script: TOOL_GATE_PATH, matcher: null }] }));
+/** A harness with our gate hook registered and these deny rules in effect. */
+const gateInstalled = denyRuleList => {
+  const harness = loopwatchHarness({ PreToolUse: [{ script: TOOL_GATE_PATH, matcher: null }] });
+  return { ...harness, claudeDir: { ...harness.claudeDir, denyRules: denyRuleList.length, denyRuleList } };
+};
+
+test('a repository that installed the gate hook before these rules existed is proposed exactly the missing deny rules', () => {
+  const missing = learnCommandDenyRules();
+  const older = toolGateDenyRules().filter(rule => !missing.includes(rule));
+  const harness = gateInstalled([...older, 'Edit(secrets/**)']);
+  const gap = toolgateGap(PROFILE_STACKS.generic, harness);
+  assert.equal(gap.state, 'absent');
+  assert.notEqual(gap.decidable, false, 'apply can close it');
+  assert.deepEqual(gap.evidence, [`PreToolUse hook: ${TOOL_GATE_PATH}`, `${missing.length} of the ${toolGateDenyRules().length} deny rules the gate hook is installed with are missing: ${missing.join(', ')}`]);
+  assert.equal(gap.proposal, `add the ${missing.length} missing deny rules beside the registered gate hook`);
+  const ps = buildProposals({ checks: [gap], manifest: null, kitVersion: '0.2.0', harness, stack: PROFILE_STACKS.generic, files: [] });
+  assert.deepEqual(ps.map(p => [p.kind, p.globs]), [['settings-deny', missing]], 'no hook file and no second registration, only the rules it lacks');
+});
+
+test('P5.toolgate is declared, never verified, when our hook is registered on PreToolUse with every deny rule; a foreign one is disclosed, not credited', () => {
+  const ours = toolgateGap(PROFILE_STACKS.generic, gateInstalled(toolGateDenyRules()));
   assert.equal(ours.state, 'declared');
   assert.deepEqual(ours.evidence, [`PreToolUse hook: ${TOOL_GATE_PATH}`]);
   assert.equal(ours.proposal, null);

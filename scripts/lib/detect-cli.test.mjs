@@ -63,7 +63,7 @@ function harnessed() {
     PreToolUse: [{ hooks: [{ type: 'command', command: 'node .claude/scripts/tool-gate.mjs' }] }],
   };
   for (const event of LOGGED_EVENTS) (hooks[event] ??= []).push({ hooks: [{ type: 'command', command: 'node .claude/scripts/session-log.mjs' }] });
-  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(*-lock.json)'] }, hooks }));
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: ['Edit(*-lock.json)', ...toolGateDenyRules()] }, hooks }));
   write(d, '.claude/rules/api.md', '#');
   write(d, '.claude/scripts/lint-touched.mjs', '//');
   write(d, '.claude/scripts/verify-touched.mjs', '//');

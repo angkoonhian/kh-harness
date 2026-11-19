@@ -18,7 +18,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, kitSkew, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, kitSkew, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
@@ -752,12 +752,26 @@ const CHECKS = [
   {
     id: 'P5.toolgate', step: 30, phase: 5,
     lookedFor: ['a PreToolUse hook in .claude/settings.json'],
-    // Decided from the hook registry alone. Which gates exist is learned
-    // later, so neither the gate files nor the session log is read here, and
-    // nothing executes, so it is never `verified`.
-    check: ({ harness, manifest, root }) => registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH,
-      'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, and deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine\'s kh-harness data directory',
-      { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }),
+    // Decided from the hook registry and the deny rules in effect. Which
+    // gates exist is learned later, so neither the gate files nor the
+    // session log is read here, and nothing executes, so it is never
+    // `verified`. The hook without every deny rule it is installed with is
+    // not the capability: those rules keep the model from editing what the
+    // hook enforces, or running what approves it.
+    check: ({ harness, manifest, root }) => {
+      const hook = registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH,
+        'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine\'s kh-harness data directory, and deny running the learn subcommands that approve or weaken a gate',
+        { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS });
+      if (hook.state !== 'declared') return hook;
+      const missing = missingToolGateDenyRules(harness);
+      if (missing.length === 0) return hook;
+      const all = toolGateDenyRules().length;
+      return {
+        state: 'absent',
+        evidence: [...hook.evidence, `${missing.length} of the ${all} deny rules the gate hook is installed with are missing: ${missing.join(', ')}`],
+        proposal: `add the ${missing.length} missing deny rule${missing.length === 1 ? '' : 's'} beside the registered gate hook`,
+      };
+    },
   },
   {
     id: 'P5.integrity', step: 32, phase: 5,

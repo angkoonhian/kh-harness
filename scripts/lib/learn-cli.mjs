@@ -13,6 +13,7 @@
 // what `log report` prints is printed, by `log report`'s own helpers.
 import { readFileSync } from 'node:fs';
 
+import { REROUTED_MEANS } from './gate-stats.mjs';
 import { ID_ERROR, isId, learningIn, learningStats, readState, standingFor, unrecordedReason } from './learn-lib.mjs';
 import { recordedPolicySha256 } from './learn-promote.mjs';
 import { readLedger, verifyLedger } from './ledger.mjs';
@@ -24,6 +25,7 @@ import { readPolicy } from './policy.mjs';
 const SPECS = Object.freeze({
   candidates: { args: [], flags: ['--json'] },
   draft: { args: [], flags: ['--from'], required: ['--from'] },
+  replay: { args: ['<id>'], flags: [] },
   list: { args: [], flags: ['--json'] },
   show: { args: ['<id>'], flags: ['--json'] },
   approve: { args: ['<id>'], flags: ['--sha256', '--action'], required: ['--sha256', '--action'] },
@@ -41,6 +43,9 @@ export const LEARN_SUBCOMMANDS = Object.freeze(Object.keys(SPECS));
 /** The subcommands that approve a gate or weaken one, which run only for a
  * person at an interactive terminal. */
 export const TERMINAL_ONLY = Object.freeze(['approve', 'wrong', 'demote', 'retire', 'policy set', 'policy clear']);
+
+/** The subcommands that write to this machine's data directory. */
+export const WRITES = new Set(['draft', 'replay', 'tick', ...TERMINAL_ONLY]);
 
 const VALUE_FLAGS = new Set(LEARN_SUBCOMMANDS.flatMap(name => SPECS[name].flags).filter(f => f !== '--json'));
 const BOOLEAN_FLAGS = new Set(['--json', '--help']);
@@ -156,7 +161,7 @@ const verdict = v => (VERDICTS.has(v) ? v : visible(v));
 const time = v => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString() : visible(v));
 const ids = list => (list.length === 0 ? 'none' : list.map(id => (/^[A-Za-z0-9 ]+$/.test(id) ? id : visible(id))).join(', '));
 const indent = lines => lines.map(l => `  ${l}`);
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 const repairedNote = result => (result.repairedGates?.length > 0 ? `the local gate set was first brought into line with the ledger: ${ids(result.repairedGates)}` : null);
 
@@ -235,10 +240,13 @@ export function readDraft(path) {
 }
 
 const STATUS_AFTER_REPLAY = {
-  trial: "status: trial; its gate is in this machine's local gate set at observe, where it blocks nothing. Show it, then approve it at a terminal, to promote it",
-  rejected: 'status: rejected; its gate is not used, and the recurrence may be drafted again',
-  candidate: 'status: candidate; it stays one, and nothing replays it again: retire it at a terminal to draft the recurrence again once more history exists',
+  trial: () => "status: trial; its gate is in this machine's local gate set at observe, where it blocks nothing. Show it, then approve it at a terminal, to promote it",
+  rejected: () => 'status: rejected; its gate is not used, and the recurrence may be drafted again',
+  candidate: id => `status: candidate; it stays one: run \`replay ${id}\` once the log holds more history`,
 };
+
+/** A replay's verdict and the status it left the learning `id` in. */
+const replayLines = (id, trial) => [`replay: ${trial.replay.verdict}: ${visible(trial.replay.reason)}`, STATUS_AFTER_REPLAY[trial.status](id)];
 
 /** Each stage of a draft: the candidate stored, then the replay's verdict
  * and the status it left, or nothing more when the replay could not run. */
@@ -246,9 +254,12 @@ export function renderDraft(drafted, trial) {
   const { learning } = drafted;
   const lines = [`draft: stored as ${learning.id}, a candidate; gate sha256 ${learning.sha256}`];
   if (trial.error !== undefined) return withRepairs(drafted, lines);
-  lines.push(`replay: ${trial.replay.verdict}: ${visible(trial.replay.reason)}`, STATUS_AFTER_REPLAY[trial.status]);
+  lines.push(...replayLines(learning.id, trial));
   return withRepairs({ repairedGates: [...(drafted.repairedGates ?? []), ...(trial.repairedGates ?? [])] }, lines);
 }
+
+/** What replaying the candidate `id` again came to. */
+export const renderReplay = (id, trial) => withRepairs(trial, replayLines(id, trial));
 
 // --- list -------------------------------------------------------------------
 
@@ -324,7 +335,7 @@ function statsLine(view) {
   if (view.stats === null) return `stats: not available: ${showCodePoints(view.statsError)}`;
   const s = view.stats;
   const unreadable = s.sessionsUnreadable > 0 ? `; sessions read only in part: ${s.sessionsUnreadable}` : '';
-  return `stats: fired ${plural(s.firings, 'time')} in ${plural(s.sessions, 'session')}; warn or block firings followed by a successful call of its tool: ${s.rerouted}; marked wrong since its last promotion: ${s.wrong}${unreadable}`;
+  return `stats: fired ${plural(s.firings, 'time')} in ${plural(s.sessions, 'session')}; rerouted: ${s.rerouted}; marked wrong: ${s.wrong} since the last promotion, ${s.wrongTotal} in all${unreadable}`;
 }
 
 export function renderShow(view) {
@@ -345,6 +356,7 @@ export function renderShow(view) {
     ...indent([
       view.replay === null ? 'replay: not yet' : `replay: ${verdict(view.replay.verdict)}: ${visible(view.replay.reason)}`,
       statsLine(view),
+      ...(view.stats === null ? [] : [`  ${REROUTED_MEANS}`]),
     ]),
   ].join('\n');
 }

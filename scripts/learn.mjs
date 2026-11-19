@@ -5,12 +5,13 @@ import { resolve } from 'node:path';
 
 import { LEARN_USAGE, learnHelp, wantsHelp, warnUnknown } from './lib/cli.mjs';
 import {
-  asciiJson, candidatesView, failureLine, helpName, listView, parseFiringRef, parseLearnArgv, policyFrom, policyView, readDraft,
+  asciiJson, candidatesView, failureLine, helpName, listView, parseFiringRef, parseLearnArgv, plural, policyFrom, policyView, readDraft,
   renderApproved, renderCandidates, renderDemoted, renderDraft, renderList, renderPolicy, renderPolicyCleared, renderPolicySet,
-  renderRetired, renderShow, renderTick, renderWrong, resolveCommand, showView, terminalRefusal,
+  renderReplay, renderRetired, renderShow, renderTick, renderWrong, resolveCommand, showView, terminalRefusal, WRITES,
 } from './lib/learn-cli.mjs';
 import { draftLearning, listLearnings, runTrial } from './lib/learn-lib.mjs';
 import { approveLearning, clearPolicy, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './lib/learn-promote.mjs';
+import { assertDataDirSafe } from './lib/log-lib.mjs';
 import { requireInteractive } from './lib/tty.mjs';
 
 const argv = process.argv.slice(2);
@@ -61,6 +62,12 @@ const SUBCOMMANDS = {
     say(renderDraft(drafted, trial));
     if (trial.error !== undefined) fail(2, failureLine(`replay of ${drafted.learning.id}`, trial));
   },
+  'replay'(root, command) {
+    const [id] = command.args;
+    const trial = runTrial(root, id);
+    if (trial.error !== undefined) fail(2, failureLine('replay', trial));
+    say(renderReplay(id, trial));
+  },
   'list'(root) {
     const listed = listLearnings(root);
     if (listed.error !== undefined) fail(2, failureLine('list', listed));
@@ -103,6 +110,7 @@ const SUBCOMMANDS = {
     const result = tick(root);
     if (result.error !== undefined) fail(2, failureLine('tick', result));
     print(result, renderTick);
+    if (result.errors.length > 0) fail(2, `tick could not do all of its work: ${plural(result.errors.length, 'step')} not done, listed above.`);
   },
   'policy show'(root) {
     print(policyView(root), renderPolicy);
@@ -122,6 +130,18 @@ const SUBCOMMANDS = {
 
 const root = resolve(command.target);
 if (!existsSync(root)) fail(2, `no such path: ${root}`);
+
+// A step that writes refuses a data directory `log` would refuse: one that
+// is a link, or not directly inside the data root, would have the write land
+// wherever it points. `assertDataDirSafe` throws `DataDirRefused` and
+// nothing else.
+if (WRITES.has(command.name)) {
+  try {
+    assertDataDirSafe(root, { absentOk: true });
+  } catch (error) {
+    fail(3, `${error.message}. Nothing was written.`);
+  }
+}
 
 // The contract is exit 0, 2 or 3: a refusal is 3, and anything unexpected is
 // one line and 2, never a stack trace.

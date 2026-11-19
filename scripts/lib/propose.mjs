@@ -347,25 +347,42 @@ export function learnCommandDenyRules() {
   return LEARN_TERMINAL_SUBCOMMANDS.flatMap(name => [`Bash(*learn.mjs* ${name}*)`, `PowerShell(*learn.mjs* ${name}*)`]);
 }
 
+/** The deny rules the gate hook is installed with that the settings in
+ * effect, as `detect` read them, do not hold. */
+export function missingToolGateDenyRules(harness) {
+  const present = new Set(harness?.claudeDir?.denyRuleList ?? []);
+  return toolGateDenyRules().filter(rule => !present.has(rule));
+}
+
+/** Whether our gate hook is registered on PreToolUse, as `P5.toolgate`
+ * decides it. */
+export const toolGateHookRegistered = ({ harness, manifest, root }) =>
+  registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH, '', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
+
 /**
  * The gate hook: a PreToolUse hook that interprets the learned gates (see
  * tool-gate.mjs), with no `matcher`, since a gate may name any tool, and the
  * deny rules that keep the model from editing what enforces it. No evidence
  * gate: which gates exist is learned later, and until one is the hook reads
- * two absent files and does nothing.
+ * two absent files and does nothing. With the hook already registered, only
+ * the deny rules it lacks are proposed, as for an install made before a rule
+ * existed.
  */
-function toolGateProposal({ kitVersion, check }) {
+function toolGateProposal({ kitVersion, check, harness, manifest, root }) {
+  const missing = missingToolGateDenyRules(harness);
+  const deny = missing.length === 0 ? [] : [{
+    kind: 'settings-deny', step: TOOL_GATE_STEP,
+    globs: missing,
+    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate, a second barrier behind their own terminal check",
+  }];
+  if (toolGateHookRegistered({ harness, manifest, root })) return deny;
   const files = hookFiles(TOOL_GATE_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PreToolUse', step: TOOL_GATE_STEP,
     entry: execEntry(TOOL_GATE_PATH),
     requiresFiles: files.map(f => f.path),
     reason: hookRegistrationReason('PreToolUse', check),
-  }, {
-    kind: 'settings-deny', step: TOOL_GATE_STEP,
-    globs: toolGateDenyRules(),
-    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate, a second barrier behind their own terminal check",
-  }];
+  }, ...deny];
 }
 
 const BOOTSTRAP_PATH = 'scripts/bootstrap.sh';

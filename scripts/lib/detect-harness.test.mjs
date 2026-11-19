@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
+import { learnCommandDenyRules } from './propose.mjs';
 
 function write(d, rel, content) {
   const p = join(d, rel);
@@ -170,6 +171,13 @@ test('denyRuleList redacts a Bash(...) rule to null, never the raw string', () =
   assert.deepEqual(list, [null]);
   const full = JSON.stringify(run(d));
   assert.equal(full.includes('ghp_SECRET'), false, 'the credential must never reach the serialised harness');
+});
+
+test("denyRuleList keeps the kit's own learn command rules verbatim, and only those", () => {
+  const d = repo();
+  const lookalikes = ['Bash(*learn.mjs* approve --sha256 SECRET*)', 'Bash(*learn.mjs* Approve*)', 'Bash(learn.mjs approve*)'];
+  write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: [...learnCommandDenyRules(), ...lookalikes] } }));
+  assert.deepEqual(run(d).claudeDir.denyRuleList, [...learnCommandDenyRules(), null, null, null]);
 });
 
 test('denyRuleList is [] when there is no settings file, and does not throw on malformed JSON', () => {

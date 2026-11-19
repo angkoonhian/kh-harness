@@ -337,14 +337,15 @@ const TERMINAL_NOTE = 'Needs a person at an interactive terminal outside Claude 
 // them; `terminal` marks the ones that approve or weaken a gate.
 const LEARN_SECTIONS = [
   { name: 'candidates', synopsis: 'candidates [--json]', text: 'List the recurrences `log report` finds that no learning stands for, with the same cleaned error line and the same counts of what was read. Reads only.' },
-  { name: 'draft', synopsis: 'draft --from <file>', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate. The file is untrusted: nothing in it is printed back." },
+  { name: 'draft', synopsis: 'draft --from <file>', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate, for `replay` to try again. The file is untrusted: nothing in it is printed back." },
+  { name: 'replay', synopsis: 'replay <id>', text: 'Replay a candidate\'s gate against the log again, as `draft` does, once the log holds more history: a pass puts it on trial at `observe`, a fail rejects it, and one still not checkable stays a candidate. Only a candidate is replayed.' },
   { name: 'list', synopsis: 'list [--json]', text: 'Every learning with its status and whether the ledger vouches for it, the approvals the ledger records, and every local gate the next step that writes repairs or removes. A broken ledger is said first. Reads only.' },
   { name: 'show', synopsis: 'show <id> [--json]', text: "One learning: its gate as JSON with every code point outside printable ASCII written as \\u{…}, the gate's sha256, the replay result and what the log records of its firings. Reads only." },
   { name: 'approve', terminal: true, synopsis: 'approve <id> --sha256 <hash> --action <warn|block>', text: "Promote a learning on trial to warn or block on this machine. <hash> must be the gate's sha256 as `show` prints it; the same view is printed first, so the hash approved sits beside the text it covers." },
   { name: 'wrong', terminal: true, synopsis: 'wrong <session>:<line>', text: 'Mark one recorded gate firing wrong. Two marks since a promotion take the gate back to observe.' },
   { name: 'demote', terminal: true, synopsis: 'demote <id>', text: "Take a promoted learning's gate back to observe; a committed gate is suspended on this machine instead, and that is final." },
   { name: 'retire', terminal: true, synopsis: 'retire <id>', text: 'Retire a learning: its local gate goes, and it no longer stands for its recurrence.' },
-  { name: 'tick', synopsis: 'tick [--json]', text: 'Run the unattended rules once: repair the local gate set, retire trials whose cited paths are all gone, demote gates marked wrong twice, and promote under the policy in force; then print all it did and all it could not. Exits 0 whenever it ran.' },
+  { name: 'tick', synopsis: 'tick [--json]', text: 'Run the unattended rules once: repair the local gate set, retire trials whose cited paths are all gone, demote gates marked wrong twice, and promote under the policy in force; then print all it did and all it could not. Exits 2, after printing all it did, when it could not do part of its work; 0 only when it did all of it.' },
   { name: 'policy show', synopsis: 'policy show [--json]', text: 'The promotion policy on disk, whether its hash is the one the ledger records, and what `tick` therefore promotes. Reads only.' },
   { name: 'policy set', terminal: true, synopsis: 'policy set --min-firings <n> --min-sessions <n> --max-action <warn|block>', text: 'Set the promotion policy and record its hash in the ledger: `tick` then promotes, up to <max-action>, each fresh trial with at least that many firings in that many sessions, none marked wrong and none read from outside content.' },
   { name: 'policy clear', terminal: true, synopsis: 'policy clear', text: 'Withdraw the policy: from then on `tick` promotes nothing, whatever policy file appears, until one is set again.' },
@@ -365,7 +366,9 @@ const TERMINAL_ONLY_TEXT = `TERMINAL ONLY
   PowerShell patterns over \`learn.mjs\`, so Claude Code declines to run them.
   That is a second barrier: a deny rule matches the command as Claude writes
   it, not the same command reached another way, and then the terminal check
-  is the one that holds.`;
+  is the one that holds. A rule matches any command that names \`learn.mjs\`
+  and, after it, one of these subcommand words, so an unrelated command that
+  happens to, such as a commit message, is declined too.`;
 
 export const LEARN_USAGE = `kh-harness learn — the learnings for one repository on this machine
 
@@ -396,9 +399,11 @@ FLAGS
            on stdout and nothing else, with every character outside printable
            ASCII escaped.
 
-Here 3 is a terminal-only subcommand run without a person at a terminal. 2 is
-also any step the learnings library refused or could not finish, with its
-reason.
+Here 3 is also a terminal-only subcommand run without a person at a terminal,
+and any subcommand that writes when this repository's data directory is a
+link or is not directly inside the data root, as \`log\` refuses it. 2 is also
+any step the learnings library refused or could not finish, with its reason,
+and a \`tick\` that could not do part of its work.
 
 ${EXIT_CODES}`;
 
