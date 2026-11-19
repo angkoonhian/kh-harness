@@ -55,8 +55,10 @@ and only while the log is enabled.
 It is installed with deny rules: edits to the whole `.claude/scripts/`
 directory (including any script of the owner's kept there),
 `.claude/kh-harness/`, the manifest, `docs/harness/LEARNED.md` and
-`~/.claude/kh-harness/`, and running the `learn` subcommands that approve
-or weaken a gate. The step is `declared` only when the hook and every one
+`~/.claude/kh-harness/`, and running the eight `learn` subcommands that
+approve a gate, weaken one or change the repository's (`approve`, `wrong`,
+`demote`, `retire`, `land`, `revert`, `policy set`, `policy clear`; `land`
+and `revert` whole, their dry runs included). The step is `declared` only when the hook and every one
 of these rules are present; an existing install missing some is proposed
 exactly those.
 

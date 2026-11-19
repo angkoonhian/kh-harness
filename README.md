@@ -288,25 +288,24 @@ Each takes `--help` for its full contract. The flags of the first three:
 | [`approve`](docs/guide/commands.md#learn-approve) | Promotes a gate on trial to `warn` or `block` on this machine | data directory | **yes** |
 | [`wrong`](docs/guide/commands.md#learn-wrong) | Marks one recorded firing wrong | data directory | **yes** |
 | [`demote`](docs/guide/commands.md#learn-demote) | Takes a gate back to `observe`, or suspends a landed one here | data directory | **yes** |
-| [`retire`](docs/guide/commands.md#learn-retire) | Ends a learning | data directory | **yes** |
+| [`retire`](docs/guide/commands.md#learn-retire) | Ends a learning; refused while its gate is still committed | data directory | **yes** |
 | [`tick`](docs/guide/commands.md#learn-tick) | Runs the unattended rules once | data directory | no |
-| [`land`](docs/guide/commands.md#learn-land) | Writes a promoted learning into the repository | repository and data directory, with `--yes` | **yes**, for `--yes` |
-| [`revert`](docs/guide/commands.md#learn-revert) | Takes a landed learning out of the repository | repository and data directory, with `--yes` | **yes**, for `--yes` |
+| [`land`](docs/guide/commands.md#learn-land) | Writes a promoted learning into the repository, uncommitted; the dry run writes nothing | repository and data directory, with `--yes` | **yes**, for `--yes` |
+| [`revert`](docs/guide/commands.md#learn-revert) | Takes a learning's gate, entry and record out of the repository, from whatever is left | repository and data directory, with `--yes` | **yes**, for `--yes` |
 | [`policy show`](docs/guide/commands.md#learn-policy-show) | The policy and what `tick` will promote | no | no |
 | [`policy set`](docs/guide/commands.md#learn-policy-set) | Sets the promotion policy and records its hash | data directory | **yes** |
 | [`policy clear`](docs/guide/commands.md#learn-policy-clear) | Withdraws the policy | data directory | **yes** |
-
-> [!NOTE]
-> At this version `land` and `revert` are built in
-> `scripts/lib/learn-land.mjs`, and `learn` still rejects them as unknown
-> subcommands (exit 2) until their command-line wiring lands.
 
 > [!IMPORTANT]
 > A **standalone terminal** means a person at an interactive terminal
 > outside Claude Code: standard input and output are both terminals and
 > `CLAUDECODE` is unset. An IDE's built-in terminal sets `CLAUDECODE` too
 > and is refused. Anywhere else these subcommands exit 3 and change nothing.
-> This is how the agent is kept from approving its own work.
+> This is how the agent is kept from approving its own work. The eight
+> owner-only subcommands are `approve`, `wrong`, `demote`, `retire`, `land`,
+> `revert`, `policy set` and `policy clear`; `apply`'s deny rules make Claude
+> Code decline all eight, the dry runs of `land` and `revert` included. The
+> `harness-learn` skill runs none of them, nor `policy show`.
 
 ## Turning on the session log and the learning loop
 
@@ -362,7 +361,11 @@ Once `apply` has installed the session-log and gate hooks:
    ```
 
    On a fresh log the verdict is usually `not-checkable`: the replay needs
-   at least 20 clean calls of the gate's tool across 2 sessions.
+   at least 20 clean calls of the gate's tool across 2 sessions. A
+   recurrence whose draft the replay rejected, or another labelled with the
+   same failure kind, is drafted again only with `learn draft --redraft`,
+   which the skill passes only when you ask for a new draft in the
+   conversation.
 
 6. **The gate hook** runs the gate at `observe` and records each firing.
    **`tick`**, run by you or the skill, repairs, demotes and promotes under
@@ -388,14 +391,30 @@ Once `apply` has installed the session-log and gate hooks:
    kh-harness: approve refused: standard input is not an interactive terminal; it needs a person at an interactive terminal outside Claude Code, and nothing was changed.
    ```
 
-9. **You** land it, in a standalone terminal, on a branch, and commit:
+9. **You** land it, on a branch. First the dry run, which needs no terminal
+   and writes nothing; it prints its notes and the diff:
 
    ```sh
-   node <kh-harness>/scripts/learn.mjs . land L1          # the diff
+   node <kh-harness>/scripts/learn.mjs . land L1
+   ```
+
+   In the scratch run behind this page `L1` had not been approved — that
+   needs a person at a terminal — so the dry run refused it (exit 3):
+
+   ```
+   kh-harness: land: L1 is trial; only a learning promoted on this machine is landed
+   ```
+
+   Once approved, write it from a standalone terminal:
+
+   ```sh
    node <kh-harness>/scripts/learn.mjs . land L1 --yes
    ```
 
-   See the note under [Commands](#commands) about `land` at this version.
+   It writes `docs/harness/LEARNED.md`, `.claude/kh-harness/gates.json` and
+   the manifest, and ends: `The change is not committed: review what this
+   run changed with git status and git diff, and commit it; until then it
+   reaches no one else.` Commit it.
 
 To take a learning back, use `wrong`, `demote`, `revert` or `retire`; see
 [The learning loop](docs/guide/learning-loop.md).
@@ -449,6 +468,12 @@ misses, and the cost figures are on [The session log](docs/guide/session-log.md)
   quoted, is not caught by them, and only the terminal check stops it. An
   unrelated command that holds that text, such as a commit message, is
   declined too.
+- The deny rules cover `land` and `revert` whole, so Claude Code also
+  declines an agent's dry run of either, by design: the dry run is yours to
+  read.
+- A dry run of `land` or `revert` writes nothing in the repository or the
+  data directory, but the `git status` it runs for the dirty-tree check may
+  refresh `.git/index`, as git does.
 - The deny rules on the protected paths stop Claude Code's file tools and
   the shell file commands it recognises. A program the agent runs that
   writes those files itself is not caught. The data-directory rule covers
@@ -462,8 +487,10 @@ misses, and the cost figures are on [The session log](docs/guide/session-log.md)
 - After a branch switch to a checkout without a committed gate, or once an
   uncommitted land is discarded, a landed learning is enforced nowhere until
   the next `learn` command or `tick`.
-- Retiring a landed or suspended learning leaves its committed gate in the
-  repository, and `revert` then refuses it; revert first.
+- A session is sealed only after 10 minutes without a new event, and
+  `log maintain` waits for that too. Until then those events are checked by
+  nothing, and `log status` says so ("events not yet sealed, in N sessions,
+  are not checked").
 - The harness identity is checked once per prompt. Tool events after a
   mid-turn edit to an installed hook are attributed to the previous base
   until the next prompt.
