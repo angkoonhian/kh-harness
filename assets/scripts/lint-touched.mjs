@@ -35,6 +35,7 @@ import {
   runBounded,
   safeSessionId,
   signatureOf,
+  stripUnsafe,
   writeJSONMarker,
 } from './harness-redact.mjs';
 
@@ -252,6 +253,21 @@ function quoteArg(value) {
     : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+const MAX_DISPLAY_PATH = 200;
+
+/**
+ * The edited file's name as this hook prints it, to stderr and into the
+ * model's context: `tool_input.file_path` is attacker-shaped, so what a
+ * reader cannot see is stripped, newlines and tabs become spaces so the
+ * name stays on one line, and it is cut to MAX_DISPLAY_PATH characters,
+ * ending in `…` when cut. Display only: the lint command, the marker keys
+ * and attribution all use the real path.
+ */
+function displayPath(filePath) {
+  const chars = Array.from(stripUnsafe(filePath).replace(/[\n\t]/g, ' '));
+  return chars.length <= MAX_DISPLAY_PATH ? chars.join('') : `${chars.slice(0, MAX_DISPLAY_PATH - 1).join('')}…`;
+}
+
 /** True if `line` plausibly refers to the edited file: matched on the path
  * as given AND on its basename, with `\` and `/` treated as equivalent —
  * this repo is developed on Windows and its tests run on both. */
@@ -411,7 +427,7 @@ function dedupeDecision(root, sessionId, filePath, signature) {
     const seen = repeats + 2; // +1 for the original report, +1 for this occurrence
     return {
       action: 'terse',
-      message: `lint-touched: ${filePath} — unchanged since the last edit (the same issue has now been reported ${seen} times since the file last linted clean)`,
+      message: `lint-touched: ${displayPath(filePath)} — unchanged since the last edit (the same issue has now been reported ${seen} times since the file last linted clean)`,
     };
   }
 
@@ -419,7 +435,7 @@ function dedupeDecision(root, sessionId, filePath, signature) {
   if (count >= MAX_REPORTS_SINCE_CLEAN) {
     return {
       action: 'terse',
-      message: `lint-touched: ${count + 1 - MAX_REPORTS_SINCE_CLEAN} further distinct issues in ${filePath}; run the lint script`,
+      message: `lint-touched: ${count + 1 - MAX_REPORTS_SINCE_CLEAN} further distinct issues in ${displayPath(filePath)}; run the lint script`,
     };
   }
   return { action: 'report' };
@@ -445,9 +461,9 @@ function forgetFile(root, sessionId, filePath) {
 }
 
 /**
- * Says, once per session, that `filePath` was not confirmed clean — never a
- * lint failure, so exit 0, where Claude Code reads stdout as JSON and shows
- * nothing from stderr. The one sentence goes to the person as
+ * Says, once per session, that `shownPath` (the edited file, through
+ * displayPath) was not confirmed clean — never a lint failure, so exit 0,
+ * where Claude Code reads stdout as JSON and shows nothing from stderr. The one sentence goes to the person as
  * `systemMessage` and to the model as PostToolUse `additionalContext`, so
  * neither mistakes "never checked" for "clean". `outcome` carries the exit
  * code, signal or timeout and nothing from the linter's output: none of
@@ -457,13 +473,13 @@ function forgetFile(root, sessionId, filePath) {
  * unreported. A marker that cannot be read or written means the notice is
  * shown again, never that it is lost.
  */
-function notConfirmedClean(root, sessionId, filePath, outcome) {
+function notConfirmedClean(root, sessionId, shownPath, outcome) {
   const path = sessionId === null ? null : markerPath(root, sessionId, 'sensor-unchecked');
   if (path !== null) {
     if (readJSONMarker(path, {}).noticed === true) return 0;
     writeJSONMarker(path, { noticed: true });
   }
-  const sentence = `lint-touched: the lint script ${outcome}, so ${filePath} was not confirmed clean. Files not confirmed later this session are not reported again.`;
+  const sentence = `lint-touched: the lint script ${outcome}, so ${shownPath} was not confirmed clean. Files not confirmed later this session are not reported again.`;
   process.stdout.write(JSON.stringify({
     systemMessage: sentence,
     hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: sentence },
@@ -558,9 +574,10 @@ async function main() {
   // A timeout (our own kill), a spawn failure or any other signal is never
   // reported as a lint failure: whatever the run printed is incomplete.
   const sessionId = safeSessionId(payload.session_id);
-  if (result.timedOut) return notConfirmedClean(root, sessionId, filePath, `timed out after ${LINT_TIMEOUT_MS / 1000}s before reporting on ${filePath}`);
-  if (result.error) return notConfirmedClean(root, sessionId, filePath, 'could not be started');
-  if (result.signal) return notConfirmedClean(root, sessionId, filePath, `was killed by ${result.signal} before reporting on ${filePath}`);
+  const shownPath = displayPath(filePath);
+  if (result.timedOut) return notConfirmedClean(root, sessionId, shownPath, `timed out after ${LINT_TIMEOUT_MS / 1000}s before reporting on ${shownPath}`);
+  if (result.error) return notConfirmedClean(root, sessionId, shownPath, 'could not be started');
+  if (result.signal) return notConfirmedClean(root, sessionId, shownPath, `was killed by ${result.signal} before reporting on ${shownPath}`);
 
   // The file the edit touched may have been rewritten by scripts.lint
   // itself (an auto-fixing `--fix`/`--write` linter) — checked BEFORE the
@@ -571,7 +588,7 @@ async function main() {
   // that no longer exists.
   if (hasChanged(before, statSnapshot(absPath))) {
     return writeReport([
-      `lint-touched: ${filePath} was modified by the lint script while it was being checked — Claude's edit may no longer match what is on disk.`,
+      `lint-touched: ${shownPath} was modified by the lint script while it was being checked — Claude's edit may no longer match what is on disk.`,
     ]);
   }
 
@@ -600,7 +617,7 @@ async function main() {
   // Nothing attributable survived: the run failed without saying anything
   // about this file, so it was not confirmed clean — and a filtered-out
   // report never participates in dedupe bookkeeping.
-  if (reported.length === 0) return notConfirmedClean(root, sessionId, filePath, `exited with code ${result.status} without reporting on ${filePath}`);
+  if (reported.length === 0) return notConfirmedClean(root, sessionId, shownPath, `exited with code ${result.status} without reporting on ${shownPath}`);
 
   const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
   if (decision.action === 'terse') return writeReport([decision.message]);
