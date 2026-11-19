@@ -15,7 +15,11 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
-import { maskText, safeSessionId } from './harness-redact.mjs';
+import { maskText, safeSessionId, SCRUB_MARK } from './harness-redact.mjs';
+
+/** What a scrubbed event holds in place of every value the scrub hid, by the
+ * mask or by a credential-named key or flag. */
+export { SCRUB_MARK };
 
 export const GATES_PATH = '.claude/kh-harness/gates.json';
 export const LOCAL_GATES_FILE = 'gates.local.json';
@@ -311,7 +315,7 @@ function scrubArray(values, onString) {
     if (words !== null && flagsCredential(words, last)) {
       words = `${words} ${text}`;
       last = text;
-      return onString('***');
+      return onString(SCRUB_MARK);
     }
     words = last = typeof v === 'string' ? text : null;
     return typeof v === 'string' ? onString(text) : v;
@@ -333,7 +337,7 @@ function scrubWith(value, onString) {
       const key = maskText(k);
       const unique = uniqueKey(key, used);
       if (!isScalar(v)) return [unique, scrubWith(v, onString)];
-      if (namesCredential(key)) return [unique, onString('***')];
+      if (namesCredential(key)) return [unique, onString(SCRUB_MARK)];
       return [unique, typeof v === 'string' ? onString(maskText(v)) : v];
     }));
   }
