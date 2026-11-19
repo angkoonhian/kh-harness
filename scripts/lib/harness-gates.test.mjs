@@ -44,7 +44,7 @@ const rejectsWith = (g, pattern) => {
 };
 
 test('GATE_LIMITS holds the stated bounds', () => {
-  assert.deepEqual(GATE_LIMITS, { valueMax: 200, messageMax: 300, gatesMax: 200 });
+  assert.deepEqual(GATE_LIMITS, { valueMax: 200, messageMax: 300, gatesMax: 200, inputMax: 262144 });
   assert.ok(Object.isFrozen(GATE_LIMITS));
 });
 
@@ -54,7 +54,7 @@ test('a well-formed gate is valid, with and without cites', () => {
   assert.deepEqual(validateGate(gate()), { ok: true });
   assert.deepEqual(validateGate(gate({ cites: ['docs/harness/RULES.md', 'src/a b.ts'] })), { ok: true });
   for (const action of ['observe', 'warn', 'block']) assert.deepEqual(validateGate(gate({ action })), { ok: true });
-  for (const kind of ['literal', 'token', 'glob']) assert.deepEqual(validateGate(withMatch(kind, 'x')), { ok: true });
+  for (const kind of ['literal', 'token', 'glob']) assert.deepEqual(validateGate(withMatch(kind, 'xyz')), { ok: true });
   assert.deepEqual(validateGate(gate({ field: 'edits.first.new_string' })), { ok: true });
 });
 
@@ -62,9 +62,9 @@ test('a non-object gate is rejected', () => {
   for (const g of [null, undefined, 'L1', 3, [gate()]]) rejectsWith(g, /object/);
 });
 
-test('an id must be L followed by digits', () => {
-  for (const id of ['L', 'l1', 'L1a', ' L1', 'X1', 'L-1', 1]) rejectsWith(gate({ id }), /id/);
-  assert.deepEqual(validateGate(gate({ id: 'L042' })), { ok: true });
+test('an id must be L followed by 1 to 9 digits with no leading zero', () => {
+  for (const id of ['L', 'l1', 'L1a', ' L1', 'X1', 'L-1', 'L0', 'L042', 'L1234567890', 1]) rejectsWith(gate({ id }), /id/);
+  for (const id of ['L1', 'L10', 'L123456789']) assert.deepEqual(validateGate(gate({ id })), { ok: true }, id);
 });
 
 test('a tool must be a non-empty string within the value limit', () => {
@@ -96,13 +96,20 @@ test('a value over the limit is rejected', () => {
   rejectsWith(withMatch('glob', 3), /value/);
 });
 
+test('a value that would match everything or nearly everything is rejected, whatever the kind', () => {
+  for (const kind of ['literal', 'token', 'glob']) {
+    for (const value of ['*', '**', '* *', '', 'ab', '*a*b*', ' a\tb ', '*?']) rejectsWith(withMatch(kind, value), /value/);
+    for (const value of ['abc', '*a?c*', ' a b c ']) assert.deepEqual(validateGate(withMatch(kind, value)), { ok: true }, `${kind} ${value}`);
+  }
+});
+
 test('an unknown action is rejected', () => {
   for (const action of ['deny', 'Block', '', undefined]) rejectsWith(gate({ action }), /action/);
 });
 
 test('an unknown top-level key is rejected', () => {
-  rejectsWith(gate({ severity: 'high' }), /unknown key/);
-  rejectsWith(gate({ suspended: true }), /unknown key/);
+  rejectsWith(gate({ severity: 'high' }), /only the keys/);
+  rejectsWith(gate({ suspended: true }), /only the keys/);
 });
 
 test('a missing required key is rejected', () => {
@@ -189,31 +196,81 @@ test('a token does not match inside a longer word', () => {
     'the boundary after a value is any non-word character, here a hyphen');
 });
 
-test('a glob matches the whole field with * and ? only', () => {
+test('a token finds a bounded occurrence among overlapping ones', () => {
+  assert.equal(matchGate(withMatch('token', 'aaa'), 'Bash', { command: 'aaaa aaa' }), true);
+  assert.equal(matchGate(withMatch('token', 'aaa'), 'Bash', { command: 'aaaa aaaa' }), false);
+  assert.equal(matchGate(withMatch('token', 'aba'), 'Bash', { command: 'ababa-aba' }), true);
+  assert.equal(matchGate(withMatch('token', 'abab'), 'Bash', { command: 'xababab ababab' }), false);
+  assert.equal(matchGate(withMatch('token', 'abab'), 'Bash', { command: 'xababab abab' }), true);
+  const astral = `x${String.fromCodePoint(0x1f600)}y`;
+  assert.equal(matchGate(withMatch('token', astral), 'Bash', { command: `a ${astral} b` }), true, 'a surrogate pair is matched whole');
+  assert.equal(matchGate(withMatch('token', astral), 'Bash', { command: `a ${astral}z b` }), false);
+});
+
+test('a glob matches the whole field, with * as its only wildcard', () => {
   const g = withMatch('glob', 'git push * --force');
   assert.equal(matchGate(g, 'Bash', { command: 'git push origin main --force' }), true);
   assert.equal(matchGate(g, 'Bash', { command: 'git push origin --force-with-lease' }), false, 'a glob is anchored at both ends');
-  assert.equal(matchGate(withMatch('glob', 'a?c'), 'Bash', { command: 'abc' }), true);
-  assert.equal(matchGate(withMatch('glob', 'a?c'), 'Bash', { command: 'ac' }), false);
-  assert.equal(matchGate(withMatch('glob', '*'), 'Bash', { command: '' }), true);
-  assert.equal(matchGate(withMatch('glob', '*.env*'), 'Bash',{ command: 'config/.env.local' }), true, '* crosses /');
+  assert.equal(matchGate(g, 'Bash', { command: 'xgit push origin --force' }), false, 'and at the start');
+  assert.equal(matchGate(withMatch('glob', 'a?c'), 'Bash', { command: 'abc' }), false, '? is an ordinary character');
+  assert.equal(matchGate(withMatch('glob', 'a?c'), 'Bash', { command: 'a?c' }), true);
+  assert.equal(matchGate(withMatch('glob', 'abc'), 'Bash', { command: 'abcd' }), false, 'a value with no star is the whole field');
+  assert.equal(matchGate(withMatch('glob', 'abc*'), 'Bash', { command: 'abc' }), true, '* matches the empty run');
+  assert.equal(matchGate(withMatch('glob', '*.env*'), 'Bash', { command: 'config/.env.local' }), true, '* crosses /');
   assert.equal(matchGate(withMatch('glob', '[ab]*'), 'Bash', { command: 'a1' }), false, 'brackets are literal');
   assert.equal(matchGate(withMatch('glob', '[ab]*'), 'Bash', { command: '[ab]1' }), true);
   assert.equal(matchGate(withMatch('glob', 'a.c'), 'Bash', { command: 'abc' }), false, 'a dot is literal');
+  assert.equal(matchGate(withMatch('glob', 'ab*ba'), 'Bash', { command: 'aba' }), false, 'head and tail never overlap');
+  assert.equal(matchGate(withMatch('glob', 'ab*ab*ab'), 'Bash', { command: 'ababab' }), true);
+  assert.equal(matchGate(withMatch('glob', 'ab*ab*ab'), 'Bash', { command: 'abab' }), false);
+  assert.equal(matchGate(withMatch('glob', 'a*x*b*y*c'), 'Bash', { command: 'a1x2b3y4c' }), true);
+  assert.equal(matchGate(withMatch('glob', 'a*x*b*y*c'), 'Bash', { command: 'a1y2b3x4c' }), false, 'segments are found in order');
+  assert.equal(matchGate(withMatch('glob', '*abc*abc'), 'Bash', { command: 'abcabc' }), true);
 });
 
-test('a glob of fifty stars against a 10,000-character input returns within 50 ms', () => {
-  const value = '*a'.repeat(50) + '*b';
-  assert.ok(value.length <= GATE_LIMITS.valueMax);
-  const g = withMatch('glob', value);
-  const input = { command: 'a'.repeat(10_000) };
-  matchGate(g, 'Bash', input);
-  const started = process.hrtime.bigint();
-  const matched = matchGate(g, 'Bash', input);
-  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-  assert.equal(matched, false);
-  assert.ok(elapsedMs < 50, `took ${elapsedMs} ms`);
+test('a gate inspects only the first inputMax characters of its field', () => {
+  const cap = GATE_LIMITS.inputMax;
+  const pad = 'x'.repeat(cap - 3);
+  assert.equal(matchGate(withMatch('literal', 'END'), 'Bash', { command: pad + 'END' }), true, 'the last inspected characters');
+  assert.equal(matchGate(withMatch('literal', 'END'), 'Bash', { command: pad + 'xxEND' }), false, 'beyond the cap');
+  assert.equal(matchGate(withMatch('literal', 'END'), 'Bash', { command: pad + 'xEND' }), false, 'straddling the cap');
+  assert.equal(matchGate(withMatch('token', 'END'), 'Bash', { command: `${pad.slice(1)} ENDxyz` }), true, 'the cut is a string end');
+  assert.equal(matchGate(withMatch('token', 'END'), 'Bash', { command: `${pad} xx END` }), false);
+  assert.equal(matchGate(withMatch('glob', 'xxx*END'), 'Bash', { command: pad + 'END' + 'more' }), true, 'the cut is the end a glob anchors to');
+  assert.equal(matchGate(withMatch('glob', 'xxx*more'), 'Bash', { command: pad + 'END' + 'more' }), false);
 });
+
+// The adversarial shape for each kind, on a field four times `inputMax`: the
+// reviewer's glob (one star, then 198 `a` and a `b`) against all `a`, and a
+// 200-character value that occurs, or almost occurs, at every position.
+// Measured on the development machine (Windows 11, Node 24.0): the slowest
+// shape, a token of 200 `a`, took about 5 ms for one gate and 0.65 s for
+// `gatesMax` gates alone, about 1.1 s while the full suite ran in parallel;
+// a literal about 1 ms and 0.18 s; the glob under 0.1 ms and 1 ms.
+const ADVERSARIAL = [
+  ['glob', '*' + 'a'.repeat(198) + 'b'],
+  ['literal', 'a'.repeat(199) + 'b'],
+  ['literal', 'b' + 'a'.repeat(199)],
+  ['token', 'a'.repeat(200)],
+  ['token', 'a'.repeat(199) + 'b'],
+];
+
+for (const [kind, value] of ADVERSARIAL) {
+  test(`a ${kind} gate stays linear on its adversarial input at the cap: ${value.slice(0, 3)}...${value.slice(-2)}`, () => {
+    assert.ok(value.length <= GATE_LIMITS.valueMax);
+    const g = withMatch(kind, value);
+    const input = { command: 'a'.repeat(GATE_LIMITS.inputMax * 4) };
+    assert.equal(matchGate(g, 'Bash', input), false);
+    let started = process.hrtime.bigint();
+    matchGate(g, 'Bash', input);
+    const oneMs = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(oneMs < 50, `one gate took ${oneMs} ms`);
+    started = process.hrtime.bigint();
+    for (let i = 0; i < GATE_LIMITS.gatesMax; i++) matchGate(g, 'Bash', input);
+    const allMs = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(allMs < 2000, `${GATE_LIMITS.gatesMax} gates took ${allMs} ms`);
+  });
+}
 
 test('a dotted field resolves through own properties of nested objects', () => {
   const g = gate({ field: 'edit.target.path', match: { kind: 'literal', value: '.env' } });
@@ -324,15 +381,40 @@ test('gatesMax bounds the gates returned, not the suspensions', () => {
   assert.deepEqual(parsed.rejected, []);
 });
 
+test('a rejection reason never repeats a key or value taken from the file', () => {
+  const marker = 'Zq9marker';
+  const entries = [
+    { ...gate({ id: 'L1' }), [marker]: 1 },
+    gate({ id: 'L2', match: { kind: marker, value: 'abc' } }),
+    gate({ id: 'L3', match: { kind: 'literal', value: `${marker}` + 'v'.repeat(GATE_LIMITS.valueMax) } }),
+    gate({ id: 'L4', action: marker }),
+    gate({ id: 'L5', message: `${marker} <` }),
+    gate({ id: 'L6', cites: [`../${marker}`] }),
+    gate({ id: `L${marker}` }),
+    gate({ id: 'L7', tool: marker.repeat(30) }),
+    gate({ id: 'L8', field: `${marker}.__proto__` }),
+    { id: 'L9', suspended: marker },
+    gate({ id: 'L10' }),
+    gate({ id: 'L10', message: marker }),
+  ];
+  const parsed = parseGates(file(entries));
+  assert.deepEqual(parsed.rejected.map(r => r.index), entries.slice(0, -2).map((_, i) => i).concat(entries.length - 1));
+  for (const r of parsed.rejected) assert.ok(!r.reason.includes(marker), r.reason);
+  const wholeFile = parseGates(JSON.stringify({ schema: 1, gates: [], [marker]: true }));
+  assert.equal(wholeFile.rejected.length, 1);
+  assert.ok(!wholeFile.rejected[0].reason.includes(marker), wholeFile.rejected[0].reason);
+});
+
 // --- the module's own constraints ----------------------------------------
 
-/** Each `RegExp(` call in `source` whose first argument is not a literal:
- * a quoted string or template without substitution, or a regex literal. */
+/** Each call in `source` of `RegExp`, or of a string method that takes a
+ * pattern, whose first argument is not a literal: a quoted string or a
+ * template without substitution, or a regex literal. */
 function nonLiteralRegExpCalls(source) {
   const found = [];
-  for (const m of source.matchAll(/\bRegExp\s*\(\s*/g)) {
+  for (const m of source.matchAll(/(?:\bRegExp|\.(?:match|matchAll|search|replace|replaceAll|split))\s*\(\s*/g)) {
     const rest = source.slice(m.index + m[0].length);
-    const literal = /^(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\$]|\\.|\$(?!\{))*`|\/(?:[^/\\\n]|\\.)+\/[a-z]*)\s*[,)]/.exec(rest);
+    const literal = /^(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\$]|\\.|\$(?!\{))*`|\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+\/[a-z]*)\s*[,)]/.exec(rest);
     if (!literal) found.push(source.slice(m.index, m.index + m[0].length + 30));
   }
   return found;
@@ -343,9 +425,13 @@ test('the RegExp scan recognises a non-literal argument', () => {
   assert.equal(nonLiteralRegExpCalls('new RegExp(gate.match.value)').length, 1);
   assert.equal(nonLiteralRegExpCalls('RegExp(`^${v}$`)').length, 1);
   assert.equal(nonLiteralRegExpCalls("new RegExp('a' + v)").length, 1);
+  assert.deepEqual(nonLiteralRegExpCalls("s.split('.'); s.split(/[\\\\/]/); s.replace(/[*]/g, ''); s.match(/a/); s.search('x'); s.replaceAll(`y`, '')"), []);
+  for (const call of ['s.match(v)', 's.matchAll(v)', 's.search(v)', "s.replace(v, '')", "s.replaceAll(v, '')", 's.split(v)', 's.split(`${v}`)']) {
+    assert.equal(nonLiteralRegExpCalls(call).length, 1, call);
+  }
 });
 
-test('the module constructs no RegExp from a non-literal', () => {
+test('the module passes no non-literal pattern to RegExp or a pattern-taking string method', () => {
   assert.deepEqual(nonLiteralRegExpCalls(readFileSync(MODULE_PATH, 'utf8')), []);
 });
 
