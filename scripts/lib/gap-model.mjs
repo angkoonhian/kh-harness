@@ -24,6 +24,8 @@ import { MANIFEST_PATH } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
+import { integrityEvidence } from './integrity-evidence.mjs';
+import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
@@ -756,6 +758,19 @@ const CHECKS = [
     check: ({ harness, manifest, root }) => registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH,
       'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, and deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine\'s kh-harness data directory',
       { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }),
+  },
+  {
+    id: 'P5.integrity', step: 32, phase: 5,
+    lookedFor: [`the harness files ${MANIFEST_PATH} records under .claude/scripts/, and ${GATES_PATH} and ${LEARNED_PATH} when it records them`, `each gate in ${GATES_PATH} against an approved-sha256 in ${LEARNED_PATH}`, `each learning ${MANIFEST_PATH} records as landed against ${GATES_PATH}`],
+    // Files are compared with the manifest and gates with their approvals;
+    // nothing executes, so it is never `verified`. Nothing is proposed:
+    // restoring a file or approving a gate is the owner's decision.
+    check: ({ manifest, root }) => {
+      if (!manifest) return { state: 'n/a', evidence: [`no readable ${MANIFEST_PATH}: nothing installed is recorded to check against`] };
+      if (root === undefined) throw new TypeError('buildGaps: P5.integrity needs `root` once there is a manifest — without it no recorded file can be read.');
+      const { problems, summary } = integrityEvidence(root, manifest);
+      return problems.length ? { state: 'failing', evidence: problems } : { state: 'declared', evidence: summary };
+    },
   },
   {
     id: 'P2.scripts', step: 8, phase: 2,
