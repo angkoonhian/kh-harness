@@ -233,13 +233,22 @@ function scriptRunBy(entry) {
  * take out the wrong hook the moment the user adds one of their own above
  * ours, and nothing would notice until something stopped running.
  *
- * @returns {{ settings: object, kept: { patch: object, reason: string }[] }}
- *   `kept` is empty when the patch was reverted, otherwise it holds the
- *   patch and the reason it stays.
+ * What the owner has already taken out by hand is not left to revert. A deny
+ * patch removes the rules of it that are still there, and is `gone` when
+ * none is. A hook patch whose entry is not found is `gone` when no hook
+ * left on its event runs a script in `producibleHookScripts`, since nothing
+ * of the kit's is then registered there; while one does, the entry may be
+ * the recorded one, edited, and the patch is kept as `patch-modified`.
+ *
+ * @returns {{ settings: object, kept: { patch: object, reason: string }[], gone: boolean }}
+ *   `kept` is empty when the patch was reverted or is gone, otherwise it
+ *   holds the patch and the reason it stays. `gone` is true when the
+ *   settings hold nothing of the patch, so nothing was changed.
  */
 export function revertPatch(settings, patch, { producibleHookScripts, producibleDenyRules }) {
   const next = clone(settings);
-  const keep = reason => ({ settings: next, kept: [{ patch, reason }] });
+  const keep = reason => ({ settings: next, kept: [{ patch, reason }], gone: false });
+  const alreadyGone = { settings: next, kept: [], gone: true };
 
   if (!patch || typeof patch !== 'object' || typeof patch.container !== 'string') {
     return keep('patch-malformed');
@@ -260,12 +269,9 @@ export function revertPatch(settings, patch, { producibleHookScripts, producible
     }
 
     const denyList = next?.permissions?.deny;
-    // Every rule we added must still be present: a missing one is a hand edit.
-    if (!Array.isArray(denyList) || !patch.rules.every(rule => denyList.includes(rule))) {
-      return keep('patch-modified');
-    }
-
     const rulesToRemove = new Set(patch.rules);
+    if (!Array.isArray(denyList) || !denyList.some(rule => rulesToRemove.has(rule))) return alreadyGone;
+
     const filtered = denyList.filter(rule => !rulesToRemove.has(rule));
     if (filtered.length === 0) {
       // Prune empty deny array and then permissions object if empty
@@ -277,7 +283,7 @@ export function revertPatch(settings, patch, { producibleHookScripts, producible
       next.permissions.deny = filtered;
     }
 
-    return { settings: next, kept: [] };
+    return { settings: next, kept: [], gone: false };
   }
 
   if (!patch.container.startsWith('/hooks/')) {
@@ -286,9 +292,12 @@ export function revertPatch(settings, patch, { producibleHookScripts, producible
 
   const event = patch.container.replace('/hooks/', '');
   const list = next?.hooks?.[event];
-  if (!Array.isArray(list)) return keep('patch-modified');
-  const idx = list.findIndex(m => matcherEntrySha256(m) === patch.entrySha256);
-  if (idx === -1) return keep('patch-modified');
+  const idx = Array.isArray(list) ? list.findIndex(m => matcherEntrySha256(m) === patch.entrySha256) : -1;
+  if (idx === -1) {
+    const kitHookRemains = Array.isArray(list) && list.some(m => Array.isArray(m?.hooks)
+      && m.hooks.some(h => hookPathTokens(h).some(token => producibleHookScripts.has(token))));
+    return kitHookRemains ? keep('patch-modified') : alreadyGone;
+  }
   const hooks = list[idx]?.hooks;
   if (!Array.isArray(hooks) || hooks.length === 0 || !hooks.every(h => producibleHookScripts.has(scriptRunBy(h)))) {
     return keep('not-generator-producible');
@@ -296,5 +305,34 @@ export function revertPatch(settings, patch, { producibleHookScripts, producible
   list.splice(idx, 1);
   if (list.length === 0) delete next.hooks[event];
   if (next.hooks && Object.keys(next.hooks).length === 0) delete next.hooks;
-  return { settings: next, kept: [] };
+  return { settings: next, kept: [], gone: false };
+}
+
+/**
+ * `revertPatch` for every patch in `patches`, each against what the ones
+ * before it left: `{ settings, reverted, gone, kept }`, the patches in each
+ * outcome, `kept` as `[{ patch, reason }]`.
+ *
+ * A hook patch whose entry is not found is judged only once every other
+ * patch has been tried, so another kit hook still to be reverted on the same
+ * event does not make it read as edited.
+ */
+export function revertPatches(settings, patches, producible) {
+  let current = settings;
+  const reverted = [], gone = [], kept = [], unfound = [];
+  for (const patch of patches) {
+    const r = revertPatch(current, patch, producible);
+    if (r.gone) gone.push(patch);
+    else if (r.kept.length === 0) {
+      current = r.settings;
+      reverted.push(patch);
+    } else if (r.kept[0].reason === 'patch-modified') unfound.push(patch);
+    else kept.push(...r.kept);
+  }
+  for (const patch of unfound) {
+    const r = revertPatch(current, patch, producible);
+    if (r.gone) gone.push(patch);
+    else kept.push(...r.kept);
+  }
+  return { settings: current, reverted, gone, kept };
 }

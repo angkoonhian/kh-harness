@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addHookEntry, hasEquivalentHook, hookPathTokens, hookScriptOf, normalizeMatcher, matcherCovers, revertPatch, addDenyRules } from './settings-merge.mjs';
+import { addHookEntry, hasEquivalentHook, hookPathTokens, hookScriptOf, normalizeMatcher, matcherCovers, revertPatch, revertPatches, addDenyRules } from './settings-merge.mjs';
 import { GENERATOR_SCRIPT_PATHS } from './propose.mjs';
 
 // What revertPatch may remove: every generator hook script, and the deny
@@ -161,14 +161,64 @@ test('revertPatch removes by hash, not by index', () => {
   assert.equal(s2.hooks.SessionStart[0].hooks[0].command, 'user-added', 'must remove OURS, not index 0');
 });
 
-test('revertPatch keeps a patch whose entry was already changed', () => {
+test('revertPatch keeps a patch whose entry was changed but still runs the kit\'s script', () => {
   // A copy: the returned settings hold the entry object itself, and the edit
   // below must not reach ENTRY, which later tests revert.
   const { settings: s1, patch } = addHookEntry({}, 'SessionStart', { ...ENTRY });
+  s1.hooks.SessionStart[0].matcher = 'startup';
+  const r = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual(r.kept, [{ patch, reason: 'patch-modified' }], 'still registered, and no longer what was recorded');
+  assert.equal(r.gone, false);
+  assert.deepEqual(r.settings, s1, 'nothing is removed');
+});
+
+test('a hook patch whose entry was removed by hand is gone, not kept', () => {
+  const { settings: s1, patch } = addHookEntry({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node mine.mjs' }] }] } }, 'SessionStart', { ...ENTRY });
+  s1.hooks.SessionStart.pop();
+  const r = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual([r.kept, r.gone], [[], true]);
+  assert.deepEqual(r.settings, s1, 'the user\'s own hook on the event is untouched');
+
+  const { patch: alone } = addHookEntry({}, 'SessionEnd', { ...ENTRY });
+  assert.equal(revertPatch({}, alone, PRODUCIBLE).gone, true, 'with the whole event gone');
+  assert.equal(revertPatch({ hooks: { SessionEnd: 'nonsense' } }, alone, PRODUCIBLE).gone, true, 'or not a list at all');
+});
+
+test('a hook patch whose entry was edited to run something else is gone: nothing of the kit\'s is registered there', () => {
+  const { settings: s1, patch } = addHookEntry({}, 'SessionStart', { ...ENTRY });
   s1.hooks.SessionStart[0].hooks[0].command = 'edited by user';
-  const { settings: s2, kept } = revertPatch(s1, patch, PRODUCIBLE);
-  assert.deepEqual(kept, [{ patch, reason: 'patch-modified' }], 'an edited entry is the user\'s now');
-  assert.deepEqual(s2, s1, 'nothing is removed');
+  const r = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual([r.kept, r.gone], [[], true]);
+  assert.deepEqual(r.settings, s1, 'the entry is the user\'s now, and stays');
+});
+
+const LOG_ENTRY = { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/session-log.mjs'] };
+
+test('revertPatches reverts what is there, drops what was removed by hand, and judges an unfound entry only after the rest', () => {
+  // Two kit hooks on one event; the owner removed the first one's entry.
+  const a = addHookEntry({}, 'SessionStart', { ...ENTRY });
+  const b = addHookEntry(a.settings, 'SessionStart', LOG_ENTRY);
+  const c = addDenyRules(b.settings, ['Edit(migrations/**)']);
+  const settings = structuredClone(c.settings);
+  settings.hooks.SessionStart.shift();
+  for (const order of [[a.patch, b.patch, c.patch], [b.patch, a.patch, c.patch]]) {
+    const r = revertPatches(settings, order, PRODUCIBLE);
+    assert.deepEqual(r.gone, [a.patch], 'the hand-removed entry is gone whichever patch is tried first');
+    assert.deepEqual(r.reverted, order.filter(p => p !== a.patch));
+    assert.deepEqual(r.kept, []);
+    assert.deepEqual(r.settings, {});
+  }
+});
+
+test('revertPatches keeps an edited kit entry as modified and a forged one as not producible', () => {
+  const a = addHookEntry({}, 'SessionStart', { ...ENTRY });
+  const settings = structuredClone(a.settings);
+  settings.hooks.SessionStart[0].matcher = 'startup';
+  const forged = addHookEntry(settings, 'Stop', { type: 'command', command: 'node mine.mjs' });
+  const r = revertPatches(forged.settings, [a.patch, forged.patch], PRODUCIBLE);
+  assert.deepEqual(r.kept, [{ patch: forged.patch, reason: 'not-generator-producible' }, { patch: a.patch, reason: 'patch-modified' }]);
+  assert.deepEqual([r.reverted, r.gone], [[], []]);
+  assert.deepEqual(r.settings, forged.settings);
 });
 
 test('revertPatch prunes an emptied event but leaves other events', () => {
@@ -333,10 +383,21 @@ test('revertPatch removes only the rules we added', () => {
   assert.deepEqual(s2.permissions.deny, ['Bash(rm:*)', 'Read(./.env)'], 'both of theirs survive');
 });
 
-test('revertPatch reports false when our rule was already removed by hand', () => {
-  const { settings: s1, patch } = addDenyRules({}, ['Edit(migrations/**)']);
-  s1.permissions.deny = [];
-  assert.deepEqual(reasons(revertPatch(s1, patch, PRODUCIBLE)), ['patch-modified']);
+test('a deny patch whose rules were all removed by hand is gone, not kept', () => {
+  const { settings: s1, patch } = addDenyRules({ permissions: { deny: ['Bash(rm:*)'] } }, ['Edit(migrations/**)']);
+  s1.permissions.deny = ['Bash(rm:*)'];
+  const r = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual([r.kept, r.gone], [[], true]);
+  assert.deepEqual(r.settings, s1);
+  assert.equal(revertPatch({}, patch, PRODUCIBLE).gone, true, 'with no deny list at all');
+});
+
+test('a deny patch with one rule removed by hand still has the rest reverted', () => {
+  const { settings: s1, patch } = addDenyRules({ permissions: { deny: ['Bash(rm:*)'] } }, ['Edit(migrations/**)', 'Edit(y)']);
+  s1.permissions.deny = s1.permissions.deny.filter(rule => rule !== 'Edit(y)');
+  const r = revertPatch(s1, patch, PRODUCIBLE);
+  assert.deepEqual([r.kept, r.gone], [[], false]);
+  assert.deepEqual(r.settings.permissions.deny, ['Bash(rm:*)'], 'the kit\'s remaining rule goes, the user\'s stays');
 });
 
 test('reverting the last deny rule prunes the empty structure', () => {

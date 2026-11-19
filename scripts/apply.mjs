@@ -161,7 +161,9 @@ const drift = (manifest.files ?? [])
 
 function reportDrift() {
   for (const path of drift) {
-    process.stdout.write(`kept       ${path} (modified since kh-harness wrote it — left as-is)\n`);
+    process.stdout.write(existsSync(join(root, path))
+      ? `kept       ${path} (modified since kh-harness wrote it — left as-is)\n`
+      : `gone       ${path} (deleted since kh-harness wrote it — not written again)\n`);
   }
 }
 

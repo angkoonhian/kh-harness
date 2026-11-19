@@ -100,12 +100,35 @@ if (plan.keepPatches.length) {
   }
 }
 
-if (plan.gonePatches.length) {
+const patchesOfAbsentFile = plan.gonePatches.filter(p => p.why === 'settings-missing');
+const patchesRemovedByHand = plan.gonePatches.filter(p => p.why !== 'settings-missing');
+
+if (patchesOfAbsentFile.length) {
   console.log('Settings file is absent — these recorded hook patches have nothing to revert:');
-  for (const p of plan.gonePatches) {
+  for (const p of patchesOfAbsentFile) {
     console.log(`  ${patchLabel(p)}`);
   }
 }
+
+/** What the manifest records that is no longer there, a file or a settings
+ * entry: nothing is done to the repository for either, and --yes drops the
+ * record. */
+function printAlreadyGone(heading, paths, patches) {
+  if (paths.length === 0 && patches.length === 0) return;
+  console.log(heading);
+  for (const path of paths) console.log(`  ${path}`);
+  for (const p of patches) console.log(`  ${patchLabel(p)} (no longer in .claude/settings.json)`);
+}
+printAlreadyGone('Already gone, so only the record of it is dropped:', plan.gone.map(g => g.path), patchesRemovedByHand);
+
+/** `detect`'s report is not recorded as installed, so uninstall never
+ * removes it: said, so the directory it keeps is no surprise. */
+function printLeftInPlace(heading, paths) {
+  if (paths.length === 0) return;
+  console.log(heading);
+  for (const path of paths) console.log(`  ${path}`);
+}
+printLeftInPlace('Will leave in place (written by `detect`, which records nothing as installed; delete it by hand if you do not want it):', plan.leftInPlace);
 
 // Task 9b (coordinator round 2, finding 1): the preview is the path a
 // cautious user reaches for first, and a preview that under-reports what
@@ -175,6 +198,8 @@ if (result.removedDirs && result.removedDirs.length > 0) {
   }
 }
 
+printAlreadyGone('Already gone (dropped from the record):', result.alreadyGone, result.patchesGone);
+
 if (result.failed.length > 0) {
   console.log('Failed to remove:');
   for (const f of result.failed) {
@@ -215,11 +240,11 @@ if (result.settingsWriteFailed) {
 }
 
 if (result.manifestWriteFailed) {
-  console.log(`Manifest file could not be updated: ${join(root, '.claude/kh-harness.manifest.json')}`);
+  console.log(`Manifest file could not be updated: ${join(root, MANIFEST_PATH)}`);
 }
 
 if (result.manifestDeleteFailed) {
-  console.log(`Manifest file could not be removed: ${join(root, '.claude/kh-harness.manifest.json')}`);
+  console.log(`Manifest file could not be removed: ${join(root, MANIFEST_PATH)}`);
 }
 
 // The run re-derives the revertable set, so `result.patchesNotReverted` —
@@ -245,7 +270,9 @@ if (plan.keep.length > 0 || result.patchesKept.length > 0) {
   }
 }
 
-if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && result.refused.length === 0 && plan.keep.length === 0 && result.patchesKept.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0) {
+printLeftInPlace('Left in place (written by `detect`, which records nothing as installed; delete it by hand if you do not want it):', result.leftInPlace);
+
+if (result.removed.length === 0 && result.failed.length === 0 && result.changedSincePlan.length === 0 && result.refused.length === 0 && plan.keep.length === 0 && result.patchesKept.length === 0 && !result.settingsReadFailed && !result.settingsWriteFailed && !result.manifestWriteFailed && !result.manifestDeleteFailed && result.patchesNotReverted.length === 0 && result.leftInPlace.length === 0) {
   console.log('nothing was left behind');
 }
 
