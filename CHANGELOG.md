@@ -219,8 +219,9 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "not a repository".
 - A `settings:permissions.deny` rule pointer resolves only on a deny rule
   that is not one of the kit's own.
-- `npm test` needs Node 22.1; the commands and the installed hooks run on
-  Node 22.0.
+- `npm test` needs Node 22.1; the commands and the installed hooks declare
+  Node 22.0 as their floor, which CI does not exercise: it runs the newest
+  22.x release and 24.
 - The `RULES.md` and `FAILURES.md` templates no longer promise an enforcer
   or a drafting rule the code does not provide.
 - The README's claim that per-prompt re-injection counters the decay of

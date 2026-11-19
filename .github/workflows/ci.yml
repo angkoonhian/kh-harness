@@ -6,8 +6,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # 22 is the floor package.json declares; 24 is current. Both run, so
-        # the floor is exercised and not merely claimed.
+        # 22 is the major package.json declares as the floor; 24 is current.
+        # '22' resolves to the newest 22.x release, so that release line is
+        # exercised and 22.0 itself, which package.json admits, is not.
         node: ['22', '24']
     runs-on: ${{ matrix.os }}
     steps:
