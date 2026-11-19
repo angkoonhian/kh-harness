@@ -48,7 +48,10 @@
   puts the rules here back in front of Claude on every prompt — bounded,
   high-priority first — because compliance with a rule stated once decays
   as a session runs. After them it re-tells each learned rule in
-  docs/harness/LEARNED.md unless that rule's gate blocks the call, since a
-  blocked call needs no reminder. Keep each rule to one sentence: the hook
-  has 1500 bytes for both files.
+  docs/harness/LEARNED.md unless that rule's entry there records
+  `approved-action: block`, since a blocked call needs no reminder. The
+  hook reads the entry, not the gate in force: a rule whose blocking gate
+  is suspended on a machine, or whose gate file cannot be read there, is
+  neither blocked nor re-told. Keep each rule to one sentence: the hook has
+  1500 bytes for both files.
 -->

@@ -247,10 +247,10 @@ test('a draft is refused while the taxonomy cannot be read or is larger than is 
 test('a learning the owner retired bars a plain draft for its recurrence; a live candidate still covers it', () => {
   const { root, learning } = trialRepo();
   assert.equal(retireLearning(root, learning.id, { interactive: AT_TERMINAL }).status, 'retired');
-  assert.deepEqual(draftLearning(root, draftFor(root)), REDRAFT_ONLY('L1 (drafted for this signature, retired by the owner)'));
+  assert.deepEqual(draftLearning(root, draftFor(root)), REDRAFT_ONLY('L1 (drafted for this signature, recorded as retired by the owner)'));
   assert.deepEqual(kinds(root).at(-1), 'L1:retired', 'the refused draft wrote nothing');
   assert.equal(draftLearning(root, draftFor(root), { redraft: true }).learning?.id, 'L2');
-  assert.equal(readLedger(root).at(-1).detail, 'a redraft; earlier: L1 (drafted for this signature, retired by the owner)');
+  assert.equal(readLedger(root).at(-1).detail, 'a redraft; earlier: L1 (drafted for this signature, recorded as retired by the owner)');
   assert.deepEqual(draftLearning(root, draftFor(root), { redraft: true }), refused('signature: learning L2 already covers this signature'),
     'redraft does not get past a live candidate');
 });

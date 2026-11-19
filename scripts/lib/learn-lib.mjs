@@ -847,7 +847,7 @@ export const ENDINGS = Object.freeze({
   rejected: 'rejected by the replay',
   wrong: 'retired after a wrong mark',
   suspended: 'retired after its gate was suspended',
-  owner: 'retired by the owner',
+  owner: 'recorded as retired by the owner',
 });
 
 /** The key in `ENDINGS` for how the learning `id` ended, or null when it

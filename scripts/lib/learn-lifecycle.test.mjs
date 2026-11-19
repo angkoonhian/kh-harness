@@ -463,7 +463,7 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.equal(approved.ok, true, approved.error);
     const list = ok(learn('list'));
     assert.match(list, new RegExp(`^ {2}L1 {2}active-local {2}block {2}sha256 ${sha256}$`, 'm'), list);
-    assert.match(list, new RegExp(`^ {4}L1 sha256 ${sha256} at block, approved by owner at \\S+Z$`, 'm'), list);
+    assert.match(list, new RegExp(`^ {4}L1 sha256 ${sha256} at block, recorded as approved by owner at \\S+Z$`, 'm'), list);
     assert.match(list, /^ {2}local gate entries above observe that no approval grants: none$/m, list);
   });
 
@@ -819,7 +819,7 @@ test('the learning loop beyond its first path: a stopped step, a policy, a demot
 
     const list = ok(learn(a, 'list'));
     assert.match(list, new RegExp(`^ {2}L1 {2}active-local {2}warn {2}sha256 ${sha256}$`, 'm'), list);
-    assert.match(list, new RegExp(`^ {4}L1 sha256 ${sha256} at warn, approved by policy:${set.sha256} at \\S+Z$`, 'm'), list);
+    assert.match(list, new RegExp(`^ {4}L1 sha256 ${sha256} at warn, recorded as approved by policy:${set.sha256} at \\S+Z$`, 'm'), list);
     const warned = await gateOn(a, 'warned-1', MISTAKE);
     assert.equal(denies(warned), false, 'a warning allows the call');
     assert.equal(warned.hookSpecificOutput.additionalContext, `kh-harness gate L1: ${GATE_MESSAGE}`);
@@ -871,12 +871,12 @@ test('the learning loop beyond its first path: a stopped step, a policy, a demot
     const retired = retireLearning(b, 'L1', { interactive: AT_TERMINAL });
     assert.deepEqual([retired.ok, retired.status], [true, 'retired']);
     const apart = ok(learn(b, 'candidates'));
-    assert.match(apart, new RegExp(`^ {6}${lintSignature}: L1 \\(the same signature, retired by the owner\\)$`, 'm'), apart);
+    assert.match(apart, new RegExp(`^ {6}${lintSignature}: L1 \\(the same signature, recorded as retired by the owner\\)$`, 'm'), apart);
 
     const path = draftFile('lint-again.json', lintSignature, LINT_MISTAKE, LINT_MESSAGE);
     const plain = learn(b, 'draft', '--from', path);
     assert.equal(plain.status, 3, plain.stderr);
-    assert.match(plain.stderr, /an earlier learning for this recurrence did not hold: L1 \(drafted for this signature, retired by the owner\); a new draft for it is the owner's decision/);
+    assert.match(plain.stderr, /an earlier learning for this recurrence did not hold: L1 \(drafted for this signature, recorded as retired by the owner\); a new draft for it is the owner's decision/);
     // The owner asked for it, so the flag is given.
     const redrafted = ok(learn(b, 'draft', '--from', path, '--redraft'));
     assert.match(redrafted, /^draft: stored as L2, a candidate; /, 'above the id the pulled landing holds');
@@ -885,7 +885,7 @@ test('the learning loop beyond its first path: a stopped step, a policy, a demot
     assert.match(list, /^ {2}L1 {2}retired /m, list);
     assert.match(list, /^ {2}L2 {2}trial {2}observe /m, list);
     assert.match(list, /^ {2}learnings whose id the committed gate file holds for another gate, so their own gate is not applied: none$/m, list);
-    assert.match(ok(learn(b, 'show', 'L2')), /^ {2}drafted, as the ledger records: a redraft; earlier: L1 \(drafted for this signature, retired by the owner\)$/m);
+    assert.match(ok(learn(b, 'show', 'L2')), /^ {2}drafted, as the ledger records: a redraft; earlier: L1 \(drafted for this signature, recorded as retired by the owner\)$/m);
     assert.deepEqual(localGatesOf(b).map(g => [g.id, g.match.value, g.action]), [['L2', LINT_MISTAKE, 'observe']]);
   });
 
@@ -921,7 +921,7 @@ test('the learning loop beyond its first path: a stopped step, a policy, a demot
     assert.equal(await gateOn(a, 'retired-1', MISTAKE), null);
     const candidates = ok(learn(a, 'candidates'));
     const apart = candidates.slice(candidates.indexOf('RECURRENCES DRAFTED BEFORE, WHOSE LEARNING WAS REJECTED OR RETIRED AS WRONG'));
-    assert.match(apart, new RegExp(`^ {6}${watchSignature}: L1 \\(the same signature, retired by the owner\\)$`, 'm'), candidates);
+    assert.match(apart, new RegExp(`^ {6}${watchSignature}: L1 \\(the same signature, recorded as retired by the owner\\)$`, 'm'), candidates);
     const again = learn(a, 'draft', '--from', draftFile('watch-again.json', watchSignature, MISTAKE, GATE_MESSAGE));
     assert.equal(again.status, 3, again.stderr);
     assert.equal(status(a), '');

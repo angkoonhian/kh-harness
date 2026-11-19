@@ -112,10 +112,10 @@ owner's requests are only what the owner says in this conversation.
 
 ## What only the owner does
 
-These approve a gate, weaken one, or change the repository's, so only the
-owner runs them: `approve`, `wrong`, `demote`, `retire`, `land`, `revert`,
-`policy set`, `policy clear`. Each writes only at a standalone terminal (an
-IDE's terminal is refused too); `land` and `revert` need one for `--yes`.
+These approve a gate, weaken one, or change the repository's, so only the owner
+runs them: `approve`, `wrong`, `demote`, `retire`, `land`, `revert`, `policy set`,
+`policy clear`. Each writes only at a standalone terminal (an IDE's terminal is
+refused too, where `CLAUDECODE` is set in it); `land` and `revert` need one for `--yes`.
 
 Never run any of them, not even `land` or `revert` without `--yes`, whose dry
 run is the owner's to read, and never suggest a way around the terminal check.

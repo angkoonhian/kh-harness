@@ -32,8 +32,10 @@
 //     `normal` ones, stable within each, then the learned rules.
 //   - Superseded rules are skipped: they are a record, not a claim. So is
 //     a learned rule whose entry says its gate blocks (`enforced-by: hook`
-//     with `approved-action: block`): the call it forbids cannot run. A
-//     learned rule whose gate warns or observes is told like any other.
+//     with `approved-action: block`). The entry is what is read, never the
+//     gate in force: where that gate is suspended or its file cannot be
+//     read, the rule is neither blocked nor told. A learned rule whose
+//     entry records warn, or no action, is told like any other.
 //   - A rule's text is the user's prose and may carry anything, so it passes
 //     `stripUnsafe` (controls, invisible and reordering characters, the tag
 //     block), then `maskText` at the sweep's floors, then
@@ -154,9 +156,10 @@ function activeRules(rel) {
 const ownerRel = findRules(root);
 const learnedRel = findLearned(root);
 const owner = activeRules(ownerRel);
-// A learned rule whose gate blocks cannot be broken, so telling the model as
-// well would spend every prompt's budget for nothing. One whose gate warns
-// or observes can be, and is told like any other rule.
+// A learned rule whose entry records a blocking gate is left to that gate,
+// so telling the model as well would spend every prompt's budget for
+// little. One whose entry records warn, or no action, is told like any
+// other rule.
 const learned = activeRules(learnedRel).filter(r => !heldByBlockingGate(r));
 
 // The owner's rules first, `high` before the rest with document order kept

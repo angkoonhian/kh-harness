@@ -575,12 +575,12 @@ export const ENFORCERS = Object.freeze(['deny', 'hook', 'lint', 'test', 'critic'
 export const APPROVED_ACTIONS = Object.freeze(['observe', 'warn', 'block']);
 
 /**
- * Whether a learned rule cannot be broken, by what its registry entry
- * records: a hook enforces it and its gate was approved at `block`. A gate
- * that warns or only observes lets the call run, and an entry that records
- * no action is not known to block, so the model can still break those rules
- * and the prompt hook re-tells them. `detect`'s count of injected rules
- * uses this same test.
+ * Whether a learned rule's registry entry records a blocking gate: a hook
+ * enforces it and its gate was approved at `block`. Only the entry is read,
+ * so this says nothing of the gate in force on a machine. A gate that warns
+ * or only observes lets the call run, and an entry that records no action
+ * is not known to block, so the prompt hook re-tells those rules.
+ * `detect`'s count of injected rules uses this same test.
  */
 export const heldByBlockingGate = rule => rule.enforcedBy === 'hook' && rule.approvedAction === 'block';
 

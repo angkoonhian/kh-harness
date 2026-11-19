@@ -459,7 +459,7 @@ export function renderList(view) {
     ...(view.proseUnrecorded.length === 0 ? [] : [`  ${PROSE_UNRECORDED_MEANS}`]),
     ...localGates,
     `approvals: ${view.approvals.length === 0 ? 'none' : ''}`.trimEnd(),
-    ...view.approvals.map(a => `  ${ids([a.id])} sha256 ${hash(a.sha256)} at ${action(a.action)}, approved by ${approver(a.approvedBy)} at ${time(a.ts)}`),
+    ...view.approvals.map(a => `  ${ids([a.id])} sha256 ${hash(a.sha256)} at ${action(a.action)}, recorded as approved by ${approver(a.approvedBy)} at ${time(a.ts)}`),
     `enforcing learnings whose cited paths are all gone, in force until retired at a terminal: ${ids(view.citationsGone)}`,
     `learning files that do not read back as a learning: ${ids(view.unreadable)}`,
   ]));
@@ -568,7 +568,7 @@ export function renderShow(view) {
 // --- the steps a person takes at a terminal -----------------------------------
 
 export const renderApproved = (result, sha256) => withRepairs(result, [
-  `${result.id} approved at ${result.action} on this machine; the ledger records the owner's approval of sha256 ${sha256}.`,
+  `${result.id} is at ${result.action} on this machine; the ledger records sha256 ${sha256} as approved by owner, in an entry this run wrote after the terminal check passed.`,
 ]);
 
 export const renderWrong = (result, ref) => withRepairs(result, [

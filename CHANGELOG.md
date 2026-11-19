@@ -197,7 +197,8 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The rules brief reads `LEARNED.md` after `RULES.md`, and skips a rule
   that does not fit and keeps going. A learned rule is re-told unless its
   entry records `approved-action: block`; one that warns, or whose entry
-  has no such line, is re-told.
+  has no such line, is re-told. The hook reads the entry, not the gate in
+  force.
 - `detect.json`: `harness.claudeDir.hookEvents` is gone
   (`hookRegistrations` holds the registrations), `harness.remotesError`
   is set when git could not list the remotes, and a deny rule that names a

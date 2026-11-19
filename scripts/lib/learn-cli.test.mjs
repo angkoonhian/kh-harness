@@ -246,7 +246,7 @@ test('a learning the owner retired puts its recurrence among those drafted again
   assert.equal(retireLearning(root, learning.id, { interactive: AT_TERMINAL }).status, 'retired');
   const retired = json(root, 'candidates');
   assert.deepEqual([signaturesIn(retired.groups), earlierOf(retired)], [[], [[bash, [{ id: 'L1', kind: null, ended: 'owner' }]]]]);
-  assert.ok(ok(runLearn(root, 'candidates')).includes(`  ${bash}: L1 (the same signature, retired by the owner)`));
+  assert.ok(ok(runLearn(root, 'candidates')).includes(`  ${bash}: L1 (the same signature, recorded as retired by the owner)`));
   drafted(root, undefined, { redraft: true });
   const view = json(root, 'candidates');
   assert.deepEqual([signaturesIn(view.groups), signaturesIn(view.redraftGroups)], [[], []], 'a live candidate stands for it');
@@ -575,7 +575,7 @@ test('list shows every learning with its status and what the ledger says beside 
   assert.deepEqual(view.approvals.map(a => [a.id, a.sha256, a.action, a.approvedBy]), [['L1', learning.sha256, 'block', 'owner']]);
   const text = ok(runLearn(root, 'list'));
   assert.match(text, /L1 {2}active-local {2}block/);
-  assert.match(text, new RegExp(`L1 sha256 ${learning.sha256} at block, approved by owner at \\d{4}-`));
+  assert.match(text, new RegExp(`L1 sha256 ${learning.sha256} at block, recorded as approved by owner at \\d{4}-`));
 
   const order = ['learnings and ledger entries that disagree', 'local gate entries the next step that writes', 'local gate entries above observe', 'approvals:', 'enforcing learnings whose cited paths', 'learning files that do not read back'];
   const at = order.map(line => text.indexOf(line));
@@ -1057,7 +1057,7 @@ test('each terminal-only handler, given a terminal, does its step and prints wha
   assert.deepEqual(asked.map(a => [a.stdin === process.stdin, a.stdout === process.stdout, a.env === process.env]), [[true, true, true]],
     'the handler asks the check once, about the real streams and environment');
   assert.ok(approved.stdout.startsWith('LEARNING L1\n'), 'the learning is printed before the approval');
-  assert.ok(approved.stdout.trimEnd().endsWith(`L1 approved at block on this machine; the ledger records the owner's approval of sha256 ${learning.sha256}.`), approved.stdout);
+  assert.ok(approved.stdout.trimEnd().endsWith(`L1 is at block on this machine; the ledger records sha256 ${learning.sha256} as approved by owner, in an entry this run wrote after the terminal check passed.`), approved.stdout);
   assert.deepEqual(localGates(root).gates, [{ ...learning.gate, action: 'block' }]);
 
   const gate = { ...learning.gate, action: 'block' };

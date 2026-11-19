@@ -369,7 +369,8 @@ Each takes `--help` for its full contract. The flags of the first three:
 > [!IMPORTANT]
 > The eight `learn` subcommands marked **yes**, and `log purge --yes`, run
 > only when standard input and output are both terminals and `CLAUDECODE`
-> is unset, so not from Claude Code or an IDE's built-in terminal; `apply`'s
+> is unset, so not from Claude Code, nor from an IDE's built-in terminal
+> in which Claude Code's extension sets `CLAUDECODE`; `apply`'s
 > deny rules also make Claude Code decline them. Nothing checks that a
 > person is at the terminal, and a process running as you can forge one.
 > What counts as a
@@ -542,7 +543,7 @@ the scrub misses, and the cost figures are on
 - An agent with a shell can append a syntactically valid line to the
   ledger, including a forged approval or wrong marks, or rewrite the ledger
   with a new valid chain. Nothing marks such a line as forged: `learn list`
-  prints a forged approval as `approved by owner`, like a real one, and the
+  prints a forged approval as `recorded as approved by owner`, like a real one, and the
   chain shows only damage that breaks it. The seal index of the session log
   is chained the same way, with no key, and can be rewritten the same way.
 - One whole line of junk in the ledger breaks its chain. While it is
@@ -579,7 +580,10 @@ the scrub misses, and the cost figures are on
   its action until the learning is reverted and landed again.
 - A learned rule is re-told on every prompt unless its entry in
   `LEARNED.md` says its gate blocks (`- approved-action: block`). One that
-  warns, or whose entry has no such line, is re-told.
+  warns, or whose entry has no such line, is re-told. The hook reads the
+  entry, not the gate in force: a rule whose blocking gate is suspended on
+  a machine, or whose gate file cannot be read there, is neither blocked
+  nor re-told on that machine.
 - Learning ids are assigned per machine. A landing pulled from another
   machine can hold the id of a local learning; `learn list`, `learn show`
   and `learn tick` report it, the committed gate is the one applied under
