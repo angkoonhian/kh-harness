@@ -179,9 +179,31 @@ test('a landed learning with no gate is named', () => {
   write(d, GATES_PATH, gateFile([g]));
   assert.deepEqual(integrityEvidence(d, manifest).problems, [
     `landed learning L2 in ${MANIFEST_PATH}: no gate in ${GATES_PATH} has its id and hash`,
-    `landed learning 3 in ${MANIFEST_PATH}: no gate in ${GATES_PATH} has its id and hash`,
-    `landed learning 4 in ${MANIFEST_PATH}: no gate in ${GATES_PATH} has its id and hash`,
+    `landed learning 3 in ${MANIFEST_PATH}: not an object with a gate id and a 64-character hex gateSha256`,
+    `landed learning 4 in ${MANIFEST_PATH}: not an object with a gate id and a 64-character hex gateSha256`,
   ]);
+});
+
+test('a landed learning with no hash, or a hash that is not one, is named by its position even with no gate behind it', () => {
+  const { d, manifest } = installed(HOOKS, { learnings: [
+    { id: 'L99' },
+    { id: 'L98', gateSha256: null },
+    { id: 'L97', gateSha256: 'A'.repeat(64) },
+    ['L96', 'a'.repeat(64)],
+  ] });
+  const r = integrityEvidence(d, manifest);
+  assert.deepEqual(r.problems, [1, 2, 3, 4].map(n => `landed learning ${n} in ${MANIFEST_PATH}: not an object with a gate id and a 64-character hex gateSha256`));
+  assert.deepEqual(r.summary, []);
+});
+
+test('a well-formed landed learning with no gate file is named by its id', () => {
+  const { d, manifest } = installed(HOOKS, { learnings: [{ id: 'L1', gateSha256: gateSha256(gate('L1')) }] });
+  assert.deepEqual(integrityEvidence(d, manifest).problems, [`landed learning L1 in ${MANIFEST_PATH}: no gate in ${GATES_PATH} has its id and hash`]);
+});
+
+test('a manifest that records no harness file says so', () => {
+  const { d, manifest } = installed({ 'HANDOFF.md': '# Handoff\n' });
+  assert.deepEqual(integrityEvidence(d, manifest).summary, [`${MANIFEST_PATH} records no harness file`, `${GATES_PATH}: no committed gate file`]);
 });
 
 test('a landed learning list that is not a list is named', () => {
@@ -209,7 +231,7 @@ test('an owner\'s entry in the learned registry with no origin is not cross-chec
 test('a recorded path that could reach the terminal unsafely is named by its position', () => {
   // A right-to-left override, which a file system accepts and a terminal
   // obeys.
-  const unsafe = '.claude/scripts/x‮gpj.mjs';
+  const unsafe = '.claude/scripts/x\u202egpj.mjs';
   const { d, manifest } = installed({ ...HOOKS, [unsafe]: '// x\n' });
   write(d, unsafe, '// edited\n');
   assert.deepEqual(integrityEvidence(d, manifest).problems, [`modified since kh-harness wrote it: the file at position 3 in ${MANIFEST_PATH}`]);

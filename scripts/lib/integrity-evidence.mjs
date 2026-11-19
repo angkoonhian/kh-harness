@@ -29,6 +29,7 @@ import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
 
 const SCRIPTS_DIR = '.claude/scripts/';
 const PLAIN_PATH = /^[A-Za-z0-9._/-]{1,200}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 const isMachinery = path => path.startsWith(SCRIPTS_DIR) || path === GATES_PATH || path === LEARNED_PATH;
 const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -88,6 +89,7 @@ function machinery(root, manifest, problems) {
       ? `modified since kh-harness wrote it: ${name}`
       : `recorded in ${MANIFEST_PATH} but missing: ${name}`);
   });
+  if (seen.size === 0) return `${MANIFEST_PATH} records no harness file`;
   return `${plural(intact, 'harness file')} recorded in ${MANIFEST_PATH} ${intact === 1 ? 'matches' : 'match'} it`;
 }
 
@@ -150,13 +152,22 @@ function landedLearnings(manifest, problems) {
   return null;
 }
 
+/** A landed learning as the manifest records it: an object with a gate id
+ * and a gate hash. */
+const isLearningRecord = l => l !== null && typeof l === 'object' && !Array.isArray(l)
+  && typeof l.id === 'string' && GATE_ID.test(l.id) && typeof l.gateSha256 === 'string' && SHA256.test(l.gateSha256);
+
 /** Pushes a line for each landed learning, and each approved learned entry,
- * with no gate behind it. */
+ * with no gate behind it. A malformed landed learning is a finding of its
+ * own, so a missing hash never compares equal to a missing gate. */
 function orphans(gates, entries, learnings, problems) {
   const hashes = new Map(gates.map(g => [g.id, gateSha256(g)]));
   learnings?.forEach((l, i) => {
-    const matched = l !== null && typeof l === 'object' && typeof l.id === 'string' && hashes.get(l.id) === l.gateSha256;
-    if (!matched) problems.push(`landed learning ${idOr(l?.id, i + 1)} in ${MANIFEST_PATH}: no gate in ${GATES_PATH} has its id and hash`);
+    if (!isLearningRecord(l)) {
+      problems.push(`landed learning ${i + 1} in ${MANIFEST_PATH}: not an object with a gate id and a 64-character hex gateSha256`);
+    } else if (!hashes.has(l.id) || hashes.get(l.id) !== l.gateSha256) {
+      problems.push(`landed learning ${l.id} in ${MANIFEST_PATH}: no gate in ${GATES_PATH} has its id and hash`);
+    }
   });
   const gateHashes = new Set(hashes.values());
   for (const e of entries ?? []) {
