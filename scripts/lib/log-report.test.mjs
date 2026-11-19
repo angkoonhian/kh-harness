@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { appendEvent, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { appendEvent, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { ledgerEntry } from './learn-lib.mjs';
 import { appendLedger } from './ledger.mjs';
 import { project, runLog, sealAll, sealedFile, sessionFile, snapshot, writeSession } from './log-fixtures.mjs';
 import { buildLogReport, NOT_CLAIMED, REROUTED_MEANS } from './log-report.mjs';
@@ -55,15 +56,19 @@ const reportJson = root => {
   return JSON.parse(r.stdout);
 };
 
-const wrongMark = learningId => ({
-  kind: 'wrong',
-  learningId,
-  contentSha256: 'a'.repeat(64),
+/** A learning as the ledger entries for it need it: no file is written, as
+ * for a gate learned on another machine or a learning since deleted. */
+const learningNamed = id => ({
+  id,
+  sha256: 'a'.repeat(64),
   evidence: { signature: 'f'.repeat(16), sessions: 2, firstTs: '2026-11-01T10:00:00.000Z', lastTs: '2026-11-02T10:00:00.000Z', external: false },
-  base: BASE,
-  learned: 'l'.repeat(64),
-  approvedBy: 'owner',
 });
+const IDENTITY = { base: BASE, learned: 'l'.repeat(64) };
+
+/** Marks the firing at `line` of `sessionId` wrong for the learning `id`. */
+const markWrong = (root, id, sessionId, line) =>
+  appendLedger(root, ledgerEntry(learningNamed(id), IDENTITY, { kind: 'wrong', approvedBy: 'owner', firing: { sessionId, line } }));
+const promote = (root, id) => appendLedger(root, ledgerEntry(learningNamed(id), IDENTITY, { kind: 'promoted', approvedBy: 'owner', action: 'warn' }));
 
 test('the report states how many sessions it read and under which harness and model', () => {
   const root = project();
@@ -179,7 +184,7 @@ test('a taxonomy that cannot be read leaves every label not read', () => {
   assert.match(reportText(root), /failure kind: not read, because docs\/harness\/FAILURES\.md could not be read/);
 });
 
-test('gate firings are counted per gate and action, and a block followed by a successful call of the same tool is rerouted', () => {
+test('gate firings are counted per gate and action, and a warn or block followed by a successful call of the same tool is rerouted', () => {
   const root = project();
   const firing = (gateId, action, tool, useId) => ({ type: 'gate_firing', gateId, gateSha256: 'a'.repeat(64), action, tool, tool_use_id: useId });
   const after = (type, tool, useId) => ({ type, tool, inputHash: 'h'.repeat(64), status: type === 'PostToolUse' ? 'ok' : 'error', tool_use_id: useId });
@@ -194,35 +199,58 @@ test('gate firings are counted per gate and action, and a block followed by a su
   assert.equal(gates.sessionsRead, 7);
   assert.equal(gates.firingsMalformed, 2);
   assert.equal(gates.reroutedMeans, REROUTED_MEANS);
+  // L1: g1, g3's second block and g4 are rerouted; g3's first block was
+  // followed by the next call, blocked. L2: the warning's next Read call
+  // succeeded; the observation told nobody anything.
+  const zero = { markedWrong: 0, markedWrongTotal: 0 };
   assert.deepEqual(gates.firings, [
-    { gateId: 'L1', fired: { observe: 0, warn: 0, block: 6 }, rerouted: 3, markedWrong: 0, gateSha256s: ['a'.repeat(64)] },
-    { gateId: 'L2', fired: { observe: 1, warn: 1, block: 0 }, rerouted: 0, markedWrong: 0, gateSha256s: ['a'.repeat(64)] },
+    { gateId: 'L1', fired: { observe: 0, warn: 0, block: 6 }, rerouted: 3, ...zero, gateSha256s: ['a'.repeat(64)] },
+    { gateId: 'L2', fired: { observe: 1, warn: 1, block: 0 }, rerouted: 1, ...zero, gateSha256s: ['a'.repeat(64)] },
   ]);
   const text = reportText(root);
   assert.ok(text.includes(REROUTED_MEANS), 'the report states what rerouted means');
-  assert.match(text, /L1: fired 6 times \(observe 0, warn 0, block 6\); rerouted after 3 of 6 blocks; marked wrong: 0/);
-  assert.match(text, /L2: fired 2 times \(observe 1, warn 1, block 0\)/);
+  assert.match(REROUTED_MEANS, /warn or block/);
+  assert.match(text, /L1: fired 6 times \(observe 0, warn 0, block 6\); rerouted after 3 of 6 warnings and blocks; marked wrong: 0 since the last promotion, 0 in all/);
+  assert.match(text, /L2: fired 2 times \(observe 1, warn 1, block 0\); rerouted after 1 of 1 warnings and blocks;/);
   assert.match(text, /firing events not counted, because their gate id or action is not one a gate can have: 2/);
   assert.doesNotMatch(text, /L9|shout/);
 });
 
 test('marked wrong is read from the ledger, and a broken ledger is reported as not read', () => {
   const root = project();
-  log(root, 'a', { type: 'gate_firing', gateId: 'L1', gateSha256: 'a'.repeat(64), action: 'warn', tool: 'Bash' });
-  appendLedger(root, wrongMark('L1'));
-  appendLedger(root, { ...wrongMark('L1'), kind: 'promoted' });
-  appendLedger(root, wrongMark('L1'));
-  appendLedger(root, wrongMark('L4'));
+  const warned = { type: 'gate_firing', gateId: 'L1', gateSha256: 'a'.repeat(64), action: 'warn', tool: 'Bash' };
+  log(root, 'a', warned, warned);
+  markWrong(root, 'L1', 'a', 1);
+  promote(root, 'L1');
+  markWrong(root, 'L1', 'a', 2);
+  markWrong(root, 'L4', 'a', 1);
   const json = reportJson(root);
   assert.deepEqual(json.ledger, { intact: true, brokenAt: null });
-  assert.deepEqual(json.gates.firings.map(g => [g.gateId, g.markedWrong, g.fired.warn]), [['L1', 2, 1], ['L4', 1, 0]]);
-  assert.match(reportText(root), /L1: .*marked wrong: 2/);
+  assert.deepEqual(json.gates.firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal, g.fired.warn]), [['L1', 1, 2, 2], ['L4', 1, 1, 0]]);
+  assert.match(reportText(root), /L1: .*marked wrong: 1 since the last promotion, 2 in all/);
 
   writeFileSync(join(repoDataDir(root), 'ledger.jsonl'), '{"not":"a ledger line"}\n', { flag: 'a' });
   const broken = reportJson(root);
   assert.deepEqual(broken.ledger, { intact: false, brokenAt: 5 });
-  assert.deepEqual(broken.gates.firings.map(g => [g.gateId, g.markedWrong]), [['L1', null]]);
+  assert.deepEqual(broken.gates.firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal]), [['L1', null, null]]);
   assert.match(reportText(root), /L1: .*marked wrong: not read, because the ledger's chain is broken at line 5/);
+});
+
+test('a gate id with no learning on this machine is reported from its firings alone, never marked wrong', () => {
+  const root = project();
+  log(root, 'a',
+    { type: 'gate_firing', gateId: 'L7', gateSha256: 'a'.repeat(64), action: 'block', tool: 'Bash', tool_use_id: 'u1' },
+    { type: 'PostToolUse', tool: 'Bash', inputHash: 'h'.repeat(64), status: 'ok', tool_use_id: 'u2' });
+  // A learning since deleted, whose ledger entries remain.
+  markWrong(root, 'L4', 'a', 1);
+  const r = runLog(root, 'report', '--json');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stderr, '');
+  const { firings } = JSON.parse(r.stdout).gates;
+  assert.deepEqual(firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal]), [['L4', 1, 1], ['L7', 0, 0]]);
+  assert.deepEqual(firings[1],
+    { gateId: 'L7', fired: { observe: 0, warn: 0, block: 1 }, rerouted: 1, markedWrong: 0, markedWrongTotal: 0, gateSha256s: ['a'.repeat(64)] });
+  assert.match(reportText(root), /L7: fired 1 time \(observe 0, warn 0, block 1\); rerouted after 1 of 1 warnings and blocks; marked wrong: 0 since the last promotion, 0 in all/);
 });
 
 test('the report counts what it could not read', () => {
@@ -286,8 +314,12 @@ test('report writes nothing: the data directory is byte-identical before and aft
   const root = project();
   for (const id of ['a', 'b']) log(root, id, harness(), failure());
   sealAll(root);
-  log(root, 'c', harness(), failure());
-  appendLedger(root, wrongMark('L1'));
+  log(root, 'c', harness(), failure(), { type: 'gate_firing', gateId: 'L1', gateSha256: 'a'.repeat(64), action: 'block', tool: 'Bash' });
+  markWrong(root, 'L1', 'c', 3);
+  // A gate the ledger grants nothing, which any step that writes would
+  // remove from the local gate set.
+  const ungranted = { id: 'L1', tool: 'Bash', field: 'command', match: { kind: 'token', value: '--watch' }, message: 'Run the tests once.', action: 'block' };
+  writeFileSync(join(repoDataDir(root), LOCAL_GATES_FILE), JSON.stringify({ schema: 1, gates: [ungranted] }));
   const before = snapshot(repoDataDir(root));
   for (const args of [['report'], ['report', '--json']]) assert.equal(runLog(root, ...args).status, 0);
   buildLogReport(root);

@@ -519,7 +519,7 @@ test('stats count firings across sessions', () => {
   const mark = (learningId, line) => appendLedger(root, { kind: 'wrong', learningId, contentSha256: learning.sha256, evidence, base: 'b', learned: 'l', approvedBy: 'owner', firing: { sessionId: 'later-a', line } });
   mark('L1', 1);
   mark('L2', 2);
-  assert.deepEqual(learningStats(root, 'L1'), { firings: 5, sessions: 4, rerouted: 2, wrong: 1, sessionsUnreadable: 0 });
+  assert.deepEqual(learningStats(root, 'L1'), { firings: 5, sessions: 4, rerouted: 2, wrong: 1, wrongTotal: 1, sessionsUnreadable: 0 });
 });
 
 test('nothing in this module writes inside the repository', () => {

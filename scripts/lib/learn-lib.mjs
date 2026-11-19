@@ -32,14 +32,15 @@ import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { GATE_LIMITS, gateSha256, parseGates, validateGate } from '../../assets/scripts/harness-gates.mjs';
-import { GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
 import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { LOCKED, withFileLock } from './file-lock.mjs';
+import { gateStats } from './gate-stats.mjs';
 import { appendLedger, isApprover, readLedger, verifyLedger } from './ledger.mjs';
-import { FAILURE_EVENT, findRecurrences, sessionIds, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
+import { findRecurrences } from './recurrence.mjs';
 import { replayGate } from './replay.mjs';
 import { readIfPresent } from './scan.mjs';
 
@@ -91,8 +92,6 @@ const LEARNINGS_DIR = 'learnings';
 // number of a rejected or removed learning is never assigned again.
 const ID_COUNTER_FILE = 'learning-ids.json';
 const LOCK_FILE = 'learnings.lock';
-
-export const FIRING_EVENT = 'gate_firing';
 
 const TITLE_MAX = 120;
 const WHY_MAX = 300;
@@ -845,18 +844,6 @@ function runTrialUnguarded(root, id) {
   });
 }
 
-/** How many times the learning `id` was marked wrong since its last
- * promotion, or ever when it was never promoted. */
-export function wrongSincePromotion(entries, id) {
-  let wrong = 0;
-  for (const entry of entries) {
-    if (entry?.learningId !== id) continue;
-    if (entry.kind === 'promoted') wrong = 0;
-    else if (entry.kind === 'wrong') wrong++;
-  }
-  return wrong;
-}
-
 /** True when the path at `path` does not exist; one that cannot be checked
  * for another reason counts as existing. */
 function isGone(path) {
@@ -922,48 +909,14 @@ export function listLearnings(root) {
 }
 
 /**
- * What the session log records of each of `learnings`' gates:
- * `{ stats, sessionsUnreadable }`, `stats` mapping each id to `{ firings,
- * sessions, rerouted }`. A firing counts when it names the learning's id and
- * content. `rerouted` counts the `warn` and `block` firings after which the
- * next call of the gate's tool in that session, the fired call itself
- * excepted, succeeded; an `observe` firing told nobody anything, so it is
- * never counted, nor is a firing whose call carries no tool use id, since
- * the fired call cannot then be told from the next.
- * `sessionsUnreadable` counts the sessions that could not be read in full,
- * whose counts are what did parse.
- */
-export function logStats(root, learnings) {
-  const counts = new Map(learnings.map(l => [l.id, { sha256: l.sha256, firings: 0, rerouted: 0, sessions: new Set() }]));
-  let sessionsUnreadable = 0;
-  for (const sessionId of sessionIds(root)) {
-    const { events, unreadable } = readEvents(root, sessionId);
-    if (unreadable) sessionsUnreadable++;
-    let awaiting = [];
-    for (const event of events) {
-      const counted = event.type === FIRING_EVENT ? counts.get(event.gateId) : undefined;
-      if (counted !== undefined && event.gateSha256 === counted.sha256) {
-        counted.firings++;
-        counted.sessions.add(sessionId);
-        if (ABOVE_OBSERVE.has(event.action) && isString(event.tool_use_id)) awaiting.push({ counted, tool: event.tool, toolUseId: event.tool_use_id });
-      } else if (event.type === SUCCESS_EVENT || event.type === FAILURE_EVENT) {
-        const isNext = f => f.tool === event[TOOL_FIELD] && f.toolUseId !== event.tool_use_id;
-        if (event.type === SUCCESS_EVENT) for (const f of awaiting) if (isNext(f)) f.counted.rerouted++;
-        awaiting = awaiting.filter(f => !isNext(f));
-      }
-    }
-  }
-  const stats = new Map([...counts].map(([id, c]) => [id, { firings: c.firings, sessions: c.sessions.size, rerouted: c.rerouted }]));
-  return { stats, sessionsUnreadable };
-}
-
-/**
- * What the session log and the ledger record of a learning's gate:
- * `firings`, the `gate_firing` events for its id and content; `sessions`,
- * how many sessions hold one; `rerouted`, the `warn` and `block` firings
- * after which the next call of the gate's tool in that session succeeded,
- * as `logStats` counts them; `wrong`, the firings marked wrong since its last
- * promotion; and `sessionsUnreadable`. Returns `{ error }` for an id that
+ * What the session log and the ledger record of a learning's gate, as
+ * `gateStats` counts them for its id and content, which is how `log report`
+ * counts them too: `firings`, the well-formed `gate_firing` events for it;
+ * `sessions`, how many sessions hold one; `rerouted`, the `warn` and `block`
+ * firings after which the next call of the gate's tool in that session
+ * succeeded; `wrong`, the firings marked wrong since its last promotion, or
+ * ever when it was never promoted; `wrongTotal`, those marked wrong in all;
+ * and `sessionsUnreadable`. Reads only. Returns `{ error }` for an id that
  * names no learning, for a learning the ledger does not vouch for, or when
  * the log cannot be read.
  */
@@ -983,6 +936,7 @@ function learningStatsUnguarded(root, id) {
   const view = readLedgerView(root);
   const unrecorded = unrecordedReason(read.learning, view);
   if (unrecorded !== null) return { error: unrecorded };
-  const { stats, sessionsUnreadable } = logStats(root, [read.learning]);
-  return { ...stats.get(id), wrong: wrongSincePromotion(view.entries, id), sessionsUnreadable };
+  const { gates, sessionsUnreadable } = gateStats(root, view.entries, new Map([[id, read.learning.sha256]]));
+  const { firings, sessions, rerouted, wrong } = gates.get(id);
+  return { firings, sessions, rerouted, wrong: wrong.sincePromotion, wrongTotal: wrong.total, sessionsUnreadable };
 }

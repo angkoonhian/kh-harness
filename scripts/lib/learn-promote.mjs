@@ -22,10 +22,11 @@ import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { harnessIdentity, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
+import { FIRING_EVENT, gateStats, wrongSincePromotion } from './gate-stats.mjs';
 import {
-  citationsGone, citesGone, committedGates, FIRING_EVENT, gateActionsFor, ID_ERROR, isId, learningIn, ledgerEntry, logStats,
+  citationsGone, citesGone, committedGates, gateActionsFor, ID_ERROR, isId, learningIn, ledgerEntry,
   readFailure, readState, recordedIn, refuse, repairedStep, repairLocalGates, rewriteLocalGates, SETTLED, unapprovedGateIds,
-  unrecordedReason, withLearningsLock, wrongSincePromotion, writeTransition,
+  unrecordedReason, withLearningsLock, writeTransition,
 } from './learn-lib.mjs';
 import { appendLedger } from './ledger.mjs';
 import { checkedPolicy, policyAllows, readPolicy, removePolicy, writePolicy } from './policy.mjs';
@@ -437,12 +438,12 @@ function applyRules(root, write, policy, result) {
 function promoteUnderPolicy(root, write, policy, result, apply) {
   const state = readState(root);
   const trials = recordedIn(state).filter(l => l.status === 'trial' && state.recorded.get(l.id).kind === 'trial');
-  const { stats } = logStats(root, trials);
+  const { gates } = gateStats(root, state.view.entries, new Map(trials.map(l => [l.id, l.sha256])));
   for (const learning of trials) {
-    const { firings, sessions } = stats.get(learning.id);
+    const { firings, sessions, wrong } = gates.get(learning.id);
     const external = learning.external || learning.evidence.external
       || state.view.entries.some(e => e?.learningId === learning.id && e.evidence?.external === true);
-    const evidence = { firings, sessions, wrong: wrongSincePromotion(state.view.entries, learning.id), external };
+    const evidence = { firings, sessions, wrong: wrong.sincePromotion, external };
     if (!policyAllows(policy.policy, evidence)) continue;
     const promotion = { action: policy.policy.maxAction, approvedBy: `policy:${policy.sha256}`, detail: `${firings} firings in ${sessions} sessions` };
     apply(learning, (s, l) => promote(root, write, s, l, promotion), () => result.promoted.push(learning.id));

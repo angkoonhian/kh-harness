@@ -20,6 +20,7 @@ import {
 import { learningStats, listLearnings, runTrial } from './learn-lib.mjs';
 import { approveLearning, clearPolicy, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './learn-promote.mjs';
 import { appendLedger, readLedger, verifyLedger } from './ledger.mjs';
+import { buildLogReport } from './log-report.mjs';
 import { readPolicy, writePolicy } from './policy.mjs';
 import { SUCCESS_EVENT } from './recurrence.mjs';
 import { MIN_CLEAN_CALLS } from './replay.mjs';
@@ -288,6 +289,34 @@ test('two wrong marks demote', () => {
   assert.ok(approveLearning(root, 'L1', { sha256: learning.sha256, action: 'warn', interactive: AT_TERMINAL }).ok);
   assert.equal(learningStats(root, 'L1').wrong, 0, 'marks count from the last promotion');
   assert.deepEqual(tick(root).demoted, []);
+});
+
+test("log report and a learning's stats count its firings, reroutes and wrong marks alike, and neither writes", () => {
+  const { root, learning } = trialRepo();
+  const ok = { interactive: AT_TERMINAL };
+  assert.equal(markWrong(root, fired(root, 'stats-a', learning.gate), ok).ok, true, 'a mark before the promotion');
+  assert.ok(approveLearning(root, 'L1', { sha256: learning.sha256, action: 'warn', interactive: AT_TERMINAL }).ok);
+  const warned = fired(root, 'stats-b', { ...learning.gate, action: 'warn' });
+  log(root, 'stats-b', success('stats-b', FIX));
+  fired(root, 'stats-c', { ...learning.gate, action: 'block' });
+  log(root, 'stats-c', success('stats-c', FIX));
+  fired(root, 'stats-d', { ...learning.gate, action: 'block' });
+  assert.equal(markWrong(root, warned, ok).wrong, 1, 'a mark after it');
+  // A gate the ledger does not grant, which any step that writes would remove.
+  writeLocalGates(root, [...localGates(root).gates, { ...WATCH_GATE, id: 'L41', action: 'block' }]);
+  const before = readFileSync(localGatesPath(root), 'utf8');
+  const ledgerBefore = readLedger(root);
+
+  const stats = learningStats(root, 'L1');
+  assert.deepEqual(stats, { firings: 4, sessions: 4, rerouted: 2, wrong: 1, wrongTotal: 2, sessionsUnreadable: 0 });
+  const gate = buildLogReport(root).gates.firings.find(g => g.gateId === 'L1');
+  assert.deepEqual(gate.fired, { observe: 1, warn: 1, block: 2 });
+  assert.deepEqual(
+    { firings: gate.fired.observe + gate.fired.warn + gate.fired.block, rerouted: gate.rerouted, wrong: gate.markedWrong, wrongTotal: gate.markedWrongTotal },
+    { firings: stats.firings, rerouted: stats.rerouted, wrong: stats.wrong, wrongTotal: stats.wrongTotal });
+  assert.equal(readFileSync(localGatesPath(root), 'utf8'), before, 'the gate repair did not run');
+  assert.deepEqual(readLedger(root), ledgerBefore);
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['L41'], 'the repair is still owed');
 });
 
 test('tick demotes a learning whose second wrong mark did not demote it', () => {

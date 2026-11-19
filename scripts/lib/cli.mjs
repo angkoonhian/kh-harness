@@ -275,9 +275,10 @@ SUBCOMMANDS
   report     List the failures that recur in two or more sessions under one
              harness and model, with their counts, sessions and the failure
              kind in docs/harness/FAILURES.md that labels each; and how each
-             gate fired, per action, how often a block was followed by a
-             successful call of the same tool, and how often its learning was
-             marked wrong in the ledger. States how many sessions it read and
+             gate fired, per action, how often a warning or block was followed
+             by a successful call of the same tool, and how often its learning
+             was marked wrong in the ledger, since its last promotion and in
+             all. States how many sessions it read and
              what it could not read, and never that outcomes improved. Reads
              only; writes nothing.
   maintain  Seal closed sessions, expire content past the retention period
