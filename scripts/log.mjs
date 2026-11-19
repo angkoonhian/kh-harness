@@ -3,14 +3,15 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { isEnabled } from '../assets/scripts/harness-log.mjs';
 import { LOG_USAGE, parseArgv, wantsHelp, warnUnknown } from './lib/cli.mjs';
 import {
-  disableLog, enableLog, logCommand, logStatus, maintainLog, purgeLog, purgeTarget,
-  renderDisable, renderEnable, renderMaintain, renderPurgePlan, renderStatus,
+  DataDirRefused, disableLog, enableLog, logCommand, logStatus, renderDisable, renderEnable, renderStatus,
 } from './lib/log-lib.mjs';
-import { isEnabled } from '../assets/scripts/harness-log.mjs';
+import { maintainLog, renderMaintain } from './lib/log-maintain.mjs';
+import { purgeLog, purgeTarget, renderPurgePlan } from './lib/log-purge.mjs';
 
-const KNOWN_FLAGS = new Set(['--yes', '--json', '--help', '-h']);
+const KNOWN_FLAGS = new Set(['--yes', '--json', '--help']);
 
 // Each flag means something to one subcommand only; elsewhere it is said to
 // be ignored, as an unknown flag is.
@@ -31,6 +32,7 @@ const fail = (code, message) => {
   process.stderr.write(`kh-harness: ${message}\n`);
   process.exit(code);
 };
+const reasonOf = error => error?.code ?? error?.message ?? 'unknown error';
 
 const [target, subcommand, ...extra] = positionals;
 if (target === undefined || subcommand === undefined) fail(2, usage);
@@ -40,22 +42,10 @@ const say = text => process.stdout.write(text + '\n');
 
 const SUBCOMMANDS = {
   enable(root) {
-    let enabled;
-    try {
-      enabled = enableLog(root);
-    } catch (error) {
-      fail(2, `could not enable the log (${error?.code ?? error?.message ?? 'unknown error'}); nothing is recorded.`);
-    }
-    say(renderEnable(enabled));
+    say(renderEnable(enableLog(root)));
   },
   disable(root) {
-    let disabled;
-    try {
-      disabled = disableLog(root);
-    } catch (error) {
-      fail(2, `could not disable the log (${error?.code ?? error?.message ?? 'unknown error'}); it may still be recording.`);
-    }
-    say(renderDisable(root, disabled));
+    say(renderDisable(root, disableLog(root)));
   },
   status(root) {
     const status = logStatus(root);
@@ -65,7 +55,7 @@ const SUBCOMMANDS = {
     if (!isEnabled(root)) fail(3, `the log is not enabled for ${root} on this machine; nothing was done. Enable it first: ${logCommand(root, 'enable')}`);
     const result = maintainLog(root);
     say(renderMaintain(result));
-    if (result.lockLost) process.exit(2);
+    if (result.lockLost || result.sealingNotRun !== null) process.exit(2);
   },
   purge(root) {
     const plan = purgeTarget(root);
@@ -81,7 +71,8 @@ const SUBCOMMANDS = {
     try {
       purgeLog(root, plan);
     } catch (error) {
-      fail(2, `could not remove ${plan.dir} (${error?.code ?? error?.message ?? 'unknown error'}); what remains is still there, and \`status\` says whether the log is still enabled.`);
+      if (error instanceof DataDirRefused) throw error;
+      fail(2, `could not remove ${plan.dir} (${reasonOf(error)}); what remains is still there, and \`status\` says whether the log is still enabled.`);
     }
     say(`Removed ${plan.dir}. The log for this repository on this machine is gone, and disabled.`);
   },
@@ -96,4 +87,11 @@ for (const [flag, owner] of Object.entries(FLAG_OWNER)) {
 const root = resolve(target);
 if (!existsSync(root)) fail(2, `no such path: ${root}`);
 
-SUBCOMMANDS[subcommand](root);
+// The contract is exit 0, 2 or 3: a refusal is 3, and anything unexpected is
+// one line and 2, never a stack trace.
+try {
+  SUBCOMMANDS[subcommand](root);
+} catch (error) {
+  if (error instanceof DataDirRefused) fail(3, `${error.message}. Nothing more was written.`);
+  fail(2, `${subcommand} failed (${reasonOf(error)}).`);
+}

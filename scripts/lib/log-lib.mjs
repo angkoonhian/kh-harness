@@ -1,20 +1,19 @@
 // scripts/lib/log-lib.mjs
 //
-// What the `log` command reads and does: whether the session-log hook is
-// registered, what the log holds and whether it can be trusted, the
-// maintenance run, and removal. Nothing here returns or renders a logged
-// event's content: only counts, times, sizes, session ids and the kit's own
-// file names leave this module.
-import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+// The `log` command's reads: whether the session-log hook is registered,
+// whether this repository's data directory is safe to write, what the log
+// holds and whether it can be trusted, and turning the log on and off.
+// Nothing here returns or renders a logged event's content or any string
+// read from a transcript: only counts, times, sizes, session ids and the
+// kit's own file names leave this module.
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 
 import {
-  BLOBS_DIR, dataRoot, isEnabled, parsedObject, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
+  dataRoot, isEnabled, parsedObject, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
 } from '../../assets/scripts/harness-log.mjs';
-import {
-  applyRetention, CLAIMED_SUFFIX, contentFieldsOf, SEAL_IDLE_MS, SEAL_TEMP_SUFFIX, sealClosedSessions, untrustedBecause, verifyIndex,
-} from '../../assets/scripts/harness-seal.mjs';
+import { CLAIMED_SUFFIX, contentFieldsOf, SEAL_TEMP_SUFFIX, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { verifyLedger } from './ledger.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { sessionIds } from './recurrence.mjs';
@@ -29,33 +28,56 @@ const SETTINGS_PATH = '.claude/settings.json';
 /** What no hook observes, whatever the log holds. */
 export const BLIND_SPOTS = Object.freeze(['user interrupts', 'cancelled tools', 'permission denials outside auto mode']);
 
-// The index lock is breakable once it is 10 minutes old, so each of the two
-// locked steps stops well inside that; what is left is done by a later run.
-const MAINTAIN_BUDGET_MS = 5 * 60_000;
-
 const DAY_MS = 86_400_000;
+const PLAIN_SUFFIX = '.jsonl';
+const SEALED_SUFFIX = '.jsonl.gz';
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const timeOf = v => (typeof v === 'string' ? Date.parse(v) : Number.NaN);
+const codeOf = error => error?.code ?? 'unknown error';
 
-/** The entry at `path` without following a link, or null when absent; any
- * other failure throws. */
-function lstatOrNull(path) {
+/** Thrown when the data directory stops being safe to write between the
+ * plan and the write; the CLI refuses (exit 3). */
+export class DataDirRefused extends Error {}
+
+/**
+ * Whether this repository's data directory may be written or removed:
+ * `'absent'`, `'refused'` with the reason, or `'ok'`. It must be a
+ * directory, not a link, whose real path is directly inside the data
+ * root's real path and is not the data root itself. Never throws.
+ */
+export function checkDataDir(root) {
+  const dir = repoDataDir(root);
+  const refused = reason => ({ state: 'refused', dir, reason });
+  let st;
   try {
-    return lstatSync(path);
+    st = lstatSync(dir);
   } catch (error) {
-    if (error?.code === 'ENOENT') return null;
-    throw error;
+    return error?.code === 'ENOENT' ? { state: 'absent', dir } : refused(`it cannot be examined (${codeOf(error)})`);
   }
+  if (st.isSymbolicLink()) return refused('it is a link, so a write or removal would act on what it points at');
+  if (!st.isDirectory()) return refused('it is not a directory');
+  let realDir;
+  let realRoot;
+  try {
+    realDir = realpathSync.native(dir);
+    realRoot = realpathSync.native(dataRoot());
+  } catch (error) {
+    return refused(`its real location cannot be resolved (${codeOf(error)})`);
+  }
+  const rel = relative(realRoot, realDir);
+  if (rel === '') return refused(`it is the data root ${realRoot} itself`);
+  if (isAbsolute(rel) || rel.startsWith('..') || /[\\/]/.test(rel)) return refused(`it is not directly inside the data root ${realRoot}`);
+  return { state: 'ok', dir };
 }
 
-const dataDirExists = root => {
-  try {
-    return lstatOrNull(repoDataDir(root)) !== null;
-  } catch {
-    return true;
-  }
-};
+/** Throws `DataDirRefused` unless the data directory is safe to write now,
+ * or absent when `absentOk`. */
+export function assertDataDirSafe(root, { absentOk = false } = {}) {
+  const check = checkDataDir(root);
+  if (check.state === 'ok' || (absentOk && check.state === 'absent')) return;
+  throw new DataDirRefused(`refusing to write to ${check.dir}: ${check.state === 'absent' ? 'it no longer exists' : check.reason}`);
+}
 
 /**
  * Whether `.claude/settings.json` registers a hook that runs
@@ -76,7 +98,7 @@ export function hookRegistration(root) {
 
 /** The bytes of every file under `dir`, each link counted as itself and
  * never followed, and how many entries could not be read. */
-function diskUsage(dir) {
+export function diskUsage(dir) {
   let bytes = 0;
   let unreadable = 0;
   const walk = path => {
@@ -104,11 +126,11 @@ function diskUsage(dir) {
   return { bytes, unreadable };
 }
 
-const sessionsDir = root => join(repoDataDir(root), SESSIONS_DIR);
+export const sessionsDir = root => join(repoDataDir(root), SESSIONS_DIR);
 
 /** The names in the sessions directory; none when it is absent or cannot
  * be listed. */
-function sessionNames(root) {
+export function sessionNames(root) {
   try {
     return readdirSync(sessionsDir(root));
   } catch {
@@ -116,17 +138,35 @@ function sessionNames(root) {
   }
 }
 
-/** Ids of sessions whose events sit, wholly or partly, in a claimed or
- * temporary file, which `readEvents` does not read. */
-function sessionsBeingSealed(root) {
+/** The session id a file name in the sessions directory names with
+ * `suffix`, or null. */
+export function idWithSuffix(name, suffix) {
+  if (!name.startsWith('s-') || !name.endsWith(suffix)) return null;
+  const id = name.slice(2, -suffix.length);
+  return sessionFileName(id) === `s-${id}${PLAIN_SUFFIX}` ? id : null;
+}
+
+const idsWithSuffix = (names, suffixes) => {
   const ids = new Set();
-  for (const name of sessionNames(root)) {
-    for (const suffix of [CLAIMED_SUFFIX, SEAL_TEMP_SUFFIX]) {
-      const id = name.startsWith('s-') && name.endsWith(`.jsonl${suffix}`) ? name.slice(2, -`.jsonl${suffix}`.length) : null;
-      if (id !== null && sessionFileName(id) === `s-${id}.jsonl`) ids.add(id);
+  for (const name of names) {
+    for (const suffix of suffixes) {
+      const id = idWithSuffix(name, suffix);
+      if (id !== null) ids.add(id);
     }
   }
-  return ids.size;
+  return [...ids].sort();
+};
+
+/** Only a transcript path that is absolute and names a regular file is
+ * read: the path comes from the log, which anyone with this user's access
+ * can edit, and a device or pipe would block the read. */
+function isReadableTranscript(path) {
+  if (!isAbsolute(path)) return false;
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** What reading every session's events finds: its date range, the lines and
@@ -160,6 +200,14 @@ function readSessions(root, ids) {
   return { firstTs: iso(first), lastTs: iso(last), unparseableLines, unreadableSessions, withoutTranscript, transcriptPaths: [...transcriptPaths] };
 }
 
+/** Coverage from the transcripts the sessions name. Strings read from a
+ * transcript never leave this function: unknown line types are counted. */
+function transcriptCoverage(paths, withoutTranscript) {
+  const readable = paths.filter(isReadableTranscript);
+  const { checked, notChecked, interrupts, unknownLineTypes } = summariseTranscripts(readable);
+  return { checked, notChecked, interrupts, unknownLineTypes: unknownLineTypes.length, skipped: paths.length - readable.length, sessionsWithoutTranscript: withoutTranscript };
+}
+
 /** Whether a sealed session's content still holds a field retention would
  * remove, and when its last event was; a line that does not parse may hold
  * content, so it counts as content. */
@@ -180,26 +228,27 @@ function sealedContentState(bytes) {
   return { holdsContent, last };
 }
 
-/** How many of the `altered` sessions, which retention leaves in place
- * because they do not match the index, still hold content older than
- * `cutoff`. A sealed file that cannot be read is judged by its modification
- * time, since what it holds cannot be told. */
-function unverifiedPastRetention(root, altered, cutoff) {
+/** How many of the sealed sessions `ids`, which retention leaves in place
+ * because they cannot be verified, still hold content older than `cutoff`.
+ * A sealed file that cannot be read is judged by its modification time,
+ * since what it holds cannot be told. */
+function unverifiedPastRetention(root, ids, cutoff) {
   let count = 0;
-  for (const id of altered) {
+  for (const id of ids) {
     const path = join(sessionsDir(root), `${sessionFileName(id)}.gz`);
+    const mtimeMs = () => statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? Number.NaN;
     let state;
     try {
       state = sealedContentState(gunzipSync(readFileSync(path)));
     } catch {
       try {
-        if (statSync(path).mtimeMs < cutoff) count++;
+        if (mtimeMs() < cutoff) count++;
       } catch {
-        // gone since it was checked
+        // unreadable even to stat: its age cannot be told
       }
       continue;
     }
-    const last = Number.isNaN(state.last) ? statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? Number.NaN : state.last;
+    const last = Number.isNaN(state.last) ? mtimeMs() : state.last;
     if (state.holdsContent && last < cutoff) count++;
   }
   return count;
@@ -208,52 +257,63 @@ function unverifiedPastRetention(root, altered, cutoff) {
 /**
  * What this repository's log on this machine holds and whether it can be
  * trusted, from reads alone: nothing is written, not even the sweep's
- * verification record. `index` is `verifyIndex`'s result; `blobSweep` says
- * whether the next sweep would remove nothing, and why, judged from it.
+ * verification record. `index` is `verifyIndex`'s result, which covers
+ * `sealedSessions` and not the events of the `unsealedSessions`;
+ * `blobSweep` says whether the next sweep would remove nothing, and why.
+ * When the sessions directory cannot be listed, every count read from it is
+ * null.
  */
 export function logStatus(root) {
   const location = repoDataDir(root);
-  const exists = dataDirExists(root);
+  const exists = checkDataDir(root).state !== 'absent';
   const config = readConfig(root);
   const hook = hookRegistration(root);
-  let ids = [];
-  let sessionsUnlistable = false;
+  let ids = null;
   try {
     ids = sessionIds(root);
   } catch {
-    sessionsUnlistable = true;
+    // reported as not read
   }
-  const read = readSessions(root, ids);
+  const listed = ids !== null;
+  const names = listed ? sessionNames(root) : [];
+  const sealedIds = idsWithSuffix(names, [SEALED_SUFFIX]);
+  const read = readSessions(root, ids ?? []);
   const index = verifyIndex(root);
   const untrusted = untrustedBecause(index);
   const usage = exists ? diskUsage(location) : { bytes: 0, unreadable: 0 };
+  const cutoff = Date.now() - config.contentRetentionDays * DAY_MS;
+  const whenListed = value => (listed ? value : null);
   return {
     enabled: isEnabled(root),
     exists,
     location,
     bytes: usage.bytes,
     unreadableEntries: usage.unreadable,
-    sessions: ids.length,
-    sessionsUnlistable,
-    sessionsBeingSealed: sessionsBeingSealed(root),
+    sessions: whenListed(ids?.length),
+    sessionsUnlistable: !listed,
+    sealedSessions: whenListed(sealedIds.length),
+    unsealedSessions: whenListed(idsWithSuffix(names, [PLAIN_SUFFIX]).length),
+    sessionsBeingSealed: whenListed(idsWithSuffix(names, [`${PLAIN_SUFFIX}${CLAIMED_SUFFIX}`, `${PLAIN_SUFFIX}${SEAL_TEMP_SUFFIX}`]).length),
     firstTs: read.firstTs,
     lastTs: read.lastTs,
     index,
     ledger: verifyLedger(root),
-    unparseableLines: read.unparseableLines,
-    unreadableSessions: read.unreadableSessions,
+    unparseableLines: whenListed(read.unparseableLines),
+    unreadableSessions: whenListed(read.unreadableSessions),
     hookRegistered: hook.registered,
     settingsProblem: hook.problem,
     retentionDays: config.contentRetentionDays,
     configUnreadable: config.configUnreadable === true,
-    contentPastRetentionUnverified: unverifiedPastRetention(root, index.sessionsAltered, Date.now() - config.contentRetentionDays * DAY_MS),
+    contentPastRetentionUnverified: index.unreadable
+      ? whenListed(unverifiedPastRetention(root, sealedIds, cutoff))
+      : unverifiedPastRetention(root, index.sessionsAltered, cutoff),
     blobSweep: { skipped: untrusted !== null, reason: untrusted },
-    transcripts: { ...summariseTranscripts(read.transcriptPaths), sessionsWithoutTranscript: read.withoutTranscript },
+    transcripts: whenListed(transcriptCoverage(read.transcriptPaths, read.withoutTranscript)),
     blindSpots: [...BLIND_SPOTS],
   };
 }
 
-const formatBytes = n => {
+export const formatBytes = n => {
   if (n < 1024) return `${n} bytes`;
   const units = ['KB', 'MB', 'GB'];
   let value = n / 1024;
@@ -268,10 +328,19 @@ function hookLine(registered, problem) {
   return `${problem}: whether the hook is registered could not be told`;
 }
 
-function indexLines(index) {
+function indexLines(s) {
+  const { index } = s;
+  if (index.unreadable) return ['index: could not be read, so no sealed session was verified'];
+  if (s.sessionsUnlistable) {
+    const chain = index.brokenAt === null ? 'its chain is unbroken' : `its chain is broken at line ${index.brokenAt}`;
+    return [`index: ${chain}, but the sessions directory could not be listed, so no sealed session was verified`];
+  }
   const lines = [];
   if (index.intact) {
-    lines.push('index: intact; the chain is unbroken and every sealed session matches it');
+    const unsealed = s.unsealedSessions > 0 ? `; events not yet sealed, in ${s.unsealedSessions} sessions, are not checked` : '';
+    lines.push(s.sealedSessions === 0
+      ? `index: intact, but no session is sealed yet, so nothing has been verified${unsealed}`
+      : `index: intact; the chain is unbroken and each of the ${s.sealedSessions} sealed sessions matches it${unsealed}`);
   } else {
     lines.push('index: not intact');
     if (index.brokenAt !== null) lines.push(`  chain broken at line ${index.brokenAt}`);
@@ -286,6 +355,20 @@ function indexLines(index) {
 }
 
 const indent = lines => lines.map(l => `  ${l}`);
+const NOT_READ = 'not read, because the sessions directory could not be listed';
+const countOf = n => (n === null ? NOT_READ : String(n));
+
+function transcriptLines(t) {
+  if (t === null) return [`transcripts: ${NOT_READ}`];
+  return [
+    `checked: ${t.checked}, not checked: ${t.notChecked}, interrupts found: ${t.interrupts}`,
+    `sessions with no transcript recorded: ${t.sessionsWithoutTranscript}`,
+    ...(t.skipped > 0 ? [`paths skipped, not absolute or not a regular file: ${t.skipped}`] : []),
+    ...(t.unknownLineTypes > 0 ? [`unknown line types seen: ${t.unknownLineTypes}`] : []),
+    'a transcript still being written can end in a half-written line, and one since moved or deleted cannot be read;',
+    'either reads as not checked, which is not damage',
+  ];
+}
 
 /** The status as text for a person. */
 export function renderStatus(s) {
@@ -301,33 +384,28 @@ export function renderStatus(s) {
       `enabled: ${s.enabled ? 'yes' : 'no'}`,
       `location: ${s.location}`,
       `size on disk: ${size}`,
-      s.sessionsUnlistable ? 'sessions: the sessions directory could not be listed' : `sessions: ${s.sessions}${range}`,
+      s.sessionsUnlistable
+        ? `sessions: ${NOT_READ}`
+        : `sessions: ${s.sessions}${range}; sealed: ${s.sealedSessions}, with events not yet sealed: ${s.unsealedSessions}`,
       hookLine(s.hookRegistered, s.settingsProblem),
     ]));
     out.push('', 'INTEGRITY');
     out.push(...indent([
-      ...indexLines(s.index),
+      ...indexLines(s),
       s.ledger.intact ? 'ledger: intact' : `ledger: broken at line ${s.ledger.brokenAt}`,
-      `unparseable lines: ${s.unparseableLines}`,
-      `unreadable sessions: ${s.unreadableSessions}`,
+      `unparseable lines: ${countOf(s.unparseableLines)}`,
+      `unreadable sessions: ${countOf(s.unreadableSessions)}`,
       ...(s.sessionsBeingSealed > 0 ? [`being sealed: ${s.sessionsBeingSealed} sessions have events in a claimed or temporary file, not read here`] : []),
     ]));
     out.push('', 'RETENTION');
     out.push(...indent([
       `content is kept ${s.retentionDays} days; structure is kept until the log is purged`,
       ...(s.configUnreadable ? ['config.json beside the log could not be read, so the defaults are in force'] : []),
-      `content past the period, kept because it could not be verified: ${s.contentPastRetentionUnverified} sessions`,
+      `content past the period, kept because it could not be verified: ${s.contentPastRetentionUnverified === null ? NOT_READ : `${s.contentPastRetentionUnverified} sessions`}`,
       s.blobSweep.skipped ? `blob sweep: skipped, because ${s.blobSweep.reason}` : 'blob sweep: not blocked; the index accounts for every sealed session',
     ]));
-    const t = s.transcripts;
     out.push('', 'TRANSCRIPTS');
-    out.push(...indent([
-      `checked: ${t.checked}, not checked: ${t.notChecked}, interrupts found: ${t.interrupts}`,
-      `sessions with no transcript recorded: ${t.sessionsWithoutTranscript}`,
-      ...(t.unknownLineTypes.length > 0 ? [`unknown line types: ${t.unknownLineTypes.join(', ')}`] : []),
-      'a transcript still being written can end in a half-written line, and one since moved or deleted cannot be read;',
-      'either reads as not checked, which is not damage',
-    ]));
+    out.push(...indent(transcriptLines(s.transcripts)));
   }
   out.push('', 'WHAT HOOKS CANNOT SEE');
   out.push(...indent(s.blindSpots));
@@ -338,8 +416,11 @@ export function renderStatus(s) {
 /** The command line for `args`, the path quoted when it holds a space. */
 export const logCommand = (root, ...args) => `node scripts/log.mjs ${/\s/.test(root) ? `"${root}"` : root} ${args.join(' ')}`;
 
-/** Turns the log on and returns what `renderEnable` states. */
+/** Turns the log on and returns what `renderEnable` states. Throws
+ * `DataDirRefused`, writing nothing, when the data directory exists and is
+ * not safe to write. */
 export function enableLog(root) {
+  assertDataDirSafe(root, { absentOk: true });
   setEnabled(root, true);
   return { root, location: repoDataDir(root), hook: hookRegistration(root), config: readConfig(root) };
 }
@@ -366,9 +447,11 @@ export function renderEnable({ root, location, hook, config }) {
 }
 
 /** Turns the log off, keeping what it holds; false, writing nothing, when
- * this repository has no log on this machine. */
+ * this repository has no log on this machine. Throws `DataDirRefused`,
+ * writing nothing, when the directory is not safe to write. */
 export function disableLog(root) {
-  if (!dataDirExists(root)) return false;
+  if (checkDataDir(root).state === 'absent') return false;
+  assertDataDirSafe(root);
   setEnabled(root, false);
   return true;
 }
@@ -380,135 +463,4 @@ export function renderDisable(root, disabled) {
     `What it holds is kept at ${repoDataDir(root)}.`,
     `To delete it:  ${logCommand(root, 'purge', '--yes')}`,
   ].join('\n');
-}
-
-function blobNames(root) {
-  try {
-    return readdirSync(join(repoDataDir(root), BLOBS_DIR));
-  } catch {
-    return [];
-  }
-}
-
-/** Sessions still holding unsealed events after a run: those appended to
- * within the idle threshold, which sealing leaves by design, and the rest. */
-function unsealedAfter(root, now) {
-  let recent = 0;
-  let other = 0;
-  for (const name of sessionNames(root)) {
-    const id = name.startsWith('s-') && name.endsWith('.jsonl') ? name.slice(2, -'.jsonl'.length) : null;
-    if (id === null || sessionFileName(id) !== name) continue;
-    try {
-      if (now - statSync(join(sessionsDir(root), name)).mtimeMs < SEAL_IDLE_MS) recent++;
-      else other++;
-    } catch {
-      // sealed since it was listed
-    }
-  }
-  return { recent, other };
-}
-
-/**
- * Seals closed sessions and applies retention, as the hook does at session
- * start, with a budget of minutes rather than milliseconds, and says what was
- * done and what was left.
- */
-export function maintainLog(root) {
-  const started = performance.now();
-  const blobsBefore = blobNames(root);
-  const seal = sealClosedSessions(root, { budgetMs: MAINTAIN_BUDGET_MS });
-  const retention = applyRetention(root, { budgetMs: MAINTAIN_BUDGET_MS - (performance.now() - started) });
-  const blobsAfter = new Set(blobNames(root));
-  return {
-    sealed: seal.sealed.length,
-    contentRemoved: retention.contentRemoved,
-    contentUnverifiable: retention.contentUnverifiable,
-    blobsRemoved: blobsBefore.filter(name => !blobsAfter.has(name)).length,
-    blobSweep: retention.blobSweep,
-    lockLost: seal.lockLost || retention.lockLost,
-    timeLimitReached: performance.now() - started >= MAINTAIN_BUDGET_MS,
-    unsealed: unsealedAfter(root, Date.now()),
-  };
-}
-
-export function renderMaintain(r) {
-  const out = [
-    `sessions sealed: ${r.sealed}`,
-    `content expired: ${r.contentRemoved} sessions`,
-    `blobs removed: ${r.blobsRemoved}`,
-  ];
-  if (r.blobSweep.skipped) out.push(`blob sweep skipped: ${r.blobSweep.reason}`);
-  if (r.contentUnverifiable > 0) out.push(`content past the period left in place, because it could not be verified: ${r.contentUnverifiable} sessions`);
-  if (r.unsealed.recent > 0) out.push(`not sealed: ${r.unsealed.recent} sessions appended to in the last ${SEAL_IDLE_MS / 60_000} minutes, which may still be running`);
-  if (r.unsealed.other > 0) out.push(`not sealed: ${r.unsealed.other} other sessions; \`status\` says whether the index explains why`);
-  if (r.timeLimitReached) out.push(`the ${MAINTAIN_BUDGET_MS / 60_000}-minute limit was reached; run maintain again to continue`);
-  if (r.lockLost) out.push('the index lock was broken by another process during the run, which then stopped');
-  return out.join('\n');
-}
-
-/**
- * Whether this repository's data directory may be removed: `'absent'`,
- * `'refused'` with the reason, or `'ok'` with its size and top-level
- * entries. It must be a directory, not a link, whose real path is directly
- * inside the data root's real path and is not the data root itself.
- */
-export function purgeTarget(root) {
-  const dir = repoDataDir(root);
-  const refused = reason => ({ state: 'refused', dir, reason });
-  let st;
-  try {
-    st = lstatOrNull(dir);
-  } catch (error) {
-    return refused(`it cannot be examined (${error?.code ?? 'unknown error'})`);
-  }
-  if (st === null) return { state: 'absent', dir };
-  if (st.isSymbolicLink()) return refused('it is a link, and removing a link would not remove what it points at');
-  if (!st.isDirectory()) return refused('it is not a directory');
-  let realDir;
-  let realRoot;
-  try {
-    realDir = realpathSync.native(dir);
-    realRoot = realpathSync.native(dataRoot());
-  } catch (error) {
-    return refused(`its real location cannot be resolved (${error?.code ?? 'unknown error'})`);
-  }
-  const rel = relative(realRoot, realDir);
-  if (rel === '') return refused(`it is the data root ${realRoot} itself`);
-  if (isAbsolute(rel) || rel.startsWith('..') || /[\\/]/.test(rel)) return refused(`it is not directly inside the data root ${realRoot}`);
-  let names;
-  try {
-    names = readdirSync(dir, { withFileTypes: true });
-  } catch (error) {
-    return refused(`it cannot be listed (${error?.code ?? 'unknown error'})`);
-  }
-  const entries = names.map(e => ({
-    name: e.isDirectory() ? `${e.name}/` : e.name,
-    bytes: e.isDirectory() ? diskUsage(join(dir, e.name)).bytes : lstatSync(join(dir, e.name), { throwIfNoEntry: false })?.size ?? 0,
-  })).sort((a, b) => (a.name < b.name ? -1 : 1));
-  let sessions = 0;
-  try {
-    sessions = sessionIds(root).length;
-  } catch {
-    // listed below as part of `sessions/`
-  }
-  return { state: 'ok', dir, usage: diskUsage(dir), entries, sessions };
-}
-
-export function renderPurgePlan(root, target) {
-  const size = target.usage.unreadable > 0 ? `${formatBytes(target.usage.bytes)} at least` : formatBytes(target.usage.bytes);
-  return [
-    `Would remove ${target.dir} (${size}, ${target.sessions} sessions):`,
-    ...target.entries.map(e => `  ${e.name}  ${formatBytes(e.bytes)}`),
-    'This is everything the kit keeps for this repository on this machine; nothing else is touched.',
-    '',
-    `Run with --yes to remove it:  ${logCommand(root, 'purge', '--yes')}`,
-  ].join('\n');
-}
-
-/** Disables the log, so no hook writes into the directory meanwhile, then
- * removes the directory `purgeTarget` cleared. Throws what the removal
- * throws. */
-export function purgeLog(root, target) {
-  setEnabled(root, false);
-  rmSync(target.dir, { recursive: true });
 }

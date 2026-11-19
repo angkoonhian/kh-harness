@@ -230,8 +230,9 @@ FLAGS
   --yes    purge only: actually remove. Without it, nothing is removed.
   --json   status only: print the status object on stdout and nothing else.
 
-Here 3 is also \`maintain\` on a log that is not enabled, and \`purge\` of a
-directory that is a link or is not inside the data root.
+Here 3 is also \`maintain\` on a log that is not enabled, and any write to or
+removal of a log directory that is a link or is not inside the data root.
+2 is also \`maintain\` when sealing could not run or its lock was lost.
 
 ${EXIT_CODES}`;
 

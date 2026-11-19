@@ -553,7 +553,8 @@ function budget(clock, budgetMs) {
  * on a later run.
  *
  * Runs under an exclusive lock and does nothing while another process holds
- * it; `lockLost` says the run stopped because its lock was broken under it.
+ * it; `lockLost` says the run stopped because its lock was broken under it,
+ * and `notRun` says why sealing did not start at all (null when it did).
  * Stops before the next session once `budgetMs` of `clock` time has passed;
  * the rest are sealed on a later call. `now` is milliseconds since the
  * epoch; `isAlive(pid)` says whether a lock's owner still runs. Never
@@ -564,11 +565,15 @@ export function sealClosedSessions(root, {
 } = {}) {
   const sealed = [];
   let outcome = 'ran';
+  let notRun = null;
   const withinBudget = budget(clock, budgetMs);
   try {
     outcome = withIndexLock(root, { now, isAlive }, held => {
       const index = readIndex(root);
-      if (index === null) return;
+      if (index === null) {
+        notRun = 'the index could not be read';
+        return;
+      }
       const sessions = listSessions(root);
       recoverInterrupted(root, sessions, index, held);
       for (const [sessionId, kinds] of sessions) {
@@ -586,7 +591,8 @@ export function sealClosedSessions(root, {
   } catch {
     // nothing more is sealed this run
   }
-  return { sealed, lockLost: outcome === 'lost' };
+  if (outcome === 'locked') notRun = 'the index lock could not be taken';
+  return { sealed, lockLost: outcome === 'lost', notRun };
 }
 
 /** The fields retention removes from an event of `type`. */
@@ -735,6 +741,7 @@ function writeVerified(root, verified, held) {
  * blob sealed content references, so the blob sweep removes nothing; null
  * when it can. */
 export function untrustedBecause(check) {
+  if (check.unreadable) return 'the index could not be read';
   if (check.brokenAt !== null) return `the index chain is broken at line ${check.brokenAt}`;
   const parts = [];
   if (check.sessionsAltered.length > 0) parts.push(`altered: ${check.sessionsAltered.join(', ')}`);
@@ -890,7 +897,7 @@ function checkIndex(root, { withinBudget = () => true, gunzip = gunzipSync, veri
     else sessionsMissing.push(sessionId);
   }
   const intact = brokenAt === null && sessionsMissing.length === 0 && sessionsAltered.length === 0;
-  return { result: { intact, brokenAt, sessionsMissing, sessionsAltered, sessionsPending }, index, sessions };
+  return { result: { intact, brokenAt, sessionsMissing, sessionsAltered, sessionsPending, unreadable: false }, index, sessions };
 }
 
 /**
@@ -907,6 +914,9 @@ function checkIndex(root, { withinBudget = () => true, gunzip = gunzipSync, veri
  * anything else, cannot be read, or has no index line is in
  * `sessionsAltered`. `intact` is true only when the chain is unbroken and
  * no session is missing or altered. Events not yet sealed are not checked.
+ * An index file that exists but cannot be read sets `unreadable`, with
+ * `intact` false, `brokenAt` null and no session judged, since nothing could
+ * be compared; otherwise `unreadable` is false.
  *
  * Every sealed file is read and hashed. The sweep's `verified.json` record
  * is never consulted: it is an optimisation for the sweep's gate, judged by
@@ -915,5 +925,5 @@ function checkIndex(root, { withinBudget = () => true, gunzip = gunzipSync, veri
  */
 export function verifyIndex(root) {
   return checkIndex(root)?.result
-    ?? { intact: false, brokenAt: 1, sessionsMissing: [], sessionsAltered: [], sessionsPending: [] };
+    ?? { intact: false, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: true };
 }

@@ -494,7 +494,7 @@ test('a session start seals the other sessions, silently and without spawning', 
   assert.deepEqual(events(root, 'earlier-1').map(e => e.type), ['PostToolUse', 'SessionEnd']);
   const index = readFileSync(join(repoDataDir(root), 'index.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
   assert.deepEqual(index.map(l => l.sessionId), ['earlier-1']);
-  assert.deepEqual(verifyIndex(root), { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [] });
+  assert.deepEqual(verifyIndex(root), { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: false });
 });
 
 test('with the log disabled a session start seals nothing', () => {
