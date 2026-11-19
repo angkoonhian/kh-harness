@@ -346,15 +346,17 @@ The session-start handler calls `sealClosedSessions` then `applyRetention`, insi
 
 **Files:** Create `assets/scripts/harness-gates.mjs`. Test `scripts/lib/harness-gates.test.mjs`.
 
+*Superseded in review: the contract below is the one built; the plan's first text (`gatesMax: 200`, ids `^L[0-9]+$`, `?` as a glob wildcard, no input cap, `parseGates` without suspensions) was replaced before Task 25 was accepted.*
+
 **Interfaces — Produces:**
 - `Gate = { id: string, tool: string, field: string, match: { kind: 'literal' | 'token' | 'glob', value: string }, action: 'observe' | 'warn' | 'block', message: string, cites?: string[] }`.
-- `GATE_LIMITS = { valueMax: 200, messageMax: 300, gatesMax: 200 }`.
-- `validateGate(gate): { ok: true } | { ok: false, reason: string }` — `id` matches `^L[0-9]+$`; `field` is a dotted path of identifier segments; `message` passes `stripUnsafe` unchanged and contains no `<` or `>`.
+- `GATE_LIMITS = { valueMax: 200, messageMax: 300, gatesMax: 100, inputMax: 65536 }`; a gate inspects only the first `inputMax` characters of its field.
+- `validateGate(gate): { ok: true } | { ok: false, reason: string }` — `id` matches `^L[1-9][0-9]{0,8}$`; `field` is a dotted path of identifier segments, none of them `__proto__`, `constructor` or `prototype`; `match.value` has at least 3 characters that are neither `*` nor whitespace; `message` is one line, passes `stripUnsafe` unchanged and contains no `<` or `>`; a reason never repeats a key or value from the file.
 - `gateSha256(gate): string` — SHA-256 of the canonical JSON of the gate without `action`.
-- `matchGate(gate, toolName, toolInput): boolean` — `literal` is substring; `token` is the value bounded by non-word characters or string ends; `glob` uses `*` and `?` only, matched with a linear two-pointer algorithm. No `RegExp` is constructed from gate data.
-- `parseGates(text): { gates: Gate[], rejected: { index: number, reason: string }[] }`.
+- `matchGate(gate, toolName, toolInput): boolean` — `literal` is substring; `token` is the value bounded by non-word characters or string ends, found in one linear pass; `glob` matches the whole field with `*` as its only wildcard (`?` is literal), by `indexOf` over the literal segments. No `RegExp` is constructed from gate data.
+- `parseGates(text): { gates: Gate[], suspended: string[], rejected: { index: number, reason: string }[] }` — a suspension entry is exactly `{ id, suspended: true }`; a whole-file rejection has index -1; entries beyond `gatesMax` are rejected.
 
-- [ ] Tests: `a literal matches a substring of the named field`; `a token does not match inside a longer word`; `a glob of fifty stars against a 10,000-character input returns within 50 ms`; `a value over the limit is rejected`; `a message containing an angle bracket or an invisible character is rejected`; `malformed JSON yields no gates and one rejection`; `the hash ignores the action`.
+- [ ] Tests: `a literal matches a substring of the named field`; `a token does not match inside a longer word`; `a glob matches the whole field, with * as its only wildcard`; `a gate inspects only the first inputMax characters of its field`; `a value over the limit is rejected`; `a value that would match everything or nearly everything is rejected, whatever the kind`; `a message containing an angle bracket or an invisible character is rejected`; `malformed JSON yields no gates and one rejection`; `the hash ignores the action`.
 - [ ] Run, implement, run task tests and `npm test`.
 - [ ] Commit `feat(learn): declarative, linear-time gate language`.
 

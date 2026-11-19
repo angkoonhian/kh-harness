@@ -1,10 +1,11 @@
 # Phase 2 — sensors
 
-Five runbook steps. Three are *script* (steps 9, 10, 11: the CLI derives
-and writes them); step 8 is *advise within a script phase* — it reports a
-gap and never writes it; step 12 is *advise* outright — a sense this kit
-cannot run on your behalf, so it only tells you how to check by hand. Read
-[references/gates.md](gates.md) before presenting the gate at the end.
+Six runbook steps. Four are *script* (steps 9, 10, 11 and 13: the CLI
+derives and writes them); step 8 is *advise within a script phase* — it
+reports a gap and never writes it; step 12 is *advise* outright — a sense
+this kit cannot run on your behalf, so it only tells you how to check by
+hand. Read [references/gates.md](gates.md) before presenting the gate at
+the end.
 
 ## Read this before presenting either hook's gate
 
@@ -168,6 +169,26 @@ and hover over a symbol, or trigger "go to definition." If it resolves, a
 language server is already active and this step needs nothing further. If
 it does not, install the language server for this stack and your own
 editor directly — this kit does not do so, and will not propose to.
+
+## Step 13 — the loop warning
+
+*Script.* *Verified against `scripts/lib/gap-model.mjs`'s `P2.loopwatch`,
+`propose.mjs`'s `loopWatchProposal` and `assets/scripts/loop-watch.mjs`'s
+header comment:* applies under every profile and is always decidable, since
+any session can repeat a failing call. Installs
+`.claude/scripts/loop-watch.mjs`, the shared `harness-redact.mjs`, and a
+`PostToolUseFailure` hook with no matcher. It runs no script of this
+repository's.
+
+What it does: after each failed tool call it compares a signature of the
+call (the tool, its input and the first line of the error, hashed) with
+the previous failure's, per session and per agent. At exactly the third
+identical failure in a row it tells Claude, and the user, one fixed
+sentence: *The same call has failed 3 times in a row with the same error.
+Stop repeating it and change approach.* Nothing from the input or the
+error is printed, and only the signature is stored, in the per-user temp
+marker directory. It never blocks a call. It sees only failures, so a
+success between two identical failures does not reset the count.
 
 ## The gate
 

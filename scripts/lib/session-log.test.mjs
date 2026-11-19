@@ -380,6 +380,24 @@ test('the agent\'s own account of its work is never logged', () => {
   }
 });
 
+test('the hook writes nothing inside the project, whatever event it records', () => {
+  const root = enabledProject();
+  const before = readdirSync(root, { recursive: true }).sort();
+  const session = 'inside-1';
+  for (const payload of [
+    { session_id: session, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-opus-5' },
+    { session_id: session, hook_event_name: 'UserPromptSubmit', prompt: 'run the tests' },
+    toolPayload('PostToolUse', session, { tool_response: 'ok' }),
+    toolPayload('PostToolUseFailure', session, { tool_name: 'WebFetch', tool_input: { url: 'https://example.test' }, error: 'timeout' }),
+    { session_id: session, hook_event_name: 'Stop', stop_hook_active: false },
+    { session_id: session, hook_event_name: 'SessionEnd', reason: 'other' },
+  ]) {
+    assertSilentSuccess(runHook(root, payload));
+  }
+  assert.ok(events(root, session).length >= 6, 'the events were recorded, outside the project');
+  assert.deepEqual(readdirSync(root, { recursive: true }).sort(), before);
+});
+
 test('an MCP tool marks the session external once', () => {
   const root = enabledProject();
   const mcp = toolPayload('PostToolUse', 'ext-1', { tool_name: 'mcp__docs__search', tool_input: { q: 'x' }, tool_response: 'r' });

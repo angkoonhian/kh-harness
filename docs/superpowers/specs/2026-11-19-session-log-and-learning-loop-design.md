@@ -221,3 +221,58 @@ Recurrences found, enforcer firings and what followed, replays passed and failed
 - Recurrence at a threshold of two may be mostly noise or mostly model limitations; no source validates a way to separate a harness defect from a model limitation. The taxonomy step exists to let the owner make that call.
 - Two hooks per tool call cost about 0.1 seconds each time on Windows.
 - The scrub is best-effort; the log will at some point hold a secret.
+
+## As built: where the implementation differs
+
+Recorded when version 0.2.0 was prepared, on 2026-11-19. The text above is the design as agreed; where it and this list disagree, this list describes the code. Each entry gives the deviation and the reason for it.
+
+**The session log**
+
+- Tamper evidence is per sealed session, not per event: a session idle for 10 minutes is sealed at a later session start or by `log maintain`, hashed whole, and its hash appended to an index whose lines are chained; events not yet sealed are covered by nothing. Parallel tool calls and sub-agents append to one session at once, so no event can name the one before it.
+- The harness line is written at session start, on a model switch, and on a prompt whose identity or model has moved; identity is therefore re-checked per prompt, and tool events after a mid-turn edit to an installed hook are attributed to the previous base until the next prompt. Hashing the harness on every tool call would read every hook script on every call.
+- No hook records the Claude Code version, because no hook payload carries it. The transcript reader reads it where transcript lines carry it, but nothing records or reports it yet.
+- The transcript reader fills in user interrupts only; cancelled tools and permission denials outside auto mode stay listed as blind spots. The transcript format is internal, so the reader reads only the interrupt markers it recognises and reports a session holding any line type it does not know as not checked.
+- A `PreToolUse` or `PermissionRequest` event stores the input's hash and size, not the input; the input and output are stored once, with the `PostToolUse` or `PostToolUseFailure` result. Storing the input twice doubles the content for no new fact.
+- The `log` command also has `report` (Phase 2) and `maintain`, which runs sealing and retention for minutes instead of the session start's 150 ms, for a log that has outgrown that budget.
+
+**Recurrence and the report**
+
+- A recurrence is a failing tool call only: the same tool, input hash and normalised first error line in two or more sessions under one base hash and model. The kit-specific patterns (an enforcer firing repeatedly, a stop gate failing after the agent declared completion) are not detected; gate firings are counted per gate in `log report` instead. A failure under an unreadable or missing base, or with no model, is counted as unattributed and grouped with nothing, so unrelated sessions are never merged.
+- The report does not compare a gate against "retrying would have fixed it". It counts how often a warn or block firing was followed by a successful call of the same tool, and states that it does not show that outcomes improved.
+
+**The ledger and the policy**
+
+- A promotion policy is bound to the ledger: setting it records a ledger entry of kind `policy` with the policy's hash, and clearing it is a `policy` entry with a null hash. A policy file whose hash is not the one last recorded promotes nothing. Anything running as the owner can write the policy file, so the file alone cannot be trusted.
+- Each ledger entry records the base and learned-set hashes at the time of the entry, not before and after.
+
+**Learnings and gates**
+
+- The gate language is `literal` (a substring), `token` (the value bounded by non-word characters or the string's ends) and `glob` with `*` as its only wildcard; `?` is a literal character. A value needs at least 3 characters that are neither `*` nor whitespace, a gate inspects only the first 65536 characters of its field, and a gate file holds at most 100 gates. These bounds keep matching linear and the worst case near 0.09 s per tool call; the earlier caps cost about 0.65 s.
+- A gate id is `L` and 1 to 9 digits with no leading zero, and is never reused on that machine, so a ledger entry names one learning for good.
+- A learning has the statuses `candidate`, `rejected`, `trial`, `active-local` (promoted on this machine, not committed), `landed`, `suspended` and `retired`. The ledger, not the learning's file, is the authority for the status and for the action its gate may carry, because the file is covered by no hash.
+- Replay needs history: the false-positive check counts only calls of the gate's own tool whose inspected field is a string, and it needs at least 20 such clean calls across at least 2 sessions; with fewer, the verdict is `not-checkable` and the draft stays a candidate for `learn replay`. Silence over too few calls proves nothing.
+- A rejected recurrence, or another recurrence that `docs/harness/FAILURES.md` labels with the same failure kind, is drafted again only with `learn draft --redraft`, and the ledger records the draft as a redraft. Without this, a model could redraft until a replay passes.
+- `tick` retires a trial whose cited paths are all gone, but does not retire an enforcing gate whose citations are gone: one promoted on this machine is reported in `citationsGone` and left until the owner retires it at a terminal, and a landed one is neither retired nor reported. Otherwise an agent could switch a guard off by deleting a file.
+- Only tool-call gates are drafted. Project checks and told rules are not drafted, and there is no registry budget for told rules.
+- Committed entries in `docs/harness/LEARNED.md` are only ever `status: active`; candidates, trials and retired learnings live in the per-machine data directory. A committed entry leaves the repository only by revert, which keeps the repository change a reviewable commit.
+
+**Promotion, landing and reverting**
+
+- Landing and reverting are terminal-only for the real write, and their ledger entries record `approvedBy: 'owner'` whoever promoted the learning on this machine, because a committed gate binds other people's agents. A dry run needs no terminal. A policy therefore cannot put a gate into the repository.
+- No repository change is queued as a pending proposal. A learning promoted under policy stays `active-local` until the owner lands it; a committed gate suspended on this machine stays in the repository until the owner reverts it.
+- A landed learning judged wrong (two wrong marks since its landing, or a demotion) is suspended on this machine, where its committed gate stops acting; it can then be reverted, which takes its gate out of the repository and ends it `retired`. Reverting a landed learning that was not suspended returns it to `active-local`, with its local gate restored, since a revert withdraws the rule from the repository and not the approval on this machine.
+- After a branch switch to a checkout without the committed gate, or once an uncommitted land is discarded, a landed learning is enforced nowhere until the next `learn` command or `tick` writes its local gate back. The repair runs only when one of those runs.
+- A revert whose working tree holds no trace of the learning (its gate, its registry entry or its manifest record) is refused and names a checkout that would hold them.
+
+**Running without the owner**
+
+- At session start the logging hook runs only sealing, retention and the notice below. The repair, the demotions, the retirements and the promotions under policy run only when `learn tick` runs, by hand or through the `harness-learn` skill, and the repair also runs before every other `learn` step that writes. The hook's 150 ms session-start budget is spent on sealing and retention, and the loop's steps take the learnings lock and read the whole ledger.
+- The session-start notice is not the session brief's: it comes from the logging hook, only when `autodraft` is set in the log's `config.json`, only for a new session (`source: startup`), and it states how many sessions were sealed since the last `tick`, counted by position in the seal index, not pending recurrences. A resumed or compacted session may already hold the notice, and recurrences are not computed at session start.
+- `learn evidence <signature>` was added: a read-only view of up to three recorded failures of one recurrence, printed between nonce-marked lines that say it is recorded data. The skill needs the recorded inputs to draft a gate, and reading the log directly would have meant an ad hoc script with no escaping.
+- `learn` also has `draft`, `list`, `tick`, `policy show`, `policy set` and `policy clear`, which the design's command list left out.
+
+**Shipped defaults and the protected surface**
+
+- The guard against finishing with no change was dropped: in interactive use a turn that ends without a change is normal. The loop warning ships as `P2.loopwatch` (runbook step 13): one fixed sentence at the third identical consecutive failure of a call, counted per agent.
+- The deny rules cover `.claude/scripts/`, `.claude/kh-harness/`, the manifest, `docs/harness/LEARNED.md` and the default data directory `~/.claude/kh-harness/`. A data directory moved with `KH_DATA_DIR` is not covered. The rules also deny running the `learn` subcommands that approve or weaken a gate. `P5.toolgate` is declared only when every one of these rules is present, so an existing install is proposed the ones it lacks.
+- `detect` gained `P5.integrity` (runbook step 32), which checks only the repository: kit machinery against the manifest, each committed gate against an approval in `LEARNED.md`, and each landed learning against `gates.json`. The ledger's chain is reported by `log status`, since the ledger is per machine.

@@ -15,6 +15,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { buildGaps } from './gap-model.mjs';
+import { selectProfile } from './profiles/index.mjs';
 
 const REF = resolve(import.meta.dirname, '..', '..', 'skills', 'harness-init', 'references');
 const ref = n => readFileSync(join(REF, n), 'utf8');
@@ -149,7 +151,7 @@ test('LOAD-BEARING: declining a gate leaves nothing written, stated for both ref
 
 // --- Phase 3: intent and rules (phase-3-intent.md) -------------------------
 
-test('step 28 discloses, near its gate, that the hook reads one file and executes nothing else, and names the 1500-byte bound', () => {
+test('step 28 discloses, near its gate, that the hook reads the two registry files and executes nothing else, and names the 1500-byte bound', () => {
   const t = ref('phase-3-intent.md');
   assert.match(t, /step 28/i);
   assert.ok(
@@ -157,8 +159,8 @@ test('step 28 discloses, near its gate, that the hook reads one file and execute
     'the "executes nothing else" disclosure must sit near the step-28 gate',
   );
   assert.ok(
-    hasNear(t, /executes?\s+nothing\s+else/i, /reads?\s+(one|a\s+single)\s+file/i, 300),
-    'and it must say the hook reads ONE file — the disclosure is about scope, not only about execution',
+    hasNear(t, /executes?\s+nothing\s+else/i, /reads?\s+two\s+files/i, 300),
+    'and it must say the hook reads TWO files, RULES.md and LEARNED.md — the disclosure is about scope, not only about execution',
   );
   assert.match(t, /\b1500\b\s*bytes/i, 'the byte bound is a number the user decides with, not a vague "bounded"');
   assert.match(t, /every\s+prompt/i, 'the per-prompt cost must be stated — it is the thing a user would be surprised by');
@@ -168,10 +170,38 @@ test('SKILL.md phase table has a phase 3 row, between phases 1 and 2, linking ph
   const skill = readFileSync(resolve(REF, '..', 'SKILL.md'), 'utf8');
   const rows = skill.split('\n').filter(l => /^\|\s*\d\s*\|/.test(l));
   const phases = rows.map(l => Number(l.split('|')[1].trim()));
-  assert.deepEqual(phases, [0, 1, 3, 2, 4], 'intent informs which rules matter, and rules inform which sensors and protected paths matter — so 3 runs between 1 and 2');
+  assert.deepEqual(phases, [0, 1, 3, 2, 4, 5], 'intent informs which rules matter, and rules inform which sensors and protected paths matter — so 3 runs between 1 and 2');
   const row3 = rows[phases.indexOf(3)];
   assert.match(row3, /26,\s*27,\s*28/);
   assert.match(row3, /references\/phase-3-intent\.md/);
   assert.match(row3, /prompt/);
   assert.match(row3, /script/);
+});
+
+// --- The runbook against the gap model ------------------------------------
+
+// Steps 2 and 3 are detection's own (the inventory, the kit-skew check and
+// the credential sweep), which references/detect.md covers.
+const DETECTION_STEPS = new Set([2, 3]);
+
+test('every step the gap model checks has a row in the SKILL.md phase table and a section in that phase\'s reference', () => {
+  const stack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
+  const harness = {
+    instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
+    claudeDir: { settings: false, localSettings: false, denyRules: 0, hooks: [], hookEvents: {}, hookRegistrations: {}, agents: [], skills: [], commands: [], rules: [] },
+    otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
+  };
+  const checks = buildGaps({ stack, harness, exposures: [], profile: selectProfile(stack), git: { branch: 'main', isRepo: true }, files: [] });
+  const skill = readFileSync(resolve(REF, '..', 'SKILL.md'), 'utf8');
+  const rows = new Map(skill.split('\n').filter(l => /^\|\s*\d\s*\|/.test(l)).map(l => {
+    const cells = l.split('|').map(c => c.trim());
+    return [Number(cells[1]), { steps: cells[2].split(',').map(s => parseInt(s, 10)), reference: /\((references\/[\w.-]+\.md)\)/.exec(cells[4])?.[1] }];
+  }));
+  for (const c of checks.filter(c => !DETECTION_STEPS.has(c.step))) {
+    const row = rows.get(c.phase);
+    assert.ok(row, `SKILL.md has no row for phase ${c.phase} (${c.id})`);
+    assert.ok(row.steps.includes(c.step), `SKILL.md's phase ${c.phase} row lists step ${c.step} (${c.id})`);
+    const headings = [...readFileSync(resolve(REF, '..', row.reference), 'utf8').matchAll(/^#+ .*\bstep (\d+)/gim)].map(m => Number(m[1]));
+    assert.ok(headings.includes(c.step), `${row.reference} has a section for step ${c.step} (${c.id})`);
+  }
 });

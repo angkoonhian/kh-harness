@@ -116,8 +116,10 @@ Installs `.claude/scripts/rules-brief.mjs`, the shared
 **Say this before the gate, not after:** accepting means the registry's
 rules are added to the model's context on **every prompt** — `high`
 priority first, superseded rules skipped, bounded at **1500 bytes** with
-the cut announced in the text itself. The hook reads one file
-(`docs/harness/RULES.md`) and executes nothing else: it runs no script of
+the cut announced in the text itself. The hook reads two files
+(`docs/harness/RULES.md`, and `docs/harness/LEARNED.md` once a learning
+has been landed, whose rules follow the owner's and are skipped when a gate
+already holds them) and executes nothing else: it runs no script of
 this repository's, writes nothing, keeps no state, and when the registry
 is missing, unreadable or empty it prints nothing and exits 0. It is the
 only hook this kit installs that is *meant* to fail open, because it
