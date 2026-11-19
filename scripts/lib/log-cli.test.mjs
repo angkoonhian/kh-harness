@@ -16,6 +16,7 @@ import {
   CANARY, DATA_ROOT, DAY_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeSession,
 } from './log-fixtures.mjs';
 import { logStatus, SESSION_LOG_SCRIPT } from './log-lib.mjs';
+import { DATA_MARKERS } from './log-report.mjs';
 
 const INTACT = { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: false, tornTail: false };
 
@@ -548,6 +549,9 @@ test('log --help prints its usage on stdout, names every flag and subcommand, an
 
 test('the usage text states retention with its conditions, and what maintain needs and returns', () => {
   const usage = LOG_USAGE.replace(/\s+/g, ' ');
+  assert.match(usage, /`\$KH_DATA_DIR\/<key>` when that variable holds an absolute path/);
+  assert.match(usage, /between a `BEGIN RECORDED DATA <nonce>` line and the `END RECORDED DATA` line carrying the same nonce/);
+  assert.ok(usage.includes(DATA_MARKERS.begin) && usage.includes(DATA_MARKERS.end), 'the words are the ones the report prints');
   assert.match(usage, /Content is removed once a session's last event is older than the retention period/);
   assert.match(usage, /only from a session that has been sealed and still matches the index/);
   assert.match(usage, /only when a session starts while the log is enabled or `maintain` is run/);
