@@ -431,6 +431,13 @@ test("floors: 'sweep' leaves a word below the sweep's floors alone and still mas
   assert.equal(maskCredentials(`rotate ${github} now`, { floors: 'sweep' }), 'rotate *** now');
 });
 
+test('a null or absent options argument means the default floors', () => {
+  const prose = ['Use', 'Bearer', 'authentication', 'everywhere'].join(' ');
+  assert.equal(maskText(prose, null), maskText(prose));
+  assert.equal(maskCredentials(prose, null), maskCredentials(prose));
+  assert.equal(maskText(prose, undefined), 'Use Bearer *** everywhere');
+});
+
 test("floors: 'sweep' still masks a private key from its header to the end of the line", () => {
   const header = ['-----BEGIN', 'RSA PRIVATE KEY-----'].join(' ');
   const footer = ['-----END', 'RSA PRIVATE KEY-----'].join(' ');

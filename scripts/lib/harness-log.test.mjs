@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
@@ -189,6 +189,18 @@ test('KH_DATA_DIR overrides the location', () => {
     assert.equal(repoDataDir(d), join(override, repoKey(d)));
     setEnabled(d, true);
     assert.ok(existsSync(join(override, repoKey(d), 'enabled.json')));
+  } finally {
+    process.env.KH_DATA_DIR = previous;
+  }
+});
+
+test('a relative KH_DATA_DIR is not used, since each process would resolve it against its own directory', () => {
+  const previous = process.env.KH_DATA_DIR;
+  try {
+    for (const relative of ['kh-data', './kh-data', '..']) {
+      process.env.KH_DATA_DIR = relative;
+      assert.equal(dataRoot(), join(homedir(), '.claude', 'kh-harness'), relative);
+    }
   } finally {
     process.env.KH_DATA_DIR = previous;
   }
