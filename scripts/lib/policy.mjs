@@ -5,11 +5,12 @@
 // in the per-machine data directory, outside the repository, and its hash is
 // what a promotion under policy records in the ledger. Without a policy file
 // nothing is promoted automatically.
-import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { writeFileAtomic } from './atomic-write.mjs';
 
 const POLICY_FILE = 'policy.json';
 
@@ -76,15 +77,7 @@ export function writePolicy(root, policy) {
   if (reason !== null) throw new Error(`invalid policy: ${reason}`);
   const dir = repoDataDir(root);
   mkdirSync(dir, { recursive: true });
-  const target = join(dir, POLICY_FILE);
-  const temp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-  try {
-    writeFileSync(temp, JSON.stringify(policy, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
-    renameSync(temp, target);
-  } catch (error) {
-    rmSync(temp, { force: true });
-    throw error;
-  }
+  writeFileAtomic(join(dir, POLICY_FILE), JSON.stringify(policy, null, 2) + '\n');
   return policyHash(policy);
 }
 

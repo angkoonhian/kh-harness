@@ -20,6 +20,11 @@ const LOCK_RETRY_MS = 5;
 // with EPERM, not EEXIST, until the delete completes.
 const LOCK_CONTENDED = new Set(['EEXIST', 'EPERM', 'EBUSY']);
 
+/** The `code` of the error thrown when the lock stayed held by another
+ * writer for the whole wait, and of the one thrown when it was taken away. */
+export const LOCKED = 'ELOCKED';
+export const LOCK_LOST = 'ELOCKLOST';
+
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -137,8 +142,9 @@ function breakLock(lockPath, at, isAlive) {
 
 /**
  * Runs `fn` holding the lock file `lockPath`, whose directory must exist.
- * `fn` gets a check to call immediately before each write, which throws when
- * the lock is no longer this writer's. `name` names what is locked in the
+ * `fn` gets a check to call immediately before each write, which throws an
+ * error with code `LOCK_LOST` when the lock is no longer this writer's; a
+ * wait that runs out throws one with code `LOCKED`. `name` names what is locked in the
  * errors thrown; `now` is the clock for the wait and the age of an ownerless
  * lock; `isAlive` says whether a lock's writer is still running.
  */
@@ -152,12 +158,14 @@ export function withFileLock(lockPath, { name, now = Date.now, isAlive = isProce
     } catch (error) {
       if (!LOCK_CONTENDED.has(error?.code)) throw error;
       if (error.code === 'EEXIST' && breakLock(lockPath, now(), isAlive)) continue;
-      if (now() >= deadline) throw new Error(`${name} is locked: ${lockPath} has been held for over ${LOCK_WAIT_MS} ms (last error ${error.code})`);
+      if (now() >= deadline) {
+        throw Object.assign(new Error(`${name} is locked: ${lockPath} has been held for over ${LOCK_WAIT_MS} ms (last error ${error.code})`), { code: LOCKED });
+      }
       pause(LOCK_RETRY_MS);
     }
   }
   const assertHeld = () => {
-    if (!holdsLock(lockPath, token)) throw new Error(`${name} lock lost: ${lockPath} is no longer this writer's; nothing was written`);
+    if (!holdsLock(lockPath, token)) throw Object.assign(new Error(`${name} lock lost: ${lockPath} is no longer this writer's; nothing was written`), { code: LOCK_LOST });
   };
   try {
     return fn(assertHeld);
