@@ -2,12 +2,37 @@
 //
 // Shared by gap-model.mjs's hook CHECKS and propose.mjs's session-log
 // GENERATOR, which registers one hook per logged event and must propose
-// exactly the events the P5.sessionlog check finds missing. A module of its
+// exactly the events the P5.sessionlog check finds missing, together with
+// the entry form every generator registers a hook in, which the install
+// record is matched against. A module of its
 // own because gap-model.mjs imports propose.mjs, so propose.mjs cannot
 // import gap-model.mjs.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { matcherCovers, normalizeMatcher } from './settings-merge.mjs';
+import { hookEntrySha256, matcherCovers, normalizeMatcher } from './settings-merge.mjs';
+
+/**
+ * A hook entry in Claude Code's EXEC form (audit Tier 3, finding 11): the
+ * executable and an argument vector, "spawned directly … with no shell
+ * involved", with the script rooted at `${CLAUDE_PROJECT_DIR}` — "the
+ * project root where the session started" — which the reference says to
+ * prefer for any path placeholder. The shell form this replaced
+ * (`node .claude/scripts/x.mjs`) paid ~260 ms of shell per invocation and
+ * a cwd-relative path that stopped resolving after `cd`. A repository's
+ * existing shell-form registration of the same script is still recognised
+ * as ours (settings-merge.mjs's `sameHook`) and never duplicated.
+ */
+export const execEntry = scriptPath => ({ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${scriptPath}`] });
+
+/** The entry the kit wrote before the exec form. */
+const shellEntry = scriptPath => ({ type: 'command', command: `node ${scriptPath}` });
+
+/** The `entrySha256` of every entry this kit has ever recorded for a hook
+ * running `scriptPath` under `matcher`: each patch's hash names the one
+ * script it registered. */
+function recordedHashes(scriptPath, matcher) {
+  return new Set([execEntry, shellEntry].map(form => hookEntrySha256(form(scriptPath), matcher)));
+}
 
 /**
  * Credit an event from `.claude/settings.json`'s hook registry rather than from
@@ -47,9 +72,13 @@ import { matcherCovers, normalizeMatcher } from './settings-merge.mjs';
  * widens to `declared` only when ours is found (so the central
  * absent-only-may-propose invariant is untouched); otherwise it stays
  * `absent` + the proposal, with evidence naming what else is already there,
- * so adding a second entry to the same event is never a surprise.
+ * so adding a second entry to the same event is never a surprise. Each
+ * occupant is named as another hook of this kit when its script is one of
+ * `kitScripts` (the kit's hook scripts, propose.mjs's
+ * `GENERATOR_SCRIPT_PATHS`), as not this kit's when it resolves to any other
+ * script, and as unknown when it does not resolve.
  */
-export function registeredHook(harness, event, ourPath, proposal, { manifest, root, matcher } = {}) {
+export function registeredHook(harness, event, ourPath, proposal, { manifest, root, matcher, kitScripts }) {
   const registrations = harness.claudeDir.hookRegistrations?.[event] ?? [];
   const scripts = registrations.map(r => r.script);
   const ours = registrations.filter(r => r.script === ourPath);
@@ -100,14 +129,23 @@ export function registeredHook(harness, event, ourPath, proposal, { manifest, ro
   // already positively identify as someone else's. This is the Task 8b
   // ruling itself ("ours", not "occupied"), applied to the branch THIS
   // fix added.
-  if (scripts.includes(null) && root && manifest?.settingsPatches?.some(p => p.event === event) && existsSync(join(root, ourPath))) {
+  //
+  // The record must be for THIS script: every kit hook shares events with
+  // the logging hook, so a patch for any kit hook on the event would
+  // otherwise credit a missing one. A patch names its script only through
+  // its entry's hash, so it is matched against the hash of each form the
+  // kit has registered this script in.
+  const hashes = recordedHashes(ourPath, matcher);
+  if (scripts.includes(null) && root && manifest?.settingsPatches?.some(p => p.event === event && hashes.has(p.entrySha256)) && existsSync(join(root, ourPath))) {
     return { state: 'declared', evidence: [`${event} hook: ${ourPath} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] };
   }
   if (scripts.length === 0) return { state: 'absent', proposal, evidence: [] };
   return {
     state: 'absent', proposal,
-    evidence: scripts.map(s => s
-      ? `${event} hook already registered, but not ours: ${s}`
-      : `${event} hook already registered, but not ours (its script could not be resolved)`),
+    evidence: scripts.map(s => {
+      if (s === null) return `${event} already holds a hook whose script could not be resolved, so it is not known whose it is`;
+      if (kitScripts.includes(s)) return `${event} already holds another kh-harness hook: ${s}`;
+      return `${event} already holds a hook that is not this kit's: ${s}`;
+    }),
   };
 }

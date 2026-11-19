@@ -18,7 +18,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, kitSkew, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, kitSkew, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { MANIFEST_PATH } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
@@ -695,7 +695,7 @@ const CHECKS = [
       }
       return registeredHook(harness, 'UserPromptSubmit', RULES_BRIEF_PATH,
         "register a UserPromptSubmit hook that re-injects the registry's rules into every prompt, bounded at 1500 bytes",
-        { manifest, root });
+        { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS });
     },
   },
   {
@@ -755,7 +755,7 @@ const CHECKS = [
     // nothing executes, so it is never `verified`.
     check: ({ harness, manifest, root }) => registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH,
       'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, and deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine\'s kh-harness data directory',
-      { manifest, root }),
+      { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }),
   },
   {
     id: 'P2.scripts', step: 8, phase: 2,
@@ -832,7 +832,7 @@ const CHECKS = [
     // ASK, not propose.
     check: ({ harness, stack, manifest, root }) => {
       const hook = registeredHook(harness, 'PostToolUse', LINT_TOUCHED_PATH,
-        'install scripts/lint-touched.mjs and register a PostToolUse hook', { manifest, root, matcher: SENSOR_MATCHER });
+        'install scripts/lint-touched.mjs and register a PostToolUse hook', { manifest, root, matcher: SENSOR_MATCHER, kitScripts: GENERATOR_SCRIPT_PATHS });
       if (hook.state === 'declared') return hook;
       if (hasLintScript(stack)) return hook;
       // Coordinator finding (Minor): occupant evidence (what registeredHook
@@ -857,7 +857,7 @@ const CHECKS = [
     // typecheck/test derivation propose.mjs's stopgateProposal uses.
     check: ({ harness, stack, manifest, root }) => {
       const hook = registeredHook(harness, 'Stop', VERIFY_TOUCHED_PATH,
-        'install scripts/verify-touched.mjs and register a Stop hook', { manifest, root });
+        'install scripts/verify-touched.mjs and register a Stop hook', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS });
       if (hook.state === 'declared') return hook;
       if (rootVerifyScript(stack)) return hook;
       // Same Minor as P2.sensor immediately above: occupant evidence must
@@ -876,7 +876,7 @@ const CHECKS = [
     // call, so the step applies under every profile and is always decidable.
     check: ({ harness, manifest, root }) => registeredHook(harness, 'PostToolUseFailure', LOOP_WATCH_PATH,
       'install scripts/loop-watch.mjs and register a PostToolUseFailure hook that warns when one call fails the same way three times in a row',
-      { manifest, root }),
+      { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }),
   },
   {
     id: 'P2.protected', step: 11, phase: 2,
@@ -990,7 +990,7 @@ const CHECKS = [
     id: 'P4.sessionbrief', step: 16, phase: 4,
     lookedFor: ['a SessionStart hook in .claude/settings.json'],
     check: ({ harness, manifest, root }) => registeredHook(harness, 'SessionStart', BRIEF_PATH,
-      'install scripts/session-brief.mjs and register a SessionStart hook', { manifest, root }),
+      'install scripts/session-brief.mjs and register a SessionStart hook', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }),
   },
   // Last, so the generators it runs are given every other check, as
   // `buildProposals` gives them.

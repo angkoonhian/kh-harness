@@ -130,8 +130,8 @@ test('P4.sessionbrief\'s settings-hook reason says "no hook registered" when the
   assert.match(hook.reason, /no SessionStart hook registered in \.claude\/settings\.json/);
 });
 
-test('P4.sessionbrief\'s settings-hook reason reuses detect\'s own "already registered, but not ours" wording instead of contradicting it', () => {
-  const evidence = ['SessionStart hook already registered, but not ours: docs/agent-context/inject.js'];
+test('P4.sessionbrief\'s settings-hook reason reuses detect\'s own "not this kit\'s" wording instead of contradicting it', () => {
+  const evidence = ['SessionStart already holds a hook that is not this kit\'s: docs/agent-context/inject.js'];
   const ps = buildProposals(args([check({ id: 'P4.sessionbrief', proposal: 'install session brief', evidence })]));
   const hook = ps.find(p => p.kind === 'settings-hook');
   assert.equal(hook.reason, evidence[0], 'must be the SAME text detect already printed, not a second phrasing');
@@ -162,8 +162,8 @@ test('P2.sensor proposes nothing when no package declares a lint script — a se
   assert.deepEqual(ps, []);
 });
 
-test('P2.sensor\'s settings-hook reason reuses detect\'s own "already registered, but not ours" wording (Task 9b finding 2)', () => {
-  const evidence = ['PostToolUse hook already registered, but not ours: some/other/hook.mjs'];
+test('P2.sensor\'s settings-hook reason reuses detect\'s own "not this kit\'s" wording (Task 9b finding 2)', () => {
+  const evidence = ['PostToolUse already holds a hook that is not this kit\'s: some/other/hook.mjs'];
   const sensorCheckWithEvidence = check({ id: 'P2.sensor', step: 9, proposal: 'install scripts/lint-touched.mjs and register a PostToolUse hook', evidence });
   const ps = buildProposals(args([sensorCheckWithEvidence], { stack: lintStack }));
   const hook = ps.find(p => p.kind === 'settings-hook');
@@ -213,12 +213,12 @@ test('P2.stopgate\'s reason discloses the fallback-to-test cost plainly, without
   assert.match(hook.reason, /120s|every turn/i, 'the cost being accepted must be stated plainly');
 });
 
-test('P2.stopgate\'s settings-hook reason reuses detect\'s own "already registered, but not ours" wording (Task 9b finding 2)', () => {
-  const evidence = ['Stop hook already registered, but not ours: some/other/hook.mjs'];
+test('P2.stopgate\'s settings-hook reason reuses detect\'s own "not this kit\'s" wording (Task 9b finding 2)', () => {
+  const evidence = ['Stop already holds a hook that is not this kit\'s: some/other/hook.mjs'];
   const stopgateCheckWithEvidence = check({ id: 'P2.stopgate', step: 10, proposal: 'install scripts/verify-touched.mjs and register a Stop hook', evidence });
   const ps = buildProposals(args([stopgateCheckWithEvidence], { stack: typecheckStack }));
   const hook = ps.find(p => p.kind === 'settings-hook');
-  assert.match(hook.reason, /^Stop hook already registered, but not ours: some\/other\/hook\.mjs — runs/, 'the registration clause must be the EXACT evidence text, not a second phrasing, with the cost note still appended');
+  assert.match(hook.reason, /^Stop already holds a hook that is not this kit's: some\/other\/hook\.mjs — runs/, 'the registration clause must be the EXACT evidence text, not a second phrasing, with the cost note still appended');
   assert.doesNotMatch(hook.reason, /no Stop hook registered/);
 });
 
@@ -1392,8 +1392,8 @@ test('P3.reinject hook entry has no matcher — UserPromptSubmit takes none', ()
   assert.equal('matcher' in hook, false);
 });
 
-test('P3.reinject reuses detect\'s "already registered, but not ours" wording as the hook reason', () => {
-  const evidence = ['UserPromptSubmit hook already registered, but not ours: tools/remind.js'];
+test('P3.reinject reuses detect\'s "not this kit\'s" wording as the hook reason', () => {
+  const evidence = ['UserPromptSubmit already holds a hook that is not this kit\'s: tools/remind.js'];
   const hook = buildProposals(reinjectArgs([reinjectCheck({ evidence })])).find(p => p.kind === 'settings-hook');
   assert.equal(hook.reason, evidence[0]);
 });
@@ -1752,8 +1752,8 @@ test('P2.loopwatch proposes the script, the shared module and a matcher-less Pos
   for (const p of ps) assert.equal(p.checkId, 'P2.loopwatch');
 });
 
-test('P2.loopwatch reuses detect\'s "already registered, but not ours" wording as the hook reason', () => {
-  const evidence = ['PostToolUseFailure hook already registered, but not ours: tools/alert.mjs'];
+test('P2.loopwatch reuses detect\'s "not this kit\'s" wording as the hook reason', () => {
+  const evidence = ['PostToolUseFailure already holds a hook that is not this kit\'s: tools/alert.mjs'];
   const hook = buildProposals(args([loopwatchCheck({ evidence })])).find(p => p.kind === 'settings-hook');
   assert.equal(hook.reason, evidence[0]);
 });
@@ -1784,7 +1784,7 @@ test('P2.loopwatch is declared when our hook is registered on PostToolUseFailure
   const theirs = loopwatchGap(PROFILE_STACKS.generic, loopwatchHarness({ PostToolUseFailure: [{ script: 'tools/alert.mjs', matcher: null }] }));
   assert.equal(theirs.state, 'absent');
   assert.ok(theirs.proposal);
-  assert.deepEqual(theirs.evidence, ['PostToolUseFailure hook already registered, but not ours: tools/alert.mjs']);
+  assert.deepEqual(theirs.evidence, ['PostToolUseFailure already holds a hook that is not this kit\'s: tools/alert.mjs']);
 
   const elsewhere = loopwatchGap(PROFILE_STACKS.generic, loopwatchHarness({ PostToolUse: [{ script: LOOP_WATCH_PATH, matcher: null }] }));
   assert.equal(elsewhere.state, 'absent', 'our script on another event is not the capability');
@@ -1853,7 +1853,7 @@ test('P5.toolgate is declared, never verified, when our hook is registered on Pr
 
   const theirs = toolgateGap(PROFILE_STACKS.generic, loopwatchHarness({ PreToolUse: [{ script: 'tools/guard.mjs', matcher: null }] }));
   assert.equal(theirs.state, 'absent');
-  assert.deepEqual(theirs.evidence, ['PreToolUse hook already registered, but not ours: tools/guard.mjs']);
+  assert.deepEqual(theirs.evidence, ['PreToolUse already holds a hook that is not this kit\'s: tools/guard.mjs']);
 });
 
 test('P5.sessionlog then P5.toolgate follow P5.failures in the checks and in the generators, and P0.kitskew stays last', () => {
@@ -1918,14 +1918,32 @@ test('an older install missing some logged events is proposed only the missing r
   assert.equal(c.via, 'apply');
   assert.deepEqual(c.evidence, [
     `${SESSION_LOG_PATH} is registered on ${rest.length} of the ${LOGGED_EVENTS.length} logged events; 2 are missing: ${first}, ${second}`,
-    `${first} hook already registered, but not ours: tools/audit.mjs`,
+    `${first} already holds a hook that is not this kit's: tools/audit.mjs`,
   ]);
   assert.match(c.proposal, /^register \.claude\/scripts\/session-log\.mjs on the 2 logged events it is missing/);
 
   const hooks = buildProposals(args([c], { harness })).filter(p => p.kind === 'settings-hook');
   assert.deepEqual(hooks.map(h => h.event), [first, second]);
-  assert.equal(hooks[0].reason, `${first} hook already registered, but not ours: tools/audit.mjs`, "the occupant of that event is disclosed in its own registration's reason");
+  assert.equal(hooks[0].reason, `${first} already holds a hook that is not this kit's: tools/audit.mjs`, "the occupant of that event is disclosed in its own registration's reason");
   assert.equal(hooks[1].reason, `no ${second} hook registered in .claude/settings.json`);
+});
+
+test('a repository with the lint sensor and no logging hook says the PostToolUse event holds another kit hook, not a foreign one', () => {
+  const harness = loopwatchHarness({ PostToolUse: [{ script: LINT_TOUCHED_PATH, matcher: 'Edit|Write' }] });
+  const c = sessionlogGap(PROFILE_STACKS.generic, harness);
+  const line = `PostToolUse already holds another kh-harness hook: ${LINT_TOUCHED_PATH}`;
+  assert.deepEqual(c.evidence, [line]);
+  const hook = buildProposals(args([c], { harness })).find(p => p.kind === 'settings-hook' && p.event === 'PostToolUse');
+  assert.equal(hook.reason, line, 'the proposal reason is the same text');
+});
+
+test('a repository with a user\'s own hook on that event still says it is not this kit\'s', () => {
+  const harness = loopwatchHarness({ PostToolUse: [{ script: 'tools/format.mjs', matcher: null }] });
+  const c = sessionlogGap(PROFILE_STACKS.generic, harness);
+  const line = 'PostToolUse already holds a hook that is not this kit\'s: tools/format.mjs';
+  assert.deepEqual(c.evidence, [line]);
+  const hook = buildProposals(args([c], { harness })).find(p => p.kind === 'settings-hook' && p.event === 'PostToolUse');
+  assert.equal(hook.reason, line);
 });
 
 test('P5.sessionlog is absent and decidable under every profile when no hook of ours is registered', () => {

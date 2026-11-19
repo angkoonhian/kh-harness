@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
 import { GENERATORS } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, settings, fixture, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
 
 sandboxDataDir();
 
@@ -53,6 +53,53 @@ test('a repository that gitignores .claude/ still recognises its own hook as dec
   assert.deepEqual(stillProposing, [],
     `detect must stop proposing anything apply can write: ${JSON.stringify(stillProposing)}`);
   assert.match(run(APPLY, d), /no actions/);
+});
+
+// The install record credits a hook only for the script it registered.
+// Every kit hook shares its event with the logging hook, so a record of the
+// logging hook on that event must not stand in for a hook whose script is on
+// disk but whose registration never landed: its entry and its record are
+// both taken out here.
+function ignoredClaudeDirWithoutOneHook(event, script, checkId) {
+  const d = mkdtempSync(join(tmpdir(), 'hk-life-gitignore-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'eslint .', typecheck: 'tsc --noEmit' } }));
+  writeFileSync(join(d, 'tsconfig.json'), '{}');
+  writeFileSync(join(d, 'index.ts'), 'export const ok = true;\n');
+  writeFileSync(join(d, '.gitignore'), '.claude/\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+  run(APPLY, d, '--yes');
+
+  const s = settings(d);
+  const isScript = m => m.hooks.some(h => h.args?.[0] === `\${CLAUDE_PROJECT_DIR}/${script}`);
+  assert.equal(s.hooks[event].filter(isScript).length, 1, `fixture sanity: ${script} was registered on ${event}`);
+  assert.ok(hooksBesideLog(s, event).length < s.hooks[event].length, `fixture sanity: the logging hook is registered on ${event}`);
+  s.hooks[event] = s.hooks[event].filter(m => !isScript(m));
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + '\n');
+  const m = manifestOf(d);
+  assert.equal(m.settingsPatches.filter(p => p.checkId === checkId).length, 1, `fixture sanity: ${checkId}'s registration was recorded`);
+  m.settingsPatches = m.settingsPatches.filter(p => p.checkId !== checkId);
+  assert.ok(m.settingsPatches.some(p => p.event === event && p.checkId === 'P5.sessionlog'), `fixture sanity: the logging hook's record on ${event} remains`);
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+  assert.ok(existsSync(join(d, script)), 'fixture sanity: the script itself is still on disk');
+  return d;
+}
+
+test('on a repository that ignores .claude/, an installed logging hook does not make a missing lint sensor read as present', () => {
+  const d = ignoredClaudeDirWithoutOneHook('PostToolUse', '.claude/scripts/lint-touched.mjs', 'P2.sensor');
+  const c = JSON.parse(run(DETECT, d, '--json')).checks.find(x => x.id === 'P2.sensor');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal);
+});
+
+test('on a repository that ignores .claude/, an installed logging hook does not make a missing Stop gate read as present', () => {
+  const d = ignoredClaudeDirWithoutOneHook('Stop', '.claude/scripts/verify-touched.mjs', 'P2.stopgate');
+  const c = JSON.parse(run(DETECT, d, '--json')).checks.find(x => x.id === 'P2.stopgate');
+  assert.equal(c.state, 'absent');
+  assert.ok(c.proposal);
 });
 
 // Whole-branch review, F2 — the missing fixture, and the reason the defect

@@ -34,15 +34,19 @@ export function buildMatcherEntry(entry, matcher) {
   return matcher === undefined ? { hooks: [entry] } : { matcher, hooks: [entry] };
 }
 
+/** The `entrySha256` a hook patch records for `entry` under `matcher`. */
+export function hookEntrySha256(entry, matcher) {
+  return sha256(canon(buildMatcherEntry(entry, matcher)));
+}
+
 export function addHookEntry(settings, event, entry, matcher) {
   const next = clone(settings);
   next.hooks ??= {};
   next.hooks[event] ??= [];
-  const matcherEntry = buildMatcherEntry(entry, matcher);
-  next.hooks[event].push(matcherEntry);
+  next.hooks[event].push(buildMatcherEntry(entry, matcher));
   return {
     settings: next,
-    patch: { container: `/hooks/${event}`, entrySha256: sha256(canon(matcherEntry)) },
+    patch: { container: `/hooks/${event}`, entrySha256: hookEntrySha256(entry, matcher) },
   };
 }
 

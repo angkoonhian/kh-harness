@@ -10,7 +10,8 @@ import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, GENERATORS } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
-import { hasEquivalentHook } from './settings-merge.mjs';
+import { hasEquivalentHook, hookEntrySha256 } from './settings-merge.mjs';
+import { execEntry } from './hook-evidence.mjs';
 import { UNREADABLE_KIND, splitExposures } from './detect-exposure.mjs';
 
 /** `byEvent` with `entry` appended on every logged event: the logging hook
@@ -1238,7 +1239,7 @@ test('a registered hook whose command names no repository path is NOT assumed to
   const c = byId(gaps(fullStack, withHooks({ Stop: [null] })), 'P2.stopgate');
   assert.equal(c.state, 'absent');
   assert.ok(c.proposal);
-  assert.deepEqual(c.evidence, ['Stop hook already registered, but not ours (its script could not be resolved)']);
+  assert.deepEqual(c.evidence, ['Stop already holds a hook whose script could not be resolved, so it is not known whose it is']);
 });
 
 // --- Coordinator review (post-8b), finding 4: declared evidence names
@@ -1310,12 +1311,29 @@ test('P2.protected says nothing about a top-up when NONE of our rules are presen
 // hand-built manifest recording the patch — the two things `registeredHook`
 // now consults instead of the scan list.
 
-function manifestWithSettingsPatch(event) {
+/** A manifest recording the patch the kit writes for `entry` on `event`. */
+function manifestWithSettingsPatch(event, entry = execEntry(BRIEF_PATH)) {
   return {
     schema: 1, kitVersion: '0.0.0', installedAt: new Date().toISOString(), files: [],
-    settingsPatches: [{ event, container: `/hooks/${event}`, entrySha256: '0'.repeat(64), step: 16, checkId: 'P4.sessionbrief', appliedAt: new Date().toISOString() }],
+    settingsPatches: [{ event, container: `/hooks/${event}`, entrySha256: hookEntrySha256(entry, undefined), step: 16, checkId: 'P4.sessionbrief', appliedAt: new Date().toISOString() }],
   };
 }
+
+test('P4.sessionbrief is declared via the install record of the shell form the kit wrote before the exec form', () => {
+  const d = tmpRepo();
+  writeFile(d, '.claude/scripts/session-brief.mjs', '//');
+  const manifest = manifestWithSettingsPatch('SessionStart', { type: 'command', command: `node ${BRIEF_PATH}` });
+  const c = byId(gaps(fullStack, withHooks({ SessionStart: [null] }), [], undefined, [], d, manifest), 'P4.sessionbrief');
+  assert.equal(c.state, 'declared');
+});
+
+test('P4.sessionbrief is not declared via an install record of another kit hook on its event', () => {
+  const d = tmpRepo();
+  writeFile(d, '.claude/scripts/session-brief.mjs', '//');
+  const manifest = manifestWithSettingsPatch('SessionStart', execEntry(SESSION_LOG_PATH));
+  const c = byId(gaps(fullStack, withHooks({ SessionStart: [null] }), [], undefined, [], d, manifest), 'P4.sessionbrief');
+  assert.equal(c.state, 'absent', 'a record of the logging hook says nothing about the session brief');
+});
 
 test('P4.sessionbrief is declared via the manifest + existsSync when .claude/ is gitignored (Task 8b finding 1)', () => {
   const d = tmpRepo();
@@ -1830,7 +1848,7 @@ test('P3.reinject: declared when OUR path is registered on UserPromptSubmit; a f
   const c2 = byId(gaps(bareStack, theirs), 'P3.reinject');
   assert.equal(c2.state, 'absent');
   assert.ok(c2.proposal);
-  assert.deepEqual(c2.evidence, ['UserPromptSubmit hook already registered, but not ours: their/inject.mjs']);
+  assert.deepEqual(c2.evidence, ['UserPromptSubmit already holds a hook that is not this kit\'s: their/inject.mjs']);
 });
 
 test('P3 checks apply to the generic profile too', () => {

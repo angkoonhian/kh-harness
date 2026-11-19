@@ -14,7 +14,7 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 // the other five.
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
-import { registeredHook } from './hook-evidence.mjs';
+import { execEntry, registeredHook } from './hook-evidence.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
@@ -51,8 +51,8 @@ const HARNESS_SEAL_PATH = '.claude/scripts/harness-seal.mjs';
  * printed immediately above apply-lib.mjs's own diff caveat
  * "(appended after N existing hooks.<event> entries, ...)" — two adjacent,
  * self-contradicting claims about the same file. `detect` already gets this
- * right (hook-evidence.mjs's `registeredHook`, evidence: "<event> hook already
- * registered, but not ours: <path>"); this reuses that EXACT text — the
+ * right (hook-evidence.mjs's `registeredHook`, evidence: "<event> already
+ * holds a hook that is not this kit's: <path>"); this reuses that EXACT text — the
  * check's own `evidence`, passed through from buildProposals, never a
  * second independently-worded copy that could drift from it — rather than
  * writing a third phrasing.
@@ -182,19 +182,6 @@ function redactAssetProposal(kitVersion) {
  * this generator writes. */
 const SENSOR_MATCHER = 'Write|Edit';
 
-/**
- * A hook entry in Claude Code's EXEC form (audit Tier 3, finding 11): the
- * executable and an argument vector, "spawned directly … with no shell
- * involved", with the script rooted at `${CLAUDE_PROJECT_DIR}` — "the
- * project root where the session started" — which the reference says to
- * prefer for any path placeholder. The shell form this replaced
- * (`node .claude/scripts/x.mjs`) paid ~260 ms of shell per invocation and
- * a cwd-relative path that stopped resolving after `cd`. A repository's
- * existing shell-form registration of the same script is still recognised
- * as ours (settings-merge.mjs's `sameHook`) and never duplicated.
- */
-const execEntry = scriptPath => ({ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${scriptPath}`] });
-
 function sensorProposal({ kitVersion, stack, check }) {
   if (!hasLintScript(stack)) return [];
   const files = hookFiles(LINT_TOUCHED_PATH, kitVersion);
@@ -296,7 +283,7 @@ const SESSION_LOG_STEP = 31;
  * reason.
  */
 export function sessionLogRegistrations(harness, { manifest, root } = {}) {
-  return LOGGED_EVENTS.map(event => ({ event, ...registeredHook(harness, event, SESSION_LOG_PATH, null, { manifest, root }) }));
+  return LOGGED_EVENTS.map(event => ({ event, ...registeredHook(harness, event, SESSION_LOG_PATH, null, { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }) }));
 }
 
 /**
