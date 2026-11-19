@@ -18,6 +18,8 @@ import {
   parseArgv, wantsHelp, APPLY_USAGE, DETECT_USAGE, UNINSTALL_USAGE, EXECUTION_DISCLOSURE, EXIT_CODES,
 } from './cli.mjs';
 import { sandboxDataDir } from './lifecycle-fixtures.mjs';
+import { GENERATORS, GENERATOR_SCRIPT_PATHS } from './propose.mjs';
+import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 sandboxDataDir();
 
@@ -158,11 +160,60 @@ test('the execution disclosure names the UserPromptSubmit re-injection hook and 
   // on different lines — \s+ tolerates the reflow (same lesson as
   // skill-prompts.test.mjs's cross-file sweep).
   assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit[\s\S]{0,400}executes\s+nothing/i);
-  assert.match(EXECUTION_DISCLOSURE, /1500 bytes/);
+  assert.match(EXECUTION_DISCLOSURE, /1500\s+bytes/);
 });
 
 test('the execution disclosure says the gate hook runs before every tool call, can block one, and has no gate until one is learned and promoted', () => {
   assert.match(EXECUTION_DISCLOSURE, /PreToolUse[\s\S]{0,80}before\s+every\s+tool\s+call/);
   assert.match(EXECUTION_DISCLOSURE, /BLOCK\s+the\s+call\s+when\s+a\s+gate\s+with\s+action\s+`block`\s+matches/);
   assert.match(EXECUTION_DISCLOSURE, /no\s+gate\s+exists\s+until\s+one\s+is\s+learned\s+and\s+promoted/);
+});
+
+// --- The disclosure covers every hook apply installs ------------------------
+
+const disclosed = EXECUTION_DISCLOSURE.replace(/\s+/g, ' ');
+
+test('the execution disclosure names every event a hook generator registers on, and how many hook scripts there are', () => {
+  const stack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'typecheck'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
+  const harness = { claudeDir: {}, rulesRegistry: { count: 1, injectable: 1 } };
+  const events = new Set();
+  const scripts = new Set();
+  for (const [id, generate] of Object.entries(GENERATORS)) {
+    if (id === 'P0.kitskew') continue;
+    for (const p of generate({ kitVersion: '0.2.0', stack, harness, files: [], checks: [], check: { evidence: [] }, manifest: null })) {
+      if (p.kind !== 'settings-hook') continue;
+      events.add(p.event);
+      scripts.add(p.entry.args[0]);
+    }
+  }
+  assert.ok(events.size >= LOGGED_EVENTS.length, 'fixture sanity: the generators registered their hooks');
+  for (const event of events) assert.ok(disclosed.includes(event), `the disclosure does not name ${event}`);
+  assert.deepEqual([...scripts].map(s => s.split('/').pop()).sort(), GENERATOR_SCRIPT_PATHS.map(s => s.split('/').pop()).sort());
+  assert.equal(GENERATOR_SCRIPT_PATHS.length, 7, 'the disclosure says seven; a hook script added changes that sentence and gets its own entry');
+  assert.match(disclosed, /registers up to seven hook scripts/);
+  assert.doesNotMatch(disclosed, /the two process hooks/);
+});
+
+test('the execution disclosure says the prompt hook reads the learned registry as well as the owner\'s', () => {
+  assert.match(disclosed, /UserPromptSubmit \(per prompt\) reads docs\/harness\/RULES\.md and docs\/harness\/LEARNED\.md/);
+});
+
+test('the execution disclosure says what the loop-warning hook reads, keeps and adds, and that it executes nothing', () => {
+  const entry = /PostToolUseFailure \(per failed call\) (.*?) (?=PreToolUse \(per tool call\))/.exec(disclosed)?.[1] ?? '';
+  assert.match(entry, /the failed call's tool name, its input and the first line of its error/);
+  assert.match(entry, /keeps only a hash of them/);
+  assert.match(entry, /three times in a row/);
+  assert.match(entry, /prints nothing of the call/);
+  assert.match(entry, /executes nothing/);
+});
+
+test('the execution disclosure says which hooks run this repository\'s scripts and that the others run none', () => {
+  assert.match(disclosed, /Two of them run THIS REPOSITORY'S OWN SCRIPTS AUTOMATICALLY/);
+  assert.match(disclosed, /The other five run nothing of this repository's/);
+  assert.match(disclosed, /SessionStart \(per session\) reads HANDOFF\.md \(or docs\/HANDOFF\.md\)/);
+});
+
+test('the execution disclosure names the terminal check for what it checks', () => {
+  assert.match(disclosed, /behind their own check for an interactive terminal outside Claude Code/);
+  assert.doesNotMatch(disclosed, /a person at a terminal/);
 });
