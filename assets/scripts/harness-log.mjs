@@ -10,7 +10,7 @@
 // running git), its read paths never throw, and an event write reports an
 // I/O failure in its result instead of throwing.
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -378,6 +378,30 @@ export function scrubValue(value) {
   return scrubWith(value, s => s);
 }
 
+/** Whether `path` is a link; on win32 a junction is one. Nothing there, or
+ * something that cannot be examined, is not. */
+function isLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why nothing may be written to this repository's log on this machine, or
+ * null: fixed text naming the first of the log directory, its sessions
+ * directory and its blob store that is a link. A write through a link lands
+ * outside the log, in whatever the link points at, so every writer of the
+ * log asks first. Never throws.
+ */
+export function logDirProblem(root) {
+  const dir = repoDataDir(root);
+  const places = [['log directory', dir], ['sessions directory', join(dir, SESSIONS_DIR)], ['blob store', join(dir, BLOBS_DIR)]];
+  const linked = places.find(([, path]) => isLink(path));
+  return linked === undefined ? null : `the ${linked[0]} is a link`;
+}
+
 /** Puts `data` at `path` unless something is already there. The bytes go to
  * a temporary sibling first and are renamed into place, so a reader or a
  * concurrent writer never finds a partial file at `path`. */
@@ -399,12 +423,15 @@ function placeOnce(path, data) {
   }
 }
 
-/** Stores already-scrubbed `text`; null when it could not be stored. */
+/** Stores already-scrubbed `text`; null when it could not be stored, or
+ * the blob store is a link. */
 function writeBlob(root, text) {
   const data = Buffer.from(text, 'utf8');
   const sha256 = sha256Hex(data);
   try {
-    placeOnce(join(repoDataDir(root), BLOBS_DIR, `${sha256}.gz`), gzipSync(data));
+    const dir = join(repoDataDir(root), BLOBS_DIR);
+    if (isLink(dir)) return null;
+    placeOnce(join(dir, `${sha256}.gz`), gzipSync(data));
     return { sha256, bytes: data.length };
   } catch {
     return null;
@@ -455,6 +482,8 @@ const sessionPath = (root, name) => join(repoDataDir(root), SESSIONS_DIR, name);
  *
  * Hooks running at once append to the same file, so the whole line,
  * newline included, goes out in one write to a file opened for appending.
+ * Nothing is written, not even a blob, when the log directory, its sessions
+ * directory or the session's file is a link.
  */
 export function appendEvent(root, sessionId, event) {
   const name = sessionFileName(sessionId);
@@ -467,11 +496,14 @@ export function appendEvent(root, sessionId, event) {
     return { written: false, reason: 'event is not serialisable' };
   }
   try {
+    const path = sessionPath(root, name);
+    if (isLink(repoDataDir(root)) || isLink(dirname(path)) || isLink(path)) {
+      return { written: false, reason: 'the log directory, its sessions directory or the session file is a link' };
+    }
     const capBytes = readConfig(root).inlineCapBytes;
     const capped = scrubWith(body, s => inlineOrBlob(root, s, capBytes));
     const { schema: _schema, ts: _ts, pid: _pid, ...fields } = capped;
     const line = JSON.stringify({ schema: LOG_SCHEMA, ts: new Date().toISOString(), pid: process.pid, ...fields }) + '\n';
-    const path = sessionPath(root, name);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     appendFileSync(path, line, { encoding: 'utf8', flag: 'a', mode: 0o600 });
     return { written: true };

@@ -6,7 +6,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -518,7 +518,7 @@ test('a blob no event references is removed once it is a day old', () => {
   appendEvent(root, 'kept', { type: 'PostToolUse', output: 'k'.repeat(4096) });
   const kept = eventsOf(root, 'kept')[0].output.blob;
   const orphan = storeBlob(root, 'z'.repeat(4096)).sha256;
-  writeFileSync(join(repoDataDir(root), 'blobs', `${orphan}.gz.123.abc.tmp`), '');
+  writeFileSync(join(repoDataDir(root), 'blobs', `${orphan}.gz.123.0a1b2c3d4e5f.tmp`), '');
 
   assert.deepEqual(applyRetention(root, {}).blobSweep, SWEPT);
   assert.equal(existsSync(blobFile(root, orphan)), true, 'a blob under a day old may belong to an event still being written');
@@ -529,6 +529,60 @@ test('a blob no event references is removed once it is a day old', () => {
   seal(root);
   applyRetention(root, { now: Date.now() + 2 * DAY_MS });
   assert.deepEqual(readdirSync(join(repoDataDir(root), 'blobs')), [`${kept}.gz`], 'a sealed session\'s blob is kept');
+});
+
+/** Makes `path` a link to the directory `target`: a junction on win32,
+ * which needs no privilege, and a symbolic link elsewhere. */
+const linkDirectory = (target, path) => symlinkSync(target, path, process.platform === 'win32' ? 'junction' : 'dir');
+
+test('the sweep removes only the kit\'s own blob and temporary names', () => {
+  const root = tempDir('hk-log-sweep-names-');
+  writeSession(root, 'named', 1);
+  const blobs = join(repoDataDir(root), 'blobs');
+  mkdirSync(blobs, { recursive: true });
+  const orphan = 'ab'.repeat(32);
+  const foreign = ['thesis.docx', `${orphan}.gz.bak`, 'notes.gz', `${orphan}.gz.tmp`];
+  const own = [`${orphan}.gz`, `${orphan}.gz.4321.0a1b2c3d4e5f.tmp`];
+  for (const name of [...foreign, ...own]) {
+    writeFileSync(join(blobs, name), 'x');
+    touchAgo(join(blobs, name), 3 * DAY_MS);
+  }
+  assert.deepEqual(applyRetention(root, {}).blobSweep, SWEPT);
+  assert.deepEqual(readdirSync(blobs).sort(), [...foreign].sort(), 'only an unreferenced blob and a blob write\'s leftover are the kit\'s to remove');
+});
+
+test('a blob store that is a link is not swept, and what it points at is untouched', () => {
+  const root = tempDir('hk-log-sweep-link-');
+  writeSession(root, 'linked', 1);
+  const elsewhere = tempDir('hk-log-elsewhere-');
+  const victim = join(elsewhere, `${'cd'.repeat(32)}.gz`);
+  writeFileSync(victim, 'not ours');
+  touchAgo(victim, 3 * DAY_MS);
+  linkDirectory(elsewhere, join(repoDataDir(root), 'blobs'));
+  assert.deepEqual(applyRetention(root, {}).blobSweep, { skipped: true, reason: 'the blob store is a link' });
+  assert.equal(existsSync(victim), true);
+});
+
+test('nothing is sealed or expired through a sessions directory or a log directory that is a link', () => {
+  for (const linked of ['sessions', 'log']) {
+    const root = tempDir('hk-log-seal-link-');
+    const elsewhere = tempDir('hk-log-elsewhere-');
+    if (linked === 'sessions') {
+      mkdirSync(repoDataDir(root), { recursive: true });
+      linkDirectory(elsewhere, join(repoDataDir(root), 'sessions'));
+    } else {
+      mkdirSync(join(elsewhere, 'sessions'));
+      linkDirectory(elsewhere, repoDataDir(root));
+    }
+    const plain = join(elsewhere, linked === 'sessions' ? '' : 'sessions', 's-foreign.jsonl');
+    writeFileSync(plain, '{"type":"Stop"}\n');
+    const before = readdirSync(elsewhere).sort();
+    const reason = `the ${linked === 'sessions' ? 'sessions directory' : 'log directory'} is a link`;
+    assert.deepEqual(seal(root), { sealed: [], lockLost: false, notRun: reason }, linked);
+    assert.deepEqual(applyRetention(root, {}).blobSweep, { skipped: true, reason }, linked);
+    assert.equal(existsSync(plain), true, 'the foreign file is not claimed');
+    assert.deepEqual(readdirSync(elsewhere).sort(), before, 'no lock, index or record is written through the link');
+  }
 });
 
 test('a lost index line does not let the sweep remove a blob sealed content still references', () => {

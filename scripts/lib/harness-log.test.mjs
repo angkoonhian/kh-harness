@@ -6,7 +6,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -750,6 +750,49 @@ test('an unwritable sessions directory returns written: false and does not throw
   const r = appendEvent(root, 's1', { type: 'Stop' });
   assert.equal(r.written, false);
   assert.match(r.reason, /^write failed: E[A-Z]+$/);
+});
+
+const linkDirectory = (target, path) => symlinkSync(target, path, process.platform === 'win32' ? 'junction' : 'dir');
+const LINKED = 'the log directory, its sessions directory or the session file is a link';
+
+test('an event is not written through a log directory or a sessions directory that is a link', () => {
+  for (const linked of ['sessions', 'log']) {
+    const root = tempDir('hk-log-link-');
+    const elsewhere = tempDir('hk-log-elsewhere-');
+    if (linked === 'sessions') {
+      mkdirSync(repoDataDir(root), { recursive: true });
+      linkDirectory(elsewhere, join(repoDataDir(root), 'sessions'));
+    } else {
+      linkDirectory(elsewhere, repoDataDir(root));
+    }
+    assert.deepEqual(appendEvent(root, 's1', { type: 'Stop', output: 'y'.repeat(70000) }), { written: false, reason: LINKED }, linked);
+    assert.deepEqual(readdirSync(elsewhere), [], `nothing is written through the ${linked} link`);
+  }
+});
+
+test('an event is not appended through a session file that is a link', t => {
+  const root = tempDir('hk-log-filelink-');
+  const target = join(tempDir('hk-log-elsewhere-'), 'victim.txt');
+  writeFileSync(target, 'not ours\n');
+  mkdirSync(join(repoDataDir(root), 'sessions'), { recursive: true });
+  try {
+    symlinkSync(target, sessionFile(root, 's1'), 'file');
+  } catch (error) {
+    t.skip(`this account cannot create a file link (${error.code})`);
+    return;
+  }
+  assert.deepEqual(appendEvent(root, 's1', { type: 'Stop' }), { written: false, reason: LINKED });
+  assert.equal(readFileSync(target, 'utf8'), 'not ours\n');
+});
+
+test('an over-cap value is not stored through a blob store that is a link', () => {
+  const root = tempDir('hk-log-bloblink-');
+  const elsewhere = tempDir('hk-log-elsewhere-');
+  mkdirSync(repoDataDir(root), { recursive: true });
+  linkDirectory(elsewhere, join(repoDataDir(root), 'blobs'));
+  assert.deepEqual(appendEvent(root, 's1', { output: 'y'.repeat(70000) }), { written: true });
+  assert.deepEqual(readEvents(root, 's1').events[0].output, { blob: null, bytes: 70000, truncated: true });
+  assert.deepEqual(readdirSync(elsewhere), []);
 });
 
 test('an unsafe session id or a non-object event writes nothing', () => {
