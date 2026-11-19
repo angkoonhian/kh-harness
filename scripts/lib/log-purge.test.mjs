@@ -18,7 +18,7 @@ import { appendLedger } from './ledger.mjs';
 import { DATA_ROOT, project, runLog, snapshot, tempDir, writeSession } from './log-fixtures.mjs';
 import { DataDirRefused } from './log-lib.mjs';
 import { purgeLog, purgeTarget, PURGE_NEEDS_TERMINAL } from './log-purge.mjs';
-import { requireInteractive } from './tty.mjs';
+import { requireInteractive, TERMINAL_CHECK } from './tty.mjs';
 
 const AT_TERMINAL = requireInteractive({ stdin: { isTTY: true }, stdout: { isTTY: true }, env: {} });
 const IN_CLAUDE_CODE = requireInteractive({ stdin: { isTTY: true }, stdout: { isTTY: true }, env: { CLAUDECODE: '1' } });
@@ -48,7 +48,7 @@ test('purge without --yes removes nothing, needs no terminal, and says what remo
   assert.match(r.stdout, /the learning ledger, every learning, the promotion policy and this machine's gate file/);
   assert.match(r.stdout, /switches off every gate promoted on this machine and every local suspension of a committed gate/);
   assert.match(r.stdout, /--yes/);
-  assert.match(r.stdout, /needs an interactive terminal outside Claude Code/);
+  assert.ok(r.stdout.includes(`which runs only from ${TERMINAL_CHECK}:`), r.stdout);
   assert.deepEqual(snapshot(repoDataDir(root)), before);
   assert.equal(isEnabled(root), true);
 });
@@ -58,7 +58,7 @@ test('purge --yes run without a terminal is refused with exit 3 and removes noth
   const before = snapshot(repoDataDir(root));
   const r = runLog(root, 'purge', '--yes');
   assert.equal(r.status, 3, r.stdout);
-  assert.match(r.stderr, /^kh-harness: purge --yes refused: standard input is not an interactive terminal; it needs an interactive terminal outside Claude Code, and nothing was removed\.$/m);
+  assert.equal(r.stderr, `kh-harness: purge --yes refused: standard input is not an interactive terminal; it runs only from ${TERMINAL_CHECK}, and nothing was removed.\n`);
   assert.doesNotMatch(r.stderr, /a person/);
   assert.deepEqual(snapshot(repoDataDir(root)), before);
   assert.equal(isEnabled(root), true);
@@ -70,7 +70,7 @@ test('the library refuses too when the terminal check did not pass, whatever cal
   for (const interactive of [IN_CLAUDE_CODE, undefined, { ok: 'yes' }]) {
     assert.deepEqual(purgeLog(root, purgeTarget(root), { interactive }), { removed: false, reason: PURGE_NEEDS_TERMINAL });
   }
-  assert.match(PURGE_NEEDS_TERMINAL, /needs an interactive terminal outside Claude Code/);
+  assert.equal(PURGE_NEEDS_TERMINAL, `purge --yes runs only from ${TERMINAL_CHECK}; nothing was removed`, 'the check in the words the learn refusals give it');
   assert.deepEqual(snapshot(repoDataDir(root)), before);
 });
 

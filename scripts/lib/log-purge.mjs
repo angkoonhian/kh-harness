@@ -20,16 +20,14 @@ import { underIndexLock } from '../../assets/scripts/harness-seal.mjs';
 import { DATA_DIR_LOCKS, LOCKED, withFileLock } from './file-lock.mjs';
 import { assertDataDirSafe, checkDataDir, diskUsage, formatBytes, logCommand, recordEnabled } from './log-lib.mjs';
 import { sessionIds } from './recurrence.mjs';
-
-/** What the terminal check is, in the words every refusal and note uses. */
-const TERMINAL = 'an interactive terminal outside Claude Code';
+import { TERMINAL_CHECK } from './tty.mjs';
 
 /** Why the library removed nothing when the terminal check did not pass. */
-export const PURGE_NEEDS_TERMINAL = `purge --yes needs ${TERMINAL}; nothing was removed`;
+export const PURGE_NEEDS_TERMINAL = `purge --yes runs only from ${TERMINAL_CHECK}; nothing was removed`;
 
 /** The one line the command ends with when `interactive`, what
  * `requireInteractive` returned, did not pass. */
-export const purgeTerminalRefusal = interactive => `purge --yes refused: ${interactive.reason}; it needs ${TERMINAL}, and nothing was removed.`;
+export const purgeTerminalRefusal = interactive => `purge --yes refused: ${interactive.reason}; it runs only from ${TERMINAL_CHECK}, and nothing was removed.`;
 
 /** What else the directory holds, and what removing it does. */
 export const PURGE_ALSO_REMOVES = "Besides the session log, the directory holds the learning ledger, every learning, the promotion policy and this machine's gate file: removing it switches off every gate promoted on this machine and every local suspension of a committed gate. Gates landed in the repository stay.";
@@ -79,7 +77,7 @@ export function renderPurgePlan(root, target) {
     'This is everything the kit keeps for this repository on this machine; nothing else is touched.',
     PURGE_ALSO_REMOVES,
     '',
-    `Run with --yes to remove it, which needs ${TERMINAL}:  ${logCommand(root, 'purge', '--yes')}`,
+    `Run with --yes to remove it, which runs only from ${TERMINAL_CHECK}:  ${logCommand(root, 'purge', '--yes')}`,
   ].join('\n');
 }
 
