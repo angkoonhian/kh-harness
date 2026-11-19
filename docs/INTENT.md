@@ -21,8 +21,9 @@ an hour later, has a harness they can read, diff, trust and remove.
 
 Once installed, the harness can record its sessions on the owner's machine
 and turn a failure that recurs across them into one small tool-call gate,
-replayed against the record before it can affect a session and promoted
-only by the owner.
+replayed against the record before it can affect a session, and promoted
+by the kit's commands only from an interactive terminal outside Claude
+Code or under a policy whose hash the ledger records.
 
 ## Users
 
@@ -53,8 +54,10 @@ judgement step.
 reports what it holds; the log lives outside the repository. `learn` runs
 the learning loop: a model, through the `harness-learn` skill, drafts a
 gate for a recurring failure; the script replays it against the log and
-tries it silently; only the owner at a terminal, or a policy the owner set
-there, promotes it, and only the owner lands it in the repository.
+tries it silently; only `learn approve` run at an interactive terminal
+outside Claude Code, or `tick` under a policy whose hash the ledger
+records, promotes it, and only `learn land --yes` at such a terminal lands
+it in the repository. A process running as the user can forge either check.
 Mechanics live in `scripts/` and are unit-tested; judgement lives in
 `skills/` as prose the model reads. See `README.md` for the commands.
 
@@ -74,8 +77,9 @@ Mechanics live in `scripts/` and are unit-tested; judgement lives in
   document, its own rules registry. Shown by: the DOGFOOD tests in
   `scripts/lib/detect-exposure.test.mjs` and
   `scripts/lib/dogfood-intent.test.mjs`.
-- No learned gate warns or blocks without the owner's approval at a
-  terminal or the owner's recorded policy. Shown by:
+- No `learn` command promotes a gate to warn or block unless it runs at an
+  interactive terminal outside Claude Code, or under a policy whose hash
+  the ledger records. Shown by:
   `scripts/lib/learn-promote.test.mjs` "approval is refused without an
   interactive terminal" and "a policy file written without a ledger
   record promotes nothing and tick says so".
@@ -133,8 +137,9 @@ Mechanics live in `scripts/` and are unit-tested; judgement lives in
 - The kit's scripts never author a rule, an invariant, a purpose statement
   or an architecture description; they scaffold shapes and parse content.
   A learning is drafted by the model, validated by the script against the
-  record, and takes effect only on the owner's approval or the owner's
-  policy.
+  record, and is moved past `observe` by the kit's commands only through
+  an approval at an interactive terminal outside Claude Code or a policy
+  whose hash the ledger records.
 - No claim that the agent or the harness improved. The loop reports
   counts: recurrences, replays, firings and what followed them.
 

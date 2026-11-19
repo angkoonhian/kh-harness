@@ -15,8 +15,12 @@ For a developer who already has a repository and uses Claude Code in it.
 evidence it read. `apply` writes only what that report proposed, as a dry run
 until you add `--yes`. `uninstall` removes what the kit wrote, and nothing
 of yours. Once installed, the harness can also keep a log of your sessions
-on your machine and turn a tool failure that recurs into a small gate, which
-the kit's commands move past `observe` only with your approval.
+on your machine and turn a tool failure that recurs into a small gate. A
+gate stays at `observe`, where it blocks nothing, until a `learn` command
+run at an interactive terminal outside Claude Code, or a policy whose hash
+the ledger records, promotes it. These are deny rules and checks against
+accident and against an agent using the tools as given, not isolation; see
+[Limits](#limits).
 
 **What it does that you should know before installing**
 
@@ -31,14 +35,17 @@ the kit's commands move past `observe` only with your approval.
 
 - Overwrite or delete a file it did not write. In `.claude/settings.json`,
   which may be yours, it adds only its own hook entries and deny rules, and
-  `uninstall` removes only those; it never writes `CLAUDE.md`.
+  `uninstall` removes only those, but each rewrites the whole file: content
+  and indentation are kept, key order and inline spacing are normalised. It
+  never writes `CLAUDE.md`.
 - Send anything over the network itself; `detect --verify` and the hooks
   run your own scripts, which may.
-- Through any of its `learn` commands, promote a learned gate to warn or
-  block without a person at a terminal or a policy that person recorded
-  there, or land one in the repository without a person at a terminal. The
-  gate hook enforces whatever the gate files hold, so a gate written into
-  them by other means acts too; see [Limits](#limits).
+- Promote or land a gate from a `learn` command unless the command is run at
+  an interactive terminal outside Claude Code, or, for promotion on this
+  machine only, the ledger records a policy. These are checks against
+  accident and against an agent using the tools as given; a process running
+  as you can forge a terminal or a ledger line, and the gate hook enforces
+  whatever the gate files hold. See [Limits](#limits).
 
 **What you get**
 
@@ -213,8 +220,9 @@ Kept:
 
 A file you edited is kept and named, and then the manifest is kept with it.
 The session log is never removed by `uninstall`; `log purge --yes` removes
-it. `uninstall` also removes the two files `learn land` writes, which takes
-landed gates out of the repository for everyone; see
+it. `uninstall` also removes the two files `learn land` writes when they
+are unmodified and hold only learnings the manifest records, which takes
+landed gates out of the repository for everyone; the exact rule is under
 [what uninstall removes](docs/guide/commands.md#uninstall).
 
 ## How it works
@@ -266,8 +274,9 @@ flowchart LR
    result.
 6. A gate that passes runs at `observe`: it records each firing and blocks
    nothing.
-7. You approve its hash at a standalone terminal, for `warn` or `block` on
-   this machine, or a policy you recorded there promotes it.
+7. You run `learn approve` with its hash, for `warn` or `block` on this
+   machine; the command runs only at an interactive terminal outside Claude
+   Code. Or `tick` promotes it under a policy whose hash the ledger records.
 8. You land it in the repository, where it binds everyone once committed.
 
 ## Commands
@@ -276,7 +285,7 @@ flowchart LR
 |---|---|---|
 | [`detect`](docs/guide/commands.md#detect) | Inventories the repository and reports each capability with its evidence | `docs/harness/detect.json` only |
 | [`apply`](docs/guide/commands.md#apply) | Writes what `detect` proposed; a dry run without `--yes` | the repository, with `--yes` |
-| [`uninstall`](docs/guide/commands.md#uninstall) | Removes what `apply` wrote, and nothing else; a dry run without `--yes` | the repository, with `--yes` |
+| [`uninstall`](docs/guide/commands.md#uninstall) | Removes what `apply` wrote, and `land`'s two files when they hold only recorded learnings; nothing of yours; a dry run without `--yes` | the repository, with `--yes` |
 | [`log`](docs/guide/commands.md#log) | The session log for one repository on this machine | the data directory |
 | [`learn`](docs/guide/commands.md#learn) | The learnings for one repository on this machine | the data directory; `land` and `revert` also the repository |
 
@@ -323,10 +332,12 @@ Each takes `--help` for its full contract. The flags of the first three:
 | [`policy clear`](docs/guide/commands.md#learn-policy-clear) | Withdraws the policy | data directory | **yes** |
 
 > [!IMPORTANT]
-> The eight subcommands marked **yes** run only for a person at a
-> standalone terminal, outside Claude Code and outside an IDE's built-in
-> terminal; `apply`'s deny rules also make Claude Code decline them. This is
-> how the agent is kept from approving its own work. What counts as a
+> The eight subcommands marked **yes** run only when standard input and
+> output are an interactive terminal and `CLAUDECODE` is unset, so not from
+> Claude Code or an IDE's built-in terminal; `apply`'s deny rules also make
+> Claude Code decline them. This keeps an agent using the tools as given
+> from approving its own work; a process running as you can forge a
+> terminal. What counts as a
 > standalone terminal, what a refusal still does, and what the deny rules
 > do and do not catch are set out once, in
 > [the terminal check and the deny rules](docs/guide/learning-loop.md#the-terminal-check-and-the-deny-rules).
@@ -399,7 +410,7 @@ Once `apply` has installed the session-log and gate hooks:
 
 6. **The gate hook** runs the gate at `observe` and records each firing.
    **`tick`**, run by you or the skill, repairs, demotes and promotes under
-   your policy; it never runs by itself.
+   a policy whose hash the ledger records; it never runs by itself.
 
 7. **You** read the learning:
 
@@ -429,7 +440,8 @@ Once `apply` has installed the session-log and gate hooks:
    ```
 
    In the scratch run behind this page `L1` had not been approved — that
-   needs a person at a terminal — so the dry run refused it (exit 3):
+   needs an interactive terminal outside Claude Code — so the dry run
+   refused it (exit 3):
 
    ```
    kh-harness: land: L1 is trial; only a learning promoted on this machine is landed
@@ -498,9 +510,10 @@ detail, what the scrub misses, and the cost figures are on
   what it holds. `tick`, or the next `learn` command that writes, removes
   every gate the ledger does not vouch for; until then the forged gate acts.
 - The firing counts a policy relies on come from the session log, which the
-  same user can append to. Forged firings can satisfy a policy. Your
-  approval of a hash at a terminal is the only control that does not depend
-  on the log.
+  same user can append to. Forged firings can satisfy a policy. An
+  approval of a hash with `learn approve` does not depend on the log's
+  firing counts; it is a ledger entry like any other, and can be forged the
+  same way.
 - The kit's internal functions can be called from Node with a made-up
   terminal result. The terminal check guards the command line, not the
   library.
@@ -542,7 +555,7 @@ detail, what the scrub misses, and the cost figures are on
   least 20 clean calls of the gate's tool across 2 sessions.
 - After a branch switch to a checkout without a committed gate, or once an
   uncommitted land is discarded, a landed learning is enforced nowhere until
-  the next `learn` command or `tick`.
+  the next `learn` command that writes, or `tick`.
 - A session is sealed only after 10 minutes without a new event, and
   `log maintain` waits for that too. Until then those events are checked by
   nothing, and `log status` says so ("events not yet sealed, in N sessions,
@@ -617,6 +630,6 @@ credential.
 |---|---|
 | `0` | did what it said |
 | `2` | could not act: a bad path or argument, unreadable settings, a failed write or removal, a `learn` step that was refused or could not finish |
-| `3` | refused to act: the default branch, a dirty tree, a corrupt or missing manifest, a terminal-only subcommand without a person at a terminal |
+| `3` | refused to act: the default branch, a dirty tree, a corrupt or missing manifest, a terminal-only subcommand run without an interactive terminal outside Claude Code |
 
 Nothing is sent anywhere. Nothing else is an exit code; a crash is a bug.

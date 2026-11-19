@@ -112,7 +112,7 @@
 
 ## R13 — No learning is promoted without a terminal-typed approval or a recorded policy hash
 
-- why: a gate that warns or blocks changes what the agent may do; only a hash approved at an interactive terminal outside Claude Code, or a policy whose hash the owner recorded in the ledger there, moves one past observe; and since a committed gate binds everyone, none is landed in the repository without a person at a terminal either
+- why: a gate that warns or blocks changes what the agent may do; the `learn` commands move one past observe only for a hash approved by a command run at an interactive terminal outside Claude Code, or under a policy whose hash the ledger records; and since a committed gate binds everyone, `land` writes one into the repository only from such a terminal too. These are checks against accident and against an agent using the tools as given, not isolation
 - enforced-by: test
 - pointer: scripts/lib/learn-promote.test.mjs
 - verify: node --test scripts/lib/learn-promote.test.mjs scripts/lib/learn-land.test.mjs scripts/lib/tty.test.mjs scripts/lib/learn-cli.test.mjs
