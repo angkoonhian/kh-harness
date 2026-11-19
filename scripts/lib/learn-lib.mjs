@@ -31,9 +31,10 @@
 import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { GATE_LIMITS, gateSha256, validateGate } from '../../assets/scripts/harness-gates.mjs';
+import { GATE_LIMITS, gateSha256, parseGates, validateGate } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
+import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { LOCKED, withFileLock } from './file-lock.mjs';
@@ -280,7 +281,7 @@ function readLearnings(root) {
   return { learnings, unreadable };
 }
 
-export const isGateEntry = entry => isPlainObject(entry) && isString(entry.id) && !Object.hasOwn(entry, 'suspended');
+const isGateEntry = entry => isPlainObject(entry) && isString(entry.id) && !Object.hasOwn(entry, 'suspended');
 /** Exactly `{ id, suspended: true }` with a learning id, the only shape a
  * local suspension is written in. */
 const isSuspension = entry => isPlainObject(entry) && Object.keys(entry).length === 2 && isId(entry.id) && entry.suspended === true;
@@ -306,15 +307,31 @@ function readLocalGates(root) {
   }
 }
 
-/** `{ gates }`, the committed gate file's entries, none when it is absent,
- * or `{ unreadable: true }` when it exists and cannot be read as a gate
- * file. */
-export function readCommittedGates(root) {
+/** Exactly the gates the gate hook loads from the committed gate file: what
+ * `parseGates` accepts, so the first entry with an id and never a rejected
+ * duplicate; none when the file is absent, larger than the hook reads,
+ * unreadable or not a gate file, since the hook then applies none of them.
+ * Anything that asks what the committed file holds asks this. */
+export function committedGates(root) {
+  try {
+    const path = join(root, GATES_PATH);
+    if (statSync(path).size > GATE_FILE_MAX_BYTES) return [];
+    return parseGates(readFileSync(path, 'utf8')).gates;
+  } catch {
+    return [];
+  }
+}
+
+/** `{ ids }`, every learning id an entry of the committed gate file carries,
+ * rejected entries included, so no id assigned can collide with one a later
+ * edit makes valid; none when the file is absent; `{ unreadable: true }`
+ * when it exists and cannot be read as a gate file. */
+function committedIdsInUse(root) {
   let text;
   try {
     text = readFileSync(join(root, GATES_PATH), 'utf8');
   } catch (error) {
-    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return { gates: [] };
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return { ids: [] };
     return { unreadable: true };
   }
   let file = null;
@@ -323,7 +340,7 @@ export function readCommittedGates(root) {
   } catch {
     // not JSON: refused below
   }
-  return isPlainObject(file) && Array.isArray(file.gates) ? { gates: file.gates } : { unreadable: true };
+  return isPlainObject(file) && Array.isArray(file.gates) ? { ids: learningIdsIn(file.gates) } : { unreadable: true };
 }
 
 /**
@@ -405,7 +422,7 @@ export function readState(root) {
     learnings, unreadable, view,
     recorded: recordedLearnings(learnings, view),
     local: readLocalGates(root),
-    committed: readCommittedGates(root),
+    committed: committedGates(root),
   };
 }
 
@@ -492,16 +509,18 @@ function repairedGates(gates, state) {
 
 /**
  * Whether a local suspension of `id` is one the ledger accounts for: the
- * ledger's last status entry for it is `suspended`, and the committed gate
- * file still holds a gate with that id and the content hash that entry
- * names, the gate the suspension was written to switch off. A suspension of
- * a gate that was only ever local, or of a committed gate whose content has
- * since changed, switches off nothing the ledger knows of.
+ * ledger's last status entry for it is `suspended`, and the gate the hook
+ * loads from the committed file under that id, as `committedGates` reads
+ * it, has the content hash that entry names: the gate the suspension was
+ * written to switch off. The hook switches off by id, so a suspension of a
+ * gate that was only ever local, of a committed gate whose content has since
+ * changed, or of one a different gate with the same id now precedes,
+ * switches off something the ledger never recorded as suspended.
  */
 function suspensionStands(state, id) {
   const last = recordedState(state.view.entries, id);
   if (last?.status !== 'suspended') return false;
-  return (state.committed.gates ?? []).some(e => isGateEntry(e) && e.id === id && gateSha256(e) === last.contentSha256);
+  return state.committed.some(g => g.id === id && gateSha256(g) === last.contentSha256);
 }
 
 /** Every ledger entry that granted an action above `observe`: who approved
@@ -630,11 +649,11 @@ function readCounter(root) {
 function nextId(root, state) {
   const counter = readCounter(root);
   if (counter === null) return { error: 'the learning id counter cannot be read, so no id that was never used can be assigned' };
-  const committed = readCommittedGates(root);
+  const committed = committedIdsInUse(root);
   if (committed.unreadable) return { error: 'the committed gate file cannot be read, so no id that avoids its ids can be assigned' };
   const used = [
     ...state.learnings.map(l => l.id),
-    ...learningIdsIn(committed.gates),
+    ...committed.ids,
     ...state.view.entries.map(e => e?.learningId).filter(isId),
     ...(state.local.file ? learningIdsIn(state.local.file.gates) : []),
   ].map(idNumber);

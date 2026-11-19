@@ -605,7 +605,7 @@ test('after clearPolicy, restoring the old policy file promotes nothing and tick
   ownerPolicy(root, POLICY);
   const policyFile = join(repoDataDir(root), 'policy.json');
   const old = readFileSync(policyFile, 'utf8');
-  assert.deepEqual(clearPolicy(root, { interactive: AT_TERMINAL }), { ok: true, repairedGates: [] });
+  assert.deepEqual(clearPolicy(root, { interactive: AT_TERMINAL }), { ok: true, policyFileRemoved: true, repairedGates: [] });
   assert.deepEqual(readPolicy(root), { state: 'absent' });
   const withdrawal = readLedger(root).at(-1);
   assert.deepEqual([withdrawal.kind, withdrawal.policySha256, withdrawal.approvedBy], ['policy', null, 'owner']);
@@ -638,7 +638,7 @@ test('clearPolicy without an interactive terminal is refused and changes nothing
 
 test('clearPolicy when no policy was ever set still records the withdrawal', () => {
   const { root } = trialRepo();
-  assert.deepEqual(clearPolicy(root, { interactive: AT_TERMINAL }), { ok: true, repairedGates: [] });
+  assert.deepEqual(clearPolicy(root, { interactive: AT_TERMINAL }), { ok: true, policyFileRemoved: true, repairedGates: [] });
   const entry = readLedger(root).at(-1);
   assert.deepEqual([entry.kind, entry.policySha256, entry.approvedBy], ['policy', null, 'owner']);
   assert.deepEqual(readPolicy(root), { state: 'absent' });
@@ -734,4 +734,46 @@ test('a local gate file that cannot be rewritten is reported, and tick carries o
   assert.deepEqual(ticked.retired, ['L1'], 'retirement still runs');
   assert.deepEqual(ticked.errors.slice(1), ['L2: the local gate file is not a gate file; nothing was written'], 'the demotion is tried and its failure reported');
   assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T09:00:00.000Z' });
+});
+
+test('a suspension does not stand when a different gate with the same id comes first in the committed file', () => {
+  const { root, gate } = suspendedRepo();
+  const other = { ...gate, message: 'A different rule under the same id.' };
+  commitFile(root, GATES_PATH, JSON.stringify({ schema: 1, gates: [other, gate] }));
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['L1'], 'the hook would switch off the first L1, which the ledger never suspended');
+  assert.deepEqual(tick(root).repairedGates, ['L1']);
+  assert.deepEqual(localGates(root).gates, []);
+  const output = hookOn(root, MISTAKE);
+  assert.ok(denied(output));
+  assert.equal(output.hookSpecificOutput.permissionDecisionReason, `kh-harness gate L1: ${other.message}`);
+});
+
+test('a learning is not treated as committed when its gate is a rejected duplicate', () => {
+  const { root, gate } = promotedRepo('block');
+  commitFile(root, GATES_PATH, JSON.stringify({ schema: 1, gates: [{ ...READ_GATE, id: 'L1', action: 'warn' }, gate] }));
+  for (const s of ['fire-a', 'fire-b']) assert.ok(markWrong(root, fired(root, s, gate), { interactive: AT_TERMINAL }).ok);
+  assert.equal(statusOf(root), 'trial', 'demoted, not suspended: the hook never loads the duplicate');
+  assert.equal(kinds(root).at(-1), 'L1:demoted');
+});
+
+test('a committed gate file the hook cannot read holds no gate of the learning', () => {
+  const { root, gate } = promotedRepo('block');
+  commitFile(root, GATES_PATH, `${JSON.stringify({ schema: 1, gates: [gate] })}\n${' '.repeat(1024 * 1024)}`);
+  for (const s of ['fire-a', 'fire-b']) assert.ok(markWrong(root, fired(root, s, gate), { interactive: AT_TERMINAL }).ok);
+  assert.equal(statusOf(root), 'trial', 'an over-sized file is one the hook applies none of');
+});
+
+test('clearPolicy that records the withdrawal but cannot remove the file says the withdrawal is in force', () => {
+  const { root } = trialRepo();
+  ownerPolicy(root, POLICY);
+  const policyFile = join(repoDataDir(root), 'policy.json');
+  rmSync(policyFile);
+  mkdirSync(policyFile);
+  const cleared = clearPolicy(root, { interactive: AT_TERMINAL });
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.policyFileRemoved, false);
+  assert.match(cleared.note, /^the withdrawal is recorded and in force, so the policy file promotes nothing, but it could not be removed \([A-Z_]+\)$/);
+  assert.equal(cleared.error, undefined);
+  assert.equal(readLedger(root).at(-1).policySha256, null);
+  assert.equal(verifyLedger(root).intact, true);
 });

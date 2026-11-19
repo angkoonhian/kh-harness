@@ -23,8 +23,8 @@ import { harnessIdentity, readEvents, repoDataDir } from '../../assets/scripts/h
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import {
-  citationsGone, citesGone, FIRING_EVENT, gateActionsFor, ID_ERROR, isGateEntry, isId, learningIn, ledgerEntry, logStats,
-  readCommittedGates, readFailure, readState, recordedIn, refuse, repairedStep, repairLocalGates, rewriteLocalGates, SETTLED, unapprovedGateIds,
+  citationsGone, citesGone, committedGates, FIRING_EVENT, gateActionsFor, ID_ERROR, isId, learningIn, ledgerEntry, logStats,
+  readFailure, readState, recordedIn, refuse, repairedStep, repairLocalGates, rewriteLocalGates, SETTLED, unapprovedGateIds,
   unrecordedReason, withLearningsLock, wrongSincePromotion, writeTransition,
 } from './learn-lib.mjs';
 import { appendLedger } from './ledger.mjs';
@@ -96,16 +96,13 @@ function promote(root, write, state, learning, { action, approvedBy, detail }) {
   return writeTransition(root, write, state, { updated, entries: [{ kind: 'promoted', approvedBy, action, detail }] });
 }
 
-/** `{ committed }`, whether the committed gate file holds this learning's
- * gate, its id with its content hash, or `{ error }` when it cannot be
- * told. A local entry weaker than a committed gate does not replace it, so
- * only a suspension takes a committed gate out of force on this machine; an
- * entry that merely reuses the id is not this learning's gate. */
-function isCommitted(root, learning) {
-  const committed = readCommittedGates(root);
-  if (committed.unreadable) return { error: 'the committed gate file cannot be read, so whether this gate is committed cannot be told; nothing was written' };
-  return { committed: committed.gates.some(e => isGateEntry(e) && e.id === learning.id && gateSha256(e) === learning.sha256) };
-}
+/** Whether the gate the hook loads from the committed file under this
+ * learning's id, as `committedGates` reads it, is this learning's gate, its
+ * content hash the learning's. A local entry weaker than a committed gate
+ * does not replace it, so only a suspension takes a committed gate out of
+ * force on this machine; an entry that merely reuses the id, or a rejected
+ * duplicate of it, is not one the hook applies as this learning's gate. */
+const isCommitted = (root, learning) => committedGates(root).some(g => g.id === learning.id && gateSha256(g) === learning.sha256);
 
 /**
  * Takes a promoted learning's gate back to `observe` on this machine. A
@@ -118,11 +115,10 @@ function isCommitted(root, learning) {
  * `{ error }`.
  */
 function demote(root, write, state, learning, approvedBy) {
-  const where = isCommitted(root, learning);
-  if (where.error) return where;
-  const status = where.committed ? 'suspended' : 'trial';
+  const committed = isCommitted(root, learning);
+  const status = committed ? 'suspended' : 'trial';
   const updated = { ...learning, status, gate: { ...learning.gate, action: 'observe' } };
-  const written = writeTransition(root, write, state, { updated, entries: [{ kind: where.committed ? 'suspended' : 'demoted', approvedBy }] });
+  const written = writeTransition(root, write, state, { updated, entries: [{ kind: committed ? 'suspended' : 'demoted', approvedBy }] });
   return written.error === undefined ? { status } : written;
 }
 
@@ -208,9 +204,10 @@ export function demoteLearning(root, id, options) {
 /**
  * Retires a learning that is neither rejected nor retired, as the person at
  * the terminal asked: its local gate goes, as `retire` says, and it no
- * longer stands for its signature. Retirement is terminal, and it takes a gate out of force, so it takes a
- * person at a terminal: `options` is `{ interactive }`. Returns `{ ok:
- * true, id, status, repairedGates }`, or `{ error }`.
+ * longer stands for its signature. Retirement is terminal, and it takes a
+ * gate out of force, so it takes a person at a terminal: `options` is
+ * `{ interactive }`. Returns `{ ok: true, id, status, repairedGates }`, or
+ * `{ error }`.
  */
 export function retireLearning(root, id, options) {
   try {
@@ -285,7 +282,10 @@ function setPolicyUnguarded(root, raw, { interactive }) {
  * 'owner'`, then the policy file is removed if there is one. From then on
  * no policy is in force, whatever file appears, until one is set again; a
  * withdrawal is recorded even when no policy was ever set. Returns `{ ok:
- * true, repairedGates }`, or `{ error }`.
+ * true, policyFileRemoved, repairedGates }`, or `{ error }`. A file that
+ * cannot be removed once the withdrawal is recorded does not undo it:
+ * `policyFileRemoved` is then false and `note` says the withdrawal is in
+ * force and the file promotes nothing.
  */
 export function clearPolicy(root, options) {
   try {
@@ -301,8 +301,13 @@ function clearPolicyUnguarded(root, { interactive }) {
     if (!readState(root).view.intact) return { error: 'the ledger cannot be read or its chain is broken, so the withdrawal cannot be recorded; nothing was written' };
     const { base, learned } = harnessIdentity(root);
     write(() => appendLedger(root, { kind: 'policy', policySha256: null, base, learned, approvedBy: 'owner' }));
-    write(() => removePolicy(root));
-    return { ok: true };
+    try {
+      write(() => removePolicy(root));
+    } catch (error) {
+      const note = `the withdrawal is recorded and in force, so the policy file promotes nothing, but it could not be removed (${codeOf(error)})`;
+      return { ok: true, policyFileRemoved: false, note };
+    }
+    return { ok: true, policyFileRemoved: true };
   });
 }
 
