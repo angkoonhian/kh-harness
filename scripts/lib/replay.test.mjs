@@ -110,22 +110,22 @@ test('a gate matching the mistakes and not the fixes passes', () => {
   const root = standardLog();
   const result = replayGate(root, WATCH_GATE, theRecurrence(root));
   assert.equal(result.verdict, 'pass', result.reason);
-  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 1 });
   assert.deepEqual(result.falsePositives, { fired: 0, callsChecked: 20, sessionsChecked: 2, notReplayable: 0, fieldAbsent: 0 });
   assert.equal(result.contentMissing, 0);
   assert.equal(result.sessionsOutsideRecurrence, 0);
   assert.equal(result.sessionsUnreadable, 0);
   assert.equal(result.linesUnparseable, 0);
-  assert.equal(result.reason, "the gate fired on all 2 mistakes, on none of 1 successful call that followed them, and on none of 20 calls of the gate's tool in 2 sessions with no failure of this signature");
+  assert.equal(result.reason, "the gate fired on all 2 mistakes, on none of 1 successful call of the gate's tool in the recurrence's sessions, and on none of 20 calls of the gate's tool in 2 sessions with no failure of this signature");
 });
 
 test('a gate that also matches the fix fails and says so', () => {
   const root = standardLog();
   const result = replayGate(root, gate('literal', FIX), theRecurrence(root));
   assert.equal(result.verdict, 'fail');
-  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnSuccessors: 1 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnGoodCalls: 1, goodCalls: 1 });
   assert.match(result.reason, /differential check failed/);
-  assert.match(result.reason, /fired on 1 of 1 successful call that followed the mistakes/);
+  assert.match(result.reason, /fired on 1 of 1 successful call of the gate's tool in the recurrence's sessions/);
   assert.doesNotMatch(result.reason, /false-positive check failed/);
   assert.ok(!result.reason.includes(FIX), 'the reason never quotes a tool input');
 });
@@ -136,7 +136,7 @@ test('a gate that fires in an unrelated clean session fails with the count', () 
   const result = replayGate(root, WATCH_GATE, theRecurrence(root));
   assert.equal(result.verdict, 'fail');
   assert.deepEqual(result.falsePositives, { fired: 1, callsChecked: 22, sessionsChecked: 3, notReplayable: 0, fieldAbsent: 0 });
-  assert.equal(result.differential.firedOnSuccessors, 0);
+  assert.equal(result.differential.firedOnGoodCalls, 0);
   assert.match(result.reason, /false-positive check failed: the gate fired on 1 of 22 calls of the gate's tool in 3 sessions/);
   assert.doesNotMatch(result.reason, /differential check failed/);
   assert.ok(!result.reason.includes('--watch'), 'the reason never quotes a tool input');
@@ -161,7 +161,7 @@ test('a gate that misses one mistake fails', () => {
   logClean(root);
   const result = replayGate(root, WATCH_GATE, theRecurrence(root));
   assert.equal(result.verdict, 'fail');
-  assert.deepEqual(result.differential, { firedOnMistakes: 1, mistakes: 2, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 1, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 1 });
   assert.match(result.reason, /differential check failed: the gate fired on 1 of 2 replayable mistakes/);
 });
 
@@ -169,7 +169,7 @@ test('a gate for another tool fires on no mistake and fails', () => {
   const root = standardLog();
   const result = replayGate(root, gate('token', '--watch', { tool: 'Shell' }), theRecurrence(root));
   assert.equal(result.verdict, 'fail');
-  assert.deepEqual(result.differential, { firedOnMistakes: 0, mistakes: 2, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 0, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 0 });
   assert.equal(result.falsePositives.callsChecked, 0);
   assert.match(result.reason, /differential check failed: the gate is for another tool than 2 of 2 recorded mistakes/);
 });
@@ -178,7 +178,7 @@ test('a mistake that lacks the inspected field fails the gate', () => {
   const root = standardLog();
   const result = replayGate(root, gate('token', 'watch', { field: 'description' }), theRecurrence(root));
   assert.equal(result.verdict, 'fail');
-  assert.deepEqual(result.differential, { firedOnMistakes: 0, mistakes: 2, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 0, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 1 });
   assert.match(result.reason, /differential check failed: the gate inspects a field that 2 of 2 recorded mistakes do not carry as text/);
 });
 
@@ -190,10 +190,10 @@ test('twenty clean calls that lack the inspected field are not-checkable, never 
   logClean(root);
   const result = replayGate(root, gate('token', 'watch', { field: 'description' }), theRecurrence(root));
   assert.equal(result.verdict, 'not-checkable');
-  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 1 });
   assert.deepEqual(result.falsePositives, { fired: 0, callsChecked: 0, sessionsChecked: 0, notReplayable: 0, fieldAbsent: 20 });
   assert.equal(result.contentMissing, 0, 'the fix lacks the field, so the gate did not fire on it; nothing is missing');
-  assert.doesNotMatch(result.reason, /differential check failed|successful call that followed the mistakes could not/);
+  assert.doesNotMatch(result.reason, /differential check failed|in the recurrence's sessions could not be replayed/);
   assert.match(result.reason, /too little clean evidence: 0 calls of the gate's tool replayed in 0 sessions/);
   assert.match(result.reason, /20 calls of the gate's tool in sessions with no failure of this signature lack the inspected field as text and were not counted as checked/);
 });
@@ -214,7 +214,7 @@ test('expired content yields not-checkable, never pass', () => {
   logClean(root);
   const result = replayGate(root, WATCH_GATE, theRecurrence(root));
   assert.equal(result.verdict, 'not-checkable');
-  assert.deepEqual(result.differential, { firedOnMistakes: 0, mistakes: 2, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 0, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 1 });
   assert.equal(result.contentMissing, 2);
   assert.match(result.reason, /no recorded mistake could be replayed/);
 });
@@ -226,12 +226,12 @@ test('mistakes that fired are not enough when others could not be replayed', () 
   logClean(root);
   const result = replayGate(root, WATCH_GATE, theRecurrence(root));
   assert.equal(result.verdict, 'not-checkable');
-  assert.deepEqual(result.differential, { firedOnMistakes: 1, mistakes: 2, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 1, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 1 });
   assert.equal(result.contentMissing, 1);
   assert.match(result.reason, /1 of 2 mistakes could not be replayed/);
 });
 
-test('a successor whose content is gone makes the differential not checkable', () => {
+test('a successful call in a recurrence session whose content is gone makes the differential not checkable', () => {
   const root = tempDir('hk-replay-repo-');
   log(root, 'one', HARNESS, mistake('one'), expired(success('one', FIX)));
   log(root, 'two', HARNESS, mistake('two'));
@@ -239,7 +239,7 @@ test('a successor whose content is gone makes the differential not checkable', (
   const result = replayGate(root, WATCH_GATE, theRecurrence(root));
   assert.equal(result.verdict, 'not-checkable');
   assert.equal(result.contentMissing, 1);
-  assert.match(result.reason, /1 of 1 successful call that followed the mistakes could not be replayed/);
+  assert.match(result.reason, /1 of 1 successful call of the gate's tool in the recurrence's sessions could not be replayed/);
 });
 
 test('a field moved to a blob over the inline cap is content missing', () => {
@@ -346,7 +346,7 @@ test('an unreadable session in the recurrence makes the verdict not-checkable', 
   writeFileSync(clean, readFileSync(clean, 'utf8') + 'not json\n');
   const result = replayGate(root, WATCH_GATE, theRecurrence(root));
   assert.equal(result.verdict, 'not-checkable');
-  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 1 });
   assert.equal(result.sessionsUnreadable, 1);
   assert.equal(result.linesUnparseable, 1);
   assert.match(result.reason, /1 of the recurrence's 2 sessions could not be read in full/);
@@ -394,14 +394,39 @@ test('a gate that is not well formed is not replayed', () => {
   const result = replayGate(root, { ...WATCH_GATE, match: { kind: 'regex', value: '--watch' } }, theRecurrence(root));
   assert.equal(result.verdict, 'fail');
   assert.equal(result.reason, 'the gate was not replayed: match.kind must be literal, token or glob');
-  assert.deepEqual(result.differential, { firedOnMistakes: 0, mistakes: 0, firedOnSuccessors: 0 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 0, mistakes: 0, firedOnGoodCalls: 0, goodCalls: 0 });
   assert.deepEqual(result.falsePositives, { fired: 0, callsChecked: 0, sessionsChecked: 0, notReplayable: 0, fieldAbsent: 0 });
 });
 
-test('a fix shared by two mistakes is one successor', () => {
+test('every successful call of the gate\'s tool in a recurrence session must be left alone, before or after a mistake', () => {
   const root = tempDir('hk-replay-repo-');
-  log(root, 'one', HARNESS, mistake('one'), mistake('one'), success('one', FIX), success('one', FIX));
+  log(root, 'one', HARNESS, success('one', FIX), mistake('one'), mistake('one'), success('one', FIX), success('one', FIX), read('one'));
   log(root, 'two', HARNESS, mistake('two'));
   const result = replayGate(root, gate('literal', FIX), theRecurrence(root));
-  assert.deepEqual(result.differential, { firedOnMistakes: 3, mistakes: 3, firedOnSuccessors: 1 });
+  assert.deepEqual(result.differential, { firedOnMistakes: 3, mistakes: 3, firedOnGoodCalls: 3, goodCalls: 3 });
+});
+
+test('a gate that fires on later good calls in the recurrence\'s own sessions fails, however silent the clean sessions are', () => {
+  const root = tempDir('hk-replay-repo-');
+  const remove = (type, id, path) => bash(type, id, `rm -rf ${path}`, type === FAILURE_EVENT ? { firstErrorLine: 'rm: cannot remove build: Permission denied' } : undefined);
+  for (const id of ['one', 'two']) {
+    log(root, id, HARNESS, remove(FAILURE_EVENT, id, 'build'), success(id, 'ls'),
+      ...Array.from({ length: 50 }, (_, i) => remove(SUCCESS_EVENT, id, `build/tmp${i}`)));
+  }
+  logClean(root);
+  const result = replayGate(root, gate('literal', 'rm -rf build'), theRecurrence(root));
+  assert.equal(result.verdict, 'fail');
+  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnGoodCalls: 100, goodCalls: 102 });
+  assert.match(result.reason, /the gate fired on 100 of 102 successful calls of the gate's tool in the recurrence's sessions/);
+});
+
+test('with no successful call of the gate\'s tool in the recurrence\'s sessions the differential is not checkable, never a pass', () => {
+  const root = tempDir('hk-replay-repo-');
+  log(root, 'one', HARNESS, mistake('one'), read('one'));
+  log(root, 'two', HARNESS, mistake('two'));
+  logClean(root);
+  const result = replayGate(root, WATCH_GATE, theRecurrence(root));
+  assert.equal(result.verdict, 'not-checkable');
+  assert.deepEqual(result.differential, { firedOnMistakes: 2, mistakes: 2, firedOnGoodCalls: 0, goodCalls: 0 });
+  assert.match(result.reason, /no successful call of the gate's tool is recorded in the recurrence's sessions, so nothing there shows the gate leaves a good call alone/);
 });
