@@ -16,7 +16,7 @@ import { CONTENT_FIELDS, indexLineCount, KEPT_FIELDS, SEAL_IDLE_MS, verifyIndex 
 import { stripAnsi } from '../../assets/scripts/harness-redact.mjs';
 import { LOGGED_EVENTS, toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { addedLatency } from './latency-fixtures.mjs';
-import { snapshot } from './log-fixtures.mjs';
+import { treeSnapshot } from './log-fixtures.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'session-log.mjs');
@@ -381,11 +381,22 @@ test('the agent\'s own account of its work is never logged', () => {
   }
 });
 
+test('the project comparison sees a new empty directory and a changed file', () => {
+  const root = project();
+  writeFileSync(join(root, 'a.txt'), 'one\n');
+  const before = treeSnapshot(root);
+  mkdirSync(join(root, 'empty'));
+  assert.notDeepEqual(treeSnapshot(root), before, 'a new empty directory shows');
+  rmSync(join(root, 'empty'), { recursive: true });
+  writeFileSync(join(root, 'a.txt'), 'two\n');
+  assert.notDeepEqual(treeSnapshot(root), before, 'a changed file shows');
+});
+
 test('the hook writes nothing inside the project, whatever event it records', () => {
   const root = enabledProject();
   mkdirSync(join(root, 'src'));
   writeFileSync(join(root, 'src', 'app.mjs'), 'export const app = 1;\n');
-  const before = snapshot(root);
+  const before = treeSnapshot(root);
   const session = 'inside-1';
   for (const payload of [
     { session_id: session, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-opus-5' },
@@ -398,7 +409,7 @@ test('the hook writes nothing inside the project, whatever event it records', ()
     assertSilentSuccess(runHook(root, payload));
   }
   assert.ok(events(root, session).length >= 6, 'the events were recorded, outside the project');
-  assert.deepEqual(snapshot(root), before, 'every file in the project, by name and bytes, is as it was');
+  assert.deepEqual(treeSnapshot(root), before, 'every file and directory in the project, files by their bytes, is as it was');
 });
 
 test('an MCP tool marks the session external once', () => {

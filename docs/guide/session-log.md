@@ -140,7 +140,9 @@ that has outgrown that budget. It needs the log enabled. See
 `log purge` lists what it would remove. `log purge --yes` removes the whole
 data directory for this repository — **the ledger, the learnings, the
 policy and this machine's gates as well as the log** — and so disables the
-log. It needs no terminal. See [log purge](commands.md#log-purge).
+log. Every gate promoted on this machine stops acting, and every committed
+gate suspended here acts again. It needs no terminal. See
+[log purge](commands.md#log-purge).
 
 ## Cost
 

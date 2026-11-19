@@ -35,7 +35,7 @@ import { pathToFileURL } from 'node:url';
 
 import { markerPath } from '../../assets/scripts/harness-redact.mjs';
 import { APPLY, DETECT, UNINSTALL, git, run, settings, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
-import { snapshot } from './log-fixtures.mjs';
+import { treeSnapshot } from './log-fixtures.mjs';
 import { LOOP_WATCH_PATH } from './propose.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -114,10 +114,10 @@ test('the hook writes nothing inside the project, warning or not', () => {
   mkdirSync(join(root, '.git'));
   mkdirSync(join(root, 'src'));
   writeFileSync(join(root, 'src', 'app.mjs'), 'export const app = 1;\n');
-  const before = snapshot(root);
+  const before = treeSnapshot(root);
   const outputs = Array.from({ length: 4 }, () => runHook(root, failure('inside-1')));
   assert.deepEqual(outputs, ['', '', WARNING_OUTPUT, ''], 'the hook counted and warned');
-  assert.deepEqual(snapshot(root), before, 'every file in the project, by name and bytes, is as it was');
+  assert.deepEqual(treeSnapshot(root), before, 'every file and directory in the project, files by their bytes, is as it was');
 });
 
 test('a different failure between them resets the count', () => {
