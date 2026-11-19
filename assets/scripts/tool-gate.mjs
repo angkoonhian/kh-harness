@@ -146,14 +146,15 @@ const unusable = label => ({ gates: [], suspended: [], problem: `${label} could 
 function loadGateFile(locate, label, { suspensionsAllowed }) {
   try {
     const path = locate();
-    let size;
+    let st;
     try {
-      size = statSync(path).size;
+      st = statSync(path);
     } catch (error) {
       if (error?.code === 'ENOENT') return { gates: [], suspended: [], problem: null };
       return unusable(label);
     }
-    if (size > GATE_FILE_MAX_BYTES) return unusable(label);
+    // A pipe at the path would block the read until the hook timed out.
+    if (!st.isFile() || st.size > GATE_FILE_MAX_BYTES) return unusable(label);
     const { gates, suspended, rejected } = lib.parseGates(readFileSync(path, 'utf8'));
     if (rejected.some(r => r.index < 0)) return { gates: [], suspended: [], problem: `${label} could not be parsed, so none of its gates apply.` };
     const n = rejected.length + (suspensionsAllowed ? 0 : suspended.length);

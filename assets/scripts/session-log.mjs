@@ -32,7 +32,7 @@
 // own text (`last_assistant_message`, a compaction summary) is a claim, not
 // an observation, and is never copied.
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 // module that imports it.
 const SIBLINGS = [
   ['./harness-redact.mjs', ['canonicalJson', 'markerPath', 'maskText', 'projectRoot', 'readJSONMarker', 'safeSessionId', 'writeJSONMarker']],
-  ['./harness-log.mjs', ['appendEvent', 'harnessIdentity', 'isEnabled', 'LAST_TICK_FILE', 'parsedObject', 'readConfig', 'repoDataDir']],
+  ['./harness-log.mjs', ['appendEvent', 'harnessIdentity', 'isEnabled', 'LAST_TICK_FILE', 'parsedObject', 'readConfig', 'readSmallFile', 'repoDataDir']],
 ];
 // Loaded at a session start only, so no other event parses it.
 const SEAL_SIBLING = ['./harness-seal.mjs', ['applyRetention', 'sealClosedSessions', 'sessionsSealedSince']];
@@ -77,7 +77,7 @@ async function loadSiblings() {
 
 const siblings = await loadSiblings();
 const {
-  appendEvent, harnessIdentity, isEnabled, LAST_TICK_FILE, parsedObject, readConfig, repoDataDir,
+  appendEvent, harnessIdentity, isEnabled, LAST_TICK_FILE, parsedObject, readConfig, readSmallFile, repoDataDir,
   canonicalJson, markerPath, maskText, projectRoot, readJSONMarker, safeSessionId, writeJSONMarker,
 } = siblings.loaded;
 const canMark = MARKING.every(name => name in siblings.loaded);
@@ -244,12 +244,18 @@ function recordHarness(root, sessionId, payload) {
 // expiring old content; what is left over is done on a later session start.
 const MAINTENANCE_BUDGET_MS = 150;
 
+// The budget is checked between sessions and a session is read whole, so a
+// session start touches no session larger than this on disk; `log maintain`
+// seals and expires those.
+const MAINTENANCE_MAX_SESSION_BYTES = 2 * 1024 * 1024;
+
 /** Seals the other sessions and expires old content, through the sealing
  * module `seal`. */
 function maintain(seal, root, currentSessionId) {
   const started = performance.now();
-  seal.sealClosedSessions(root, { currentSessionId, budgetMs: MAINTENANCE_BUDGET_MS });
-  seal.applyRetention(root, { budgetMs: MAINTENANCE_BUDGET_MS - (performance.now() - started) });
+  const maxSessionBytes = MAINTENANCE_MAX_SESSION_BYTES;
+  seal.sealClosedSessions(root, { currentSessionId, budgetMs: MAINTENANCE_BUDGET_MS, maxSessionBytes });
+  seal.applyRetention(root, { budgetMs: MAINTENANCE_BUDGET_MS - (performance.now() - started), maxSessionBytes });
 }
 
 /** The seal index position `learn tick` recorded when it last ran; 0, so
@@ -258,7 +264,7 @@ function maintain(seal, root, currentSessionId) {
 function indexLinesAtLastTick(root) {
   let text;
   try {
-    text = readFileSync(join(repoDataDir(root), LAST_TICK_FILE), 'utf8');
+    text = readSmallFile(join(repoDataDir(root), LAST_TICK_FILE));
   } catch {
     return 0;
   }

@@ -543,6 +543,17 @@ test('a session start seals the other sessions, silently and without spawning', 
   assert.deepEqual(verifyIndex(root), { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: false, tornTail: false });
 });
 
+test('a session start leaves a session over 2 MiB on disk for log maintain, and seals the rest', () => {
+  const root = enabledProject();
+  assertSilentSuccess(runHook(root, toolPayload('PostToolUse', 'small-1', { tool_response: 'ok' })));
+  idle(root, 'small-1');
+  const line = `${JSON.stringify({ schema: 1, ts: new Date().toISOString(), pid: 1, type: 'PostToolUse', tool: 'Bash', output: 'x'.repeat(1000) })}\n`;
+  writeFileSync(join(sessionsDir(root), 's-large-1.jsonl'), line.repeat(Math.ceil((2 * 1024 * 1024 + 1) / line.length)));
+  idle(root, 'large-1');
+  assertSilentSuccess(runHook(root, { session_id: 'next-2', hook_event_name: 'SessionStart', source: 'startup' }));
+  assert.deepEqual(readdirSync(sessionsDir(root)).sort(), ['s-large-1.jsonl', 's-next-2.jsonl', 's-small-1.jsonl.gz']);
+});
+
 test('with the log disabled a session start seals nothing', () => {
   const root = enabledProject();
   assertSilentSuccess(runHook(root, toolPayload('PostToolUse', 'off-earlier', { tool_response: 'ok' })));

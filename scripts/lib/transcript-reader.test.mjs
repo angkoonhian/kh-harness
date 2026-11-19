@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { KNOWN_LINE_TYPES, readTranscript, summariseTranscripts } from './transcript-reader.mjs';
+import { KNOWN_LINE_TYPES, MAX_TRANSCRIPT_LINE_BYTES, readTranscript, summariseTranscripts } from './transcript-reader.mjs';
 
 const made = [];
 const tempDir = () => {
@@ -160,6 +160,20 @@ test('a transcript is read in bounded chunks, so lines span chunk boundaries', (
   assert.equal(r.status, 'ok');
   assert.equal(r.interrupts.length, 5);
   assert.deepEqual(r.interrupts.at(-1), { ts: '2026-11-19T10:04:00.000Z' });
+});
+
+test('a line longer than the bound makes the session not-checked, without the line being held whole', () => {
+  assert.equal(MAX_TRANSCRIPT_LINE_BYTES, 64 * 1024 * 1024);
+  const long = { ...assistant('2026-11-19T10:00:00.000Z'), message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(5000) }] } };
+  const path = transcript([interrupt('2026-11-19T10:00:00.000Z'), long, interrupt('2026-11-19T10:01:00.000Z')]);
+  const r = readTranscript(path, { maxLineBytes: 4096 });
+  assert.deepEqual(r, { status: 'not-checked', reason: 'line 2 is longer than 4096 bytes', claudeCodeVersion: '2.1.327', interrupts: [], unknownLineTypes: [] });
+  assert.equal(readTranscript(path, { maxLineBytes: 8192 }).status, 'ok');
+
+  // A file with no newline at all is one line, refused once it passes the bound.
+  const endless = join(tempDir(), 'endless.jsonl');
+  writeFileSync(endless, ' '.repeat(3 * 1024 * 1024));
+  assert.equal(readTranscript(endless, { maxLineBytes: 1024 * 1024 }).reason, 'line 1 is longer than 1048576 bytes');
 });
 
 test('a last line without its newline is still read', () => {

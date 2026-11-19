@@ -8,7 +8,9 @@
 // use, so it imports only Node built-ins and sibling files, never spawns a
 // child process (the git common directory is found by reading files, not by
 // running git), its read paths never throw, and an event write reports an
-// I/O failure in its result instead of throwing.
+// I/O failure in its result instead of throwing. Every file is read through
+// `readBounded`: its size is checked first, so a file far larger than the
+// kit writes, a pipe or a device costs a stat and is reported as unreadable.
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -32,6 +34,50 @@ const ENABLED_FILE = 'enabled.json';
 const CONFIG_FILE = 'config.json';
 
 const DEFAULT_CONFIG = Object.freeze({ contentRetentionDays: 90, inlineCapBytes: 65536, autodraft: false });
+
+/** The most bytes read from one session file, sealed or not, and the most a
+ * sealed one may decompress to; also the bound on the seal index. A file is
+ * decoded to one string, which Node caps near 512 MiB, so the bound sits
+ * below that. A session over it is not read, sealed or expired: every
+ * reader counts it as unreadable and `log status` names it. */
+export const MAX_LOG_FILE_BYTES = 256 * 1024 * 1024;
+
+/** `MAX_LOG_FILE_BYTES`, or the test override: a real file of that size is
+ * too costly a fixture. */
+export const maxLogFileBytes = () => Number(process.env.KH_LOG_MAX_FILE_BYTES) || MAX_LOG_FILE_BYTES;
+
+// The bound on every file the kit keeps small: a record, a configuration, a
+// gate file, the manifest, an installed script, a `.git` pointer.
+const MAX_SMALL_FILE_BYTES = 1024 * 1024;
+
+/** The `code` of the error `readBounded` and `readGzipBounded` throw for a
+ * file over its bound. */
+export const OVER_LIMIT = 'EKHOVERLIMIT';
+
+const overLimit = () => Object.assign(new Error('the file is larger than the kit reads'), { code: OVER_LIMIT });
+
+/** The bytes of the regular file at `path`. Throws without reading when the
+ * file is larger than `maxBytes` (code `OVER_LIMIT`) or is not a regular
+ * file, and what the file system throws otherwise, `ENOENT` for none. */
+export function readBounded(path, maxBytes) {
+  const st = statSync(path);
+  if (!st.isFile()) throw Object.assign(new Error('not a regular file'), { code: 'EKHNOTFILE' });
+  if (st.size > maxBytes) throw overLimit();
+  return readFileSync(path);
+}
+
+/** `bytes` decompressed; throws with code `OVER_LIMIT` once the output
+ * passes `maxBytes`, and what zlib throws for bytes that are not gzip. */
+export function gunzipBounded(bytes, maxBytes = maxLogFileBytes()) {
+  try {
+    return gunzipSync(bytes, { maxOutputLength: maxBytes });
+  } catch (error) {
+    throw error?.code === 'ERR_BUFFER_TOO_LARGE' ? overLimit() : error;
+  }
+}
+
+/** The text of a file the kit keeps small; throws as `readBounded` does. */
+export const readSmallFile = path => readBounded(path, MAX_SMALL_FILE_BYTES).toString('utf8');
 
 /** The per-machine directory every repository's log lives under. */
 export function dataRoot() {
@@ -58,7 +104,7 @@ function normalisedPath(path) {
 
 function readTrimmed(path) {
   try {
-    return readFileSync(path, 'utf8').trim();
+    return readSmallFile(path).trim();
   } catch {
     return null;
   }
@@ -113,7 +159,7 @@ export function repoDataDir(root) {
 
 function readJson(path) {
   try {
-    return { ok: true, value: JSON.parse(readFileSync(path, 'utf8')) };
+    return { ok: true, value: JSON.parse(readSmallFile(path)) };
   } catch (error) {
     return { ok: false, absent: error?.code === 'ENOENT' };
   }
@@ -203,7 +249,7 @@ const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray
 
 function fileDigest(path) {
   try {
-    return sha256Hex(lfNormalised(readFileSync(path)));
+    return sha256Hex(lfNormalised(readBounded(path, MAX_SMALL_FILE_BYTES)));
   } catch (error) {
     return error?.code === 'ENOENT' ? 'missing' : UNREADABLE;
   }
@@ -223,7 +269,8 @@ function baseHash(root, manifest) {
 /** `id:sha256` for each gate in the file (`id:suspended` for a suspension),
  * nothing when the file is absent, and the one entry `UNREADABLE` when it is
  * not `{ schema: 1, gates: [...] }` of objects with string ids, so damage
- * changes the hash. */
+ * changes the hash. A file over the size the gate hook reads is unreadable
+ * here too, since none of its gates apply. */
 function gatePairs(path) {
   const read = readJson(path);
   if (!read.ok) return read.absent ? [] : [UNREADABLE];
@@ -527,10 +574,12 @@ export function parsedObject(line) {
  * holds the earlier events, then the `.jsonl`. A line that is not a JSON
  * object is counted in `unparseable`; a file present but unreadable or not
  * gzip sets `unreadable`, and what the other file holds is still returned.
- * An unsafe session id reads nothing. Never throws.
+ * A file larger than `maxLogFileBytes()`, on disk or decompressed, is not
+ * read: it sets `unreadable` and `overLimit`. An unsafe session id reads
+ * nothing. Never throws.
  */
 export function readEvents(root, sessionId) {
-  const result = { events: [], unparseable: 0, unreadable: false };
+  const result = { events: [], unparseable: 0, unreadable: false, overLimit: false };
   const name = sessionFileName(sessionId);
   if (name === null) return result;
   let plain;
@@ -539,12 +588,14 @@ export function readEvents(root, sessionId) {
   } catch {
     return { ...result, unreadable: true };
   }
-  for (const [path, decode] of [[`${plain}.gz`, gunzipSync], [plain, buf => buf]]) {
+  const maxBytes = maxLogFileBytes();
+  for (const [path, decode] of [[`${plain}.gz`, bytes => gunzipBounded(bytes, maxBytes)], [plain, bytes => bytes]]) {
     let lines;
     try {
-      lines = decode(readFileSync(path)).toString('utf8').split('\n');
+      lines = decode(readBounded(path, maxBytes)).toString('utf8').split('\n');
     } catch (error) {
       if (error?.code !== 'ENOENT') result.unreadable = true;
+      if (error?.code === OVER_LIMIT) result.overLimit = true;
       continue;
     }
     // The writer ends every line with a newline, so the empty string after
