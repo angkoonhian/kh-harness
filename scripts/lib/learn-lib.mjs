@@ -83,6 +83,10 @@ export const SETTLED = new Set(['rejected', 'retired']);
 // The statuses whose gate lives in the local gate set.
 const LOCAL_GATE_STATUSES = new Set(['trial', 'active-local']);
 
+// The statuses whose learning a local suspension of its committed gate
+// stands for.
+const SUSPENDING = new Set(['suspended', 'retired']);
+
 const ABOVE_OBSERVE = new Set(['warn', 'block']);
 
 const LEARNINGS_DIR = 'learnings';
@@ -281,6 +285,9 @@ function readLearnings(root) {
 }
 
 export const isGateEntry = entry => isPlainObject(entry) && isString(entry.id) && !Object.hasOwn(entry, 'suspended');
+/** Exactly `{ id, suspended: true }` with a learning id, the only shape a
+ * local suspension is written in. */
+const isSuspension = entry => isPlainObject(entry) && Object.keys(entry).length === 2 && isId(entry.id) && entry.suspended === true;
 const entryId = entry => (isPlainObject(entry) && isString(entry.id) ? entry.id : null);
 const learningIdsIn = entries => entries.map(entryId).filter(isId);
 
@@ -410,28 +417,38 @@ export const recordedIn = state => state.learnings.filter(l => state.recorded.ha
  * report and `modified` whether `gates` differs from the entries given.
  * `recorded` maps the id of each learning the ledger vouches for to its
  * recorded state; with the ledger broken it is empty, so every learned gate
- * goes and none is restored.
+ * goes and none is restored. `entries` are the ledger's entries, none when
+ * it is broken.
  *
- * A gate entry stays only when its learning is recorded in a status that
- * keeps a local gate, its content hash is the learning's, its action is the
- * one the recorded state grants, and no earlier entry has its id. A
- * recorded learning in such a status with no entry left gets its own gate.
- * A gate whose learning file cannot be read stays only at `observe`, and is
- * reported either way. A suspension and an entry with no id stay as they
- * are.
+ * Nothing stays unless the ledger accounts for it. A gate entry stays only
+ * when its learning is recorded in a status that keeps a local gate, its
+ * content hash is the learning's, its action is the one the recorded state
+ * grants, and no earlier entry has its id. A suspension, exactly `{ id,
+ * suspended: true }`, stays only when the ledger's last status entry for
+ * its id is `suspended` or `retired` and no earlier entry has its id: any
+ * other would switch off the gate it shadows unseen. A recorded learning in
+ * a status that keeps a local gate with no entry left gets its own gate. A
+ * gate whose learning file cannot be read stays only at `observe`, and is
+ * reported either way. An entry with no usable id is dropped and reported
+ * by its 1-based place in the file, as `entry <n>`.
  */
-function repairedGates(gates, learnings, unreadable, recorded) {
+function repairedGates(gates, learnings, unreadable, recorded, entries) {
   const learningById = new Map(learnings.map(l => [l.id, l]));
   const unknown = new Set(unreadable);
   const kept = [];
   const present = new Set();
   const changed = new Set();
   let modified = false;
-  for (const entry of gates) {
+  for (const [index, entry] of gates.entries()) {
     const id = entryId(entry);
     if (!isGateEntry(entry)) {
-      kept.push(entry);
-      if (id !== null) present.add(id);
+      if (isSuspension(entry) && !present.has(id) && SUSPENDING.has(recordedState(entries, id)?.status)) {
+        kept.push(entry);
+        present.add(id);
+      } else {
+        changed.add(id ?? `entry ${index + 1}`);
+        modified = true;
+      }
       continue;
     }
     if (unknown.has(id)) {
@@ -468,20 +485,24 @@ function repairedGates(gates, learnings, unreadable, recorded) {
 
 /** Every ledger entry that granted an action above `observe`: who approved
  * which content of which learning, at which action, and when. */
-export const approvalsIn = entries => entries
+const approvalsIn = entries => entries
   .filter(e => e?.kind === 'promoted' && isApprover(e.approvedBy) && ABOVE_OBSERVE.has(e.action))
   .map(e => ({ id: e.learningId, sha256: e.contentSha256, action: e.action, approvedBy: e.approvedBy, ts: e.ts }));
 
-/** The ids of the local gate entries above `observe` that no approval
- * grants: none names their id, content and action. The repair removes each
- * of them, since an entry above `observe` stays only on a recorded
- * promotion; these are the ones nobody ever approved. */
-export function unapprovedGateIds(gates, approvals) {
+/** The ids of the local gate entries above `observe` that the approval in
+ * force for their learning does not grant: the last status-changing ledger
+ * entry for the id must be a promotion, by an approver, of the entry's
+ * content at the entry's action. An approval the learning has since lost
+ * grants nothing. The repair removes each of these, since an entry above
+ * `observe` stays only on such a promotion. */
+export function unapprovedGateIds(gates, ledgerEntries) {
   const ids = new Set();
   for (const entry of gates) {
     if (!isGateEntry(entry) || !ABOVE_OBSERVE.has(entry.action)) continue;
-    const sha256 = gateSha256(entry);
-    if (!approvals.some(a => a.id === entry.id && a.sha256 === sha256 && a.action === entry.action)) ids.add(entry.id);
+    const state = recordedState(ledgerEntries, entry.id);
+    const approved = state !== null && state.kind === 'promoted' && state.approvedBy !== null
+      && state.contentSha256 === gateSha256(entry) && state.action === entry.action;
+    if (!approved) ids.add(entry.id);
   }
   return [...ids].sort(idOrder);
 }
@@ -490,11 +511,21 @@ export function unapprovedGateIds(gates, approvals) {
  * the lock, and returns the ids changed. A local gate file that is not a
  * gate file is left as it is. */
 export function repairLocalGates(root, write) {
-  const { learnings, unreadable, recorded, local } = readState(root);
+  const { learnings, unreadable, recorded, local, view } = readState(root);
   if (!local.file) return [];
-  const repair = repairedGates(local.file.gates, learnings, unreadable, recorded);
+  const repair = repairedGates(local.file.gates, learnings, unreadable, recorded, view.entries);
   if (repair.modified) write(() => writeJson(localGatesPath(root), { ...local.file, gates: repair.gates }));
   return repair.changed;
+}
+
+/** Writes the local gate file afresh as exactly the gates the ledger in
+ * `state`, taken under the lock, grants, over a file that is not a gate
+ * file; returns the ids of the gates it holds. The ledger must be intact,
+ * or it grants nothing and the file would be emptied for no reason. */
+export function rewriteLocalGates(root, write, state) {
+  const rebuilt = repairedGates([], state.learnings, state.unreadable, state.recorded, state.view.entries);
+  write(() => writeJson(localGatesPath(root), { schema: 1, gates: rebuilt.gates }));
+  return rebuilt.changed;
 }
 
 /**
@@ -625,7 +656,7 @@ export function writeTransition(root, write, state, { updated, entries, suspend 
   let gates = null;
   if (state.local.file) {
     const before = state.local.file.gates;
-    const repair = repairedGates(before, learningsAfter, state.unreadable, recordedAfter);
+    const repair = repairedGates(before, learningsAfter, state.unreadable, recordedAfter, [...state.view.entries, ...records]);
     const suspension = suspend && !repair.gates.some(e => entryId(e) === updated.id) ? [{ id: updated.id, suspended: true }] : [];
     const after = [...repair.gates, ...suspension];
     const count = list => list.filter(isGateEntry).length;
@@ -830,16 +861,15 @@ export function listLearnings(root) {
   try {
     const state = readState(root);
     const { learnings, unreadable, view, recorded, local } = state;
-    const approvals = approvalsIn(view.entries);
     return {
       learnings,
-      gatesToRepair: local.file ? repairedGates(local.file.gates, learnings, unreadable, recorded).changed : null,
-      unapprovedGates: local.file ? unapprovedGateIds(local.file.gates, approvals) : null,
+      gatesToRepair: local.file ? repairedGates(local.file.gates, learnings, unreadable, recorded, view.entries).changed : null,
+      unapprovedGates: local.file ? unapprovedGateIds(local.file.gates, view.entries) : null,
       citationsGone: citationsGone(root, state),
       ledgerMismatch: ledgerMismatches(learnings, unreadable, view, recorded),
       ledgerIntact: view.intact,
       unreadable,
-      approvals,
+      approvals: approvalsIn(view.entries),
     };
   } catch (error) {
     return readFailure(error);
@@ -850,10 +880,11 @@ export function listLearnings(root) {
  * What the session log records of each of `learnings`' gates:
  * `{ stats, sessionsUnreadable }`, `stats` mapping each id to `{ firings,
  * sessions, rerouted }`. A firing counts when it names the learning's id and
- * content. `rerouted` counts the `block` firings after which the next call
- * of the gate's tool in that session, the fired call itself excepted,
- * succeeded; a firing whose call carries no tool use id is never counted,
- * since the fired call cannot then be told from the next.
+ * content. `rerouted` counts the `warn` and `block` firings after which the
+ * next call of the gate's tool in that session, the fired call itself
+ * excepted, succeeded; an `observe` firing told nobody anything, so it is
+ * never counted, nor is a firing whose call carries no tool use id, since
+ * the fired call cannot then be told from the next.
  * `sessionsUnreadable` counts the sessions that could not be read in full,
  * whose counts are what did parse.
  */
@@ -869,7 +900,7 @@ export function logStats(root, learnings) {
       if (counted !== undefined && event.gateSha256 === counted.sha256) {
         counted.firings++;
         counted.sessions.add(sessionId);
-        if (event.action === 'block' && isString(event.tool_use_id)) awaiting.push({ counted, tool: event.tool, toolUseId: event.tool_use_id });
+        if (ABOVE_OBSERVE.has(event.action) && isString(event.tool_use_id)) awaiting.push({ counted, tool: event.tool, toolUseId: event.tool_use_id });
       } else if (event.type === SUCCESS_EVENT || event.type === FAILURE_EVENT) {
         const isNext = f => f.tool === event[TOOL_FIELD] && f.toolUseId !== event.tool_use_id;
         if (event.type === SUCCESS_EVENT) for (const f of awaiting) if (isNext(f)) f.counted.rerouted++;
@@ -884,9 +915,9 @@ export function logStats(root, learnings) {
 /**
  * What the session log and the ledger record of a learning's gate:
  * `firings`, the `gate_firing` events for its id and content; `sessions`,
- * how many sessions hold one; `rerouted`, the `block` firings after which
- * the next call of the gate's tool in that session succeeded, as
- * `logStats` counts them; `wrong`, the firings marked wrong since its last
+ * how many sessions hold one; `rerouted`, the `warn` and `block` firings
+ * after which the next call of the gate's tool in that session succeeded,
+ * as `logStats` counts them; `wrong`, the firings marked wrong since its last
  * promotion; and `sessionsUnreadable`. Returns `{ error }` for an id that
  * names no learning, for a learning the ledger does not vouch for, or when
  * the log cannot be read.

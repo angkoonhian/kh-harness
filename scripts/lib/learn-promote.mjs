@@ -1,9 +1,13 @@
 // scripts/lib/learn-promote.mjs
 //
 // A learning's life past its silent trial. Only a person at an interactive
-// terminal, or a promotion policy that person wrote, moves a learning's gate
-// on to `warn` or `block` on this machine; wrong marks, a demotion or a
-// retirement take it back. `tick` runs the rules unattended.
+// terminal, or a promotion policy that person set at a terminal, moves a
+// learning's gate on to `warn` or `block` on this machine; wrong marks, a
+// demotion or a retirement take it back. `tick` runs the rules unattended.
+//
+// The policy file, like every file in the data directory, can be written by
+// anything running as this user, so a policy promotes only while its hash is
+// the one the ledger recorded when the owner set it.
 //
 // Every step goes through `learn-lib.mjs`: the ledger is the authority for
 // what a learning's gate may do, each step first repairs the local gate set
@@ -14,16 +18,17 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { harnessIdentity, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import {
-  approvalsIn, citationsGone, citesGone, FIRING_EVENT, gateActionsFor, ID_ERROR, isGateEntry, isId, learningIn, ledgerEntry, logStats,
-  readCommittedGates, readFailure, readState, recordedIn, refuse, repairedStep, repairLocalGates, SETTLED, unapprovedGateIds,
+  citationsGone, citesGone, FIRING_EVENT, gateActionsFor, ID_ERROR, isGateEntry, isId, learningIn, ledgerEntry, logStats,
+  readCommittedGates, readFailure, readState, recordedIn, refuse, repairedStep, repairLocalGates, rewriteLocalGates, SETTLED, unapprovedGateIds,
   unrecordedReason, withLearningsLock, wrongSincePromotion, writeTransition,
 } from './learn-lib.mjs';
 import { appendLedger } from './ledger.mjs';
-import { policyAllows, readPolicy } from './policy.mjs';
+import { checkedPolicy, policyAllows, readPolicy, writePolicy } from './policy.mjs';
 
 // The actions a promotion may grant: those a learning promoted on this
 // machine may carry.
@@ -90,14 +95,15 @@ function promote(root, write, state, learning, { action, approvedBy, detail }) {
   return writeTransition(root, write, state, { updated, entries: [{ kind: 'promoted', approvedBy, action, detail }] });
 }
 
-/** `{ committed }`, whether the committed gate file holds a gate with the
- * learning's id, or `{ error }` when it cannot be told. A local entry
- * weaker than a committed gate does not replace it, so only a suspension
- * takes a committed gate out of force on this machine. */
-function isCommitted(root, id) {
+/** `{ committed }`, whether the committed gate file holds this learning's
+ * gate, its id with its content hash, or `{ error }` when it cannot be
+ * told. A local entry weaker than a committed gate does not replace it, so
+ * only a suspension takes a committed gate out of force on this machine; an
+ * entry that merely reuses the id is not this learning's gate. */
+function isCommitted(root, learning) {
   const committed = readCommittedGates(root);
   if (committed.unreadable) return { error: 'the committed gate file cannot be read, so whether this gate is committed cannot be told; nothing was written' };
-  return { committed: committed.gates.some(e => isGateEntry(e) && e.id === id) };
+  return { committed: committed.gates.some(e => isGateEntry(e) && e.id === learning.id && gateSha256(e) === learning.sha256) };
 }
 
 /**
@@ -109,7 +115,7 @@ function isCommitted(root, id) {
  * when the demotion rule decided. Returns `{ status }`, or `{ error }`.
  */
 function demote(root, write, state, learning, approvedBy) {
-  const where = isCommitted(root, learning.id);
+  const where = isCommitted(root, learning);
   if (where.error) return where;
   const status = where.committed ? 'suspended' : 'trial';
   const updated = { ...learning, status, gate: { ...learning.gate, action: 'observe' } };
@@ -121,7 +127,7 @@ function demote(root, write, state, learning, approvedBy) {
  * suspended on this machine, and the ledger gets `retired`. Retirement is
  * terminal: nothing in this module revives a retired learning. */
 function retire(root, write, state, learning, { approvedBy, detail }) {
-  const where = isCommitted(root, learning.id);
+  const where = isCommitted(root, learning);
   if (where.error) return where;
   const updated = { ...learning, status: 'retired', gate: { ...learning.gate, action: 'observe' } };
   return writeTransition(root, write, state, { updated, entries: [{ kind: 'retired', approvedBy, detail }], suspend: where.committed });
@@ -240,6 +246,45 @@ function byHand(root, id, { interactive }, what, change) {
 }
 
 /**
+ * Sets the repository's promotion policy on this machine, as the person at
+ * the terminal asked: `policy` is `{ minTrialFirings, minTrialSessions,
+ * maxAction }` and `options` is `{ interactive }`, what
+ * `requireInteractive` returned. The ledger gets a `policy` entry carrying
+ * the policy's hash with `approvedBy: 'owner'`, then the policy file is
+ * written; `tick` promotes under a policy only while the file's hash is the
+ * last one recorded. Returns `{ ok: true, sha256, repairedGates }`, or
+ * `{ error }`.
+ */
+export function setPolicy(root, policy, options) {
+  try {
+    return setPolicyUnguarded(root, policy, optionsOf(options));
+  } catch (error) {
+    return readFailure(error);
+  }
+}
+
+function setPolicyUnguarded(root, raw, { interactive }) {
+  if (!isInteractive(interactive)) return refuse(root, needsTerminal('setting a policy'));
+  const checked = checkedPolicy(raw);
+  if (checked.reason !== undefined) return refuse(root, `policy: ${checked.reason}`);
+  return repairedStep(root, write => {
+    if (!readState(root).view.intact) return { error: 'the ledger cannot be read or its chain is broken, so the policy cannot be recorded; nothing was written' };
+    const { base, learned } = harnessIdentity(root);
+    write(() => appendLedger(root, { kind: 'policy', policySha256: checked.sha256, base, learned, approvedBy: 'owner' }));
+    write(() => writePolicy(root, checked.policy));
+    return { ok: true, sha256: checked.sha256 };
+  });
+}
+
+/** The hash of the policy the owner last set, from the ledger's last
+ * `policy` entry, or null when none was ever set. */
+function recordedPolicySha256(entries) {
+  let sha256 = null;
+  for (const entry of entries) if (entry?.kind === 'policy') sha256 = entry.policySha256;
+  return sha256;
+}
+
+/**
  * The deterministic part of the loop, run unattended. In order: the gate
  * repair, which removes every local gate the ledger does not grant, the
  * ones nobody approved among them (`unapprovedRemoved`); retirement of each
@@ -247,20 +292,24 @@ function byHand(root, id, { interactive }, what, change) {
  * is never retired this way); demotion of each promoted learning marked
  * wrong twice since its promotion, suspending a committed gate
  * (`suspended`) and otherwise returning it to `trial` (`demoted`); and,
- * under a readable policy, promotion as `promoteUnderPolicy` decides. A
+ * under a readable policy the owner set, promotion as
+ * `promoteUnderPolicy` decides; a policy file whose hash the ledger did not
+ * record promotes nothing, and `policyUnrecorded` says so. A
  * learning whose gate warns or blocks is never retired here, since deleting
  * a file must not switch off an enforcing gate: when its cited paths are all
  * gone it is reported in `citationsGone` and stays in force until the owner
- * retires it at a terminal. Writes `last-tick.json` as `{ ts }` from `now`
- * at the end.
+ * retires it at a terminal. A local gate file that is not a gate file is
+ * rewritten as the gates the ledger grants (`gateFileRewritten`) while the
+ * ledger is intact, and left as it is otherwise. Writes `last-tick.json` as
+ * `{ ts }` from `now` at the end.
  *
  * Changes only learnings the ledger vouches for, and only in the data
  * directory; never a rule in `docs/harness/RULES.md` or any file in the
  * repository. With the ledger broken it does the removals and nothing else.
  * Returns `{ promoted, demoted, retired, suspended, citationsGone,
- * unapprovedRemoved, repairedGates, ledgerIntact, policy, errors }`,
- * `policy` the policy's state and `errors` what could not be done, or
- * `{ error }`.
+ * unapprovedRemoved, repairedGates, gateFileRewritten, ledgerIntact, policy,
+ * policyUnrecorded, errors }`, `policy` the policy file's state and
+ * `errors` what could not be done, or `{ error }`.
  */
 export function tick(root, options) {
   try {
@@ -273,14 +322,18 @@ export function tick(root, options) {
 function tickUnguarded(root, { now = Date.now }) {
   return withLearningsLock(root, write => {
     const before = readState(root);
-    const unapprovedRemoved = before.local.file ? unapprovedGateIds(before.local.file.gates, approvalsIn(before.view.entries)) : [];
-    const repairedGates = repairLocalGates(root, write);
+    const intact = before.view.intact;
+    const unapprovedRemoved = before.local.file ? unapprovedGateIds(before.local.file.gates, before.view.entries) : [];
+    const rewrite = before.local.unreadable === true && intact;
+    const repairedGates = rewrite ? rewriteLocalGates(root, write, before) : repairLocalGates(root, write);
     const policy = readPolicy(root);
     const result = {
       promoted: [], demoted: [], retired: [], suspended: [], citationsGone: [],
-      unapprovedRemoved, repairedGates, ledgerIntact: before.view.intact, policy: policy.state, errors: [],
+      unapprovedRemoved, repairedGates, gateFileRewritten: rewrite,
+      ledgerIntact: intact, policy: policy.state, policyUnrecorded: false, errors: [],
     };
-    if (before.view.intact) applyRules(root, write, policy, result);
+    if (before.local.unreadable && !intact) result.errors.push('the local gate file is not a gate file, and with the ledger broken it cannot be rebuilt; it was left as it is');
+    if (intact) applyRules(root, write, policy, result);
     else result.errors.push('the ledger cannot be read or its chain is broken, so nothing was retired, demoted or promoted');
     result.citationsGone = citationsGone(root, readState(root));
     const dir = repoDataDir(root);
@@ -314,14 +367,22 @@ function applyRules(root, write, policy, result) {
   }
 
   if (policy.state === 'unreadable') result.errors.push(`the policy cannot be used (${policy.reason}), so nothing was promoted`);
-  if (policy.state === 'ok') promoteUnderPolicy(root, write, policy, result, apply);
+  if (policy.state !== 'ok') return;
+  if (policy.sha256 !== recordedPolicySha256(readState(root).view.entries)) {
+    result.policyUnrecorded = true;
+    return;
+  }
+  promoteUnderPolicy(root, write, policy, result, apply);
 }
 
 /**
  * Promotes, to the policy's `maxAction` and recorded with `approvedBy:
  * 'policy:<sha256>'`, each learning on trial that `policyAllows` given its
  * firings, sessions, wrong marks and whether its evidence holds outside
- * content. Only a learning fresh from replay qualifies, one whose last
+ * content. A learning is external when its file says so or any ledger entry
+ * for it does: the file is covered by no hash, and the draft's `proposed`
+ * entry already carries the flag. Only a learning fresh from replay
+ * qualifies, one whose last
  * status entry is `trial`: a learning demoted back to trial is promoted
  * again only by the owner, so a demotion the owner asked for is not undone
  * by the next tick.
@@ -332,7 +393,9 @@ function promoteUnderPolicy(root, write, policy, result, apply) {
   const { stats } = logStats(root, trials);
   for (const learning of trials) {
     const { firings, sessions } = stats.get(learning.id);
-    const evidence = { firings, sessions, wrong: wrongSincePromotion(state.view.entries, learning.id), external: learning.external || learning.evidence.external };
+    const external = learning.external || learning.evidence.external
+      || state.view.entries.some(e => e?.learningId === learning.id && e.evidence?.external === true);
+    const evidence = { firings, sessions, wrong: wrongSincePromotion(state.view.entries, learning.id), external };
     if (!policyAllows(policy.policy, evidence)) continue;
     const promotion = { action: policy.policy.maxAction, approvedBy: `policy:${policy.sha256}`, detail: `${firings} firings in ${sessions} sessions` };
     apply(learning, (s, l) => promote(root, write, s, l, promotion), () => result.promoted.push(learning.id));

@@ -278,16 +278,16 @@ test('a gate left in the local set without its learning on trial is reported and
   const root = loggedRepo();
   const learning = drafted(root);
   // A gate the step after its write never reached, beside one with no
-  // learning at all.
+  // learning at all and a suspension the ledger does not account for.
   const suspension = { id: 'L40', suspended: true };
   const stray = { ...WATCH_GATE, id: 'L41', action: 'observe' };
   writeLocalGates(root, [suspension, { ...learning.gate }, stray]);
-  assert.deepEqual(listLearnings(root).gatesToRepair, ['L1', 'L41']);
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['L1', 'L40', 'L41']);
 
   const result = runTrial(root, learning.id);
-  assert.deepEqual(result.repairedGates, ['L1', 'L41']);
+  assert.deepEqual(result.repairedGates, ['L1', 'L40', 'L41']);
   assert.equal(result.status, 'trial');
-  assert.deepEqual(localGates(root).gates, [suspension, learning.gate]);
+  assert.deepEqual(localGates(root).gates, [learning.gate]);
   assert.deepEqual(listLearnings(root).gatesToRepair, []);
 });
 
@@ -508,6 +508,9 @@ test('stats count firings across sessions', () => {
   // Observed, and the next Bash call succeeded: nothing was rerouted.
   logFiring(root, 'later-d', gate, 'd-1');
   log(root, 'later-d', success('later-d', FIX));
+  // Warned, and the next Bash call succeeded.
+  logFiring(root, 'later-e', { ...gate, action: 'warn' }, 'e-1');
+  log(root, 'later-e', success('later-e', FIX));
   // Neither another gate's firing nor a firing of other content counts.
   logFiring(root, 'later-c', { ...gate, id: 'L99' }, 'c-1');
   logFiring(root, 'later-c', gate, 'c-2', { gateSha256: '0'.repeat(64) });
@@ -516,7 +519,7 @@ test('stats count firings across sessions', () => {
   const mark = (learningId, line) => appendLedger(root, { kind: 'wrong', learningId, contentSha256: learning.sha256, evidence, base: 'b', learned: 'l', approvedBy: 'owner', firing: { sessionId: 'later-a', line } });
   mark('L1', 1);
   mark('L2', 2);
-  assert.deepEqual(learningStats(root, 'L1'), { firings: 4, sessions: 3, rerouted: 1, wrong: 1, sessionsUnreadable: 0 });
+  assert.deepEqual(learningStats(root, 'L1'), { firings: 5, sessions: 4, rerouted: 2, wrong: 1, sessionsUnreadable: 0 });
 });
 
 test('nothing in this module writes inside the repository', () => {
@@ -553,4 +556,12 @@ test('a deleted learning file does not let a second draft for its signature thro
   assert.equal(runTrial(rejected, drafted(rejected, { gate: FIX_GATE }).id).status, 'rejected');
   rmSync(learningFile(rejected, 'L1'));
   assert.equal(drafted(rejected).id, 'L2', 'a rejected learning does not stand for its signature, file or none');
+});
+
+test('a local entry with no usable id is dropped and reported by its place in the file', () => {
+  const { root, learning } = trialRepo();
+  writeLocalGates(root, [{ ...WATCH_GATE, action: 'block' }, 'block everything', learning.gate, { id: 7, suspended: true }]);
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['entry 1', 'entry 2', 'entry 4']);
+  assert.deepEqual(runTrial(root, 'L9'), { error: 'L9: no such learning', repairedGates: ['entry 1', 'entry 2', 'entry 4'] });
+  assert.deepEqual(localGates(root).gates, [learning.gate]);
 });

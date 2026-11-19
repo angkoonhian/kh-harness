@@ -43,7 +43,7 @@ const entry = (over = {}) => ({
 const lines = root => readFileSync(ledgerPath(root), 'utf8').split('\n').slice(0, -1);
 
 test('LEDGER_KINDS is the fixed list of learning events', () => {
-  assert.deepEqual(LEDGER_KINDS, ['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong']);
+  assert.deepEqual(LEDGER_KINDS, ['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong', 'policy']);
   assert.ok(Object.isFrozen(LEDGER_KINDS));
 });
 
@@ -169,6 +169,37 @@ test('a promoted entry carries the action it grants, and no other kind carries o
   const raw = lines(root);
   writeFileSync(ledgerPath(root), [raw[0], JSON.stringify({ ...JSON.parse(raw[1]), action: 'observe' })].join('\n') + '\n', 'utf8');
   assert.deepEqual(verifyLedger(root), { intact: false, brokenAt: 2 }, 'a stored entry is held to the same rule');
+});
+
+test('a policy entry names the policy the owner set and no learning', () => {
+  const root = tempDir('hk-ledger-repo-');
+  const policy = { kind: 'policy', policySha256: 'e'.repeat(64), base: 'b'.repeat(64), learned: 'c'.repeat(64), approvedBy: 'owner' };
+  appendLedger(root, entry());
+  appendLedger(root, policy);
+  appendLedger(root, { ...policy, detail: 'set at the terminal' });
+  const [, first, second] = readLedger(root);
+  assert.deepEqual(Object.keys(first).sort(), ['approvedBy', 'base', 'kind', 'learned', 'policySha256', 'prev', 'ts']);
+  assert.equal(first.policySha256, 'e'.repeat(64));
+  assert.equal(second.detail, 'set at the terminal');
+  assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
+
+  for (const [over, field] of [
+    [{ policySha256: 'xyz' }, /policySha256/],
+    [{ policySha256: undefined }, /policySha256/],
+    [{ approvedBy: null }, /approvedBy/],
+    [{ approvedBy: `policy:${'d'.repeat(64)}` }, /approvedBy/],
+    [{ learningId: 'L1' }, /learningId/],
+    [{ evidence: entry().evidence }, /evidence/],
+    [{ action: 'warn' }, /action/],
+  ]) {
+    assert.throws(() => appendLedger(root, { ...policy, ...over }), field, JSON.stringify(over));
+  }
+  assert.throws(() => appendLedger(root, entry({ policySha256: 'e'.repeat(64) })), /policySha256/, 'a learning entry carries no policy hash');
+  assert.equal(readLedger(root).length, 3);
+
+  const raw = lines(root);
+  writeFileSync(ledgerPath(root), [raw[0], raw[1], JSON.stringify({ ...JSON.parse(raw[2]), approvedBy: null })].join('\n') + '\n', 'utf8');
+  assert.deepEqual(verifyLedger(root), { intact: false, brokenAt: 3 }, 'a stored policy entry is held to the same rule');
 });
 
 test('a wrong entry carries the firing it marks, and no other kind carries one', () => {

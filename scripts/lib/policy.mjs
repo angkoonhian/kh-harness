@@ -45,6 +45,15 @@ function invalidReason(raw) {
 
 const policyHash = policy => createHash('sha256').update(canonicalJson(policy), 'utf8').digest('hex');
 
+/** `{ policy, sha256 }`, `raw` as a policy with the hash a promotion under
+ * it records, or `{ reason }` when it is not a valid policy. */
+export function checkedPolicy(raw) {
+  const reason = invalidReason(raw);
+  if (reason !== null) return { reason };
+  const policy = { minTrialFirings: raw.minTrialFirings, minTrialSessions: raw.minTrialSessions, maxAction: raw.maxAction };
+  return { policy, sha256: policyHash(policy) };
+}
+
 /** The repository's promotion policy on this machine. Never throws. */
 export function readPolicy(root) {
   let text;
@@ -60,10 +69,8 @@ export function readPolicy(root) {
   } catch {
     return { state: 'unreadable', reason: 'the policy file is not valid JSON' };
   }
-  const reason = invalidReason(raw);
-  if (reason !== null) return { state: 'unreadable', reason };
-  const policy = { minTrialFirings: raw.minTrialFirings, minTrialSessions: raw.minTrialSessions, maxAction: raw.maxAction };
-  return { state: 'ok', policy, sha256: policyHash(policy) };
+  const checked = checkedPolicy(raw);
+  return checked.reason === undefined ? { state: 'ok', ...checked } : { state: 'unreadable', reason: checked.reason };
 }
 
 /**

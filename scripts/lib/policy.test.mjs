@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
-import { policyAllows, readPolicy, writePolicy } from './policy.mjs';
+import { checkedPolicy, policyAllows, readPolicy, writePolicy } from './policy.mjs';
 
 const made = [];
 const tempDir = prefix => {
@@ -150,4 +150,14 @@ test('writePolicy refuses a policy readPolicy would reject', () => {
   assert.throws(() => writePolicy(root, { ...POLICY, maxAction: 'observe' }), /maxAction/);
   assert.throws(() => writePolicy(root, { ...POLICY, minTrialSessions: 0 }), /minTrialSessions/);
   assert.deepEqual(readPolicy(root), { state: 'absent' });
+});
+
+test('a checked policy carries the hash that writing and reading it give', () => {
+  const root = tempDir('hk-policy-repo-');
+  const checked = checkedPolicy({ maxAction: 'warn', minTrialSessions: 2, minTrialFirings: 5 });
+  assert.deepEqual(checked.policy, POLICY);
+  assert.equal(checked.sha256, writePolicy(root, POLICY));
+  assert.equal(checked.sha256, readPolicy(root).sha256);
+  assert.deepEqual(checkedPolicy({ ...POLICY, maxAction: 'observe' }), { reason: "maxAction must be 'warn' or 'block'" });
+  assert.deepEqual(checkedPolicy(null), { reason: 'the policy is not a JSON object' });
 });
