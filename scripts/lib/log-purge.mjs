@@ -5,11 +5,34 @@
 // `checkDataDir` clears it; the check is repeated immediately before each
 // write and before the removal, so a directory swapped for a link after the
 // plan is refused rather than followed.
+//
+// The directory holds more than the log: the learning ledger, the
+// learnings, the promotion policy and this machine's gate file. Removing it
+// switches off every gate promoted on this machine and every local
+// suspension of a committed gate, so the removal runs only with the result
+// of the terminal check `requireInteractive` makes, as the `learn` steps
+// that weaken a gate do, and holding the locks those files are written
+// under.
 import { lstatSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { sessionIds } from './recurrence.mjs';
+import { underIndexLock } from '../../assets/scripts/harness-seal.mjs';
+import { DATA_DIR_LOCKS, LOCKED, withFileLock } from './file-lock.mjs';
 import { assertDataDirSafe, checkDataDir, diskUsage, formatBytes, logCommand, recordEnabled } from './log-lib.mjs';
+import { sessionIds } from './recurrence.mjs';
+
+/** What the terminal check is, in the words every refusal and note uses. */
+const TERMINAL = 'an interactive terminal outside Claude Code';
+
+/** Why the library removed nothing when the terminal check did not pass. */
+export const PURGE_NEEDS_TERMINAL = `purge --yes needs ${TERMINAL}; nothing was removed`;
+
+/** The one line the command ends with when `interactive`, what
+ * `requireInteractive` returned, did not pass. */
+export const purgeTerminalRefusal = interactive => `purge --yes refused: ${interactive.reason}; it needs ${TERMINAL}, and nothing was removed.`;
+
+/** What else the directory holds, and what removing it does. */
+export const PURGE_ALSO_REMOVES = "Besides the session log, the directory holds the learning ledger, every learning, the promotion policy and this machine's gate file: removing it switches off every gate promoted on this machine and every local suspension of a committed gate. Gates landed in the repository stay.";
 
 const sizeOf = path => {
   try {
@@ -54,18 +77,71 @@ export function renderPurgePlan(root, target) {
     `Would remove ${target.dir} (${size}, ${sessions}):`,
     ...target.entries.map(e => `  ${e.name}  ${e.bytes === null ? 'size unreadable' : formatBytes(e.bytes)}`),
     'This is everything the kit keeps for this repository on this machine; nothing else is touched.',
+    PURGE_ALSO_REMOVES,
     '',
-    `Run with --yes to remove it:  ${logCommand(root, 'purge', '--yes')}`,
+    `Run with --yes to remove it, which needs ${TERMINAL}:  ${logCommand(root, 'purge', '--yes')}`,
   ].join('\n');
 }
 
-/** Disables the log, so no hook writes into the directory meanwhile, then
- * removes it; a link inside it is removed as a link. Throws
- * `DataDirRefused` when the directory is no longer safe at either step, and
- * otherwise what the removal throws. */
-export function purgeLog(root, target) {
+// A hook that read the log as enabled just before the purge can still append
+// one event after the removal, recreating the directory. The removal is
+// followed by this many looks, a pause before each, and whatever reappeared
+// is removed again.
+const SETTLE_LOOKS = 3;
+const SETTLE_PAUSE_MS = 50;
+const sleep = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, SETTLE_PAUSE_MS);
+
+/** Removes the directory, then what a late hook write put back. */
+function removeAndSettle(root, dir, pause) {
+  rmSync(dir, { recursive: true });
+  for (let look = 0; look < SETTLE_LOOKS; look++) {
+    pause();
+    if (checkDataDir(root).state === 'absent') continue;
+    assertDataDirSafe(root);
+    rmSync(dir, { recursive: true });
+  }
+}
+
+/** Runs `fn` holding the data directory's three locks, or returns the name
+ * of the first one another process held for the whole wait. */
+function underDataDirLocks(root, dir, now, fn) {
+  let held = 'learnings';
+  try {
+    return withFileLock(join(dir, DATA_DIR_LOCKS.learnings), { name: 'learnings', now }, () => {
+      held = 'ledger';
+      return withFileLock(join(dir, DATA_DIR_LOCKS.ledger), { name: 'ledger', now }, () => {
+        let result;
+        const outcome = underIndexLock(root, () => { result = fn(); });
+        return outcome === 'ran' ? result : { lockedBy: 'index' };
+      });
+    });
+  } catch (error) {
+    if (error?.code === LOCKED) return { lockedBy: held };
+    throw error;
+  }
+}
+
+/**
+ * Removes the repository's data directory: `{ removed: true }`, or
+ * `{ removed: false, reason }` when nothing was removed. `interactive` is
+ * what `requireInteractive` returned, and anything but its pass is a
+ * refusal. The removal holds the learnings, ledger and index locks, so no
+ * `learn` step or sealing run is part-way through a write; it first
+ * disables the log, so no hook starts a write into the directory, and a
+ * link inside the directory is removed as a link. Throws `DataDirRefused`
+ * when the directory is no longer safe at any step, and otherwise what the
+ * removal throws. `now` is the clock for the lock waits and `pause` what
+ * waits between the looks after the removal.
+ */
+export function purgeLog(root, target, { interactive, now = Date.now, pause = sleep } = {}) {
+  if (interactive?.ok !== true) return { removed: false, reason: PURGE_NEEDS_TERMINAL };
   assertDataDirSafe(root);
-  recordEnabled(root, false);
-  assertDataDirSafe(root);
-  rmSync(target.dir, { recursive: true });
+  const done = underDataDirLocks(root, target.dir, now, () => {
+    assertDataDirSafe(root);
+    recordEnabled(root, false);
+    assertDataDirSafe(root);
+    removeAndSettle(root, target.dir, pause);
+    return { removed: true };
+  });
+  return done.lockedBy === undefined ? done : { removed: false, reason: `another process holds the ${done.lockedBy} lock; nothing was removed` };
 }

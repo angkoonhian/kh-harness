@@ -345,8 +345,15 @@ SUBCOMMANDS
              that has outgrown that. It runs on a disabled log too, which no
              session start maintains, so what was recorded can still expire.
   purge      List what would be removed. With --yes, remove this
-             repository's log directory, and nothing else, which also
-             disables the log.
+             repository's data directory on this machine and nothing outside
+             it. Besides the session log, that directory holds the learning
+             ledger, every learning, the promotion policy and this machine's
+             gate file, so removing it disables the log and switches off
+             every gate promoted on this machine and every local suspension
+             of a committed gate; gates landed in the repository stay.
+             --yes needs an interactive terminal outside Claude Code;
+             anywhere else it refuses (3) and removes nothing. Without --yes
+             it needs no terminal.
 
 No subcommand prints a prompt or a tool's input or output. Only \`report\`
 prints an error line: a recurrence's first, normalised, on one line, with
@@ -359,9 +366,15 @@ FLAGS
            else.
 
 Here 3 is also any write to or removal of a log directory that is a link or
-is not inside the data root, by \`maintain\` as by the others. 2 is also
-\`maintain\` when sealing, retention or the blob sweep did not run or stopped
-before its end for a reason other than the time limit, which it names.
+is not inside the data root, by \`maintain\` as by the others, and
+\`purge --yes\` run anywhere but an interactive terminal outside Claude Code:
+standard input and output must both be terminals and CLAUDECODE unset. That
+check is a barrier against the ordinary case, not isolation: a process
+running as the same user can forge a terminal or delete the directory. 2 is
+also \`purge --yes\` while another process holds one of the directory's
+locks, and \`maintain\` when sealing, retention or the blob sweep did not run
+or stopped before its end for a reason other than the time limit, which it
+names.
 
 ${EXIT_CODES}`;
 
