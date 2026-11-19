@@ -6,14 +6,20 @@
 //
 // Two gate files bind: the committed `GATES_PATH`, which binds everyone who
 // has the repository, and `LOCAL_GATES_FILE` in this machine's data
-// directory, which binds only this machine. The gates are tried in ascending
-// order of their id's number, and only the first that matches acts:
-//   - `observe` records a firing and changes nothing;
+// directory, which binds only this machine. Every gate in force is tried
+// against the call, and every one that matches records a firing with its own
+// action, so no gate hides another:
+//   - `observe` records its firing and changes nothing;
 //   - `warn` leaves the call to the normal permission flow, and its message
 //     reaches Claude alongside the tool's result, after the call has run;
 //   - `block` denies the call with its message as the reason.
-// A firing is recorded only while the session log is enabled, so with the
-// log disabled an `observe` gate does nothing at all.
+// The call is denied when any matching gate blocks. The text Claude gets
+// names each matching gate above `observe` on a line of its own, the blocks
+// first and then the warnings, each in ascending order of the id's number,
+// up to `GATE_TEXT_MAX_CHARS`; a last line counts the ones that did not fit,
+// whose firings are recorded all the same. A firing is recorded only while
+// the session log is enabled, so with the log disabled an `observe` gate
+// does nothing at all.
 //
 // The local file cannot weaken a committed gate unseen. A local gate with a
 // committed gate's id replaces it only when it is the same rule
@@ -23,9 +29,9 @@
 // that way, but the person is told. Suspension is a machine-local act, so a
 // suspension in the committed file is a rejected entry.
 //
-// The text shown to Claude is the fixed prefix `kh-harness gate <id>: ` and
-// the gate's message, which `parseGates` validates again here because the
-// files can be edited by hand.
+// A gate's line is the fixed prefix `kh-harness gate <id>: ` and the gate's
+// message, which `parseGates` validates again here because the files can be
+// edited by hand.
 //
 // Fails open, visibly: a gate file that exists but cannot be read, is larger
 // than GATE_FILE_MAX_BYTES or cannot be parsed, or that holds rejected
@@ -39,8 +45,9 @@
 // missing gate file is normal and silent, and stdin that is not a PreToolUse
 // payload with a tool name gets no notice of any kind.
 //
-// Runs before every tool call, so it reads the two files, parses and matches,
-// and never spawns a child process. Always exits 0: unparseable stdin, a
+// Runs before every tool call, so it reads the two files, parses and matches
+// (at most `GATE_LIMITS.gatesMax` gates from each file), and never spawns a
+// child process. Always exits 0: unparseable stdin, a
 // payload for another event or without a tool name, and any internal failure
 // are all nothing to do.
 import { createHash } from 'node:crypto';
@@ -92,6 +99,11 @@ const HOOK_EVENT = 'PreToolUse';
 export const GATE_FILE_MAX_BYTES = 1024 * 1024;
 
 const ACTION_RANK = { observe: 0, warn: 1, block: 2 };
+
+/** The most characters of gate text one call gives Claude: a dozen messages
+ * of full length, and well inside the 10,000 characters Claude Code keeps of
+ * a hook's output. */
+export const GATE_TEXT_MAX_CHARS = 4000;
 
 // A hard ceiling on how long reading stdin may block; see lint-touched.mjs's
 // STDIN_TIMEOUT_MS for why the read is asynchronous.
@@ -160,8 +172,9 @@ const idNumber = gate => Number(gate.id.slice(1));
 const mayReplace = (local, committed) =>
   lib.gateSha256(local) === lib.gateSha256(committed) && ACTION_RANK[local.action] >= ACTION_RANK[committed.action];
 
-/** The gates in force, in the order they are tried, and how many local
- * entries were ignored or suspended a committed gate. */
+/** The gates in force, in ascending order of their id's number, which is the
+ * order their firings are recorded in, and how many local entries were
+ * ignored or suspended a committed gate. */
 function gatesInForce(committed, local) {
   const byId = new Map(committed.gates.map(g => [g.id, g]));
   let ignored = 0;
@@ -230,18 +243,41 @@ function decide(root, payload) {
   const notice = sentences.filter(s => s !== null && firstTelling(root, sessionId, s));
   const output = notice.length > 0 ? { systemMessage: `kh-harness: ${notice.join(' ')}` } : {};
 
-  const gate = gates.find(g => lib.matchGate(g, toolName, toolInput));
-  if (gate !== undefined) {
-    recordFiring(root, sessionId, gate, payload);
-    const text = `kh-harness gate ${gate.id}: ${gate.message}`;
-    if (gate.action === 'block') {
-      output.hookSpecificOutput = { hookEventName: HOOK_EVENT, permissionDecision: 'deny', permissionDecisionReason: text };
-    } else if (gate.action === 'warn') {
+  const matched = gates.filter(g => lib.matchGate(g, toolName, toolInput));
+  for (const gate of matched) recordFiring(root, sessionId, gate, payload);
+  const told = matched
+    .filter(g => g.action !== 'observe')
+    .sort((a, b) => ACTION_RANK[b.action] - ACTION_RANK[a.action] || idNumber(a) - idNumber(b));
+  if (told.length > 0) {
+    const text = toldText(told);
+    output.hookSpecificOutput = told[0].action === 'block'
+      ? { hookEventName: HOOK_EVENT, permissionDecision: 'deny', permissionDecisionReason: text }
       // No `permissionDecision`: `allow` would skip the permission prompt.
-      output.hookSpecificOutput = { hookEventName: HOOK_EVENT, additionalContext: text };
-    }
+      : { hookEventName: HOOK_EVENT, additionalContext: text };
   }
   return Object.keys(output).length === 0 ? null : output;
+}
+
+const notShown = n => `kh-harness: ${n} more matching ${plural(n, 'gate is', 'gates are')} not shown.`;
+
+/** One line per gate of `told`, in its order, for as many as fit in
+ * `GATE_TEXT_MAX_CHARS` with the line that counts the rest, which is added
+ * when any is left out. The first always fits. */
+function toldText(told) {
+  const lines = [];
+  let used = 0;
+  for (const [i, gate] of told.entries()) {
+    const line = `kh-harness gate ${gate.id}: ${gate.message}`;
+    const after = told.length - i - 1;
+    const reserved = after > 0 ? notShown(after).length + 1 : 0;
+    if (i > 0 && used + line.length + 1 + reserved > GATE_TEXT_MAX_CHARS) {
+      lines.push(notShown(told.length - i));
+      break;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return lines.join('\n');
 }
 
 async function main() {
