@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // PostToolUseFailure hook: tells Claude when the same call has failed the
-// same way three times in a row, so it changes approach instead of
-// repeating it.
+// same way three times with no different failure between, so it changes
+// approach instead of repeating it.
 //
 // A failure's signature is a SHA-256 over the tool name, the canonical JSON
 // of the tool input and the first non-empty line of the error. A failure's
@@ -64,7 +64,8 @@ try {
 const { canonicalJson, markerPath, openMarker, projectRoot, safeSessionId, stripAnsi } = asset;
 
 const WARN_AT = 3;
-const WARNING = 'The same call has failed 3 times in a row with the same error. Stop repeating it and change approach.';
+// Not "in a row": a success between two of the failures is not seen.
+const WARNING = 'The same call has failed with the same error 3 times, with no different failure between them. Stop repeating it and change approach.';
 
 const NONCE_BYTES = 16;
 const RECORD = /^[0-9a-f]{64} [0-9a-f]{32}$/;

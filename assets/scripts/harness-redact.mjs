@@ -337,7 +337,7 @@ const PEM_TO_END_OF_LINE = new RegExp(PEM_HEADER.source + '.*', 'g');
 
 /** Options every mask entry point takes. `floors: 'mask'` (the default) uses
  * each shape's `maskPattern`, `'sweep'` its stricter `pattern`. */
-const sweepFloors = ({ floors = 'mask' } = {}) => floors === 'sweep';
+const sweepFloors = options => options?.floors === 'sweep';
 
 /** Masks one line that `stripAnsi` has already cleaned. */
 function maskLine(line, sweep) {

@@ -79,10 +79,13 @@ export function gunzipBounded(bytes, maxBytes = maxLogFileBytes()) {
 /** The text of a file the kit keeps small; throws as `readBounded` does. */
 export const readSmallFile = path => readBounded(path, MAX_SMALL_FILE_BYTES).toString('utf8');
 
-/** The per-machine directory every repository's log lives under. */
+/** The per-machine directory every repository's log lives under:
+ * `KH_DATA_DIR` when it is an absolute path, otherwise the default. A
+ * relative value is not used, since a hook and the command line would each
+ * resolve it against their own working directory and keep two logs. */
 export function dataRoot() {
   const override = process.env.KH_DATA_DIR;
-  return override && override.length > 0 ? override : join(homedir(), '.claude', 'kh-harness');
+  return override && isAbsolute(override) ? override : join(homedir(), '.claude', 'kh-harness');
 }
 
 /**

@@ -42,7 +42,7 @@ import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'loop-watch.mjs');
 const FORBID_SPAWN = resolve(import.meta.dirname, 'session-log-forbid-spawn.cjs');
-const WARNING = 'The same call has failed 3 times in a row with the same error. Stop repeating it and change approach.';
+const WARNING = 'The same call has failed with the same error 3 times, with no different failure between them. Stop repeating it and change approach.';
 const WARNING_OUTPUT = JSON.stringify({
   systemMessage: WARNING,
   hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: WARNING },
