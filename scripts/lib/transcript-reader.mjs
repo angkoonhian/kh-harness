@@ -50,9 +50,18 @@ const KNOWN = new Set(KNOWN_LINE_TYPES);
 const INTERRUPT_MARKERS = new Set(['[Request interrupted by user]', '[Request interrupted by user for tool use]']);
 
 // Transcripts reach hundreds of megabytes, so the file is never held whole;
-// only the line being assembled is.
+// only the line being assembled is, and that only up to
+// `MAX_TRANSCRIPT_LINE_BYTES`.
 const CHUNK_BYTES = 1024 * 1024;
 const NEWLINE = 0x0a;
+
+/** The longest line read. A line holds one message, pasted images included;
+ * a file with no newline, which is no transcript, would otherwise be held
+ * whole. The path comes from the log, which this user's other processes can
+ * write. */
+export const MAX_TRANSCRIPT_LINE_BYTES = 64 * 1024 * 1024;
+
+const LINE_OVER_LIMIT = 'EKHLINEOVERLIMIT';
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -72,22 +81,31 @@ const isInterrupt = content =>
 
 /** Calls `onLine(bytes, number)` for each line of the file, numbered from 1,
  * including an unterminated last line, and stops early when it returns
- * false. Throws what the file system throws. */
-function forEachLine(path, onLine) {
+ * false. Throws what the file system throws, and an error with code
+ * `LINE_OVER_LIMIT` and the line's number at the first line longer than
+ * `maxLineBytes`, before holding more of it than that. */
+function forEachLine(path, maxLineBytes, onLine) {
   const fd = openSync(path, 'r');
   try {
     const chunk = Buffer.allocUnsafe(CHUNK_BYTES);
     let pending = [];
+    let pendingBytes = 0;
     let number = 0;
+    const hold = bytes => {
+      pendingBytes += bytes.length;
+      if (pendingBytes > maxLineBytes) throw Object.assign(new Error('line over the limit'), { code: LINE_OVER_LIMIT, line: number + 1 });
+      pending.push(bytes);
+    };
     for (let n = readSync(fd, chunk); n > 0; n = readSync(fd, chunk)) {
       let start = 0;
       for (let nl = chunk.indexOf(NEWLINE, start); nl !== -1 && nl < n; nl = chunk.indexOf(NEWLINE, start)) {
-        pending.push(chunk.subarray(start, nl));
+        hold(chunk.subarray(start, nl));
         if (onLine(Buffer.concat(pending), ++number) === false) return;
         pending = [];
+        pendingBytes = 0;
         start = nl + 1;
       }
-      if (start < n) pending.push(Buffer.from(chunk.subarray(start, n)));
+      if (start < n) hold(Buffer.from(chunk.subarray(start, n)));
     }
     if (pending.length > 0) onLine(Buffer.concat(pending), ++number);
   } finally {
@@ -100,13 +118,13 @@ function forEachLine(path, onLine) {
  * with their timestamps. `claudeCodeVersion` is the version on the last line
  * that carries one, since a resumed session can span an upgrade, or null.
  * The session is `not-checked`, with no interrupts, when the file cannot be
- * read, when a line does not parse as an object with a string `type`, when
- * a `user` line's content is neither a string nor a list, when an interrupt
- * has no timestamp, or when any line's type is not in
- * KNOWN_LINE_TYPES; `unknownLineTypes` lists those types in order of first
- * appearance. Never throws.
+ * read, when a line is longer than `maxLineBytes`, when a line does not
+ * parse as an object with a string `type`, when a `user` line's content is
+ * neither a string nor a list, when an interrupt has no timestamp, or when
+ * any line's type is not in KNOWN_LINE_TYPES; `unknownLineTypes` lists those
+ * types in order of first appearance. Never throws.
  */
-export function readTranscript(path) {
+export function readTranscript(path, { maxLineBytes = MAX_TRANSCRIPT_LINE_BYTES } = {}) {
   let claudeCodeVersion = null;
   let problem = null;
   const interrupts = [];
@@ -114,7 +132,7 @@ export function readTranscript(path) {
   try {
     // Reading continues past an unknown type so that every unknown type is
     // named, and stops at any other problem.
-    forEachLine(path, (bytes, number) => {
+    forEachLine(path, maxLineBytes, (bytes, number) => {
       let line;
       try {
         line = JSON.parse(utf8.decode(bytes));
@@ -147,7 +165,10 @@ export function readTranscript(path) {
       return true;
     });
   } catch (error) {
-    return { status: 'not-checked', reason: `cannot read the transcript (${error?.code ?? error?.message})`, claudeCodeVersion: null, interrupts: [], unknownLineTypes: [] };
+    if (error?.code !== LINE_OVER_LIMIT) {
+      return { status: 'not-checked', reason: `cannot read the transcript (${error?.code ?? error?.message})`, claudeCodeVersion: null, interrupts: [], unknownLineTypes: [] };
+    }
+    problem = `line ${error.line} is longer than ${maxLineBytes} bytes`;
   }
   const unknownLineTypes = [...unknown];
   if (problem === null && unknownLineTypes.length > 0) problem = `unknown line type: ${unknownLineTypes.join(', ')}`;

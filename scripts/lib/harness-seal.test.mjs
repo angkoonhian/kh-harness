@@ -497,6 +497,68 @@ test('an index that cannot be read has no line count and no sessions sealed', ()
   assert.equal(sessionsSealedSince(root, 0), 0);
 });
 
+/** Runs `fn` with the read limit on a log file lowered to `bytes`. */
+function withReadLimit(bytes, fn) {
+  process.env.KH_LOG_MAX_FILE_BYTES = String(bytes);
+  try {
+    return fn();
+  } finally {
+    delete process.env.KH_LOG_MAX_FILE_BYTES;
+  }
+}
+
+test('an index over the read limit is unreadable, and nothing is sealed against it', () => {
+  const root = tempDir('hk-seal-index-overlimit-');
+  for (const id of ['a', 'b', 'c']) writeSession(root, id);
+  seal(root, { currentSessionId: 'c' });
+  withReadLimit(statSync(dataFile(root, 'index.jsonl')).size - 1, () => {
+    assert.equal(verifyIndex(root).unreadable, true);
+    assert.equal(indexLineCount(root), null);
+    assert.deepEqual(seal(root), { sealed: [], lockLost: false, notRun: 'the index could not be read' });
+  });
+  assert.deepEqual(seal(root).sealed, ['c'], 'fixture sanity: under the real limit the run seals');
+});
+
+test('a session over the read limit is left unsealed, and the sweep keeps every blob because its references are not known', () => {
+  const root = tempDir('hk-seal-session-overlimit-');
+  writeConfig(root, { inlineCapBytes: 1024 });
+  writeSession(root, 'small', 1);
+  appendEvent(root, 'big', { type: 'PostToolUse', output: 'b'.repeat(4096), pad: 'p'.repeat(900) });
+  for (let i = 0; i < 4; i++) appendEvent(root, 'big', { type: 'PostToolUse', pad: 'p'.repeat(900) });
+  const blob = eventsOf(root, 'big')[0].output.blob;
+  touchAgo(blobFile(root, blob), 2 * DAY_MS);
+  withReadLimit(2000, () => {
+    assert.deepEqual(seal(root).sealed, ['small']);
+    assert.deepEqual(applyRetention(root, {}).blobSweep, {
+      skipped: true, reason: 'a session with events not yet sealed could not be read, so the blobs it references are not known',
+    });
+  });
+  assert.equal(existsSync(blobFile(root, blob)), true);
+  assert.equal(existsSync(sessionFile(root, 'big')), true, 'its events stay where they are');
+});
+
+test('a session larger on disk than the caller\'s bound is left unclaimed for a caller with a larger one', () => {
+  const root = tempDir('hk-seal-session-bound-');
+  writeSession(root, 'small', 1);
+  writeSession(root, 'large', 12);
+  const bound = statSync(sessionFile(root, 'small')).size + 50;
+  assert.deepEqual(seal(root, { maxSessionBytes: bound }).sealed, ['small']);
+  assert.deepEqual(readdirSync(join(repoDataDir(root), 'sessions')).sort(), ['s-large.jsonl', 's-small.jsonl.gz']);
+  assert.equal(eventsOf(root, 'large').length, 12, 'its events are still read');
+  assert.deepEqual(seal(root).sealed, ['large']);
+});
+
+test('retention leaves a sealed session larger on disk than the caller\'s bound for a caller with a larger one', () => {
+  const root = tempDir('hk-retention-session-bound-');
+  writeSession(root, 'large', 12);
+  seal(root);
+  const later = Date.now() + 100 * DAY_MS;
+  const size = statSync(sealedFile(root, 'large')).size;
+  assert.equal(applyRetention(root, { now: later, maxSessionBytes: size - 1 }).contentRemoved, 0);
+  assert.equal(Object.hasOwn(eventsOf(root, 'large')[0], 'output'), true);
+  assert.equal(applyRetention(root, { now: later }).contentRemoved, 1);
+});
+
 test('a crash during a retention rewrite is pending and finished on the next run', () => {
   const root = tempDir('hk-log-retention-crash-');
   writeSession(root, 'aged', 2);

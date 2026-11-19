@@ -381,6 +381,49 @@ test('a damaged gate file changes learned', () => {
   assert.equal(seen.size, 2, 'every kind of damage contributes the one literal "unreadable"');
 });
 
+test('a gate file larger than the gate hook reads counts as unreadable, as it does to the hook', () => {
+  const root = installedRepo();
+  writeAt(root, GATES_PATH, '{ not json');
+  const damaged = harnessIdentity(root).learned;
+  const padded = JSON.stringify({ schema: 1, generatedBy: 'x'.repeat(1024 * 1024), gates: [gate('L1')] });
+  writeAt(root, GATES_PATH, padded);
+  assert.equal(harnessIdentity(root).learned, damaged, 'none of its gates apply, so none of them is hashed');
+});
+
+test('an installed script larger than the kit writes is hashed as unreadable, not read', () => {
+  const root = installedRepo();
+  writeAt(root, HOOK, `// ${'a'.repeat(1024 * 1024)}\n`);
+  const first = harnessIdentity(root).base;
+  writeAt(root, HOOK, `// ${'b'.repeat(1024 * 1024)}\n`);
+  assert.equal(harnessIdentity(root).base, first);
+});
+
+/** Runs `fn` with the read limit on a log file lowered to `bytes`. */
+function withReadLimit(bytes, fn) {
+  process.env.KH_LOG_MAX_FILE_BYTES = String(bytes);
+  try {
+    return fn();
+  } finally {
+    delete process.env.KH_LOG_MAX_FILE_BYTES;
+  }
+}
+
+test('a session file over the read limit, on disk or once decompressed, is not read and is marked over the limit', () => {
+  const root = tempDir('hk-log-overlimit-');
+  appendEvent(root, 'small', { n: 1 });
+  appendEvent(root, 'big', { pad: 'x'.repeat(4000) });
+  writeFileSync(`${sessionFile(root, 'bomb')}.gz`, gzipSync(Buffer.alloc(200_000, 0x20)));
+  assert.ok(statSync(`${sessionFile(root, 'bomb')}.gz`).size < 2000, 'fixture sanity: small on disk');
+  withReadLimit(2000, () => {
+    const over = { events: [], unparseable: 0, unreadable: true, overLimit: true };
+    assert.deepEqual(readEvents(root, 'big'), over);
+    assert.deepEqual(readEvents(root, 'bomb'), over, 'the output of a decompression is bounded too');
+    assert.deepEqual(readEvents(root, 'small').events.map(e => e.n), [1]);
+    assert.equal(readEvents(root, 'small').overLimit, false);
+  });
+  assert.equal(readEvents(root, 'big').events.length, 1, 'fixture sanity: readable under the real limit');
+});
+
 test('no manifest yields base none', () => {
   const id = harnessIdentity(tempDir('hk-log-ident-bare-'));
   assert.equal(id.base, 'none');
@@ -840,8 +883,8 @@ test('a compressed session is read, before any events appended after it', () => 
 
 test('reading an absent, unsafe or undecompressable session never throws', () => {
   const root = tempDir('hk-log-readfail-');
-  assert.deepEqual(readEvents(root, 'absent'), { events: [], unparseable: 0, unreadable: false });
-  assert.deepEqual(readEvents(root, '../escape'), { events: [], unparseable: 0, unreadable: false });
+  assert.deepEqual(readEvents(root, 'absent'), { events: [], unparseable: 0, unreadable: false, overLimit: false });
+  assert.deepEqual(readEvents(root, '../escape'), { events: [], unparseable: 0, unreadable: false, overLimit: false });
   mkdirSync(join(repoDataDir(root), 'sessions'), { recursive: true });
   writeFileSync(`${sessionFile(root, 's1')}.gz`, 'not gzip');
   appendEvent(root, 's1', { n: 1 });

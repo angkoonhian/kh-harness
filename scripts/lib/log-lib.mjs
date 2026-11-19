@@ -6,12 +6,11 @@
 // Nothing here returns or renders a logged event's content or any string
 // read from a transcript: only counts, times, sizes, session ids and the
 // kit's own file names leave this module.
-import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
-import { gunzipSync } from 'node:zlib';
 
 import {
-  dataRoot, isEnabled, parsedObject, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
+  dataRoot, gunzipBounded, isEnabled, maxLogFileBytes, parsedObject, readBounded, readConfig, readEvents, repoDataDir, sessionFileName, SESSIONS_DIR, setEnabled,
 } from '../../assets/scripts/harness-log.mjs';
 import { CLAIMED_SUFFIX, contentFieldsOf, SEAL_TEMP_SUFFIX, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { verifyLedger } from './ledger.mjs';
@@ -239,7 +238,7 @@ function unverifiedPastRetention(root, ids, cutoff) {
     const mtimeMs = () => statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? Number.NaN;
     let state;
     try {
-      state = sealedContentState(gunzipSync(readFileSync(path)));
+      state = sealedContentState(gunzipBounded(readBounded(path, maxLogFileBytes())));
     } catch {
       try {
         if (mtimeMs() < cutoff) count++;

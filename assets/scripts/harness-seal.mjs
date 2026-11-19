@@ -32,11 +32,13 @@
 // it imports only Node built-ins and sibling files and never spawns a child
 // process.
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, closeSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readdirSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { gzipSync } from 'node:zlib';
 
-import { BLOBS_DIR, logDirProblem, parsedObject, readConfig, repoDataDir, sessionFileName, SESSIONS_DIR } from './harness-log.mjs';
+import {
+  BLOBS_DIR, gunzipBounded, logDirProblem, maxLogFileBytes, parsedObject, readBounded, readConfig, repoDataDir, sessionFileName, SESSIONS_DIR,
+} from './harness-log.mjs';
 import { canonicalJson, safeSessionId } from './harness-redact.mjs';
 
 /** Appended to a session's file name (`sessionFileName`): the file its
@@ -118,6 +120,8 @@ const NEWLINE = 0x0a;
 // owner leaves it ownerless only between creating it and writing to it.
 const LOCK_STALE_MS = 30_000;
 const LOCK_MAX_AGE_MS = 10 * 60_000;
+// A lock holds its owner's pid and token; anything larger is not one.
+const LOCK_MAX_BYTES = 4096;
 
 // The suffixes after a session's file name that name its plain file and its
 // sealed one; `CLAIMED_SUFFIX` and `SEAL_TEMP_SUFFIX` name the other two.
@@ -185,7 +189,7 @@ function recordLatest(index, record, lineHash) {
 function readIndex(root) {
   let buf;
   try {
-    buf = readFileSync(indexPath(root));
+    buf = readBounded(indexPath(root), maxLogFileBytes());
   } catch (error) {
     if (error?.code !== 'ENOENT') return null;
     buf = Buffer.alloc(0);
@@ -251,11 +255,12 @@ function listSessions(root) {
 const sessionFile = (root, sessionId, kind) => `${join(repoDataDir(root), SESSIONS_DIR, sessionFileName(sessionId))}${kind}`;
 
 /** The uncompressed bytes of a gzip file, or null when it is absent; any
- * other failure, a file that is not gzip included, throws. */
-function readCompressed(path, gunzip = gunzipSync) {
+ * other failure throws: a file that is not gzip, and one over
+ * `maxLogFileBytes()` on disk or decompressed. */
+function readCompressed(path, gunzip = gunzipBounded) {
   let bytes;
   try {
-    bytes = readFileSync(path);
+    bytes = readBounded(path, maxLogFileBytes());
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
     throw error;
@@ -272,7 +277,7 @@ const matchesIndex = (bytes, latest) => (latest === undefined ? bytes === null :
 
 /** Whether the session's temporary file holds what its latest index line
  * names; false when either is absent or the file cannot be read. */
-function tempMatchesIndex(root, sessionId, latest, gunzip = gunzipSync) {
+function tempMatchesIndex(root, sessionId, latest, gunzip = gunzipBounded) {
   if (latest === undefined) return false;
   try {
     return matchesRecord(readCompressed(sessionFile(root, sessionId, SEAL_TEMP_SUFFIX), gunzip), latest);
@@ -349,7 +354,7 @@ const rethrowLockLost = error => {
  * `verifyIndex` to report. `sessions` is updated to match; a session whose
  * temporary file remains is left alone by the rest of the run.
  */
-function recoverInterrupted(root, sessions, index, held, gunzip = gunzipSync) {
+function recoverInterrupted(root, sessions, index, held, gunzip = gunzipBounded) {
   for (const [sessionId, kinds] of sessions) {
     if (!kinds.has(SEAL_TEMP_SUFFIX)) continue;
     const temp = sessionFile(root, sessionId, SEAL_TEMP_SUFFIX);
@@ -388,15 +393,19 @@ function joined(sealed, claimed) {
  * session whose sealed file does not match its latest index line is left
  * alone, so `verifyIndex` keeps reporting it instead of the damage being
  * sealed over. A claimed file an interrupted run left is sealed before the
- * plain file, which then waits for a later run.
+ * plain file, which then waits for a later run. A session whose sealed and
+ * unsealed files together are larger on disk than `maxBytes` is left as it
+ * is, unclaimed, since sealing reads both whole.
  */
-function sealSession(root, sessionId, kinds, index, now, held) {
+function sealSession(root, sessionId, kinds, index, now, held, maxBytes) {
   if (kinds.has(SEAL_TEMP_SUFFIX) || !(kinds.has(PLAIN) || kinds.has(CLAIMED_SUFFIX))) return false;
   const plainPath = sessionFile(root, sessionId, PLAIN);
   const sealedPath = sessionFile(root, sessionId, SEALED);
   const claimedPath = sessionFile(root, sessionId, CLAIMED_SUFFIX);
   const tempPath = sessionFile(root, sessionId, SEAL_TEMP_SUFFIX);
-  if (!kinds.has(CLAIMED_SUFFIX) && now - statSync(plainPath).mtimeMs < SEAL_IDLE_MS) return false;
+  const unsealed = statSync(kinds.has(CLAIMED_SUFFIX) ? claimedPath : plainPath);
+  if (!kinds.has(CLAIMED_SUFFIX) && now - unsealed.mtimeMs < SEAL_IDLE_MS) return false;
+  if (unsealed.size + (statSync(sealedPath, { throwIfNoEntry: false })?.size ?? 0) > maxBytes) return false;
   const sealed = readCompressed(sealedPath);
   if (!matchesIndex(sealed, index.latest.get(sessionId))) return false;
   if (!kinds.has(CLAIMED_SUFFIX)) {
@@ -405,7 +414,7 @@ function sealSession(root, sessionId, kinds, index, now, held) {
     kinds.delete(PLAIN);
     kinds.add(CLAIMED_SUFFIX);
   }
-  const claimed = readFileSync(claimedPath);
+  const claimed = readBounded(claimedPath, maxLogFileBytes());
   if (claimed.length === 0) {
     held();
     rmSync(claimedPath, { force: true });
@@ -438,7 +447,7 @@ function processIsAlive(pid) {
 
 function readLock(path) {
   try {
-    const bytes = readFileSync(path);
+    const bytes = readBounded(path, LOCK_MAX_BYTES);
     return { bytes, mtimeMs: statSync(path).mtimeMs };
   } catch {
     return null;
@@ -577,12 +586,16 @@ function budget(clock, budgetMs) {
  * lock, an unreadable index, or a log directory, sessions directory or blob
  * store that is a link, through which nothing is written.
  * Stops before the next session once `budgetMs` of `clock` time has passed;
- * the rest are sealed on a later call. `now` is milliseconds since the
- * epoch; `isAlive(pid)` says whether a lock's owner still runs. Never
- * throws.
+ * the rest are sealed on a later call. The budget is checked between
+ * sessions and one session is read whole, so `maxSessionBytes` bounds what
+ * a single one may cost: a session larger than that on disk, sealed and
+ * unsealed files together, is left for a caller with a larger bound. By
+ * default the bound is the most any reader reads, `maxLogFileBytes()`. `now`
+ * is milliseconds since the epoch; `isAlive(pid)` says whether a lock's
+ * owner still runs. Never throws.
  */
 export function sealClosedSessions(root, {
-  now = Date.now(), currentSessionId, budgetMs = Infinity, clock = defaultClock, isAlive = processIsAlive,
+  now = Date.now(), currentSessionId, budgetMs = Infinity, maxSessionBytes = maxLogFileBytes(), clock = defaultClock, isAlive = processIsAlive,
 } = {}) {
   const sealed = [];
   let outcome = 'ran';
@@ -610,7 +623,7 @@ export function sealClosedSessions(root, {
         if (sessionId === currentSessionId) continue;
         if (!withinBudget()) return;
         try {
-          if (sealSession(root, sessionId, kinds, index, now, held)) sealed.push(sessionId);
+          if (sealSession(root, sessionId, kinds, index, now, held, maxSessionBytes)) sealed.push(sessionId);
         } catch (error) {
           rethrowLockLost(error);
           // this session is left for a later run
@@ -688,13 +701,14 @@ function expireSession(root, sessionId, index, held, gunzip) {
 
 /** Every blob some session references: the latest index line's list for
  * each indexed session, which the caller has verified its sealed content
- * matches, and a read of every unsealed session file. */
+ * matches, and a read of every unsealed session file. Throws when one of
+ * those cannot be read, since what it references is then not known. */
 function referencedBlobs(root, sessions, index) {
   const referenced = new Set();
   for (const [sessionId, kinds] of sessions) {
     for (const sha256 of index.latest.get(sessionId)?.blobs ?? []) referenced.add(sha256);
     for (const kind of [PLAIN, CLAIMED_SUFFIX]) {
-      if (kinds.has(kind)) blobsIn(readFileSync(sessionFile(root, sessionId, kind)), referenced);
+      if (kinds.has(kind)) blobsIn(readBounded(sessionFile(root, sessionId, kind), maxLogFileBytes()), referenced);
     }
   }
   return referenced;
@@ -705,12 +719,11 @@ function referencedBlobs(root, sessions, index) {
 const BLOB_NAME = /^([0-9a-f]{64})\.gz$/;
 const BLOB_TEMP_NAME = /^[0-9a-f]{64}\.gz\.\d+\.[0-9a-f]{12}\.tmp$/;
 
-/** Removes every blob in the blob store that no session references, and
- * every blob write's leftover, once it is over a day old by `now`; the age
- * floor spares a blob whose event has not been appended yet. A file under
- * any other name is not the kit's and is left alone. */
-function removeUnreferencedBlobs(root, sessions, index, now, held) {
-  const referenced = referencedBlobs(root, sessions, index);
+/** Removes every blob in the blob store that `referenced` does not hold,
+ * and every blob write's leftover, once it is over a day old by `now`; the
+ * age floor spares a blob whose event has not been appended yet. A file
+ * under any other name is not the kit's and is left alone. */
+function removeUnreferencedBlobs(root, referenced, now, held) {
   const dir = join(repoDataDir(root), BLOBS_DIR);
   let names;
   try {
@@ -741,7 +754,7 @@ const isVerifiedEntry = v => isPlainObject(v) && isSha256(v.line) && Number.isSa
 function readVerified(root) {
   const record = (() => {
     try {
-      return parsedObject(readFileSync(verifiedPath(root), 'utf8'));
+      return parsedObject(readBounded(verifiedPath(root), maxLogFileBytes()).toString('utf8'));
     } catch {
       return null;
     }
@@ -810,13 +823,15 @@ export function untrustedBecause(check) {
  *
  * Runs under the index lock and does nothing while another process holds
  * it, or when the log directory, its sessions directory or its blob store is
- * a link. A session with events being sealed is left for a later run, as is
+ * a link. A session whose sealed file is larger than `maxSessionBytes` on
+ * disk is left for a caller with a larger bound, as `sealClosedSessions`
+ * leaves one. A session with events being sealed is left for a later run, as is
  * everything once `budgetMs` of `clock` time has passed. `isAlive(pid)`
  * says whether a lock's owner still runs; `gunzip` decompresses sealed
  * files. Never throws.
  */
 export function applyRetention(root, {
-  now = Date.now(), budgetMs = Infinity, clock = defaultClock, isAlive = processIsAlive, gunzip = gunzipSync,
+  now = Date.now(), budgetMs = Infinity, maxSessionBytes = maxLogFileBytes(), clock = defaultClock, isAlive = processIsAlive, gunzip = gunzipBounded,
 } = {}) {
   let contentRemoved = 0;
   let contentUnverifiable = 0;
@@ -854,6 +869,7 @@ export function applyRetention(root, {
           continue;
         }
         if (latest.contentExpired === true || latest.lastTs === null || !(Date.parse(latest.lastTs) < cutoff)) continue;
+        if ((statSync(sessionFile(root, sessionId, SEALED), { throwIfNoEntry: false })?.size ?? 0) > maxSessionBytes) continue;
         if (!withinBudget()) return skip('the time budget was spent');
         try {
           const expired = expireSession(root, sessionId, index, held, gunzip);
@@ -877,7 +893,13 @@ export function applyRetention(root, {
       if (check === null) return skip('the time budget was spent');
       const untrusted = untrustedBecause(check.result);
       if (untrusted !== null) return skip(untrusted);
-      removeUnreferencedBlobs(root, check.sessions, check.index, now, held);
+      let referenced;
+      try {
+        referenced = referencedBlobs(root, check.sessions, check.index);
+      } catch {
+        return skip('a session with events not yet sealed could not be read, so the blobs it references are not known');
+      }
+      removeUnreferencedBlobs(root, referenced, now, held);
       blobSweep = { skipped: false, reason: null };
     });
   } catch {
@@ -896,7 +918,7 @@ export function applyRetention(root, {
  * taken to match without being read, and every file found to match is
  * entered, so the progress of a run cut short is kept.
  */
-function checkIndex(root, { withinBudget = () => true, gunzip = gunzipSync, verified = null } = {}) {
+function checkIndex(root, { withinBudget = () => true, gunzip = gunzipBounded, verified = null } = {}) {
   const sessionsMissing = [];
   const sessionsAltered = [];
   const sessionsPending = [];
