@@ -14,8 +14,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   each event, tool input and output included, in the per-machine data
   directory `~/.claude/kh-harness/<key>/` (or under `KH_DATA_DIR`), outside
   the repository, after a best-effort credential scrub. Sessions are sealed
-  and compressed after 10 minutes idle and chained in an index; content
-  is kept 90 days by default and structure until purged.
+  and compressed after 10 minutes idle and chained in an unkeyed index.
+  While the log is enabled, a sealed session's content is removed after
+  90 days by default; after `log disable` nothing expires until
+  `log purge --yes`. Structure is kept until purged.
 - The `log` command: `enable`, `disable`, `status`, `report`, `maintain`
   and `purge`.
 - Recurrence detection: the same tool, input hash and normalised first
@@ -83,30 +85,47 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `retire`, `land`, `revert`, `policy set`, `policy clear`), in the Bash and
   PowerShell tools. `apply` proposes the missing ones to an install made
   before they existed.
+- Upgrading from 0.1.0: every generated file carries the kit's version in
+  its stamp, so on a 0.1.0 install `detect` proposes every unmodified
+  kit-owned file as an update (`P0.kitskew`), the `RULES.md` scaffold
+  included, whose comment changed. A file you edited is kept and named.
 - `stripUnsafe` removes more invisible characters: the variation
   selectors, the Hangul fillers, and U+2028, U+2029 and U+0085.
-- `detect`: one credential table now serves both the sweep and the hooks'
-  mask; a directory the walk cannot list is a finding, not an empty walk;
-  an unparseable settings file or a malformed manifest is its own state,
-  not an absence; the report is written atomically and inside the
-  repository only; proposals carry `via` (`apply`, `skill` or `human`) and
-  the no-actions line counts failing checks; a concatenated string literal
-  and a JavaScript arrow parameter are no longer reported as credentials.
+- `detect`: one credential table serves both the sweep and the hooks'
+  mask; proposals carry `via` (`apply`, `skill` or `human`) and the
+  no-actions line counts failing checks.
+- `apply`: a hook script and the module it imports are updated together
+  or not at all; the dry run prints the execution disclosure whenever a
+  hook is proposed.
+- `uninstall` also removes the two files `learn land` writes, together and
+  only while they hold nothing but learnings the manifest records, and
+  clears the manifest's landed learnings; the ledger is not changed. It
+  reports the session log's directory and size and never removes it.
+- The rules brief reads `LEARNED.md` after `RULES.md`, and skips a rule
+  that does not fit and keeps going.
+- The `RULES.md` and `FAILURES.md` templates no longer promise an enforcer
+  or a drafting rule the code does not provide.
+- The README's claim that per-prompt re-injection counters the decay of
+  told rules is withdrawn: the decay is measured, the remedy is not.
+
+### Fixed
+
+- `detect`: a directory the walk cannot list is a finding, not an empty
+  walk; an unparseable settings file or a malformed manifest is its own
+  state, not an absence; the report is written atomically and only inside
+  the repository; a concatenated string literal and a JavaScript arrow
+  parameter are no longer reported as credentials, and a quoted value can
+  no longer escape the mask.
 - `detect` and `apply`: a hook is credited as the kit's only by its own
   registration, never because the logging hook occupies the same event.
 - `apply`: `--yes` writes nothing (exit 2) when a batch holds a settings
   patch and `settings.json` cannot be parsed, so no hook script is left
   installed and unregistered; a malformed manifest makes `apply` and
-  `uninstall` refuse (exit 3); a hook script and the module it imports are updated together or
-  not at all; the dry run prints the execution disclosure whenever a hook
-  is proposed.
+  `uninstall` refuse (exit 3).
 - `uninstall`: a settings patch is reverted only when a kit generator could
   have written it, and a hook entry counts as the kit's only in the exact
   shape a generator writes; a patch kept for lack of provenance is listed
-  as kept and leaves the exit code at 0; `LEARNED.md` and `gates.json` are
-  removed only together and only while they hold nothing but recorded
-  learnings; the session log's directory and size are reported and it is
-  never removed.
+  as kept and leaves the exit code at 0.
 - The lint sensor and the Stop gate: suppression counts reset on a clean
   run; command redaction drops a line only when it echoes the whole
   command or holds a command token of 8 or more characters, so diagnostics
@@ -114,22 +133,14 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   body lines are hidden; the lint sensor says when it could not confirm a
   file clean, and walks up past a manifest with no lint script.
 - The session brief and the rules brief strip, mask and escape the text
-  they inject; the rules brief skips a rule that does not fit and keeps
-  going, and reads `LEARNED.md` after `RULES.md`.
-- The `RULES.md` and `FAILURES.md` templates no longer promise an enforcer
-  or a drafting rule the code does not provide.
-- The README's claim that per-prompt re-injection counters the decay of
-  told rules is withdrawn: the decay is measured, the remedy is not.
+  they inject.
 
 ### Limits
 
 On one user account these controls are detection and deny rules, not
-isolation: an agent with a shell can forge ledger lines and firing counts,
-write the local gate file, reach `learn.mjs` past the deny rules, or call
-the kit's functions directly. The scrub is best-effort. The README's
-"Limits" section lists each case.
-
-## [0.1.0]
-
-The first version: `detect`, `apply`, `uninstall` and the `harness-init`
-skill. No changelog was kept for it.
+isolation: an agent with a shell can forge or rewrite ledger lines and
+firing counts, write the local gate file, reach `learn.mjs` past the deny
+rules, or call the kit's functions directly, and nothing marks a forged
+ledger line as forged. The scrub is best-effort, and recorded content
+stops expiring once the log is disabled. The README's "Limits" section
+lists each case.

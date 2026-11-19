@@ -47,8 +47,10 @@ The harness line is written at session start, on a model switch, and on a
 prompt whose identity or model has moved since the last one. A change to a
 file the kit did not write, such as your own rules, changes neither hash.
 
-A payload larger than 64 KiB (the `inlineCapBytes` setting) is stored once,
-compressed, under `blobs/`, named by its hash.
+The cap applies to each string value in an event, not to the event as a
+whole: a string longer than 64 KiB (the `inlineCapBytes` setting) is stored
+once, compressed, under `blobs/`, named by its hash, and the event holds a
+reference to it.
 
 ## Where it lives
 
@@ -97,20 +99,23 @@ The scrub is **best-effort**:
   secret can be found from its hash by trying candidates.
 - Anything you paste into a prompt is stored, after the same mask.
 
-The lint sensor and the Stop gate also filter what they show the model, a
-second way: they drop a line that repeats a part of the command they ran.
-Only parts of 8 characters or more count, so a secret shorter than 8
-characters inside a `sh: <word>: command not found` line is not dropped and
-reaches the model unless the mask recognises it.
-
 ## Retention
 
 Content — prompts, tool input and output, denial reasons, stop-failure
-errors — is removed after 90 days, or after `contentRetentionDays`.
-Structure is kept until you purge: ids, tools, hashes, sizes, statuses,
-first error lines, times and harness lines. That is what recurrence
-detection needs. Content past the period that cannot be verified is kept
-and counted in `log status`.
+errors — is removed from a **sealed** session once its last event is older
+than 90 days, or `contentRetentionDays`. Structure is kept until you purge:
+ids, tools, hashes, sizes, statuses, first error lines, times and harness
+lines. That is what recurrence detection needs.
+
+> [!WARNING]
+> Retention runs only while the log is enabled: at a session start, within
+> the 150 ms budget, or from `log maintain`, which refuses a disabled log. A
+> session not yet sealed is not expired. After `log disable`, every prompt
+> and every tool input and output already recorded stays on disk, with no
+> time limit, until `log purge --yes`.
+
+Sealed content past the period that cannot be verified against the index is
+kept and counted in `log status`.
 
 ## Sealing
 
@@ -118,8 +123,10 @@ A session idle for 10 minutes is sealed at the next session start, or by
 `log maintain`: its events are compressed, the file is hashed whole, and
 the hash is appended to `index.jsonl`, each line carrying the hash of the
 line before. `log status` checks that chain and every sealed file. It shows
-accidental damage and naive edits. It does not stop a process running as
-you, and events not yet sealed are checked by nothing.
+accidental damage and an edit that breaks the chain. The chain has no key:
+a process running as you can rewrite the index and the sealed files with a
+new valid chain, and nothing then shows it. Events not yet sealed are
+checked by nothing.
 
 ## maintain
 
@@ -137,8 +144,8 @@ log. It needs no terminal. See [log purge](commands.md#log-purge).
 
 ## Cost
 
-Measured on the owner's own transcripts from one project, 7,134 tool calls
-in 16 days:
+The size figures are the design's (its "Cost" paragraph), measured on the
+owner's own transcripts from one project, 7,134 tool calls in 16 days:
 
 | What | Size |
 |---|---|
@@ -152,10 +159,19 @@ Time per hook run, on the development machine (Windows, Node 24):
 | session log | about 30 ms (median about 85 ms against about 58 ms) |
 | gate hook, 100 gates and a 64 KiB input | 38 to 45 ms |
 
-The test suite fails either hook when its median adds more than 100 ms. A
-minimal Node append measured about 55 ms on the owner's machine. Counting
-Node's own start-up, each of the two hooks that run on every tool call
-takes about 0.1 seconds on Windows. Neither spawns a child process.
+These two figures are the measurements recorded in the comments of
+`scripts/lib/session-log.test.mjs` and `scripts/lib/tool-gate.test.mjs`. The
+test suite fails either hook when its median adds more than 100 ms. Neither
+spawns a child process.
+
+A tool call runs more than one hook. The gate hook runs once, on
+`PreToolUse`. The session-log hook runs on `PreToolUse` and again on
+`PostToolUse` or `PostToolUseFailure`, and on `PermissionRequest` too when a
+permission prompt is shown. The loop warning runs on each failed call, and
+the lint sensor after each `Write` or `Edit`. The design records a minimal
+Node append at about 55 ms on the owner's machine, and about 0.1 seconds
+each time for its two hooks per tool call on Windows. Neither figure was
+re-measured for this page.
 
 ## What hooks cannot see
 

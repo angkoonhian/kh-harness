@@ -50,6 +50,7 @@ import { GATES_PATH, LOCAL_GATES_FILE } from '../../assets/scripts/tool-gate.mjs
 import { addedLatency } from './latency-fixtures.mjs';
 import { APPLY, DETECT, UNINSTALL, git, run, settings, hooksBesideLog } from './lifecycle-fixtures.mjs';
 import { HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH, TOOL_GATE_PATH, toolGateDenyRules } from './propose.mjs';
+import { snapshot } from './log-fixtures.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
@@ -183,6 +184,19 @@ test('warn and block act with the session log disabled', () => {
   assert.deepEqual(runHook(root, { ...PAYLOAD_EXAMPLE, session_id: 'off-1', tool_name: 'Write', tool_input: { file_path: 'yarn.lock', content: '' } }),
     denial('kh-harness gate L2: Move files to the trash folder instead of deleting them.'));
   assert.equal(existsSync(repoDataDir(root)), false);
+});
+
+test('the hook writes nothing inside the project, whatever its gates do', () => {
+  const root = project();
+  writeCommitted(root, gateFile([gate('L1'), gate('L2', { action: 'warn', match: { kind: 'token', value: 'git push' } }), gate('L3', { action: 'block', match: { kind: 'token', value: 'curl' } })]));
+  writeLocal(root, gateFile([]));
+  writeAt(join(root, 'src', 'app.mjs'), 'export const app = 1;\n');
+  const before = snapshot(root);
+  assert.equal(runHook(root, call('inside-1', 'rm -rf build')), null);
+  assert.ok(runHook(root, call('inside-1', 'git push origin')) !== null);
+  assert.ok(runHook(root, call('inside-1', 'curl example.test')) !== null);
+  assert.equal(firings(root, 'inside-1').length, 3, 'each firing was recorded, outside the project');
+  assert.deepEqual(snapshot(root), before, 'every file in the project, by name and bytes, is as it was');
 });
 
 const SUSPENDED_ONE = 'kh-harness: 1 committed gate is suspended on this machine; `learn` lists them.';
