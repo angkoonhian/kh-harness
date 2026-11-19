@@ -117,8 +117,8 @@ export function helpName(positionals) {
 
 /**
  * What the command line asks for: `{ target, name, args, values, json,
- * redraft, yes, allowDirty, allowDefaultBranch, ignored }`, `ignored` the flags given that this subcommand does
- * not own, or `{ error }`.
+ * redraft, yes, allowDirty, allowDefaultBranch, ignored }`, `ignored` the
+ * flags given that this subcommand does not own, or `{ error }`.
  */
 export function resolveCommand({ positionals, values, flags, problems }) {
   const target = positionals[0];
@@ -514,14 +514,14 @@ export const renderWrong = (result, ref) => withRepairs(result, [
 ]);
 
 export const renderDemoted = result => withRepairs(result, [result.status === 'suspended'
-  ? `${result.id} suspended: its committed gate is switched off on this machine, and stays so until \`revert ${result.id}\` at a terminal takes it out of the repository and retires the learning.`
+  ? `${result.id} suspended: its committed gate is switched off on this machine, and stays so until \`learn revert ${result.id} --yes\` at a terminal takes it out of the repository and retires the learning.`
   : `${result.id} demoted: back to trial, its gate at observe on this machine.`]);
 
 export const renderRetired = result => withRepairs(result, [
   `${result.id} retired: its local gate is gone, and it no longer stands for its recurrence.`,
 ]);
 
-// --- land and revert ----------------------------------------------------------
+// --- land and revert --------------------------------------------------------
 
 const noteLines = notes => notes.map(note => `note: ${showCodePoints(note)}`);
 

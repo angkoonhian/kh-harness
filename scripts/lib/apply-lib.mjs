@@ -147,16 +147,20 @@ export function writeGateRefusals({ root, git, manifestResult, allowDefaultBranc
 // as one that could not be had.
 const COMMIT_READ_TIMEOUT_MS = 10_000;
 
+// The variables that point git at a repository, work tree, index or object
+// store other than the one found from `-C <root>`.
+const REPOSITORY_VARIABLES = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY'];
+
 /**
- * The environment a git call reading a commit runs in: this process's,
- * with git's messages in the C locale, so the wording it is matched on does
- * not depend on the owner's language, and without the variables that would
- * point git at a repository, work tree or index other than the one at
- * `root`.
+ * The environment a git call reading a commit runs in: `base`, this
+ * process's in every call made here, with git's messages in the C locale,
+ * so the wording they are matched on does not depend on the owner's
+ * language, and without `REPOSITORY_VARIABLES`. Exported so a test can see
+ * what the calls are made with.
  */
-function commitReadEnv() {
-  const env = { ...process.env, LC_ALL: 'C' };
-  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[name];
+export function commitReadEnv(base = process.env) {
+  const env = { ...base, LC_ALL: 'C' };
+  for (const name of REPOSITORY_VARIABLES) delete env[name];
   return env;
 }
 
@@ -190,7 +194,12 @@ const REGULAR_FILE_MODES = new Set(['100644', '100755']);
  * `ls-tree` after `--` and read by its object id. Every call runs git with
  * `--no-replace-objects`, so no `refs/replace/` object the repository holds
  * changes what the commit is read as; with its arguments as an array, never
- * through a shell; under a timeout; and in `commitReadEnv`.
+ * through a shell; under a timeout; and in `commitReadEnv`. So a
+ * repository that git finds only through `GIT_DIR` reads here as not a
+ * git repository, while the default-branch and dirty-tree checks, which keep
+ * the environment, still read it: that fails safe, with the could-not-check
+ * note. The bound is on the bytes git gives, as the gate hook bounds the
+ * file's size, not on the text they decode to.
  */
 export function committedText(root, rel, maxBytes) {
   const env = commitReadEnv();
@@ -215,16 +224,16 @@ export function committedText(root, rel, maxBytes) {
   if (entry === null || entry[2] !== 'blob' || !REGULAR_FILE_MODES.has(entry[1])) {
     return { unknown: `the commit holds something other than a regular file at ${rel}` };
   }
-  let text;
+  let bytes;
   try {
     // One byte past the bound is read, so a file of exactly `maxBytes` is
     // told from a larger one.
-    text = git(['cat-file', 'blob', entry[3]], { maxBuffer: maxBytes + 1 });
+    bytes = git(['cat-file', 'blob', entry[3]], { maxBuffer: maxBytes + 1, encoding: 'buffer' });
   } catch (err) {
     if (err?.code === 'ENOBUFS') return { tooLarge: true };
     return { unknown: gitFailure(err, 'read the committed file') };
   }
-  return Buffer.byteLength(text, 'utf8') > maxBytes ? { tooLarge: true } : { text };
+  return bytes.length > maxBytes ? { tooLarge: true } : { text: bytes.toString('utf8') };
 }
 
 // A hand-rolled O(n·m) LCS diff is fine for the kit's own small template and

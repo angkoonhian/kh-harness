@@ -47,17 +47,14 @@ const settle = (name, interactive, result, render) => {
   say(render(result));
 };
 
-/** Ends `land` or `revert`: a dry run's plan, which needs no terminal; a
- * refusal (3) when the write was asked for and no person is at an
- * interactive terminal, whatever the library returned; a refusal (3) when
- * the write met the default-branch or dirty-tree refusal, as `apply` exits;
- * a failure (2) when the library refused for another reason or could not
- * finish; otherwise what it did. */
+/** Ends `land` or `revert`: a refusal (3) when the write was asked for and
+ * no person is at an interactive terminal, whatever the library returned;
+ * the library's own code when it refused (3) or could not finish (2), as
+ * `EXIT_CODES` assigns them; otherwise a dry run's plan, which needs no
+ * terminal, or what the write did. */
 const settleRepository = (name, command, interactive, result) => {
-  if (result.error !== undefined) {
-    if (command.yes && interactive.ok !== true) fail(3, terminalRefusal(name, interactive, result));
-    fail(result.refusals === undefined ? 2 : 3, failureLine(name, result));
-  }
+  if (command.yes && interactive.ok !== true) fail(3, terminalRefusal(name, interactive, result));
+  if (result.error !== undefined) fail(result.exitCode ?? 2, failureLine(name, result));
   if (result.dryRun === true) print(result, view => renderRepositoryPlan(name, command.args[0], view));
   else print(result, view => renderRepositoryDone(name, view));
 };

@@ -338,8 +338,9 @@ const LEARN_TERMINAL_SUBCOMMANDS = ['approve', 'wrong', 'demote', 'retire', 'lan
 /**
  * Deny rules for running the `learn` subcommands that approve a gate,
  * weaken one or change the repository's, in the Bash and the PowerShell
- * tool. A rule's `*` stands for any text, so `*learn.mjs* approve*` matches the command with any path to the
- * script, quoted or not, and any repository path before the subcommand; a
+ * tool. A rule's `*` stands for any text, so `*learn.mjs* approve*`
+ * matches the command with any path to the script, quoted or not, and any
+ * repository path before the subcommand; a
  * deny rule applies to each part of a compound command. It matches the
  * command text Claude writes and not the same program reached another way,
  * so it is a second barrier: the subcommand's own terminal check is the one

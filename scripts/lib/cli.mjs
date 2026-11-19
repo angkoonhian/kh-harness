@@ -413,21 +413,26 @@ FLAGS
   --yes    land and revert only: write what the dry run shows; a person at an
            interactive terminal only.
   --allow-dirty, --allow-default-branch
-           land and revert only, with --yes: waive the dirty-tree or the
-           default-branch refusal, as for \`apply\`.
+           land and revert only: waive the dirty-tree or the default-branch
+           refusal, as for \`apply\`; a dry run then no longer lists it
+           among what --yes would be refused for.
   --redraft
            draft only: draft a recurrence again although the replay rejected
            an earlier learning for it or for its failure kind; the owner's
            decision. The ledger records the draft as a redraft, naming the
            learnings rejected.
 
-Here 3 is also a terminal-only subcommand run without a person at a terminal,
-and \`evidence\` or any subcommand that writes when this repository's data
-directory is a link or is not directly inside the data root, as \`log\`
-refuses it. 2 is also any step the learnings library refused or could not
-finish, with its reason, and a \`tick\` that could not do part of its work. 3
-is also land or revert with --yes on the default branch or with uncommitted
-changes to tracked files, as \`apply\` refuses.
+Here 3 is also a terminal-only subcommand run without a person at a terminal
+(land and revert only with --yes), and \`evidence\` or any subcommand that
+writes when this repository's data directory is a link or is not directly
+inside the data root, as \`log\` refuses it. 2 is also any step of the other
+subcommands the learnings library refused or could not finish, with its
+reason, and a \`tick\` that could not do part of its work. land and revert
+exit with the code the library gives, as the block below assigns it: 3 when
+they refuse to act (the default branch, a dirty tree, a manifest that cannot
+be read, a learned file kh-harness no longer owns, a learning in no state to
+land or revert), 2 when they cannot (an id that names no learning, a write
+that failed).
 
 ${EXIT_CODES}`;
 

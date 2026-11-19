@@ -1016,12 +1016,15 @@ function olderInstallIsRepaired(added) {
 
   const before = JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P5.toolgate');
   assert.equal(before.state, 'absent');
-  assert.match(before.evidence.at(-1), new RegExp(`^${added.size} of the ${toolGateDenyRules().length} deny rules the gate hook is installed with are missing`));
+  assert.equal(before.evidence.at(-1), `${added.size} of the ${toolGateDenyRules().length} deny rules the gate hook is installed with are missing: ${[...added].join(', ')}`,
+    'detect names exactly the missing rules');
   const dry = run(APPLY, d);
   for (const rule of added) assert.ok(dry.includes(JSON.stringify(rule)), rule);
   assert.doesNotMatch(dry, /\(hook: PreToolUse\)  \[P5\.toolgate\]/, 'the registered hook is not proposed again');
+  const denyBefore = settings(d).permissions.deny;
+  assert.ok(denyBefore.includes('Edit(secrets/**)'), 'fixture sanity: the user\'s own deny rule is there');
   run(APPLY, d, '--yes', '--allow-dirty');
-  assert.deepEqual(settings(d).permissions.deny.filter(rule => added.has(rule)), [...added]);
+  assert.deepEqual(settings(d).permissions.deny, [...denyBefore, ...added], 'apply adds exactly the missing rules, after the user\'s own, which stays');
 
   const after = JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P5.toolgate');
   assert.equal(after.state, 'declared');
