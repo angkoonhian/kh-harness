@@ -828,9 +828,11 @@ test('an unknown flag warns on stderr, never on stdout, and the run continues', 
   assert.match(r.stderr, /--verfiy/);
 });
 
-test('a missing target exits 2', () => {
+test('a missing target exits 2', (t) => {
+  const parent = mkdtempSync(join(tmpdir(), 'hk-cli-missing-'));
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
   assert.throws(
-    () => execFileSync(process.execPath, [CLI, join(tmpdir(), 'does-not-exist-hk')], { encoding: 'utf8', stdio: 'pipe' }),
+    () => execFileSync(process.execPath, [CLI, join(parent, 'does-not-exist')], { encoding: 'utf8', stdio: 'pipe' }),
     e => e.status === 2,
   );
 });

@@ -1,9 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyCommands, defaultRun } from './verify.mjs';
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+/** A script in a directory of its own, so no other run can share its name. */
+function script(name, source) {
+  const dir = mkdtempSync(join(tmpdir(), 'hk-verify-'));
+  const path = join(dir, name);
+  writeFileSync(path, source);
+  return { path, remove: () => rmSync(dir, { recursive: true, force: true }) };
+}
 
 const stack = { languages: ['typescript'], packageManager: 'npm', isWorkspace: false,
   packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['build', 'test'] }], ci: [] };
@@ -39,29 +47,27 @@ test('a throwing runner is recorded as exit 1, not propagated', () => {
 });
 
 test('defaultRun executes a command that exits 0', () => {
-  const exitZeroFile = join(tmpdir(), `exit-0-${Date.now()}.mjs`);
-  writeFileSync(exitZeroFile, 'process.exit(0)');
+  const exitZero = script('exit-0.mjs', 'process.exit(0)');
   try {
     // Quoted: TEMP contains a space on plenty of Windows installs.
-    const result = defaultRun('.', '.', `node "${exitZeroFile}"`);
+    const result = defaultRun('.', '.', `node "${exitZero.path}"`);
     assert.equal(result.exitCode, 0);
     assert.equal(typeof result.durationMs, 'number');
     assert.ok(result.durationMs >= 0);
   } finally {
-    unlinkSync(exitZeroFile);
+    exitZero.remove();
   }
 });
 
 test('defaultRun captures the actual exit code, not flattened to 1', () => {
-  const exitThreeFile = join(tmpdir(), `exit-3-${Date.now()}.mjs`);
-  writeFileSync(exitThreeFile, 'process.exit(3)');
+  const exitThree = script('exit-3.mjs', 'process.exit(3)');
   try {
-    const result = defaultRun('.', '.', `node "${exitThreeFile}"`);
+    const result = defaultRun('.', '.', `node "${exitThree.path}"`);
     assert.equal(result.exitCode, 3);
     assert.equal(typeof result.durationMs, 'number');
     assert.ok(result.durationMs >= 0);
   } finally {
-    unlinkSync(exitThreeFile);
+    exitThree.remove();
   }
 });
 
@@ -89,26 +95,24 @@ test('every verification record carries timedOut, false when the runner did not 
 });
 
 test('defaultRun marks a command killed by the timeout as timedOut', () => {
-  const sleeper = join(tmpdir(), `sleep-${Date.now()}.mjs`);
-  writeFileSync(sleeper, 'setTimeout(() => {}, 5000);');
+  const sleeper = script('sleep.mjs', 'setTimeout(() => {}, 5000);');
   try {
-    const result = defaultRun('.', '.', `node "${sleeper}"`, { timeoutMs: 300 });
+    const result = defaultRun('.', '.', `node "${sleeper.path}"`, { timeoutMs: 300 });
     assert.equal(result.timedOut, true);
     assert.equal(result.exitCode, null, 'a command that never exited has no exit code');
     assert.ok(result.durationMs < 4000, 'the bound, not the command, decided when this ended');
   } finally {
-    unlinkSync(sleeper);
+    sleeper.remove();
   }
 });
 
 test('defaultRun runs the command with CI=1 so watch modes do not hang', () => {
-  const probe = join(tmpdir(), `ci-${Date.now()}.mjs`);
-  writeFileSync(probe, "process.exit(process.env.CI === '1' ? 0 : 7);");
+  const probe = script('ci.mjs', "process.exit(process.env.CI === '1' ? 0 : 7);");
   try {
-    const result = defaultRun('.', '.', `node "${probe}"`);
+    const result = defaultRun('.', '.', `node "${probe.path}"`);
     assert.equal(result.exitCode, 0);
     assert.equal(result.timedOut, false);
   } finally {
-    unlinkSync(probe);
+    probe.remove();
   }
 });
