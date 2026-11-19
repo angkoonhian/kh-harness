@@ -52,9 +52,6 @@ const DEMOTABLE = new Set(['active-local', 'landed']);
 // The statuses of a learning whose gate the repository may still hold.
 const COMMITTED_STATUSES = new Set(['landed', 'suspended']);
 
-// The event a session carries once a tool call in it read outside content,
-// as the logging hook writes it.
-
 const optionsOf = value => (isPlainObject(value) ? value : {});
 
 /** True only for what `requireInteractive` returns when its check passes;
