@@ -18,7 +18,7 @@ import {
   logReadMistakes, MISTAKE, mtimes, READ_GATE, repo, success, trialRepo, useId, WATCH_GATE, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { learningStats, listLearnings, runTrial } from './learn-lib.mjs';
-import { approveLearning, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './learn-promote.mjs';
+import { approveLearning, clearPolicy, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './learn-promote.mjs';
 import { appendLedger, readLedger, verifyLedger } from './ledger.mjs';
 import { readPolicy, writePolicy } from './policy.mjs';
 import { SUCCESS_EVENT } from './recurrence.mjs';
@@ -516,6 +516,7 @@ test('a policy file written without a ledger record promotes nothing and tick sa
   const ticked = tick(root);
   assert.equal(ticked.policy, 'ok');
   assert.equal(ticked.policyUnrecorded, true);
+  assert.deepEqual(ticked.errors, ['the policy file is not the policy in force, which only setting it at a terminal records, so nothing was promoted']);
   assert.deepEqual(ticked.promoted, []);
   assert.equal(statusOf(root), 'trial');
 });
@@ -595,4 +596,142 @@ test('a local gate file that is not a gate file is rebuilt by tick from an intac
   assert.equal(broken.gateFileRewritten, false);
   assert.ok(broken.errors.includes('the local gate file is not a gate file, and with the ledger broken it cannot be rebuilt; it was left as it is'));
   assert.equal(readFileSync(localGatesPath(root), 'utf8'), '{ not a gate file');
+});
+
+const UNRECORDED = 'the policy file is not the policy in force, which only setting it at a terminal records, so nothing was promoted';
+
+test('after clearPolicy, restoring the old policy file promotes nothing and tick says the policy is unrecorded', () => {
+  const { root, learning } = trialRepo();
+  ownerPolicy(root, POLICY);
+  const policyFile = join(repoDataDir(root), 'policy.json');
+  const old = readFileSync(policyFile, 'utf8');
+  assert.deepEqual(clearPolicy(root, { interactive: AT_TERMINAL }), { ok: true, repairedGates: [] });
+  assert.deepEqual(readPolicy(root), { state: 'absent' });
+  const withdrawal = readLedger(root).at(-1);
+  assert.deepEqual([withdrawal.kind, withdrawal.policySha256, withdrawal.approvedBy], ['policy', null, 'owner']);
+  assert.equal(verifyLedger(root).intact, true);
+
+  writeFileSync(policyFile, old);
+  assert.equal(readPolicy(root).state, 'ok', 'fixture: the old file reads back as the old policy');
+  for (const s of ['fire-a', 'fire-b']) fired(root, s, learning.gate);
+  const ticked = tick(root);
+  assert.equal(ticked.policyUnrecorded, true);
+  assert.deepEqual(ticked.promoted, []);
+  assert.deepEqual(ticked.errors, [UNRECORDED]);
+  assert.equal(statusOf(root), 'trial');
+  ownerPolicy(root, POLICY);
+  assert.deepEqual(tick(root).promoted, ['L1'], 'setting it again at a terminal brings it back');
+});
+
+test('clearPolicy without an interactive terminal is refused and changes nothing', () => {
+  const { root } = trialRepo();
+  const sha = ownerPolicy(root, POLICY);
+  const entries = readLedger(root).length;
+  for (const interactive of [NOT_AT_TERMINAL, undefined, { ok: 1 }]) {
+    assert.deepEqual(clearPolicy(root, { interactive }), NO_TERMINAL('withdrawing a policy'));
+  }
+  assert.deepEqual(clearPolicy(root), NO_TERMINAL('withdrawing a policy'));
+  assert.equal(readPolicy(root).sha256, sha);
+  assert.equal(readLedger(root).length, entries);
+  assert.equal(tick(root).policyUnrecorded, false, 'the policy set is still in force');
+});
+
+test('clearPolicy when no policy was ever set still records the withdrawal', () => {
+  const { root } = trialRepo();
+  assert.deepEqual(clearPolicy(root, { interactive: AT_TERMINAL }), { ok: true, repairedGates: [] });
+  const entry = readLedger(root).at(-1);
+  assert.deepEqual([entry.kind, entry.policySha256, entry.approvedBy], ['policy', null, 'owner']);
+  assert.deepEqual(readPolicy(root), { state: 'absent' });
+});
+
+test('a learning can be drafted after the owner set a policy', () => {
+  const root = loggedRepo();
+  logReadMistakes(root);
+  assert.equal(runTrial(root, drafted(root).id).status, 'trial');
+  ownerPolicy(root, POLICY);
+  assert.ok(clearPolicy(root, { interactive: AT_TERMINAL }).ok);
+  ownerPolicy(root, POLICY);
+  const other = drafted(root, { gate: READ_GATE });
+  assert.equal(other.id, 'L2');
+  const listed = listLearnings(root);
+  assert.deepEqual(listed.ledgerMismatch, []);
+  assert.deepEqual(listed.gatesToRepair, []);
+  assert.deepEqual(listed.approvals, []);
+  assert.equal(learningStats(root, 'L1').wrong, 0);
+  assert.equal(tick(root).ledgerIntact, true);
+});
+
+/** A repository whose Bash learning L1, promoted to block and committed,
+ * the rule suspended on this machine. */
+function suspendedRepo() {
+  const { root, learning, gate } = promotedRepo('block');
+  commitFile(root, GATES_PATH, JSON.stringify({ schema: 1, gates: [gate] }));
+  for (const ref of [fired(root, 'fire-a', gate), fired(root, 'fire-b', gate)]) markRaw(root, learning, ref);
+  assert.deepEqual(tick(root).suspended, ['L1']);
+  return { root, learning, gate };
+}
+
+test('deleting a recorded suspension line is repaired', () => {
+  const { root } = suspendedRepo();
+  writeLocalGates(root, []);
+  assert.ok(denied(hookOn(root, MISTAKE)), 'fixture: without the suspension the committed gate blocks');
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['L1']);
+  assert.deepEqual(tick(root).repairedGates, ['L1']);
+  assert.deepEqual(localGates(root).gates, [{ id: 'L1', suspended: true }]);
+  assert.equal(denied(hookOn(root, MISTAKE)), false);
+});
+
+test("a suspension stands only for a suspended learning's committed gate as the ledger recorded it", () => {
+  const changed = suspendedRepo();
+  const edited = { ...changed.gate, message: 'A rule the team has since changed.' };
+  commitFile(changed.root, GATES_PATH, JSON.stringify({ schema: 1, gates: [edited] }));
+  assert.deepEqual(listLearnings(changed.root).gatesToRepair, ['L1'], 'the committed gate it switched off is gone');
+  assert.deepEqual(tick(changed.root).repairedGates, ['L1']);
+  assert.deepEqual(localGates(changed.root).gates, []);
+  assert.ok(denied(hookOn(changed.root, MISTAKE)), 'the changed committed gate is in force');
+
+  const retired = suspendedRepo();
+  assert.equal(retireLearning(retired.root, 'L1', { interactive: AT_TERMINAL }).status, 'retired');
+  assert.deepEqual(localGates(retired.root).gates, [], 'a retired learning keeps no suspension');
+
+  const local = trialRepo();
+  writeLocalGates(local.root, [{ id: 'L1', suspended: true }]);
+  assert.deepEqual(listLearnings(local.root).gatesToRepair, ['L1'], 'a learning that was only ever local has nothing to suspend');
+  tick(local.root);
+  assert.deepEqual(localGates(local.root).gates, [local.learning.gate]);
+});
+
+test('a rebuilt local gate file keeps a recorded suspension', () => {
+  const { root } = suspendedRepo();
+  writeFileSync(localGatesPath(root), '{ not a gate file');
+  const ticked = tick(root);
+  assert.equal(ticked.gateFileRewritten, true);
+  assert.deepEqual(ticked.repairedGates, ['L1']);
+  assert.deepEqual(localGates(root), { schema: 1, gates: [{ id: 'L1', suspended: true }] });
+  assert.equal(denied(hookOn(root, MISTAKE)), false, 'the rebuilt file does not put the suspended committed gate back in force');
+  assert.equal(statusOf(root), 'suspended');
+});
+
+test('a local gate file that cannot be rewritten is reported, and tick carries on', () => {
+  const files = { 'docs/watch.md': '# watch\n' };
+  const { root } = trialRepo({ files, cites: ['docs/watch.md'] });
+  logReadMistakes(root);
+  for (const id of ['clean-read-0', 'clean-read-1']) {
+    log(root, id, HARNESS, ...Array.from({ length: MIN_CLEAN_CALLS / 2 }, (_, i) => call(SUCCESS_EVENT, id, 'Read', { file_path: `src/f-${i}.mjs` })));
+  }
+  const other = drafted(root, { gate: READ_GATE });
+  assert.equal(runTrial(root, other.id).status, 'trial');
+  assert.ok(approveLearning(root, 'L2', { sha256: other.sha256, action: 'block', interactive: AT_TERMINAL }).ok);
+  const blocking = { ...other.gate, action: 'block' };
+  for (const ref of [fired(root, 'fire-a', blocking), fired(root, 'fire-b', blocking)]) markRaw(root, other, ref);
+  rmSync(join(root, 'docs/watch.md'));
+  rmSync(localGatesPath(root));
+  mkdirSync(localGatesPath(root));
+
+  const ticked = tick(root, { now: () => Date.parse('2026-11-19T09:00:00.000Z') });
+  assert.equal(ticked.gateFileRewritten, false);
+  assert.match(ticked.errors[0], /^the local gate file is not a gate file and could not be rewritten \([A-Z]+\); it was left as it is$/);
+  assert.deepEqual(ticked.retired, ['L1'], 'retirement still runs');
+  assert.deepEqual(ticked.errors.slice(1), ['L2: the local gate file is not a gate file; nothing was written'], 'the demotion is tried and its failure reported');
+  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'last-tick.json'), 'utf8')), { ts: '2026-11-19T09:00:00.000Z' });
 });

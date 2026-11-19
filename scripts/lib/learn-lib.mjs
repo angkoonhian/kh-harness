@@ -83,10 +83,6 @@ export const SETTLED = new Set(['rejected', 'retired']);
 // The statuses whose gate lives in the local gate set.
 const LOCAL_GATE_STATUSES = new Set(['trial', 'active-local']);
 
-// The statuses whose learning a local suspension of its committed gate
-// stands for.
-const SUSPENDING = new Set(['suspended', 'retired']);
-
 const ABOVE_OBSERVE = new Set(['warn', 'block']);
 
 const LEARNINGS_DIR = 'learnings';
@@ -400,39 +396,43 @@ function recordedLearnings(learnings, view) {
 }
 
 /** Everything a step decides from, read afresh: the learning files, the
- * ledger, the learnings it vouches for and the local gate file. Throws when
- * the learnings directory cannot be listed. */
+ * ledger, the learnings it vouches for, the local gate file and the
+ * committed one. Throws when the learnings directory cannot be listed. */
 export function readState(root) {
   const { learnings, unreadable } = readLearnings(root);
   const view = readLedgerView(root);
-  return { learnings, unreadable, view, recorded: recordedLearnings(learnings, view), local: readLocalGates(root) };
+  return {
+    learnings, unreadable, view,
+    recorded: recordedLearnings(learnings, view),
+    local: readLocalGates(root),
+    committed: readCommittedGates(root),
+  };
 }
 
 /** The learnings in `state` the ledger vouches for. */
 export const recordedIn = state => state.learnings.filter(l => state.recorded.has(l.id));
 
 /**
- * The local gate entries as the learnings the ledger vouches for require
- * them: `{ gates, changed, modified }`, where `changed` are the ids to
- * report and `modified` whether `gates` differs from the entries given.
- * `recorded` maps the id of each learning the ledger vouches for to its
- * recorded state; with the ledger broken it is empty, so every learned gate
- * goes and none is restored. `entries` are the ledger's entries, none when
- * it is broken.
+ * The local gate entries as the ledger in `state` (`readState`'s shape)
+ * requires them: `{ gates, changed, modified }`, where `changed` are the
+ * ids to report and `modified` whether `gates` differs from the entries
+ * given. With the ledger broken it records nothing, so every learned gate
+ * and every suspension goes and none is restored.
  *
  * Nothing stays unless the ledger accounts for it. A gate entry stays only
  * when its learning is recorded in a status that keeps a local gate, its
  * content hash is the learning's, its action is the one the recorded state
  * grants, and no earlier entry has its id. A suspension, exactly `{ id,
- * suspended: true }`, stays only when the ledger's last status entry for
- * its id is `suspended` or `retired` and no earlier entry has its id: any
- * other would switch off the gate it shadows unseen. A recorded learning in
- * a status that keeps a local gate with no entry left gets its own gate. A
- * gate whose learning file cannot be read stays only at `observe`, and is
- * reported either way. An entry with no usable id is dropped and reported
- * by its 1-based place in the file, as `entry <n>`.
+ * suspended: true }`, stays only when `suspensionStands` and no earlier
+ * entry has its id: any other would switch off the gate it shadows unseen.
+ * A recorded learning in a status that keeps a local gate with no entry left
+ * gets its own gate, and a suspension that stands with no entry left is
+ * written again. A gate whose learning file cannot be read stays only at
+ * `observe`, and is reported either way. An entry with no usable id is
+ * dropped and reported by its 1-based place in the file, as `entry <n>`.
  */
-function repairedGates(gates, learnings, unreadable, recorded, entries) {
+function repairedGates(gates, state) {
+  const { learnings, unreadable, recorded } = state;
   const learningById = new Map(learnings.map(l => [l.id, l]));
   const unknown = new Set(unreadable);
   const kept = [];
@@ -442,7 +442,7 @@ function repairedGates(gates, learnings, unreadable, recorded, entries) {
   for (const [index, entry] of gates.entries()) {
     const id = entryId(entry);
     if (!isGateEntry(entry)) {
-      if (isSuspension(entry) && !present.has(id) && SUSPENDING.has(recordedState(entries, id)?.status)) {
+      if (isSuspension(entry) && !present.has(id) && suspensionStands(state, id)) {
         kept.push(entry);
         present.add(id);
       } else {
@@ -462,9 +462,9 @@ function repairedGates(gates, learnings, unreadable, recorded, entries) {
       continue;
     }
     const learning = learningById.get(id);
-    const state = recorded.get(id);
-    const sound = learning !== undefined && state !== undefined && LOCAL_GATE_STATUSES.has(state.status) && !present.has(id)
-      && gateSha256(entry) === learning.sha256 && recordedActions(state).includes(entry.action);
+    const held = recorded.get(id);
+    const sound = learning !== undefined && held !== undefined && LOCAL_GATE_STATUSES.has(held.status) && !present.has(id)
+      && gateSha256(entry) === learning.sha256 && recordedActions(held).includes(entry.action);
     if (sound) {
       kept.push(entry);
       present.add(id);
@@ -474,13 +474,34 @@ function repairedGates(gates, learnings, unreadable, recorded, entries) {
     }
   }
   for (const learning of learnings) {
-    const state = recorded.get(learning.id);
-    if (state === undefined || !LOCAL_GATE_STATUSES.has(state.status) || present.has(learning.id)) continue;
+    const held = recorded.get(learning.id);
+    if (held === undefined || !LOCAL_GATE_STATUSES.has(held.status) || present.has(learning.id)) continue;
     kept.push(learning.gate);
     changed.add(learning.id);
     modified = true;
   }
+  for (const id of new Set(state.view.entries.map(e => e?.learningId).filter(isId))) {
+    if (present.has(id) || !suspensionStands(state, id)) continue;
+    kept.push({ id, suspended: true });
+    present.add(id);
+    changed.add(id);
+    modified = true;
+  }
   return { gates: kept, changed: [...changed].sort(idOrder), modified };
+}
+
+/**
+ * Whether a local suspension of `id` is one the ledger accounts for: the
+ * ledger's last status entry for it is `suspended`, and the committed gate
+ * file still holds a gate with that id and the content hash that entry
+ * names, the gate the suspension was written to switch off. A suspension of
+ * a gate that was only ever local, or of a committed gate whose content has
+ * since changed, switches off nothing the ledger knows of.
+ */
+function suspensionStands(state, id) {
+  const last = recordedState(state.view.entries, id);
+  if (last?.status !== 'suspended') return false;
+  return (state.committed.gates ?? []).some(e => isGateEntry(e) && e.id === id && gateSha256(e) === last.contentSha256);
 }
 
 /** Every ledger entry that granted an action above `observe`: who approved
@@ -511,19 +532,21 @@ export function unapprovedGateIds(gates, ledgerEntries) {
  * the lock, and returns the ids changed. A local gate file that is not a
  * gate file is left as it is. */
 export function repairLocalGates(root, write) {
-  const { learnings, unreadable, recorded, local, view } = readState(root);
+  const state = readState(root);
+  const { local } = state;
   if (!local.file) return [];
-  const repair = repairedGates(local.file.gates, learnings, unreadable, recorded, view.entries);
+  const repair = repairedGates(local.file.gates, state);
   if (repair.modified) write(() => writeJson(localGatesPath(root), { ...local.file, gates: repair.gates }));
   return repair.changed;
 }
 
-/** Writes the local gate file afresh as exactly the gates the ledger in
- * `state`, taken under the lock, grants, over a file that is not a gate
- * file; returns the ids of the gates it holds. The ledger must be intact,
- * or it grants nothing and the file would be emptied for no reason. */
+/** Writes the local gate file afresh as exactly the gates and suspensions
+ * the ledger in `state`, taken under the lock, accounts for, over a file
+ * that is not a gate file; returns the ids of the entries it holds. The
+ * ledger must be intact, or it accounts for nothing and the file would be
+ * emptied for no reason. Throws when the file cannot be written. */
 export function rewriteLocalGates(root, write, state) {
-  const rebuilt = repairedGates([], state.learnings, state.unreadable, state.recorded, state.view.entries);
+  const rebuilt = repairedGates([], state);
   write(() => writeJson(localGatesPath(root), { schema: 1, gates: rebuilt.gates }));
   return rebuilt.changed;
 }
@@ -640,31 +663,34 @@ export const ledgerEntry = (learning, identity, { kind, approvedBy = null, actio
 /**
  * Writes one change to a learning under the lock: its ledger entries, built
  * from `entries`, then the learning as `updated`, then the local gate set as
- * the ledger will then grant it, with a local suspension of the learning's
- * committed gate when `suspend`. `state` is `readState` taken under the same
- * lock. Returns `{}`, or `{ error }` with nothing written when the local
- * gate file, which the change needs, is not a gate file, or when the set
- * would grow past its limit.
+ * the ledger will then account for it: a `suspended` entry for a committed
+ * gate brings its local suspension with it. `state` is `readState` taken
+ * under the same lock. Returns `{}`, or `{ error }` with nothing written
+ * when the local gate file, which the change needs, is not a gate file, or
+ * when the set would grow past its limit.
  */
-export function writeTransition(root, write, state, { updated, entries, suspend = false }) {
+export function writeTransition(root, write, state, { updated, entries }) {
   // Every entry precedes the writes, so each names the harness in force
   // before this step.
   const identity = harnessIdentity(root);
   const records = entries.map(spec => ledgerEntry(updated, identity, spec));
-  const recordedAfter = new Map(state.recorded).set(updated.id, recordedState([...state.view.entries, ...records], updated.id));
-  const learningsAfter = state.learnings.map(l => (l.id === updated.id ? updated : l));
+  const entriesAfter = [...state.view.entries, ...records];
+  const after = {
+    ...state,
+    learnings: state.learnings.map(l => (l.id === updated.id ? updated : l)),
+    recorded: new Map(state.recorded).set(updated.id, recordedState(entriesAfter, updated.id)),
+    view: { ...state.view, entries: entriesAfter },
+  };
   let gates = null;
   if (state.local.file) {
     const before = state.local.file.gates;
-    const repair = repairedGates(before, learningsAfter, state.unreadable, recordedAfter, [...state.view.entries, ...records]);
-    const suspension = suspend && !repair.gates.some(e => entryId(e) === updated.id) ? [{ id: updated.id, suspended: true }] : [];
-    const after = [...repair.gates, ...suspension];
+    const repair = repairedGates(before, after);
     const count = list => list.filter(isGateEntry).length;
-    if (count(after) > GATE_LIMITS.gatesMax && count(after) > count(before)) {
+    if (count(repair.gates) > GATE_LIMITS.gatesMax && count(repair.gates) > count(before)) {
       return { error: `the local gate set would hold more than ${GATE_LIMITS.gatesMax} gates; nothing was written` };
     }
-    if (repair.modified || suspension.length > 0) gates = after;
-  } else if (suspend || LOCAL_GATE_STATUSES.has(updated.status)) {
+    if (repair.modified) gates = repair.gates;
+  } else if (updated.status === 'suspended' || LOCAL_GATE_STATUSES.has(updated.status)) {
     return { error: 'the local gate file is not a gate file; nothing was written' };
   }
   for (const record of records) write(() => appendLedger(root, record));
@@ -863,7 +889,7 @@ export function listLearnings(root) {
     const { learnings, unreadable, view, recorded, local } = state;
     return {
       learnings,
-      gatesToRepair: local.file ? repairedGates(local.file.gates, learnings, unreadable, recorded, view.entries).changed : null,
+      gatesToRepair: local.file ? repairedGates(local.file.gates, state).changed : null,
       unapprovedGates: local.file ? unapprovedGateIds(local.file.gates, view.entries) : null,
       citationsGone: citationsGone(root, state),
       ledgerMismatch: ledgerMismatches(learnings, unreadable, view, recorded),

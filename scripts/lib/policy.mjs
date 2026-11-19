@@ -6,7 +6,7 @@
 // what a promotion under policy records in the ledger. Without a policy file
 // nothing is promoted automatically.
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
@@ -86,6 +86,12 @@ export function writePolicy(root, policy) {
   mkdirSync(dir, { recursive: true });
   writeFileAtomic(join(dir, POLICY_FILE), JSON.stringify(policy, null, 2) + '\n');
   return policyHash(policy);
+}
+
+/** Removes the policy file, if there is one. Throws when it exists and
+ * cannot be removed. */
+export function removePolicy(root) {
+  rmSync(join(repoDataDir(root), POLICY_FILE), { force: true });
 }
 
 /**
