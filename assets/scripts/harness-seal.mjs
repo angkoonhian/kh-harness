@@ -57,7 +57,7 @@ const frozenByType = entries => Object.freeze(Object.fromEntries(Object.entries(
  * Every field, by event type, that the hook writes and retention keeps: an
  * identifier, a path, a name from a fixed set, a hash, a size, a time, a
  * flag or a failure's first error line. The first error line is masked and
- * cut to 300 characters when written, and with the tool and the input hash
+ * then cut to 300 characters when written, and with the tool and the input hash
  * it is a failure's signature, which recurrence detection and replay need
  * for as long as structure is kept. The writer's own `schema`, `ts` and
  * `pid` are kept on every event.

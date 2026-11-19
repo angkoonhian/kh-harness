@@ -235,6 +235,19 @@ test('the first error line is cut to 300 characters', () => {
   assert.equal(event.firstErrorLine, 'é'.repeat(300));
 });
 
+test('a credential that straddles the 300-character cut is masked whole, in the event and on disk', () => {
+  const root = enabledProject();
+  const token = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
+  const error = `${'x'.repeat(287)} ${token} trailing words`;
+  const event = toLogEvent(toolPayload('PostToolUseFailure', 's', { error }));
+  assert.equal(event.firstErrorLine, `${'x'.repeat(287)} *** trailing`);
+
+  assertSilentSuccess(runHook(root, toolPayload('PostToolUseFailure', 'straddle-1', { error })));
+  const [stored] = events(root, 'straddle-1');
+  assert.equal(stored.firstErrorLine, `${'x'.repeat(287)} *** trailing`);
+  assert.doesNotMatch(JSON.stringify(stored), /ghp_/);
+});
+
 test('a failure with no error text records no error line', () => {
   const event = toLogEvent(toolPayload('PostToolUseFailure', 's', { error: '\n \n' }));
   assert.equal(event.status, 'error');

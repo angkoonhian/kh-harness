@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import {
   appendEvent, canonicalJson, harnessIdentity, isEnabled, LAST_TICK_FILE, parsedObject, readConfig, repoDataDir,
 } from './harness-log.mjs';
-import { markerPath, projectRoot, readJSONMarker, safeSessionId, stripAnsi, writeJSONMarker } from './harness-redact.mjs';
+import { markerPath, maskText, projectRoot, readJSONMarker, safeSessionId, writeJSONMarker } from './harness-redact.mjs';
 
 const IDENTITY_FIELDS = ['session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
 
@@ -57,11 +57,15 @@ function toolCall(payload) {
   return { tool: payload.tool_name, inputHash: sha256Hex(canonical), inputBytes: Buffer.byteLength(canonical, 'utf8') };
 }
 
-/** The first non-blank line of `text` without colour, cut to
- * `MAX_ERROR_LINE_CHARS` code points; undefined when there is none. */
+/** The first non-blank line of `text`, masked and then cut to
+ * `MAX_ERROR_LINE_CHARS` code points, so the cut never leaves the start of a
+ * credential that the mask would have hidden whole; undefined when there is
+ * no such line. The whole text is masked, since a private key is recognised
+ * by the lines around it, and `maskText` keeps the line count and removes
+ * colour. */
 function firstErrorLine(text) {
   if (typeof text !== 'string') return undefined;
-  const line = stripAnsi(text).split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
+  const line = maskText(text).split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
   return line === undefined ? undefined : [...line].slice(0, MAX_ERROR_LINE_CHARS).join('');
 }
 
