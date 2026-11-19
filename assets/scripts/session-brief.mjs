@@ -35,9 +35,28 @@
 //       reads, so the two cannot disagree again.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  boundReport, escapeDelimiters, findHandoff, maskText, projectRoot, stripUnsafe, HANDOFF_CANDIDATES,
-} from './harness-redact.mjs';
+
+// The shared asset beside this hook can be older than the hook: `apply`
+// leaves a hand-edited copy in place. A static import of a name that copy
+// lacks fails at link time with a stack trace at every session start, so the
+// asset's shape is probed and a stale or missing one gets one line naming
+// the fix, on stdout so it reaches the session, with exit 0, because a
+// SessionStart hook has nothing to block. The asset cannot hold this text:
+// it is the file that may be missing.
+const NEEDED = ['boundReport', 'escapeDelimiters', 'findHandoff', 'HANDOFF_CANDIDATES', 'maskText', 'projectRoot', 'stripUnsafe'];
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+let asset;
+try {
+  asset = await import('./harness-redact.mjs');
+} catch {
+  process.stdout.write(`kh-harness session-brief: .claude/scripts/harness-redact.mjs is missing or cannot be loaded — ${REMEDY}\n`);
+  process.exit(0);
+}
+if (NEEDED.some(name => !(name in asset))) {
+  process.stdout.write(`kh-harness session-brief: .claude/scripts/harness-redact.mjs is older than this hook and lacks what it needs — ${REMEDY}\n`);
+  process.exit(0);
+}
+const { boundReport, escapeDelimiters, findHandoff, maskText, projectRoot, stripUnsafe, HANDOFF_CANDIDATES } = asset;
 
 const root = projectRoot();
 const rel = findHandoff(root);
