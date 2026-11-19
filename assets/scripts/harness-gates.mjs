@@ -21,7 +21,7 @@ import { stripUnsafe } from './harness-redact.mjs';
 
 /** `inputMax` is how many leading characters of a field a gate inspects;
  * a gate never sees text beyond them. */
-export const GATE_LIMITS = Object.freeze({ valueMax: 200, messageMax: 300, gatesMax: 200, inputMax: 262144 });
+export const GATE_LIMITS = Object.freeze({ valueMax: 200, messageMax: 300, gatesMax: 100, inputMax: 65536 });
 
 const GATE_KEYS = new Set(['id', 'tool', 'field', 'match', 'action', 'message', 'cites']);
 const MATCH_KINDS = new Set(['literal', 'token', 'glob']);
