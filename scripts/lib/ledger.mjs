@@ -5,19 +5,20 @@
 // repository's per-machine data directory and hash-chained, each line
 // carrying the SHA-256 of the line before it. It is never committed, so no
 // merge can break the chain. Only the kit's CLI writes it.
+//
+// A line is an entry once its newline is written, and each is written whole
+// in one append. So bytes after the last newline are a step that never
+// finished its line: every reader passes over them, and the next append
+// removes them, under the lock, before it chains to the last whole line.
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, truncateSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
-import { isProcessAlive, LOCK_STALE_MS, withFileLock } from './file-lock.mjs';
+import { isProcessAlive, withFileLock } from './file-lock.mjs';
 
 export const LEDGER_KINDS = Object.freeze(['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong', 'policy']);
-
-/** How old a ledger lock without a readable owner must be before it is
- * broken; one whose writer is alive never is. */
-export const LEDGER_LOCK_STALE_MS = LOCK_STALE_MS;
 
 const LEDGER_FILE = 'ledger.jsonl';
 
@@ -28,7 +29,9 @@ const sha256Hex = bytes => createHash('sha256').update(bytes).digest('hex');
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isNonEmptyString = v => typeof v === 'string' && v.length > 0;
 const isTimestamp = v => typeof v === 'string' && !Number.isNaN(Date.parse(v));
-const isSha256 = v => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+/** Whether `v` is a SHA-256 as the kit writes one: 64 lowercase hex
+ * characters. */
+export const isSha256 = v => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 
 const POLICY_APPROVER = /^policy:[0-9a-f]{64}$/;
 
@@ -61,6 +64,12 @@ const LEARNING_FIELDS = {
   contentSha256: isSha256,
   approvedBy: v => v === null || isApprover(v),
 };
+
+// `contentSha256` is the hash of the learning's gate. `proseSha256` is the
+// hash of what else the ledger vouches for, its title, why and evidence, as
+// `learn-lib.mjs` computes it. An entry written before the kit recorded it
+// has none, so it is optional; where present it is a hash.
+const PROSE_FIELD = 'proseSha256';
 
 // A policy entry names no learning and carries no evidence: only the hash of
 // the policy the owner set, so a policy file nobody recorded promotes
@@ -120,7 +129,7 @@ function entryProblem(value, { stored }) {
   if (!COMMON_FIELDS.kind(value.kind)) return 'kind is missing or invalid';
   const policy = value.kind === POLICY_KIND;
   const fields = { ...COMMON_FIELDS, ...(policy ? POLICY_FIELDS : LEARNING_FIELDS), ...(stored ? STAMP_FIELDS : {}) };
-  const optional = policy ? ['detail'] : ['evidence', 'detail', ...Object.keys(KIND_FIELDS)];
+  const optional = policy ? ['detail'] : ['evidence', 'detail', PROSE_FIELD, ...Object.keys(KIND_FIELDS)];
   for (const key of Object.keys(value)) {
     if (!Object.hasOwn(fields, key) && !optional.includes(key)) return `unknown field "${key}"`;
   }
@@ -129,6 +138,7 @@ function entryProblem(value, { stored }) {
   }
   if (value.detail !== undefined && typeof value.detail !== 'string') return 'detail is not a string';
   if (policy) return null;
+  if (Object.hasOwn(value, PROSE_FIELD) && !isSha256(value[PROSE_FIELD])) return `${PROSE_FIELD} is invalid`;
   for (const [field, { kinds, valid }] of Object.entries(KIND_FIELDS)) {
     if (kinds.includes(value.kind)) {
       if (!valid(value[field])) return `${field} is missing or invalid for a ${value.kind} entry`;
@@ -153,8 +163,9 @@ function ledgerBytes(root) {
   }
 }
 
-/** Each line's bytes without its newline; an unterminated last line is
- * kept. */
+/** `{ lines, whole }`: each terminated line's bytes without its newline, and
+ * how many bytes they and their newlines take. Anything after is an
+ * unterminated last line, which is no entry. */
 function splitLines(buf) {
   const lines = [];
   let start = 0;
@@ -162,19 +173,22 @@ function splitLines(buf) {
     lines.push(buf.subarray(start, nl));
     start = nl + 1;
   }
-  if (start < buf.length) lines.push(buf.subarray(start));
-  return lines;
+  return { lines, whole: start };
 }
+
+/** The ledger's terminated lines, none when the file is absent; any other
+ * read failure throws. */
+const ledgerLines = root => splitLines(ledgerBytes(root) ?? Buffer.alloc(0)).lines;
 
 /** The fields of a valid `entry` the ledger stores, copied so nothing
  * beyond its schema rides along. */
 function recordedFields(entry) {
   const { kind, base, learned, approvedBy, detail } = entry;
   if (kind === POLICY_KIND) return { kind, policySha256: entry.policySha256, base, learned, approvedBy, detail };
-  const { learningId, contentSha256, evidence, action, firing } = entry;
+  const { learningId, contentSha256, proseSha256, evidence, action, firing } = entry;
   const { signature, sessions, firstTs, lastTs, external } = evidence;
   return {
-    kind, learningId, contentSha256,
+    kind, learningId, contentSha256, proseSha256,
     evidence: { signature, sessions, firstTs, lastTs, external },
     base, learned, approvedBy, action,
     firing: firing === undefined ? undefined : { sessionId: firing.sessionId, line: firing.line },
@@ -186,9 +200,10 @@ function recordedFields(entry) {
  * Appends one event to the ledger, adding `ts` (now) and `prev` (the
  * SHA-256 of the previous line's bytes, null for the first line). Throws,
  * writing nothing, when the entry is not the ledger's schema; the caller
- * supplies neither `ts` nor `prev`. `now` is the clock for `ts`, the lock
- * wait and the age of an ownerless lock; `isAlive` says whether a lock's
- * writer is still running.
+ * supplies neither `ts` nor `prev`. An unterminated last line, left by an
+ * append that stopped partway, is removed first. `now` is the clock for
+ * `ts`, the lock wait and the age of an ownerless lock; `isAlive` says
+ * whether a lock's writer is still running.
  */
 export function appendLedger(root, entry, { now = Date.now, isAlive = isProcessAlive } = {}) {
   const problem = entryProblem(entry, { stored: false });
@@ -200,27 +215,54 @@ export function appendLedger(root, entry, { now = Date.now, isAlive = isProcessA
   // across processes.
   withFileLock(join(dir, `${LEDGER_FILE}.lock`), { name: 'ledger', now, isAlive }, assertHeld => {
     const buf = ledgerBytes(root) ?? Buffer.alloc(0);
-    const lines = splitLines(buf);
+    const { lines, whole } = splitLines(buf);
     const prev = lines.length === 0 ? null : sha256Hex(lines.at(-1));
     const record = { ...fields, ts: new Date(now()).toISOString(), prev };
-    // A torn last line stays a line of its own, which `verifyLedger` reports.
-    const torn = buf.length > 0 && buf.at(-1) !== NEWLINE;
     assertHeld();
-    appendFileSync(ledgerPath(root), `${torn ? '\n' : ''}${canonicalJson(record)}\n`, 'utf8');
+    if (whole < buf.length) truncateSync(ledgerPath(root), whole);
+    appendFileSync(ledgerPath(root), `${canonicalJson(record)}\n`, 'utf8');
   });
 }
 
 /** Every ledger entry in order, without checking the chain; `verifyLedger`
  * does that. An absent ledger is empty; a line that does not parse throws. */
 export function readLedger(root) {
-  const buf = ledgerBytes(root);
-  return (buf === null ? [] : splitLines(buf)).map((line, i) => {
+  return ledgerLines(root).map((line, i) => {
     try {
       return JSON.parse(utf8.decode(line));
     } catch {
       throw new Error(`ledger line ${i + 1} does not parse`);
     }
   });
+}
+
+/** `{ brokenAt, entries }` for the ledger's lines: `brokenAt` as
+ * `verifyLedger` gives it, and the parsed entries when it is null. */
+function checkedLines(lines) {
+  const entries = [];
+  for (let i = 0; i < lines.length; i++) {
+    let parsed;
+    try {
+      parsed = JSON.parse(utf8.decode(lines[i]));
+    } catch {
+      return { brokenAt: i + 1 };
+    }
+    if (entryProblem(parsed, { stored: true }) !== null) return { brokenAt: i + 1 };
+    if (i === 0 && parsed.prev !== null) return { brokenAt: 1 };
+    if (i > 0 && parsed.prev !== sha256Hex(lines[i - 1])) return { brokenAt: i };
+    entries.push(parsed);
+  }
+  return { brokenAt: null, entries };
+}
+
+/** The ledger checked from one read: `{ brokenAt, entries }`, broken at
+ * line 1 when it cannot be read at all. */
+function checkedLedger(root) {
+  try {
+    return checkedLines(ledgerLines(root));
+  } catch {
+    return { brokenAt: 1 };
+  }
 }
 
 /**
@@ -232,23 +274,14 @@ export function readLedger(root) {
  * at all is broken at line 1. Never throws.
  */
 export function verifyLedger(root) {
-  let buf;
-  try {
-    buf = ledgerBytes(root);
-  } catch {
-    return { intact: false, brokenAt: 1 };
-  }
-  const lines = buf === null ? [] : splitLines(buf);
-  for (let i = 0; i < lines.length; i++) {
-    let parsed;
-    try {
-      parsed = JSON.parse(utf8.decode(lines[i]));
-    } catch {
-      return { intact: false, brokenAt: i + 1 };
-    }
-    if (entryProblem(parsed, { stored: true }) !== null) return { intact: false, brokenAt: i + 1 };
-    if (i === 0 && parsed.prev !== null) return { intact: false, brokenAt: 1 };
-    if (i > 0 && parsed.prev !== sha256Hex(lines[i - 1])) return { intact: false, brokenAt: i };
-  }
-  return { intact: true, brokenAt: null };
+  const { brokenAt } = checkedLedger(root);
+  return { intact: brokenAt === null, brokenAt };
+}
+
+/** `{ intact, entries }`: the ledger's entries when its chain is intact,
+ * else none, since a broken chain vouches for nothing. One read of the file
+ * decides both. Never throws. */
+export function readLedgerView(root) {
+  const { brokenAt, entries } = checkedLedger(root);
+  return brokenAt === null ? { intact: true, entries } : { intact: false, entries: [] };
 }
