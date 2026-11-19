@@ -10,7 +10,7 @@
 // entirely on indirection through its two callers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { closeSync, constants, mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, basename, dirname } from 'node:path';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -34,6 +34,7 @@ import {
   markerPath,
   maskCredentials,
   maskText,
+  openMarker,
   readJSONMarker,
   rootTag,
   runBounded,
@@ -681,6 +682,29 @@ test('writeJSONMarker refuses to follow a symlink planted at the marker path', (
   const wrote = writeJSONMarker(path, { count: 1 });
   assert.equal(readFileSync(victim, 'utf8'), 'untouched', 'the link target is never written through');
   assert.equal(wrote, false);
+});
+
+test('openMarker opens a plain marker path and never one where a link is planted', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'hk-marker-root-'));
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND;
+  const plain = markerPath(root, 'open1', 'stop');
+  const fd = openMarker(plain, flags);
+  assert.equal(typeof fd, 'number', 'an absent marker is created and opened');
+  closeSync(fd);
+  const victim = join(mkdtempSync(join(tmpdir(), 'hk-marker-victim-')), 'victim.txt');
+  writeFileSync(victim, 'untouched');
+  const linked = markerPath(root, 'open2', 'stop');
+  try {
+    symlinkSync(victim, linked, 'file');
+  } catch (e) {
+    t.skip(`cannot create a file symlink here: ${e.message}`);
+    return;
+  }
+  // POSIX refuses the open itself (ELOOP); elsewhere the lstat returns null.
+  let opened = null;
+  try { opened = openMarker(linked, flags); } catch { /* refused */ }
+  assert.equal(opened, null, 'no descriptor for a linked path');
+  assert.equal(readFileSync(victim, 'utf8'), 'untouched');
 });
 
 // --- readJSONMarker / writeJSONMarker --------------------------------------

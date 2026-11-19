@@ -31,6 +31,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { markerPath } from '../../assets/scripts/harness-redact.mjs';
 import { APPLY, DETECT, UNINSTALL, git, run, settings, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
@@ -232,6 +233,102 @@ test('a line that is not a record, such as an earlier version\'s marker, ends a 
   assert.equal(runHook(root, payload), '');
   assert.equal(runHook(root, payload), WARNING_OUTPUT, 'three records after the foreign line are a run of three');
   assert.equal(readFileSync(path, 'utf8').split('\n')[0], JSON.stringify({ signature, count: 2 }), 'no record joined the line before it');
+});
+
+// Every record is 98 bytes: its newline, 64 hex of signature, a space and 32
+// hex of nonce. The hook first reads the last 4096 bytes (about 41 records)
+// and reads back at most 64 KiB (about 668).
+const RECORD_BYTES = 98;
+const OTHER_SIGNATURE = 'b'.repeat(64);
+/** `n` records of `signature` in the marker's format. */
+const recordsOf = (signature, n) => Array.from({ length: n }, (_, i) => `\n${signature} ${i.toString(16).padStart(32, '0')}`).join('');
+
+/** A preload that, right after the hook's own append, appends `count` records
+ * of OTHER_SIGNATURE through the same descriptor: the records of runs that
+ * appended between this run's write and its read. */
+function appendAfterPreload(count) {
+  const preload = join(tempDir('hk-loop-preload-'), 'append-after.mjs');
+  writeFileSync(preload, [
+    "import fs from 'node:fs';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    'const real = fs.writeSync;',
+    'let done = false;',
+    'fs.writeSync = (fd, ...rest) => {',
+    '  const written = real(fd, ...rest);',
+    '  if (!done) {',
+    '    done = true;',
+    `    real(fd, Buffer.from(${JSON.stringify(recordsOf(OTHER_SIGNATURE, count))}, 'latin1'));`,
+    '  }',
+    '  return written;',
+    '};',
+    'syncBuiltinESMExports();',
+    '',
+  ].join('\n'));
+  return ['--import', pathToFileURL(preload).href];
+}
+
+test('a marker longer than the first read still counts the run at its end', () => {
+  const root = tempDir('hk-loop-');
+  const payload = failure('long-1');
+  const path = markerOf(root, 'long-1');
+  writeFileSync(path, recordsOf(OTHER_SIGNATURE, 50));
+  assert.ok(50 * RECORD_BYTES > 4096, 'fixture sanity: the marker is longer than the first read');
+  assert.deepEqual([runHook(root, payload), runHook(root, payload), runHook(root, payload)], ['', '', WARNING_OUTPUT]);
+});
+
+test('a run whose record dozens of later runs have followed still finds it and the records before it', () => {
+  // 40 later records put this run's record first in the first read, with
+  // the records before it out of view; 45 put it out of the first read.
+  for (const later of [40, 45]) {
+    const root = tempDir('hk-loop-');
+    const payload = failure(`later-${later}`);
+    assert.equal(runHook(root, payload), '');
+    assert.equal(runHook(root, payload), '');
+    assert.equal(runHook(root, payload, { nodeArgs: appendAfterPreload(later) }), WARNING_OUTPUT, `${later} records after it`);
+    assert.equal(readFileSync(markerOf(root, `later-${later}`), 'utf8').length, (3 + later) * RECORD_BYTES, 'fixture sanity: the later records landed after this run\'s');
+  }
+});
+
+test('the read back is capped: a record further than 64 KiB from the end is not looked for, and nothing is said', () => {
+  const root = tempDir('hk-loop-');
+  const payload = failure('capped-1');
+  assert.equal(runHook(root, payload), '');
+  assert.equal(runHook(root, payload), '');
+  const later = Math.ceil(64 * 1024 / RECORD_BYTES);
+  assert.equal(runHook(root, payload, { nodeArgs: appendAfterPreload(later) }), '', 'the third failure is not found within the cap, so no warning');
+
+  // A marker far larger than the cap costs nothing when the run is at its end.
+  const big = tempDir('hk-loop-');
+  writeFileSync(markerOf(big, 'capped-2'), recordsOf(OTHER_SIGNATURE, 2000));
+  const again = failure('capped-2');
+  assert.deepEqual([runHook(big, again), runHook(big, again), runHook(big, again)], ['', '', WARNING_OUTPUT]);
+});
+
+/** A copy of the hook in its own directory beside a harness-redact.mjs
+ * holding `asset`, or none when it is null. */
+function installedCopy(asset) {
+  const dir = tempDir('hk-loop-copy-');
+  writeFileSync(join(dir, 'loop-watch.mjs'), readFileSync(HOOK, 'utf8'));
+  if (asset !== null) writeFileSync(join(dir, 'harness-redact.mjs'), asset);
+  return join(dir, 'loop-watch.mjs');
+}
+
+test('an older or missing harness-redact.mjs gives the person one line and exits 0', () => {
+  const root = tempDir('hk-loop-');
+  const real = pathToFileURL(resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'harness-redact.mjs')).href;
+  const remedy = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+  // Every name the hook needs but `openMarker`.
+  const older = installedCopy(`export { markerPath, projectRoot, safeSessionId, stripAnsi } from '${real}';\n`);
+  const missing = installedCopy(null);
+  for (const [script, problem] of [[older, 'is older than this hook and lacks what it needs'], [missing, 'is missing or cannot be loaded']]) {
+    const r = spawnSync(process.execPath, [script], { input: JSON.stringify(failure('stale-1')), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, '', 'no stack trace');
+    assert.deepEqual(JSON.parse(r.stdout), { systemMessage: `kh-harness loop-watch: .claude/scripts/harness-redact.mjs ${problem}, so repeated failures are not counted — ${remedy}` });
+  }
+  const whole = installedCopy(readFileSync(resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'harness-redact.mjs'), 'utf8'));
+  const r = spawnSync(process.execPath, [whole], { input: JSON.stringify(failure('stale-2')), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root } });
+  assert.deepEqual([r.status, r.stdout, r.stderr], [0, '', ''], 'fixture sanity: the copy works beside the current asset');
 });
 
 test('ten hook processes for the same failure at once warn exactly once', async () => {

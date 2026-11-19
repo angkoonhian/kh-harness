@@ -4,11 +4,12 @@
 // repeating it.
 //
 // A failure's signature is a SHA-256 over the tool name, the canonical JSON
-// of the tool input and the first non-empty line of the error. The marker
-// keeps, per session and per agent, the last signature and how many
-// consecutive failures carried it; a failure with a different signature
-// starts a new count at 1. A sub-agent's failures arrive with its `agent_id`
-// and are counted apart from the main agent's and every other sub-agent's.
+// of the tool input and the first non-empty line of the error. A failure's
+// count is how many failures in a row, ending with it, carried its
+// signature, so a failure with a different signature starts a new count at
+// 1. Counts are kept per session and per agent: a sub-agent's failures
+// arrive with its `agent_id` and are counted apart from the main agent's and
+// every other sub-agent's.
 // The hook is registered only on the failure event, so a success between two
 // identical failures is not seen and does not reset the count.
 //
@@ -24,8 +25,9 @@
 //
 // Each record begins with its newline, so it never joins a line the file
 // already held, and a line that is not a whole record ends a run rather than
-// extending it. The marker grows by one record per failure of the session's
-// agent; only its tail is read.
+// extending it. The marker is never shortened: it grows by 98 bytes per
+// failure of the session's agent, and only its tail, at most MAX_READ_BYTES,
+// is ever read back.
 //
 // The warning is one fixed sentence, emitted exactly at the third identical
 // failure and not again for the same run. Nothing from the tool input or the
@@ -38,19 +40,42 @@
 // usable session id, an unusable agent id, and any internal failure are all
 // nothing to do.
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, writeSync } from 'node:fs';
-import { markerPath, projectRoot, safeSessionId, stripAnsi } from './harness-redact.mjs';
+import { closeSync, constants, fstatSync, readSync, writeSync } from 'node:fs';
+
+// The shared asset beside this hook can be older than the hook: `apply`
+// leaves a hand-edited copy in place, and a static import of a name that
+// copy lacks would fail at link time with exit 1 on every failed call. Its
+// shape is probed instead, and a stale or missing one gets one line naming
+// the fix, shown to the person, with exit 0. The asset cannot hold this
+// text: it is the file that may be missing.
+const NEEDED = ['markerPath', 'openMarker', 'projectRoot', 'safeSessionId', 'stripAnsi'];
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+const assetProblem = problem => {
+  process.stdout.write(JSON.stringify({ systemMessage: `kh-harness loop-watch: .claude/scripts/harness-redact.mjs ${problem}, so repeated failures are not counted — ${REMEDY}` }) + '\n');
+  process.exit(0);
+};
+let asset;
+try {
+  asset = await import('./harness-redact.mjs');
+} catch {
+  assetProblem('is missing or cannot be loaded');
+}
+if (NEEDED.some(name => !(name in asset))) assetProblem('is older than this hook and lacks what it needs');
+const { markerPath, openMarker, projectRoot, safeSessionId, stripAnsi } = asset;
 
 const WARN_AT = 3;
 const WARNING = 'The same call has failed 3 times in a row with the same error. Stop repeating it and change approach.';
 
 const NONCE_BYTES = 16;
 const RECORD = /^[0-9a-f]{64} [0-9a-f]{32}$/;
-// The bytes read from the end of the marker at first, doubled until they
-// hold this run's record and the WARN_AT records before it, or the whole
-// file: forty records, so more is read only when dozens of runs appended
-// after this one.
+// The bytes read from the end of the marker at first, about forty records,
+// doubled until they hold this run's record and the WARN_AT records before
+// it, the whole file, or MAX_READ_BYTES.
 const TAIL_BYTES = 4096;
+// About 670 records: far more runs than ever append after one run of one
+// agent before it reads, while a read stays one small buffer however long
+// the session.
+const MAX_READ_BYTES = 64 * 1024;
 
 // A hard ceiling on how long reading stdin may block; see lint-touched.mjs's
 // STDIN_TIMEOUT_MS for why the read is asynchronous.
@@ -109,23 +134,13 @@ function agentKey(agentId) {
   return safe === null ? null : `agent-${safe}`;
 }
 
-/** Opens the marker to append to and read, creating it, never through a link
- * planted at its path: O_NOFOLLOW where the platform defines it (POSIX);
- * elsewhere an lstat first. Null when a link is there. */
-function openMarker(path) {
-  const flags = constants.O_RDWR | constants.O_APPEND | constants.O_CREAT;
-  if (constants.O_NOFOLLOW !== undefined) return openSync(path, flags | constants.O_NOFOLLOW);
-  let st = null;
-  try { st = lstatSync(path); } catch { /* absent: the open creates it */ }
-  return st?.isSymbolicLink() ? null : openSync(path, flags);
-}
-
 /** How many identical signatures end at `record` in the marker open as `fd`,
- * counted up to WARN_AT + 1, or 0 when `record` is not there. */
+ * counted up to WARN_AT + 1, or 0 when `record` and the WARN_AT records
+ * before it are not all within the last MAX_READ_BYTES. */
 function runEndingAt(fd, record) {
   const signature = record.slice(0, record.indexOf(' '));
   const size = fstatSync(fd).size;
-  for (let span = TAIL_BYTES; ; span *= 2) {
+  for (let span = TAIL_BYTES; ; span = Math.min(span * 2, MAX_READ_BYTES)) {
     const start = Math.max(0, size - span);
     const tail = Buffer.alloc(size - start);
     const read = readSync(fd, tail, 0, tail.length, start);
@@ -138,7 +153,7 @@ function runEndingAt(fd, record) {
       while (count <= WARN_AT && at - count >= 0 && RECORD.test(lines[at - count]) && lines[at - count].startsWith(`${signature} `)) count++;
       return count;
     }
-    if (start === 0) return 0;
+    if (start === 0 || span === MAX_READ_BYTES) return 0;
   }
 }
 
@@ -158,7 +173,7 @@ async function main() {
   const base = markerPath(projectRoot(), sessionId, 'loop-watch');
   if (base === null) return;
   const record = `${signatureOf(toolName, toolInput, error)} ${randomBytes(NONCE_BYTES).toString('hex')}`;
-  const fd = openMarker(`${base}.${agent}`);
+  const fd = openMarker(`${base}.${agent}`, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT);
   if (fd === null) return;
   let count;
   try {

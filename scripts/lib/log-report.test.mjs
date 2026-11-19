@@ -56,6 +56,13 @@ const reportJson = root => {
   return JSON.parse(r.stdout);
 };
 
+/** Asserts the report read every line of every session, for a test whose
+ * counts mean something only when nothing was left unread. */
+const assertReadWhole = json => assert.deepEqual(
+  { sessionsUnreadable: json.sessionsUnreadable, linesUnparseable: json.linesUnparseable, gatesSessionsUnreadable: json.gates.sessionsUnreadable },
+  { sessionsUnreadable: 0, linesUnparseable: 0, gatesSessionsUnreadable: 0 },
+);
+
 /** A learning as the ledger entries for it need it: no file is written, as
  * for a gate learned on another machine or a learning since deleted. */
 const learningNamed = id => ({
@@ -79,6 +86,7 @@ test('the report states how many sessions it read and under which harness and mo
   log(root, 'e', harness(OTHER_BASE), failure({ tool: 'Edit' }));
   log(root, 'f', { type: 'SessionStart', source: 'startup' });
   const json = reportJson(root);
+  assertReadWhole(json);
   assert.equal(json.sessionsRead, 6);
   // The group of the recurrence in the most sessions comes first.
   assert.deepEqual(json.groups.map(g => [g.base, g.model, g.recurrences.map(r => [r.tool, r.sessions.length])]), [
@@ -98,7 +106,9 @@ test('it lists each recurrence with its session count', () => {
   log(root, 'a', failure({ tool: 'Read', firstErrorLine: 'Error: no such file' }));
   log(root, 'b', failure({ tool: 'Read', firstErrorLine: 'Error: no such file' }));
   log(root, 'c', failure({ tool: 'Grep', firstErrorLine: 'Error: once only' }));
-  const [group] = reportJson(root).groups;
+  const json = reportJson(root);
+  assertReadWhole(json);
+  const [group] = json.groups;
   const bash = failureSignature({ ...failure() }, root);
   assert.deepEqual(group.recurrences.map(r => [r.tool, r.sessions.length, r.count]), [['Bash', 3, 4], ['Read', 2, 2]]);
   assert.equal(group.recurrences[0].signature, bash);
@@ -142,7 +152,9 @@ test('an error line is shown only cleaned: one line, nothing invisible, delimite
   log(root, 'b', harness(), failure({ firstErrorLine: raw }));
   const prefix = `Error: <${errorMarker}> second line `;
   const cleaned = `Error: &lt;${errorMarker}&gt; second line ${'x'.repeat(200 - prefix.length)}`;
-  const [r] = reportJson(root).groups[0].recurrences;
+  const json = reportJson(root);
+  assertReadWhole(json);
+  const [r] = json.groups[0].recurrences;
   assert.equal(r.errorLine, cleaned);
   const text = reportText(root);
   assert.ok(text.includes(`error: ${cleaned}\n`), text);
@@ -159,6 +171,7 @@ test('each recurrence names the failure kind that lists its signature, or says i
   for (const id of ['a', 'b']) log(root, id, harness(), failure(), failure({ tool: 'Edit' }));
   const bash = failureSignature(failure(), root);
   const absent = reportJson(root);
+  assertReadWhole(absent);
   assert.deepEqual(absent.taxonomy, { path: 'docs/harness/FAILURES.md', state: 'absent' });
   assert.deepEqual(absent.groups[0].recurrences.map(r => r.failureKinds), [[], []]);
   assert.match(reportText(root), /failure kind: unlabelled; there is no docs\/harness\/FAILURES\.md/);
@@ -179,6 +192,7 @@ test('a taxonomy that cannot be read leaves every label not read', () => {
   for (const id of ['a', 'b']) log(root, id, harness(), failure());
   mkdirSync(join(root, 'docs/harness/FAILURES.md'), { recursive: true });
   const json = reportJson(root);
+  assertReadWhole(json);
   assert.equal(json.taxonomy.state, 'unreadable');
   assert.equal(json.groups[0].recurrences[0].failureKinds, null);
   assert.match(reportText(root), /failure kind: not read, because docs\/harness\/FAILURES\.md could not be read/);
@@ -195,7 +209,9 @@ test('gate firings are counted per gate and action, and a warn or block followed
   log(root, 'g5', firing('L1', 'block', 'Bash', 'u12'));
   log(root, 'g6', firing('L2', 'warn', 'Read', 'u13'), firing('L2', 'observe', 'Read', 'u14'), after('PostToolUse', 'Read', 'u14'));
   log(root, 'g7', firing('<L9>', 'block', 'Bash', 'u15'), firing('L3', 'shout', 'Bash', 'u16'));
-  const { gates } = reportJson(root);
+  const json = reportJson(root);
+  assertReadWhole(json);
+  const { gates } = json;
   assert.equal(gates.sessionsRead, 7);
   assert.equal(gates.firingsMalformed, 2);
   assert.equal(gates.reroutedMeans, REROUTED_MEANS);
@@ -225,6 +241,7 @@ test('marked wrong is read from the ledger, and a broken ledger is reported as n
   markWrong(root, 'L1', 'a', 2);
   markWrong(root, 'L4', 'a', 1);
   const json = reportJson(root);
+  assertReadWhole(json);
   assert.deepEqual(json.ledger, { intact: true, brokenAt: null });
   assert.deepEqual(json.gates.firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal, g.fired.warn]), [['L1', 1, 2, 2], ['L4', 1, 1, 0]]);
   assert.match(reportText(root), /L1: .*marked wrong: 1 since the last promotion or landing, 2 in all/);
@@ -246,7 +263,9 @@ test('a gate id with no learning on this machine is reported from its firings al
   const r = runLog(root, 'report', '--json');
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stderr, '');
-  const { firings } = JSON.parse(r.stdout).gates;
+  const json = JSON.parse(r.stdout);
+  assertReadWhole(json);
+  const { firings } = json.gates;
   assert.deepEqual(firings.map(g => [g.gateId, g.markedWrong, g.markedWrongTotal]), [['L4', 1, 1], ['L7', 0, 0]]);
   assert.deepEqual(firings[1],
     { gateId: 'L7', fired: { observe: 0, warn: 0, block: 1 }, rerouted: 1, markedWrong: 0, markedWrongTotal: 0, gateSha256s: ['a'.repeat(64)] });

@@ -78,7 +78,7 @@
 // and does not belong in a shared chokepoint.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -922,20 +922,30 @@ export function readJSONMarker(path, fallback) {
  */
 export function writeJSONMarker(path, state) {
   try {
-    // Never through a link planted at the marker's own path: O_NOFOLLOW
-    // where the platform defines it (POSIX); elsewhere an lstat first.
-    if (constants.O_NOFOLLOW === undefined) {
-      let st = null;
-      try { st = lstatSync(path); } catch { /* absent: fine */ }
-      if (st && st.isSymbolicLink()) return false;
-      writeFileSync(path, JSON.stringify(state), 'utf8');
-    } else {
-      writeFileSync(path, JSON.stringify(state), { encoding: 'utf8', flag: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW });
+    const fd = openMarker(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC);
+    if (fd === null) return false;
+    try {
+      writeFileSync(fd, JSON.stringify(state), 'utf8');
+    } finally {
+      closeSync(fd);
     }
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Opens a marker file with `flags`, numeric `fs.constants` open flags, and
+ * returns its descriptor, never through a link planted at the marker's own
+ * path: O_NOFOLLOW where the platform defines it (POSIX); elsewhere an lstat
+ * first, and null when a link is there. Throws what the open throws.
+ */
+export function openMarker(path, flags) {
+  if (constants.O_NOFOLLOW !== undefined) return openSync(path, flags | constants.O_NOFOLLOW);
+  let st = null;
+  try { st = lstatSync(path); } catch { /* absent: the open may create it */ }
+  return st?.isSymbolicLink() ? null : openSync(path, flags);
 }
 
 // --- Running a repository's own command, bounded ---------------------------
