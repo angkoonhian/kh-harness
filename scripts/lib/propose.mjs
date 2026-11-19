@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { render, versionStamp, machineryStamp, stampVersion, carriesStamp } from './render.mjs';
-import { classify, contentMatches, sha256 } from './manifest.mjs';
+import { classify, contentMatches, MANIFEST_PATH, sha256 } from './manifest.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
@@ -16,24 +16,19 @@ import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mj
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { execEntry, registeredHook } from './hook-evidence.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
+import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
 
+// Where every hook script and module is installed. Each script loads its
+// siblings by a relative `./name.mjs`, so they all land in this one
+// directory.
+const SCRIPTS_DIR = '.claude/scripts/';
 const BRIEF_PATH = '.claude/scripts/session-brief.mjs';
 const LINT_TOUCHED_PATH = '.claude/scripts/lint-touched.mjs';
 const VERIFY_TOUCHED_PATH = '.claude/scripts/verify-touched.mjs';
-// Shared by ALL THREE installed hooks — lint-touched.mjs (PostToolUse),
-// verify-touched.mjs (Stop) and, since the whole-branch review's F3/F4,
-// session-brief.mjs (SessionStart). See harness-redact.mjs's own comment
-// for why a shared module exists at all. Each script imports it via a
-// relative `./harness-redact.mjs`, so it must always land in the SAME
-// directory as each of them.
 const REDACT_PATH = '.claude/scripts/harness-redact.mjs';
-// Phase 3 (intent and rules): the UserPromptSubmit hook that re-injects the
-// rules registry into every prompt. Declared here, like the other three
-// hook paths, so `registeredHook` (hook-evidence.mjs) can ask "is OURS here"
-// against the same constant the generator registers — one source of truth.
 const RULES_BRIEF_PATH = '.claude/scripts/rules-brief.mjs';
 const LOOP_WATCH_PATH = '.claude/scripts/loop-watch.mjs';
 const SESSION_LOG_PATH = '.claude/scripts/session-log.mjs';
@@ -269,7 +264,7 @@ export const TOOL_GATE_STEP = 30;
  * approves, weakens or removes a learned gate.
  */
 export function toolGateDenyRules() {
-  const inRepository = ['.claude/scripts/**', '.claude/kh-harness/**', '.claude/kh-harness.manifest.json', LEARNED_PATH].map(p => `Edit(/${p})`);
+  const inRepository = [`${SCRIPTS_DIR}**`, `${dirname(GATES_PATH)}/**`, MANIFEST_PATH, LEARNED_PATH].map(p => `Edit(/${p})`);
   return [...inRepository, 'Edit(~/.claude/kh-harness/**)', ...commandDenyRules()];
 }
 
@@ -683,7 +678,6 @@ const HOOK_MODULE_PATHS = Object.freeze(Object.keys(HOOK_MODULES));
  * then the modules. */
 const INSTALLED_SCRIPTS = Object.freeze({ ...HOOK_SCRIPTS, ...HOOK_MODULES });
 const INSTALLED_SCRIPT_PATHS = Object.freeze(Object.keys(INSTALLED_SCRIPTS));
-const SCRIPTS_DIR = '.claude/scripts/';
 
 const siblingsByPath = new Map();
 

@@ -556,7 +556,7 @@ test('SECURITY: a package.json script body never reaches stdout or detect.json',
 });
 
 // A hook command's ARGUMENTS are where secrets live, and one of the two files
-// hookEvents reads — .claude/settings.local.json — is gitignored and sits on
+// the hook registry reads — .claude/settings.local.json — is gitignored and sits on
 // the credential scanner's always-probe list precisely because it holds
 // machine-local secrets. Masking against a pattern list only narrows the leak:
 // it depends on that list being complete, and this project fixed I1 because it
@@ -912,7 +912,7 @@ test('F1 SECURITY: a file the scan named but cannot read is reported, and P0.sec
   const checks = buildGaps({
     stack: { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] },
     harness: { instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-      claudeDir: { settings: false, localSettings: false, denyRules: 0, denyRuleList: [], hooks: [], hookEvents: {}, agents: [], skills: [], commands: [], rules: [] },
+      claudeDir: { settings: false, localSettings: false, denyRules: 0, denyRuleList: [], hooks: [], agents: [], skills: [], commands: [], rules: [] },
       otherEditors: [], architecture: null, docPointers: [], projectDocs: [], handoff: null, bootstrap: null, gitattributes: false, remotes: [] },
     exposures, profile: selectProfile({ languages: [], packages: [] }),
     git: { isRepo: true, branch: 'feat/x' }, files, root: d,

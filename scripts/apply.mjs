@@ -14,11 +14,10 @@ import { buildGaps } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { buildProposals } from './lib/propose.mjs';
 import { deriveCouldNotDerive, exposureSectionLines, stillOpen } from './lib/report.mjs';
-import { readManifestResult, emptyManifest, writeManifest, classify, displayPath, MANIFEST_PATH } from './lib/manifest.mjs';
+import { readManifestResult, emptyManifest, writeManifest, classify, displayPath, KIT_VERSION, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, diffRenderer, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason, writeGateRefusals } from './lib/apply-lib.mjs';
 import { parseArgv, refuseExtraArguments, warnUnknown, wantsHelp, APPLY_USAGE, EXECUTION_DISCLOSURE } from './lib/cli.mjs';
 
-const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const KNOWN_FLAGS = new Set(['--yes', '--allow-default-branch', '--allow-dirty']);
 
 const argv = process.argv.slice(2);

@@ -6,6 +6,10 @@ import { GATE_ID } from '../../assets/scripts/harness-gates.mjs';
 
 const MANIFEST_PATH = '.claude/kh-harness.manifest.json';
 
+/** The version of the kit this code is, read from its package.json: the one
+ * place it is read. */
+export const KIT_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+
 export function sha256(input) {
   // Handle both strings and buffers. Buffers are hashed as raw bytes (no encoding).
   // Strings are hashed as utf-8 for backward compatibility, but file content must use buffers.

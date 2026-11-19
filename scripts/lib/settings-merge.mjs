@@ -1,5 +1,8 @@
 import { sha256 } from './manifest.mjs';
 
+/** The project settings file every patch is written to and reverted from. */
+export const SETTINGS_PATH = '.claude/settings.json';
+
 const clone = o => JSON.parse(JSON.stringify(o ?? {}));
 
 /** Canonical form so the hash does not depend on key order. */

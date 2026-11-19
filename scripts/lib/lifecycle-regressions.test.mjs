@@ -30,7 +30,7 @@ test('a repository that gitignores .claude/ still recognises its own hook as dec
   // Fixture sanity: .claude/ really is invisible to the scan the OLD
   // (defective) code relied on — otherwise this test could pass for a
   // reason unrelated to the fix.
-  assert.equal(after.harness.claudeDir.hookEvents.SessionStart[0], null,
+  assert.ok(after.harness.claudeDir.hookRegistrations.SessionStart.every(r => r.script === null),
     'fixture sanity: the scan-list resolution must genuinely fail to see our own script here');
 
   const c = after.checks.find(x => x.id === 'P4.sessionbrief');
@@ -301,7 +301,7 @@ test('a user who replaces our hook with their own is told it is absent again, no
   // Fixture sanity: the replacement really does resolve to a real path —
   // this must be a POSITIVE identification of someone else's hook, not an
   // unresolvable one, or this test would not isolate the regression.
-  assert.equal(r.harness.claudeDir.hookEvents.SessionStart[0], 'tools-their-replacement.mjs');
+  assert.ok(r.harness.claudeDir.hookRegistrations.SessionStart.some(h => h.script === 'tools-their-replacement.mjs'));
 
   const c = r.checks.find(x => x.id === 'P4.sessionbrief');
   assert.equal(c.state, 'absent', 'a hook that positively resolves to someone else\'s script must never be credited as ours');
