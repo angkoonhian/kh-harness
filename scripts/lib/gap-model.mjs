@@ -312,14 +312,18 @@ const CHECKS = [
     // instead of reproducing them line for line — see
     // `prominentExposureNote`'s own comment for which test holds the collapse
     // guarantee now that this one structurally cannot.
-    check: ({ exposures }) => {
+    check: ({ exposures, harness }) => {
       const { prominent, collapsedCount } = splitExposures(exposures);
       const { credentials, unreadable } = partitionProminent(prominent);
       const blocking = credentials.filter(e => e.severity !== 'low');
       const fixtures = credentials.length - blocking.length;
+      // Said beside whatever else was found: a remote URL that could not be
+      // listed was not swept.
+      const unlisted = harness?.remotesError ? [`remote URLs were not checked for a token: git could not list the remotes (${harness.remotesError})`] : [];
       const notes = [
         ...(fixtures ? [fixtureExposureNote(fixtures)] : []),
         ...(collapsedCount ? [collapsedExposureNote(collapsedCount)] : []),
+        ...unlisted,
       ];
       if (unreadable.length || blocking.length) {
         return {
@@ -331,7 +335,7 @@ const CHECKS = [
           ],
         };
       }
-      return { state: 'verified', evidence: notes.length ? notes : [CLEAN_SWEEP_NOTE] };
+      return { state: 'verified', evidence: fixtures || collapsedCount ? notes : [CLEAN_SWEEP_NOTE, ...unlisted] };
     },
   },
   {
@@ -1049,9 +1053,18 @@ const CHECKS = [
     lookedFor: ['at least one git remote'],
     // Adding a remote needs a URL and an account only the owner has.
     viaWithoutGenerator: 'human',
-    check: ({ harness }) => harness.remotes.length
-      ? { state: 'declared', evidence: harness.remotes.map(r => r.name) }
-      : { state: 'absent', proposal: 'add a git remote so the harness is backed up off this machine' },
+    check: ({ harness }) => {
+      if (harness.remotes.length) return { state: 'declared', evidence: harness.remotes.map(r => r.name) };
+      // A git that could not answer is not a repository without a remote.
+      if (harness.remotesError) {
+        return {
+          state: 'absent', decidable: false,
+          evidence: [`git could not list this repository's remotes (${harness.remotesError}), so it is not known whether it has one`],
+          question: 'git could not list this repository\'s remotes. Does it have one, so the harness is backed up off this machine?',
+        };
+      }
+      return { state: 'absent', proposal: 'add a git remote so the harness is backed up off this machine' };
+    },
   },
   // Two capabilities, two checks. Conflating them is how a repository with a
   // working SessionStart hook was told to "install HANDOFF.md and session-brief

@@ -11,10 +11,9 @@
 //      unrecorded — a partially applied repository that is accurately
 //      described in its manifest is recoverable; one that is not, is not.
 //   4. There is no --force. Not a flag, not an option, not a code path.
-import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { defaultBranches } from './git-info.mjs';
+import { commitReadEnv, defaultBranches, git, gitFailure } from './git-info.mjs';
 import { classify, contentMatches, emptyManifest, MANIFEST_PATH, replaceFile, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook, SETTINGS_PATH } from './settings-merge.mjs';
@@ -74,12 +73,9 @@ function ownedByUs(manifestResult) {
 function trackedChanges(root, ignorePaths) {
   let out;
   try {
-    out = execFileSync('git', ['-C', root, 'status', '--porcelain', '-z', '--untracked-files=no'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    out = git(root, ['status', '--porcelain', '-z', '--untracked-files=no']);
   } catch (err) {
-    const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
-    return { dirty: false, error: stderr || (err?.code === 'ENOENT' ? 'git is not installed or not on PATH' : 'git status failed') };
+    return { dirty: false, error: gitFailure(err, 'report the status of the tree') };
   }
   const records = out.split('\0');
   for (let i = 0; i < records.length; i++) {
@@ -141,39 +137,6 @@ export function writeGateRefusals({ root, git, manifestResult, allowDefaultBranc
   return refusals;
 }
 
-// How long one git call reading a commit may take before the answer counts
-// as one that could not be had.
-const COMMIT_READ_TIMEOUT_MS = 10_000;
-
-// The variables that point git at a repository, work tree, index or object
-// store other than the one found from `-C <root>`.
-const REPOSITORY_VARIABLES = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY'];
-
-/**
- * The environment a git call reading a commit runs in: `base`, this
- * process's in every call made here, with git's messages in the C locale,
- * so the wording they are matched on does not depend on the owner's
- * language, and without `REPOSITORY_VARIABLES`. Exported so a test can see
- * what the calls are made with.
- */
-export function commitReadEnv(base = process.env) {
-  const env = { ...base, LC_ALL: 'C' };
-  for (const name of REPOSITORY_VARIABLES) delete env[name];
-  return env;
-}
-
-/** Why a git call reading a commit failed, as a sentence: the call timing
- * out, git stopped by a signal, git missing, or the first line git printed.
- * Output past the read's bound is the caller's to word (`ENOBUFS`). */
-function gitFailure(err, what) {
-  if (err?.code === 'ETIMEDOUT') return `git did not answer within ${COMMIT_READ_TIMEOUT_MS / 1000} seconds`;
-  if ((err?.signal ?? null) !== null) return `git was stopped by ${err.signal}`;
-  if (err?.code === 'ENOENT') return 'git is not installed or not on PATH';
-  const stderr = String(err?.stderr ?? '').trim().split(/\r?\n/)[0];
-  if (/not a git repository/i.test(stderr)) return 'it is not a git repository';
-  return stderr || `git could not ${what}`;
-}
-
 // The tree entry modes of a regular file, executable or not. A symbolic
 // link (120000) is a blob too, but its content is a path, not the file.
 const REGULAR_FILE_MODES = new Set(['100644', '100755']);
@@ -192,20 +155,13 @@ const REGULAR_FILE_MODES = new Set(['100644', '100755']);
  * `ls-tree` after `--` and read by its object id. Every call runs git with
  * `--no-replace-objects`, so no `refs/replace/` object the repository holds
  * changes what the commit is read as; with its arguments as an array, never
- * through a shell; under a timeout; and in `commitReadEnv`. So a
- * repository that git finds only through `GIT_DIR` reads here as not a
- * git repository, while the default-branch and dirty-tree checks, which keep
- * the environment, still read it: that fails safe, with the could-not-check
- * note. The bound is on the bytes git gives, as the gate hook bounds the
- * file's size, not on the text they decode to.
+ * through a shell; under a timeout; and in `commitReadEnv` (git-info.mjs's
+ * `git`, as every kit git call does). The bound is on the bytes git gives,
+ * as the gate hook bounds the file's size, not on the text they decode to.
  */
 export function committedText(root, rel, maxBytes) {
-  const env = commitReadEnv();
-  const git = (args, options = {}) => execFileSync('git', ['--no-replace-objects', '-C', root, ...args], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: COMMIT_READ_TIMEOUT_MS, env, ...options,
-  });
   try {
-    git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+    git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
   } catch (err) {
     // `--verify --quiet` exits 1 and says nothing when HEAD names no commit.
     const silent = err?.status === 1 && String(err?.stderr ?? '').trim() === '';
@@ -213,7 +169,7 @@ export function committedText(root, rel, maxBytes) {
   }
   let listing;
   try {
-    listing = git(['ls-tree', '-z', 'HEAD', '--', rel]);
+    listing = git(root, ['ls-tree', '-z', 'HEAD', '--', rel]);
   } catch (err) {
     return { unknown: gitFailure(err, 'list the committed file') };
   }
@@ -226,7 +182,7 @@ export function committedText(root, rel, maxBytes) {
   try {
     // One byte past the bound is read, so a file of exactly `maxBytes` is
     // told from a larger one.
-    bytes = git(['cat-file', 'blob', entry[3]], { maxBuffer: maxBytes + 1, encoding: 'buffer' });
+    bytes = git(root, ['cat-file', 'blob', entry[3]], { maxBuffer: maxBytes + 1, encoding: 'buffer' });
   } catch (err) {
     if (err?.code === 'ENOBUFS') return { tooLarge: true };
     return { unknown: gitFailure(err, 'read the committed file') };
@@ -1045,4 +1001,4 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
 // production caller should import these to re-derive its own allowlist
 // logic; `assertAllowed`/`isAllowedDirectory` are the two sanctioned
 // readers of them.
-export { SETTINGS_PATH, ALLOWED_PREFIXES, ALLOWED_EXACT };
+export { SETTINGS_PATH, ALLOWED_PREFIXES, ALLOWED_EXACT, commitReadEnv };
