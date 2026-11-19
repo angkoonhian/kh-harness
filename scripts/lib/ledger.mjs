@@ -10,6 +10,7 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { isProcessAlive, LOCK_STALE_MS, withFileLock } from './file-lock.mjs';
 
 export const LEDGER_KINDS = Object.freeze(['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong']);
@@ -29,6 +30,12 @@ const isNonEmptyString = v => typeof v === 'string' && v.length > 0;
 const isTimestamp = v => typeof v === 'string' && !Number.isNaN(Date.parse(v));
 const isSha256 = v => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 
+const POLICY_APPROVER = /^policy:[0-9a-f]{64}$/;
+
+/** Whether `value` names who approved a step: exactly `owner`, or a policy
+ * as `policy:` and the SHA-256 hex of its canonical JSON. */
+export const isApprover = value => value === 'owner' || (typeof value === 'string' && POLICY_APPROVER.test(value));
+
 // Evidence references what was seen, never what was said: a signature id,
 // counts and a time span. Any other key is refused, so no excerpt can ride
 // along.
@@ -46,7 +53,22 @@ const ENTRY_FIELDS = {
   contentSha256: isSha256,
   base: isNonEmptyString,
   learned: isNonEmptyString,
-  approvedBy: v => v === null || v === 'owner' || (typeof v === 'string' && v.startsWith('policy:') && v.length > 'policy:'.length),
+  approvedBy: v => v === null || isApprover(v),
+};
+
+const FIRING_KEYS = ['sessionId', 'line'];
+
+// Fields only some kinds carry: each is required on those kinds and refused
+// on every other. A promotion records the action it grants, so a learning's
+// file cannot claim a stronger one; a wrong mark records the firing it
+// marks, by session and 1-based event index, so a firing is marked once.
+const KIND_FIELDS = {
+  action: { kinds: ['promoted'], valid: v => v === 'warn' || v === 'block' },
+  firing: {
+    kinds: ['wrong'],
+    valid: v => isPlainObject(v) && Object.keys(v).length === FIRING_KEYS.length && FIRING_KEYS.every(k => Object.hasOwn(v, k))
+      && safeSessionId(v.sessionId) === v.sessionId && Number.isSafeInteger(v.line) && v.line >= 1,
+  },
 };
 
 const STORED_FIELDS = {
@@ -66,15 +88,23 @@ function evidenceProblem(evidence) {
   return null;
 }
 
-/** Why `value` is not an entry under `fields` plus `evidence` and an
- * optional string `detail`, or null when it is one. */
+/** Why `value` is not an entry under `fields`, the `KIND_FIELDS` its kind
+ * carries, `evidence` and an optional string `detail`, or null when it is
+ * one. */
 function entryProblem(value, fields) {
   if (!isPlainObject(value)) return 'entry is not an object';
   for (const key of Object.keys(value)) {
-    if (key !== 'evidence' && key !== 'detail' && !Object.hasOwn(fields, key)) return `unknown field "${key}"`;
+    if (key !== 'evidence' && key !== 'detail' && !Object.hasOwn(fields, key) && !Object.hasOwn(KIND_FIELDS, key)) return `unknown field "${key}"`;
   }
   for (const [field, valid] of Object.entries(fields)) {
     if (!valid(value[field])) return `${field} is missing or invalid`;
+  }
+  for (const [field, { kinds, valid }] of Object.entries(KIND_FIELDS)) {
+    if (kinds.includes(value.kind)) {
+      if (!valid(value[field])) return `${field} is missing or invalid for a ${value.kind} entry`;
+    } else if (value[field] !== undefined) {
+      return `${field} is carried only by a ${kinds.join(' or ')} entry`;
+    }
   }
   if (value.detail !== undefined && typeof value.detail !== 'string') return 'detail is not a string';
   return evidenceProblem(value.evidence);
@@ -117,7 +147,7 @@ function splitLines(buf) {
 export function appendLedger(root, entry, { now = Date.now, isAlive = isProcessAlive } = {}) {
   const problem = entryProblem(entry, ENTRY_FIELDS);
   if (problem !== null) throw new Error(`ledger entry refused: ${problem}`);
-  const { kind, learningId, contentSha256, evidence, base, learned, approvedBy, detail } = entry;
+  const { kind, learningId, contentSha256, evidence, base, learned, approvedBy, action, firing, detail } = entry;
   const { signature, sessions, firstTs, lastTs, external } = evidence;
   const dir = repoDataDir(root);
   mkdirSync(dir, { recursive: true });
@@ -130,7 +160,9 @@ export function appendLedger(root, entry, { now = Date.now, isAlive = isProcessA
     const record = {
       kind, learningId, contentSha256,
       evidence: { signature, sessions, firstTs, lastTs, external },
-      base, learned, approvedBy, detail,
+      base, learned, approvedBy, action,
+      firing: firing === undefined ? undefined : { sessionId: firing.sessionId, line: firing.line },
+      detail,
       ts: new Date(now()).toISOString(),
       prev,
     };

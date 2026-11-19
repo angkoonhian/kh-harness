@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
-import { appendLedger, LEDGER_KINDS, LEDGER_LOCK_STALE_MS, readLedger, verifyLedger } from './ledger.mjs';
+import { appendLedger, isApprover, LEDGER_KINDS, LEDGER_LOCK_STALE_MS, readLedger, verifyLedger } from './ledger.mjs';
 
 const made = [];
 const tempDir = prefix => {
@@ -53,7 +53,7 @@ test('an appended entry chains to the previous one', () => {
   assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
 
   appendLedger(root, entry());
-  appendLedger(root, entry({ kind: 'promoted', approvedBy: 'owner', detail: 'owner approved after replay' }));
+  appendLedger(root, entry({ kind: 'promoted', approvedBy: 'owner', action: 'warn', detail: 'owner approved after replay' }));
   appendLedger(root, entry({ kind: 'retired', approvedBy: `policy:${'d'.repeat(64)}` }));
 
   const raw = lines(root);
@@ -70,7 +70,7 @@ test('an appended entry chains to the previous one', () => {
 
 test('an edited line breaks the chain at that line', () => {
   const root = tempDir('hk-ledger-repo-');
-  for (const kind of ['proposed', 'replayed', 'trial', 'promoted']) appendLedger(root, entry({ kind }));
+  for (const kind of ['proposed', 'replayed', 'trial', 'demoted']) appendLedger(root, entry({ kind }));
   const raw = lines(root);
   raw[1] = raw[1].replace('"replayed"', '"rejected"');
   writeFileSync(ledgerPath(root), raw.join('\n') + '\n', 'utf8');
@@ -141,8 +141,47 @@ test('the rest of an entry is checked against its schema', () => {
   assert.throws(() => appendLedger(root, entry({ base: 7 })), /base/);
   assert.throws(() => appendLedger(root, entry({ approvedBy: 'someone' })), /approvedBy/);
   assert.throws(() => appendLedger(root, entry({ approvedBy: 'policy:' })), /approvedBy/);
+  assert.throws(() => appendLedger(root, entry({ approvedBy: 'policy:abc' })), /approvedBy/);
+  assert.throws(() => appendLedger(root, entry({ approvedBy: `policy:${'D'.repeat(64)}` })), /approvedBy/);
+  assert.throws(() => appendLedger(root, entry({ approvedBy: `policy:${'d'.repeat(65)}` })), /approvedBy/);
+  assert.throws(() => appendLedger(root, entry({ approvedBy: '' })), /approvedBy/);
   assert.throws(() => appendLedger(root, entry({ detail: 42 })), /detail/);
   assert.deepEqual(readLedger(root), []);
+});
+
+test('an approver is the owner or a policy named by its 64-hex hash', () => {
+  for (const v of ['owner', `policy:${'0123456789abcdef'.repeat(4)}`]) assert.equal(isApprover(v), true, v);
+  for (const v of [null, undefined, '', 'Owner', 'policy:', 'policy:abc', `policy:${'d'.repeat(63)}`, `policy:${'A'.repeat(64)}`, ` owner`, 7]) {
+    assert.equal(isApprover(v), false, String(v));
+  }
+});
+
+test('a promoted entry carries the action it grants, and no other kind carries one', () => {
+  const root = tempDir('hk-ledger-repo-');
+  for (const action of ['warn', 'block']) appendLedger(root, entry({ kind: 'promoted', approvedBy: 'owner', action }));
+  assert.deepEqual(readLedger(root).map(e => e.action), ['warn', 'block']);
+  assert.throws(() => appendLedger(root, entry({ kind: 'promoted', approvedBy: 'owner' })), /action/);
+  assert.throws(() => appendLedger(root, entry({ kind: 'promoted', approvedBy: 'owner', action: 'observe' })), /action/);
+  assert.throws(() => appendLedger(root, entry({ kind: 'demoted', action: 'warn' })), /action/);
+  assert.equal(readLedger(root).length, 2);
+  assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
+
+  const raw = lines(root);
+  writeFileSync(ledgerPath(root), [raw[0], JSON.stringify({ ...JSON.parse(raw[1]), action: 'observe' })].join('\n') + '\n', 'utf8');
+  assert.deepEqual(verifyLedger(root), { intact: false, brokenAt: 2 }, 'a stored entry is held to the same rule');
+});
+
+test('a wrong entry carries the firing it marks, and no other kind carries one', () => {
+  const root = tempDir('hk-ledger-repo-');
+  const firing = { sessionId: 'session-1', line: 3 };
+  appendLedger(root, entry({ kind: 'wrong', approvedBy: 'owner', firing }));
+  assert.deepEqual(readLedger(root)[0].firing, firing);
+  for (const bad of [undefined, null, {}, { sessionId: 'session-1' }, { ...firing, line: 0 }, { ...firing, line: 1.5 }, { ...firing, sessionId: '../x' }, { ...firing, extra: 1 }]) {
+    assert.throws(() => appendLedger(root, entry({ kind: 'wrong', approvedBy: 'owner', firing: bad })), /firing/, JSON.stringify(bad));
+  }
+  assert.throws(() => appendLedger(root, entry({ kind: 'trial', firing })), /firing/);
+  assert.equal(readLedger(root).length, 1);
+  assert.deepEqual(verifyLedger(root), { intact: true, brokenAt: null });
 });
 
 const lockOf = root => `${ledgerPath(root)}.lock`;
