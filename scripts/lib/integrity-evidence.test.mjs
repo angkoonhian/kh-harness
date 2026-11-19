@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 import { integrityEvidence } from './integrity-evidence.mjs';
 import { buildGaps } from './gap-model.mjs';
-import { MANIFEST_PATH, sha256 } from './manifest.mjs';
+import { MANIFEST_PATH, readManifestResult, sha256 } from './manifest.mjs';
 import { renderLearnedEntry } from './learned-registry.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { TOOL_GATE_PATH, HARNESS_GATES_PATH } from './propose.mjs';
@@ -47,18 +47,21 @@ function installed(files, extra = {}) {
   return { d, manifest };
 }
 
-const gate = (id, o = {}) => ({ id, tool: 'Bash', field: 'command', match: { kind: 'token', value: 'rm -rf' }, action: 'observe', message: 'Move files to the trash folder instead.', ...o });
+const gate = (id, o = {}) => ({ id, tool: 'Bash', field: 'command', match: { kind: 'token', value: 'rm -rf' }, action: 'warn', message: 'Move files to the trash folder instead.', ...o });
 const gateFile = gates => JSON.stringify({ schema: 1, gates }, null, 2) + '\n';
-function learned(id, approvedSha256) {
+/** A registry entry approving the gate hash at `approvedAction`; with none,
+ * the entry as the kit wrote it before entries named their action. */
+function learned(id, approvedSha256, approvedAction) {
   const r = renderLearnedEntry({
     id, title: 'Do not delete files outright', why: 'Deleted build output was needed later.', enforcedBy: 'hook', pointer: GATES_PATH,
-    evidenceSummary: { signature: '0123456789abcdef', sessions: 2, firstTs: null, lastTs: null, external: false }, approvedSha256,
+    evidenceSummary: { signature: '0123456789abcdef', sessions: 2, firstTs: null, lastTs: null, external: false }, approvedSha256, approvedAction,
   });
   assert.equal(r.error, undefined);
   return r;
 }
-/** The learned registry with an entry approving each gate's current hash. */
-const registryFor = gates => ['# Learned rules', '', ...gates.map(g => learned(g.id, gateSha256(g)).text)].join('\n');
+/** The learned registry with an entry approving each gate's current hash
+ * and action. */
+const registryFor = gates => ['# Learned rules', '', ...gates.map(g => learned(g.id, gateSha256(g), g.action).text)].join('\n');
 
 const HOOKS = { [TOOL_GATE_PATH]: '// tool gate\n', [HARNESS_GATES_PATH]: '// gate language\n' };
 
@@ -70,7 +73,7 @@ test('an untouched install is declared', () => {
   assert.deepEqual(r.problems, []);
   assert.deepEqual(r.summary, [
     `4 harness files recorded in ${MANIFEST_PATH} match it`,
-    `${GATES_PATH}: 1 gate, each approved in ${LEARNED_PATH}`,
+    `${GATES_PATH}: 1 gate, each approved in ${LEARNED_PATH} for its content and its action`,
     `1 landed learning recorded in ${MANIFEST_PATH}, each matched by its gate`,
   ]);
 });
@@ -125,12 +128,42 @@ test('a gate whose text changed after approval is named', () => {
   ]);
 });
 
-test('changing only a gate\'s action keeps its approval', () => {
+test('a gate whose action alone changed after approval is named, in either direction, though its hash is unchanged', () => {
+  for (const [approved, committed] of [['warn', 'block'], ['block', 'warn'], ['block', 'observe']]) {
+    const g = gate('L1', { action: approved });
+    const { d, manifest } = installed(HOOKS);
+    write(d, LEARNED_PATH, registryFor([g]));
+    const changed = { ...g, action: committed };
+    assert.equal(gateSha256(changed), gateSha256(g), 'fixture: the hash leaves the action out');
+    write(d, GATES_PATH, gateFile([changed]));
+    const r = integrityEvidence(d, manifest);
+    assert.deepEqual(r.problems, [`L1 in ${GATES_PATH}: its action changed since it was approved — it is not the approved-action of L1 in ${LEARNED_PATH}`], `${approved} to ${committed}`);
+    assert.deepEqual(r.summary, []);
+  }
+});
+
+test('an entry written before entries named their action approves a gate for its content and not for its action, and the check says so', () => {
+  const old = gate('L1', { action: 'block' });
+  const current = gate('L2', { match: { kind: 'literal', value: 'git push --force' } });
+  const { d, manifest } = installed(HOOKS);
+  write(d, LEARNED_PATH, ['# Learned rules', '', learned('L1', gateSha256(old)).text, learned('L2', gateSha256(current), current.action).text].join('\n'));
+  write(d, GATES_PATH, gateFile([old, current]));
+  const r = integrityEvidence(d, manifest);
+  assert.deepEqual(r.problems, [
+    `L1 in ${GATES_PATH}: not approved for its action — its entry in ${LEARNED_PATH} records no approved-action, as an entry landed by an older kh-harness does not; `
+      + '`learn revert L1 --yes` then `learn land L1 --yes`, at a terminal on the machine that landed it, writes one',
+  ], 'neither passed as approved nor reported as changed; the entry beside it is unaffected');
+  assert.deepEqual(r.summary, []);
+});
+
+test('an approval of a gate\'s hash under another id approves no action for it', () => {
   const g = gate('L1');
   const { d, manifest } = installed(HOOKS);
-  write(d, LEARNED_PATH, registryFor([g]));
-  write(d, GATES_PATH, gateFile([{ ...g, action: 'block' }]));
-  assert.deepEqual(integrityEvidence(d, manifest).problems, []);
+  write(d, LEARNED_PATH, ['# Learned rules', '', learned('L8', gateSha256(g), 'block').text].join('\n'));
+  write(d, GATES_PATH, gateFile([g]));
+  assert.deepEqual(integrityEvidence(d, manifest).problems, [
+    `L1 in ${GATES_PATH}: not approved for its action — no entry L1 in ${LEARNED_PATH} approves its hash, so none records an action for it`,
+  ]);
 });
 
 test('a gate with no registry entry is named', () => {
@@ -172,28 +205,26 @@ test('a landed learning with no gate is named', () => {
   const { d, manifest } = installed(HOOKS, { learnings: [
     { id: 'L1', gateSha256: gateSha256(g) },
     { id: 'L2', gateSha256: gateSha256(gate('L2')) },
-    { id: '\u001b[2Jforged', gateSha256: 'x' },
-    'not a learning',
   ] });
   write(d, LEARNED_PATH, registryFor([g]));
   write(d, GATES_PATH, gateFile([g]));
   assert.deepEqual(integrityEvidence(d, manifest).problems, [
     `landed learning L2 in ${MANIFEST_PATH}: no gate in ${GATES_PATH} has its id and hash`,
-    `landed learning 3 in ${MANIFEST_PATH}: not an object with a gate id and a 64-character hex gateSha256`,
-    `landed learning 4 in ${MANIFEST_PATH}: not an object with a gate id and a 64-character hex gateSha256`,
   ]);
 });
 
-test('a landed learning with no hash, or a hash that is not one, is named by its position even with no gate behind it', () => {
-  const { d, manifest } = installed(HOOKS, { learnings: [
-    { id: 'L99' },
-    { id: 'L98', gateSha256: null },
-    { id: 'L97', gateSha256: 'A'.repeat(64) },
-    ['L96', 'a'.repeat(64)],
-  ] });
-  const r = integrityEvidence(d, manifest);
-  assert.deepEqual(r.problems, [1, 2, 3, 4].map(n => `landed learning ${n} in ${MANIFEST_PATH}: not an object with a gate id and a 64-character hex gateSha256`));
-  assert.deepEqual(r.summary, []);
+test('a manifest whose landed learnings are not id-and-hash records never reaches the cross-check: it is corrupt, and the check fails on that', () => {
+  for (const learnings of [
+    [{ id: '\u001b[2Jforged', gateSha256: 'x' }], ['not a learning'], [{ id: 'L99' }], [{ id: 'L98', gateSha256: null }],
+    [{ id: 'L97', gateSha256: 'A'.repeat(64) }], [['L96', 'a'.repeat(64)]], { L1: 'x' },
+  ]) {
+    const { d, manifest } = installed(HOOKS, { learnings });
+    write(d, MANIFEST_PATH, JSON.stringify(manifest));
+    assert.equal(readManifestResult(d).state, 'corrupt', JSON.stringify(learnings));
+    const check = integrityGap(d, null);
+    assert.equal(check.state, 'failing');
+    assert.deepEqual(check.evidence, [`${MANIFEST_PATH} could not be read as a manifest, so the kit's files could not be checked against it`]);
+  }
 });
 
 test('a well-formed landed learning with no gate file is named by its id', () => {
@@ -206,19 +237,14 @@ test('a manifest that records no harness file says so', () => {
   assert.deepEqual(integrityEvidence(d, manifest).summary, [`${MANIFEST_PATH} records no harness file`, `${GATES_PATH}: no committed gate file`]);
 });
 
-test('a landed learning list that is not a list is named', () => {
-  const { d, manifest } = installed(HOOKS, { learnings: { L1: 'x' } });
-  assert.deepEqual(integrityEvidence(d, manifest).problems, [`${MANIFEST_PATH}: learnings is not a list`]);
-});
-
 test('an approved learned entry with no gate is named, by its line when its id is not a gate id', () => {
   const g = gate('L1');
   const { d, manifest } = installed(HOOKS);
-  const forged = learned('L9', gateSha256(gate('L9'))).text.replace('## L9', '## Lx9');
+  const forged = learned('L9', gateSha256(gate('L9')), 'warn').text.replace('## L9', '## Lx9');
   write(d, LEARNED_PATH, [registryFor([g]), forged].join('\n'));
   assert.deepEqual(integrityEvidence(d, manifest).problems, [
     `L1 in ${LEARNED_PATH}: approved, but no gate in ${GATES_PATH} has its approved-sha256`,
-    `the entry at line 12 in ${LEARNED_PATH}: approved, but no gate in ${GATES_PATH} has its approved-sha256`,
+    `the entry at line 13 in ${LEARNED_PATH}: approved, but no gate in ${GATES_PATH} has its approved-sha256`,
   ]);
 });
 

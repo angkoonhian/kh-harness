@@ -5,10 +5,10 @@
 //
 // Every step an owner or a hook takes goes through the real entry point as
 // a child process, the hooks run from the copies `apply` installed in the
-// fixture, at the paths its settings register. The steps that need a person
-// at a terminal are first shown refused as a child process, which has none,
-// and are then taken through the library with the result
-// `requireInteractive` gives at a terminal; each such call says so. What is
+// fixture, at the paths its settings register. The steps that pass the
+// terminal check are first shown refused as a child process, which has no
+// terminal, and are then taken through the library with the result
+// `requireInteractive` gives at one; each such call says so. What is
 // asserted is the commands' own output, `git status` and the data
 // directory.
 import { test } from 'node:test';
@@ -28,7 +28,7 @@ import {
 } from './lifecycle-fixtures.mjs';
 import { MIN_CLEAN_CALLS, MIN_CLEAN_SESSIONS } from './replay.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
-import { requireInteractive } from './tty.mjs';
+import { requireInteractive, TERMINAL_CHECK } from './tty.mjs';
 
 const DATA_ROOT = sandboxDataDir();
 sandboxMarkerDir();
@@ -84,10 +84,10 @@ function ok(result) {
 }
 
 /** A kit CLI's result, asserted to be the terminal refusal: exit 3 and a
- * line naming the missing terminal. */
+ * line saying what the check tests. */
 function refusedForTerminal(result) {
   assert.equal(result.status, 3, `exit ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stderr, /interactive terminal/);
+  assert.ok(result.stderr.includes(`it runs only from ${TERMINAL_CHECK}`), result.stderr);
 }
 
 test('the learning loop end to end, through the real commands and the installed hooks', async t => {
@@ -336,10 +336,28 @@ test('the learning loop end to end, through the real commands and the installed 
     // Listed under the recurrences that may be drafted, and none apart as
     // rejected before.
     const candidates = ok(learn('candidates'));
-    const draftable = candidates.slice(candidates.indexOf('RECURRENCES NO LEARNING STANDS FOR (each may be drafted)'), candidates.indexOf('RECURRENCES DRAFTED BEFORE'));
-    assert.match(draftable, new RegExp(`^ {4}${signature} {2}Bash: in 2 sessions, 2 times, from `, 'm'), candidates);
-    assert.match(draftable, /^ {6}failure kind: unlabelled$/m);
-    assert.match(candidates, /^RECURRENCES DRAFTED BEFORE, .*\n {2}none found$/m);
+    const draftable = candidates.slice(candidates.indexOf('RECURRENCES NO LEARNING STANDS FOR (each that names a failure kind may be drafted)'), candidates.indexOf('RECURRENCES DRAFTED BEFORE'));
+    assert.match(draftable, new RegExp(`^ {6}${signature} {2}Bash: in 2 sessions, 2 times, from `, 'm'), candidates);
+    assert.match(draftable, /^ {8}failure kind: unlabelled$/m);
+    assert.match(candidates, /^ {2}RECURRENCES DRAFTED BEFORE, .*\n {4}none found$/m);
+    // What the log recorded stands between two lines carrying one nonce.
+    const nonce = /^BEGIN RECORDED DATA ([0-9a-f]{16}): /m.exec(candidates)?.[1];
+    assert.ok(nonce, candidates);
+    assert.ok(candidates.indexOf(`BEGIN RECORDED DATA ${nonce}`) < candidates.indexOf(WATCH_ERROR), candidates);
+    assert.ok(candidates.indexOf(WATCH_ERROR) < candidates.indexOf(`\nEND RECORDED DATA ${nonce}\n`), candidates);
+
+    // Nobody has named the failure, so a draft for it is refused, and stores
+    // nothing: the rule the skill states is the command's.
+    const path = join(draftDir, 'unlabelled.json');
+    writeFileSync(path, JSON.stringify({
+      signature, title: 'Tests run once', why: 'Watch mode waits for a terminal.',
+      gate: { tool: 'Bash', field: 'command', match: { kind: 'literal', value: MISTAKE }, message: GATE_MESSAGE },
+    }));
+    const data = dataSnapshot();
+    const refused = learn('draft', '--from', path);
+    assert.equal(refused.status, 3, refused.stderr);
+    assert.match(refused.stderr, /^kh-harness: draft: signature: no failure kind in docs\/harness\/FAILURES\.md lists this signature, and only the owner names a failure: /);
+    assert.deepEqual(dataSnapshot(), data, 'the refused draft stored nothing');
   });
 
   await step('6. the owner names the failure in docs/harness/FAILURES.md, and log report shows the kind', () => {
@@ -416,7 +434,7 @@ test('the learning loop end to end, through the real commands and the installed 
     const data = dataSnapshot();
     const r = learn('draft', '--from', path);
     assert.deepEqual({ status: r.status, stdout: r.stdout, stderr: r.stderr },
-      { status: 2, stdout: '', stderr: 'kh-harness: draft: signature: learning L1 already covers this signature\n' });
+      { status: 3, stdout: '', stderr: 'kh-harness: draft: signature: learning L1 already covers this signature\n' });
     assert.deepEqual(dataSnapshot(), data, 'the refused draft stored nothing');
   });
 
@@ -509,7 +527,9 @@ test('the learning loop end to end, through the real commands and the installed 
     ]);
     const checks = detect();
     assert.equal(checks['P5.integrity'].state, 'declared', JSON.stringify(checks['P5.integrity'].evidence));
-    assert.ok(checks['P5.integrity'].evidence.includes('.claude/kh-harness/gates.json: 1 gate, each approved in docs/harness/LEARNED.md'), JSON.stringify(checks['P5.integrity'].evidence));
+    assert.ok(checks['P5.integrity'].evidence.includes('.claude/kh-harness/gates.json: 1 gate, each approved in docs/harness/LEARNED.md for its content and its action'),
+      JSON.stringify(checks['P5.integrity'].evidence));
+    assert.match(readFileSync(join(d, 'docs/harness/LEARNED.md'), 'utf8'), new RegExp(`^- approved-sha256: ${sha256}\\n- approved-action: block$`, 'm'));
     assert.match(ok(learn('list')), new RegExp(`^ {2}L1 {2}landed {2}block {2}sha256 ${sha256}$`, 'm'));
     owner(d, 'add', '-A');
     owner(d, 'commit', '-q', '-m', 'land L1');

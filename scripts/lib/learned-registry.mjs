@@ -25,46 +25,55 @@
 // file holds: a retired learning is removed from the file, not kept in it
 // with another status.
 //
+// An entry approves a gate twice over: `approved-sha256` is the hash of the
+// gate's content, which leaves its action out, and `approved-action` is the
+// action it was approved at, `warn` or `block`. The prompt hook reads the
+// second to tell a rule its gate blocks from one it only warns about. An
+// entry written before the kit recorded the action has no such line, and
+// `approvedActions` reads it as approving none.
+//
 // A new file starts from `assets/templates/LEARNED.md.tmpl`, rendered with
 // the kit's version as `kitVersion`.
+import { GATE_ID } from '../../assets/scripts/harness-gates.mjs';
 import {
   ANY_H2, ENFORCERS, escapeDelimiters, maskText, parseRules, registryLines, RULE_HEADING, stripUnsafe,
 } from '../../assets/scripts/harness-redact.mjs';
+import { isSha256 } from './ledger.mjs';
 
-const ID = /^L[1-9][0-9]{0,8}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
-const SIGNATURE = /^[0-9a-f]{16}$/;
+/** A failure signature as the learning loop writes one. */
+export const SIGNATURE = /^[0-9a-f]{16}$/;
 // `Date.prototype.toISOString`'s shape, which is how the session log
 // records `ts`.
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 // One token with nothing a key line or a delimited block could be split by.
 const POINTER = /^[^\s<>]{1,200}$/;
-const TITLE_MAX = 120;
-const WHY_MAX = 300;
+
+/** The most characters a title and a why may take in the registry, counted
+ * as `registryLine` writes them. A draft is held to the same count, so no
+ * text a learning stores is cut when it lands. */
+export const TITLE_MAX = 120;
+export const WHY_MAX = 300;
+
+/** The actions an entry may record its gate as approved at. */
+export const APPROVED_ACTIONS = Object.freeze(['warn', 'block']);
+
+// A key line as `parseRules` reads one, and the `approved-action` key as it
+// compares keys: lowercased, with every `-` and `_` removed.
+const KEY_LINE = /^\s*[-*]\s*([A-Za-z][\w-]*)\s*:\s*(.*)$/;
+const ACTION_KEY = 'approvedaction';
 
 /**
- * Untrusted prose as one line of at most `max` characters: invisible and
+ * Untrusted prose as the one line the registry writes: invisible and
  * control characters removed, every other whitespace character made a
  * plain space, runs of spaces collapsed and the ends trimmed,
- * credential-shaped values masked, then `<` and `>` escaped. The cap counts
- * the escaped text and never cuts inside an escape or a surrogate pair.
+ * credential-shaped values masked, then `<` and `>` escaped. Nothing is
+ * cut: a line longer than its limit is refused where it is rendered.
  *
- * The mask runs before the escape and the cap. An escape's `;` ends an
- * unquoted keyed value, so `password=<x>` escaped first would mask only
- * `&lt`; and a cap that cut a token first could leave a fragment too short
- * for any shape to recognise.
+ * The mask runs before the escape. An escape's `;` ends an unquoted keyed
+ * value, so `password=<x>` escaped first would mask only `&lt`.
  */
-function cleanLine(raw, max) {
-  const plain = maskText(stripUnsafe(raw).replace(/[^\S ]/g, ' ').replace(/ {2,}/g, ' ').trim());
-  let out = '';
-  let length = 0;
-  for (const ch of plain) {
-    const piece = escapeDelimiters(ch);
-    if (length + piece.length > max) break;
-    out += piece;
-    length += piece.length;
-  }
-  return out.trimEnd();
+export function registryLine(raw) {
+  return escapeDelimiters(maskText(stripUnsafe(raw).replace(/[^\S ]/g, ' ').replace(/ {2,}/g, ' ').trim()));
 }
 
 /** True for null, or a timestamp that names a real instant: it round-trips
@@ -99,29 +108,36 @@ function evidenceLine(summary) {
 }
 
 const refuse = field => ({ error: `learned entry: ${field} is missing or malformed — nothing was rendered` });
+const tooLong = (field, max) => ({ error: `learned entry: ${field} is longer than ${max} characters as the registry writes it, each < and > counting as four — nothing was rendered` });
 
 /**
  * One learned entry as a registry section: the `## <id> — <title>` heading
  * and its key lines, ending in a newline. `id` is `L` and a number;
  * `enforcedBy` one of `ENFORCERS`; `pointer` one token; `evidenceSummary`
  * `{ signature, sessions, firstTs, lastTs, external }`, required, with ISO
- * timestamps or null, in order; `approvedSha256` 64 lowercase hex characters. `title`
- * and `why` are cleaned (see `cleanLine`); either with nothing left is
- * refused.
+ * timestamps or null, in order; `approvedSha256` 64 lowercase hex
+ * characters; `approvedAction` one of `APPROVED_ACTIONS`, written as the
+ * last key line, or undefined for an entry with no such line, as the kit
+ * wrote them before it recorded the action. `title` and `why` are cleaned
+ * (see `registryLine`); either with nothing left, or longer than its limit,
+ * is refused, never cut.
  */
 export function renderLearnedEntry(entry) {
   if (entry === null || typeof entry !== 'object') return refuse('the entry');
-  const { id, title, why, enforcedBy, pointer, evidenceSummary, approvedSha256 } = entry;
-  if (typeof id !== 'string' || !ID.test(id)) return refuse('id');
-  const cleanTitle = typeof title === 'string' ? cleanLine(title, TITLE_MAX) : '';
+  const { id, title, why, enforcedBy, pointer, evidenceSummary, approvedSha256, approvedAction } = entry;
+  if (typeof id !== 'string' || !GATE_ID.test(id)) return refuse('id');
+  const cleanTitle = typeof title === 'string' ? registryLine(title) : '';
   if (cleanTitle === '') return refuse('title');
-  const cleanWhy = typeof why === 'string' ? cleanLine(why, WHY_MAX) : '';
+  if (cleanTitle.length > TITLE_MAX) return tooLong('title', TITLE_MAX);
+  const cleanWhy = typeof why === 'string' ? registryLine(why) : '';
   if (cleanWhy === '') return refuse('why');
+  if (cleanWhy.length > WHY_MAX) return tooLong('why', WHY_MAX);
   if (!ENFORCERS.includes(enforcedBy)) return refuse('enforced-by');
   if (typeof pointer !== 'string' || !POINTER.test(pointer) || stripUnsafe(pointer) !== pointer) return refuse('pointer');
   const evidence = evidenceLine(evidenceSummary);
   if (evidence.field) return refuse(evidence.field);
-  if (typeof approvedSha256 !== 'string' || !SHA256.test(approvedSha256)) return refuse('approved-sha256');
+  if (!isSha256(approvedSha256)) return refuse('approved-sha256');
+  if (approvedAction !== undefined && !APPROVED_ACTIONS.includes(approvedAction)) return refuse('approved-action');
   return {
     text: [
       `## ${id} — ${cleanTitle}`,
@@ -132,9 +148,39 @@ export function renderLearnedEntry(entry) {
       '- status: active',
       `- evidence: ${evidence.line}`,
       `- approved-sha256: ${approvedSha256}`,
+      ...(approvedAction === undefined ? [] : [`- approved-action: ${approvedAction}`]),
       '',
     ].join('\n'),
   };
+}
+
+/**
+ * The action each rule in registry `text` records its gate as approved at,
+ * by rule id: `warn`, `block`, or null for a rule with no `approved-action`
+ * line or one that names anything else. Read as `parseRules` reads a key:
+ * from the parser's own lines, inside the section of the first heading with
+ * the id, the last such line winning.
+ */
+export function approvedActions(text) {
+  const actions = new Map();
+  const seen = new Set();
+  let current = null;
+  for (const line of registryLines(text)) {
+    if (ANY_H2.test(line)) {
+      const id = RULE_HEADING.exec(line)?.[1];
+      current = id === undefined || seen.has(id) ? null : id;
+      if (current !== null) {
+        seen.add(current);
+        actions.set(current, null);
+      }
+      continue;
+    }
+    const key = current === null ? null : KEY_LINE.exec(line);
+    if (key === null || key[1].toLowerCase().replace(/[-_]/g, '') !== ACTION_KEY) continue;
+    const value = key[2].trim().toLowerCase();
+    actions.set(current, APPROVED_ACTIONS.includes(value) ? value : null);
+  }
+  return actions;
 }
 
 /**
@@ -165,18 +211,22 @@ const reading = ({ line: _line, ...rule }) => JSON.stringify(rule);
 const headingsFor = (text, id) => registryLines(text).filter(l => RULE_HEADING.exec(l)?.[1] === id).length;
 
 /**
- * `{ text: after }` when `after` reads, to the parser, exactly as `before`
- * does in every rule but `id`, and as `expected` in rule `id`: the rendered
- * entry read alone, under the one heading with that id, or no rule and no
- * heading with that id when `expected` is null. Otherwise an error, and
- * nothing changes.
+ * `{ text: after }` when `after` reads, to the parser and to
+ * `approvedActions`, exactly as `before` does in every rule but `id`, and as
+ * `expected` in rule `id`: the rendered entry read alone, with its approved
+ * action, under the one heading with that id, or no rule and no heading
+ * with that id when `expected` is null. Otherwise an error, and nothing
+ * changes.
  */
 function guarded(before, after, id, expected) {
-  const others = text => parseRules(text).rules.filter(r => r.id !== id).map(reading).join('\n');
+  const others = text => {
+    const actions = approvedActions(text);
+    return parseRules(text).rules.filter(r => r.id !== id).map(r => `${reading(r)} ${actions.get(r.id)}`).join('\n');
+  };
   const own = parseRules(after).rules.find(r => r.id === id);
   const ok = others(after) === others(before)
     && headingsFor(after, id) === (expected === null ? 0 : 1)
-    && (expected === null ? own === undefined : own !== undefined && reading(own) === expected);
+    && (expected === null ? own === undefined : own !== undefined && `${reading(own)} ${approvedActions(after).get(id)}` === expected);
   const verb = expected === null ? 'removed' : 'rendered';
   return ok
     ? { text: after }
@@ -195,7 +245,7 @@ export function upsertLearnedEntry(text, entry) {
   if (rendered.error) return rendered;
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const section = rendered.text.replace(/\n/g, eol);
-  const expected = reading(parseRules(rendered.text).rules[0]);
+  const expected = `${reading(parseRules(rendered.text).rules[0])} ${approvedActions(rendered.text).get(entry.id)}`;
   const at = sectionOf(text, entry.id);
   if (at === null) {
     const base = text === '' || text.endsWith('\n') ? text : text + eol;
@@ -214,7 +264,7 @@ export function upsertLearnedEntry(text, entry) {
  */
 export function removeLearnedEntry(text, id) {
   if (typeof text !== 'string') return { error: 'learned entry: the registry text is not a string — nothing was removed' };
-  if (typeof id !== 'string' || !ID.test(id)) return { error: 'learned entry: id is missing or malformed — nothing was removed' };
+  if (typeof id !== 'string' || !GATE_ID.test(id)) return { error: 'learned entry: id is missing or malformed — nothing was removed' };
   const at = sectionOf(text, id);
   if (at === null) return { text, removed: false };
   const result = guarded(text, text.slice(0, at[0]) + text.slice(at[1]), id, null);

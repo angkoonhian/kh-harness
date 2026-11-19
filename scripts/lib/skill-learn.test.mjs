@@ -11,7 +11,8 @@ import { join, resolve } from 'node:path';
 import { GATE_LIMITS } from '../../assets/scripts/harness-gates.mjs';
 import { LEARN_USAGE, LOG_USAGE } from './cli.mjs';
 import { candidatesView, DATA_MARKERS, listView, renderCandidates, renderList, TERMINAL_ONLY } from './learn-cli.mjs';
-import { drafted, FIX_GATE, loggedRepo, logReadMistakes, signatureOf, WATCH_GATE } from './learn-fixtures.mjs';
+import { FAILURES_PATH } from './failures-evidence.mjs';
+import { draftFor, drafted, FIX_GATE, loggedRepo, logReadMistakes, signatureOf, WATCH_GATE } from './learn-fixtures.mjs';
 import { draftLearning, listLearnings, runTrial } from './learn-lib.mjs';
 import { MIN_CLEAN_CALLS, MIN_CLEAN_SESSIONS } from './replay.mjs';
 
@@ -236,13 +237,42 @@ test('whatever the commands print is data, from the log, a learning or a reposit
 test('FAILURES.md is among the files the skill never edits, as the owner\'s', () => {
   const owner = section(skill, 'What only the owner does');
   const never = owner.slice(owner.indexOf('Never edit by hand'));
-  assert.match(never, /^Never\s+edit\s+by\s+hand[^`]*(`[^`]+`[^`]*?)*?`docs\/harness\/FAILURES\.md`,\s+which\s+is\s+the\s+owner's\s+and\s+decides\s+which\s+recurrences\s+a\s+rejection\s+covers/);
-  assert.match(LEARN_USAGE.replace(/\s+/g, ' '), /Which recurrences a rejection covers follows the failure kinds as docs\/harness\/FAILURES\.md labels them now\./);
+  assert.match(never, /^Never\s+edit\s+by\s+hand[^`]*(`[^`]+`[^`]*?)*?`docs\/harness\/FAILURES\.md`,\s+which\s+is\s+the\s+owner's\s+and\s+decides\s+which\s+recurrences\s+an\s+earlier\s+learning\s+covers/);
+  assert.match(LEARN_USAGE.replace(/\s+/g, ' '), /Which recurrences an earlier learning covers follows the failure kinds as docs\/harness\/FAILURES\.md labels them now\./);
 });
 
 test('a refusal after a rejection partway through a run is an expected outcome, not worked around', () => {
   assert.match(section(skill, 'The steps, in order'),
     /After\s+a\s+`fail`,\s+`draft`\s+refuses\s+the\s+remaining\s+recurrences\s+of\s+the\s+same\s+failure\s+kind:\s+an\s+expected\s+outcome,\s+reported\s+as\s+it\s+is\s+and\s+never\s+worked\s+around/);
+});
+
+test('the labelling rule the skill states is the one draft enforces: an unlabelled recurrence is refused, naming the taxonomy', () => {
+  const steps = section(skill, 'The steps, in order');
+  assert.match(steps, /Draft\s+nothing\s+for\s+any\s+other,\s+which\s+`draft`\s+refuses/);
+  assert.match(drafting, /`draft`\s+refuses\s+a\s+signature\s+no\s+failure\s+kind\s+there\s+lists/);
+  const root = loggedRepo({ label: false });
+  const unlabelled = renderCandidates(candidatesView(root));
+  assert.ok(unlabelled.includes(`failure kind: unlabelled; there is no ${FAILURES_PATH}`), 'candidates shows it in the words the skill quotes');
+  const refused = draftLearning(root, draftFor(root));
+  assert.equal(refused.exitCode, 3);
+  assert.ok(refused.error.includes(FAILURES_PATH), 'the refusal names the file the owner writes the label in');
+  assert.match(LEARN_USAGE.replace(/\s+/g, ' '), /A draft is refused \(3\) for a signature no failure kind in docs\/harness\/FAILURES\.md lists: only the owner names a failure\./);
+});
+
+test('candidates prints what the log recorded inside a block marked as recorded data, as drafting.md says', () => {
+  const root = loggedRepo();
+  const lines = renderCandidates(candidatesView(root)).split('\n');
+  const begin = lines.findIndex(l => l.startsWith(`${DATA_MARKERS.begin} `));
+  const end = lines.findIndex(l => l.startsWith(`${DATA_MARKERS.end} `));
+  assert.ok(begin !== -1 && end > begin, 'the block is there');
+  const nonce = /^END RECORDED DATA ([0-9a-f]{16})$/.exec(lines[end])?.[1];
+  assert.ok(nonce, 'the end line carries a nonce and nothing else');
+  assert.ok(lines[begin].startsWith(`${DATA_MARKERS.begin} ${nonce}: `), 'the same nonce opens the block');
+  const error = lines.findIndex(l => l.trimStart().startsWith('error: '));
+  assert.ok(error > begin && error < end, 'the recorded error line is inside it');
+  assert.ok(lines.slice(begin + 1, end).every(l => l === '' || l.startsWith('  ')), 'every line between is indented');
+  assert.match(drafting, /`candidates`\s+gives\s+each\s+recurrence's\s+signature,\s+tool\s+and\s+error\s+line,\s+in\s+a\s+block\s+of\s+recorded\s+data/);
+  assert.notEqual(nonce, /^END RECORDED DATA ([0-9a-f]{16})$/m.exec(renderCandidates(candidatesView(root)))[1], 'drawn afresh for each run');
 });
 
 test('the evidence block is read to the end line carrying its own nonce', () => {
@@ -274,10 +304,12 @@ test('the skill drafts only from the draftable section, by the headings candidat
   const step = section(skill, 'The steps, in order');
   const headings = [...step.matchAll(/`(RECURRENCES [^`]+)`/g)].map(m => m[1].replace(/\s+/g, ' '));
   assert.equal(headings.length, 2);
-  for (const heading of headings) assert.ok(text.includes(`\n${heading}`), `candidates prints no heading starting "${heading}"`);
-  assert.match(step, /Draft\s+one\s+learning\s+per\s+labelled\s+recurrence\s+under\s+`RECURRENCES NO LEARNING STANDS FOR`/);
-  assert.match(step, /A\s+recurrence\s+under\s+`RECURRENCES\s+DRAFTED\s+BEFORE,\s+WHOSE\s+REPLAY\s+REJECTED\s+THE\s+DRAFT`\s+is\s+not\s+drafted,\s+with\s+one\s+exception:/,
+  const printed = text.split('\n').map(l => l.trim());
+  for (const heading of headings) assert.ok(printed.some(l => l.startsWith(heading)), `candidates prints no heading starting "${heading}"`);
+  assert.match(step, /Draft\s+one\s+learning\s+per\s+labelled\s+recurrence\s+under\s+`RECURRENCES\s+NO\s+LEARNING\s+STANDS\s+FOR`/);
+  assert.match(step, /A\s+recurrence\s+under\s+`RECURRENCES\s+DRAFTED\s+BEFORE,\s+WHOSE\s+LEARNING\s+WAS\s+REJECTED\s+OR\s+RETIRED\s+AS\s+WRONG`\s+is\s+not\s+drafted,\s+with\s+one\s+exception:/,
     'one rule, with its one exception');
+  assert.match(drafting, /It\s+refuses\s+the\s+same\s+way\s+once\s+a\s+learning\s+for\s+the\s+recurrence\s+was\s+retired\s+after\s+a\s+wrong\s+mark,\s+after\s+its\s+gate\s+was\s+suspended,\s+or\s+by\s+the\s+owner/);
   assert.doesNotMatch(step, /never\s+one\s+under/, 'no flat prohibition the exception contradicts');
 });
 
@@ -305,14 +337,16 @@ test('the owner scaffolds FAILURES.md with apply; the skill does not run it', ()
   assert.match(section(skill, 'The steps, in order'), /The\s+owner\s+can\s+run\s+`apply`\s+to\s+scaffold\s+it;\s+the\s+skill\s+does\s+not\s+run\s+it/);
 });
 
-test('a later run replays each candidate list shows as not checkable, in list\'s own words', () => {
+test('a later run replays each candidate list shows as never replayed or not checkable, in list\'s own words', () => {
   const root = loggedRepo({ clean: false });
   const learning = drafted(root);
+  const row = verdict => new RegExp(`\\n {2}${learning.id} {2}candidate {2}observe .*\\n {6}title: .*\\n {6}replay: ${verdict}\\n`);
+  assert.match(renderList(listView(listLearnings(root))), row('not yet'), 'a draft whose replay never ran, as after a lock it could not take');
   assert.equal(runTrial(root, learning.id).status, 'candidate');
   const listed = renderList(listView(listLearnings(root)));
-  assert.match(listed, new RegExp(`\\n {2}${learning.id} {2}candidate {2}observe .*\\n {6}title: .*\\n {6}replay: not-checkable\\n`));
+  assert.match(listed, row('not-checkable'));
   const step = section(skill, 'The steps, in order');
-  assert.match(step, /For\s+each\s+learning\s+`list`\s+shows\s+as\s+`candidate`\s+with\s+`replay: not-checkable`,\s+other\s+than\s+one\s+drafted\s+in\s+this\s+run,\s+run\s+once\s+and\s+report\s+its\s+verdict/);
+  assert.match(step, /For\s+each\s+learning\s+`list`\s+shows\s+as\s+`candidate`\s+with\s+`replay: not yet`,\s+or\s+with\s+`replay: not-checkable`\s+other\s+than\s+one\s+drafted\s+in\s+this\s+run,\s+run\s+once\s+and\s+report\s+its\s+verdict/);
   assert.ok(invocations(step).some(s => s.cli === 'learn' && s.words.join(' ') === 'replay <id>'));
 });
 
@@ -378,5 +412,8 @@ test('the limits drafting.md states are the ones the validator and the replay ap
   assert.ok(drafting.includes('one line, at most 120 characters'));
   assert.match(draft({ why: 'x'.repeat(301) }).error, /why: must be at most 300 characters/);
   assert.ok(drafting.includes('one line, at most 300 characters, saying why'));
+  assert.match(draft({ title: `${'x'.repeat(117)}<` }).error, /title: must be at most 120 characters, each < and > counting as four/);
+  assert.equal(draft({ title: `${'x'.repeat(116)}<` }).error, undefined, 'at the limit as counted, it is accepted');
+  assert.match(drafting, /In\s+both\s+counts\s+each\s+`<`\s+and\s+`>`\s+takes\s+four/);
   assert.match(draft({ gate: { ...WATCH_GATE, match: { kind: 'token', value: '*a* ' } } }).error, /at least 3 characters that are neither \* nor whitespace/);
 });

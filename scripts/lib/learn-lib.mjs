@@ -16,34 +16,85 @@
 // repository's per-machine data directory; it reads the repository and
 // never writes inside it.
 //
-// The ledger, not a learning's file, is the authority for its status and for
-// the action its gate may carry: the file is covered by no hash. Every
-// transition is written ledger first, then the learning, then the local gate
-// set, so an interrupted step leaves a ledger entry with less in force than
-// it says, never a gate in force that the ledger does not record.
+// The ledger, not a learning's file, is the authority for its status, for
+// the action its gate may carry, and for its content. Two hashes bind the
+// content: `contentSha256`, of the gate, and `proseSha256`, of the title,
+// the why, the evidence and the outside-content flag (`proseSha256Of`),
+// which a landing writes into the repository. Every status-changing entry
+// carries both, and a learning whose file differs from either is not
+// vouched for (`unrecordedReason`).
+//
+// A learning drafted before the ledger recorded the second hash has none in
+// its entries. Its gate, status and action are vouched for as before, so it
+// keeps working on this machine, but its title, why and evidence are not:
+// `list` and `show` say so, and a policy does not promote it. The hash is
+// recorded by the first step on it at which the owner, at a terminal, is
+// shown that text by the same run: an approval, which prints the learning,
+// or a landing, which prints the diff it writes. Every other step leaves it
+// as it was.
+//
+// Every transition is written ledger first, then the learning, then the
+// local gate set, so an interrupted step leaves a ledger entry with less in
+// force than it says, never a gate in force that the ledger does not
+// record. A learning file left behind its ledger entry is rolled forward
+// (`laggingLearnings`): when the file's gate is the one the last status
+// entry names, its status, action and evidence are rewritten from that
+// entry, with an action above `observe` only where the entry names an
+// approver. `landed` and `reverted` are left to `learn-land.mjs`, whose own
+// command finishes them, since they are half of a change to the repository.
+// An id the ledger names that has no file at all is settled by `tick`
+// (`learn-promote.mjs`), which records it retired.
 //
 // The gate hook enforces whatever the local gate set holds, and anything
 // running as this user can write it. So every step that writes, refused or
-// not, first brings the set into line with what the ledger grants and
-// reports the ids it changed as `repairedGates`: a gate the ledger does not
-// grant is removed even while the ledger is broken, and one it grants is
-// restored only while it is intact. "Nothing was written" in an error speaks
-// of the step, never of that repair. No exported function throws.
+// not, first rolls lagging learning files forward and brings the set into
+// line with what the ledger grants, and reports the ids it changed as
+// `rolledForward` and `repairedGates`: a gate the ledger does not grant is
+// removed even while the ledger is broken, and one it grants is restored
+// only while it is intact. "Nothing was written" in an error speaks of the
+// step, never of that repair.
+//
+// Ids are assigned per machine, each above every id this machine has seen.
+// A landing pulled from another machine can therefore hold an id a local
+// learning already has. Nothing renumbers: `idCollisions` finds them, and
+// `list` and `tick` report them with what to do.
+//
+// No exported function throws. Every `{ error }` carries the exit code the
+// command ends with, as `scripts/lib/cli.mjs` `EXIT_CODES` defines them,
+// given by `refused` or `failed` and nowhere else:
+//
+//   3, refused to act: no terminal; a learning in the wrong status for the
+//      step; a learning the ledger does not vouch for, a broken ledger
+//      among the reasons; a hash that is not the one shown; a signature a
+//      learning already stands for, or one that needs a redraft or a label;
+//      a firing already marked, or of other content; a local gate file that
+//      is not a gate file, or a gate set that is full; a learning file that
+//      does not read back and may cover the signature drafted.
+//   2, could not act: an argument or a draft that is malformed; an id, a
+//      signature or a firing that names nothing; anything that could not be
+//      read, locked or written, or that stopped partway.
+import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { GATE_LIMITS, gateSha256, parseGates, validateGate } from '../../assets/scripts/harness-gates.mjs';
-import { GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { GATE_ID, GATE_LIMITS, gateSha256, validateGate } from '../../assets/scripts/harness-gates.mjs';
+import { canonicalJson, GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
-import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { LOCKED, withFileLock } from './file-lock.mjs';
 import { gateStats } from './gate-stats.mjs';
+import { readCommittedGateFile } from './integrity-evidence.mjs';
+import { registryLine, SIGNATURE, TITLE_MAX, WHY_MAX } from './learned-registry.mjs';
 import { ACTION_KINDS, appendLedger, isApprover, readLedgerView } from './ledger.mjs';
 import { findRecurrences } from './recurrence.mjs';
 import { replayGate } from './replay.mjs';
 import { readIfPresent } from './scan.mjs';
+
+/** An error the step refused to act on, and one it could not act on, each
+ * with the exit code the command ends with. */
+export const refused = error => ({ error, exitCode: 3 });
+export const failed = error => ({ error, exitCode: 2 });
 
 const STATUSES = new Set(['candidate', 'rejected', 'trial', 'active-local', 'landed', 'suspended', 'retired']);
 
@@ -86,8 +137,8 @@ const STATUS_AFTER = Object.freeze({
 });
 
 // A learning in one of these no longer stands for its signature, so a new
-// draft for the signature may be made: after a rejection, only as a
-// redraft.
+// draft for the signature may be made: only as a redraft where `earlierFor`
+// finds it ended in a way that speaks against one.
 export const SETTLED = new Set(['rejected', 'retired']);
 
 // The statuses whose gate lives in the local gate set. A `landed` learning's
@@ -95,7 +146,13 @@ export const SETTLED = new Set(['rejected', 'retired']);
 // approved: see `keepsLocalGate`.
 const LOCAL_GATE_STATUSES = new Set(['trial', 'active-local']);
 
-const ABOVE_OBSERVE = new Set(['warn', 'block']);
+// The actions above `observe`: those a promoted learning's gate may carry.
+const ABOVE_OBSERVE = new Set(GATE_ACTIONS['active-local']);
+
+// The ledger kinds `learn-land.mjs` finishes itself when its step stopped
+// after them: each is half of a change to the repository, so the roll
+// forward leaves a learning whose last entry is one of them alone.
+const FINISHED_BY_OWN_COMMAND = new Set(['landed', 'reverted']);
 
 const LEARNINGS_DIR = 'learnings';
 // The highest id ever assigned on this machine for this repository, so the
@@ -103,23 +160,22 @@ const LEARNINGS_DIR = 'learnings';
 const ID_COUNTER_FILE = 'learning-ids.json';
 const LOCK_FILE = 'learnings.lock';
 
-const TITLE_MAX = 120;
-const WHY_MAX = 300;
 const ID_NUMBER_MAX = 999_999_999;
 
-const ID = /^L([1-9][0-9]{0,8})$/;
-const LEARNING_FILE = /^(L[1-9][0-9]{0,8})\.json$/;
-const SIGNATURE = /^[0-9a-f]{16}$/;
+const LEARNING_FILE_SUFFIX = '.json';
 const LINE_BREAK = /[\n\p{Zl}\p{Zp}]/u;
 const DRAFT_KEYS = new Set(['signature', 'title', 'why', 'gate']);
+const REPLAYED_DETAIL = /^(pass|fail|not-checkable): (.*)$/s;
 
 export const ID_ERROR = 'id: must be L followed by 1 to 9 digits, without a leading zero';
 
-const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+export const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isString = v => typeof v === 'string';
-export const isId = v => isString(v) && ID.test(v);
-const idNumber = id => Number(ID.exec(id)[1]);
-const codeOf = error => (isString(error?.code) ? error.code : 'unknown');
+/** Whether `v` is a learning id: the gate hook's own pattern for a gate id. */
+export const isId = v => isString(v) && GATE_ID.test(v);
+const idNumber = id => Number(id.slice(1));
+/** The code of a caught error, for an error line. */
+export const codeOf = error => (isString(error?.code) ? error.code : 'unknown');
 
 /** Learning ids by number, then any other id, as a hand-written gate entry
  * may carry, by its text. */
@@ -140,13 +196,13 @@ function writeJson(path, value) {
 
 /** What an exported function returns when something it reads before taking
  * the lock cannot be read. */
-export const readFailure = error => ({ error: `what this step reads could not be read (${codeOf(error)}); nothing was written` });
+export const readFailure = error => failed(`what this step reads could not be read (${codeOf(error)}); nothing was written`);
 
 /**
  * Runs `fn` holding the lock every update to a learning, the id counter and
  * the local gate set is made under, and returns its result. `fn` gets
  * `write`, through which every write goes. Never throws: a lock that could
- * not be taken, or a failure inside `fn`, is returned as `{ error }` saying
+ * not be taken, or a failure inside `fn`, is returned as `failed` saying
  * whether anything was written.
  */
 export function withLearningsLock(root, fn) {
@@ -166,22 +222,25 @@ export function withLearningsLock(root, fn) {
   } catch (error) {
     const code = codeOf(error);
     if (!entered) {
-      return { error: code === LOCKED ? 'another process holds the learnings lock; nothing was written' : `the learnings lock could not be taken (${code}); nothing was written` };
+      return failed(code === LOCKED ? 'another process holds the learnings lock; nothing was written' : `the learnings lock could not be taken (${code}); nothing was written`);
     }
-    if (!wrote) return { error: `the step failed (${code}); nothing was written` };
-    return { error: `the step stopped partway (${code}); listLearnings reports what it left disagreeing` };
+    if (!wrote) return failed(`the step failed (${code}); nothing was written`);
+    return failed(`the step stopped partway (${code}); the same command run again, or \`tick\`, brings what it left into line with the ledger`);
   }
 }
 
 /** `{ text }`, the value stripped, trimmed and masked, or `{ error }`. Its
- * rules are checked on what a reader would see, before masking. */
+ * rules are checked on what a reader would see, before masking, except its
+ * length: that is counted as the learned registry counts the line it writes
+ * (`registryLine`), so a text accepted here is never too long to land. */
 function proseField(field, value, max) {
   if (!isString(value)) return { error: `${field}: must be a string` };
   const text = stripUnsafe(value).trim();
   if (LINE_BREAK.test(text)) return { error: `${field}: must be a single line` };
   if (text.length === 0) return { error: `${field}: must not be empty` };
-  if (text.length > max) return { error: `${field}: must be at most ${max} characters` };
-  return { text: maskText(text) };
+  const stored = maskText(text);
+  if (registryLine(stored).length > max) return { error: `${field}: must be at most ${max} characters, each < and > counting as four` };
+  return { text: stored };
 }
 
 /** The gate's model-written strings, by the name an error gives each. A
@@ -230,6 +289,13 @@ const evidenceOf = recurrence => ({
   lastTs: recurrence.lastTs,
   external: recurrence.external,
 });
+
+/** The SHA-256 of what the ledger vouches for of a learning beside its
+ * gate: its title, its why, its evidence and whether a session behind it
+ * read outside content, as canonical JSON. */
+export function proseSha256Of({ title, why, external, evidence }) {
+  return createHash('sha256').update(canonicalJson({ title, why, external, evidence }), 'utf8').digest('hex');
+}
 
 /** The failure kinds `docs/harness/FAILURES.md` names, none when it is
  * absent or cannot be read. */
@@ -284,7 +350,7 @@ function readLearnings(root) {
     if (error?.code === 'ENOENT') return { learnings: [], unreadable: [] };
     throw error;
   }
-  const ids = names.map(name => LEARNING_FILE.exec(name)?.[1]).filter(isString).sort(idOrder);
+  const ids = names.filter(name => name.endsWith(LEARNING_FILE_SUFFIX)).map(name => name.slice(0, -LEARNING_FILE_SUFFIX.length)).filter(isId).sort(idOrder);
   const learnings = [];
   const unreadable = [];
   for (const id of ids) {
@@ -325,16 +391,9 @@ function readLocalGates(root) {
  * `parseGates` accepts, so the first entry with an id and never a rejected
  * duplicate; none when the file is absent, larger than the hook reads,
  * unreadable or not a gate file, since the hook then applies none of them.
- * Anything that asks what the committed file holds asks this. */
-export function committedGates(root) {
-  try {
-    const path = join(root, GATES_PATH);
-    if (statSync(path).size > GATE_FILE_MAX_BYTES) return [];
-    return parseGates(readFileSync(path, 'utf8')).gates;
-  } catch {
-    return [];
-  }
-}
+ * Anything that asks what the committed file holds asks this, through the
+ * one bounded read the integrity check makes too. */
+export const committedGates = root => readCommittedGateFile(root).parsed?.gates ?? [];
 
 /** `{ ids }`, every learning id an entry of the committed gate file carries,
  * rejected entries included, so no id assigned can collide with one a later
@@ -360,19 +419,29 @@ function committedIdsInUse(root) {
 /**
  * The state the last status-changing ledger entry for `id` leaves the
  * learning in, whatever content hash that entry names, or null when there
- * is none: `{ status, kind, contentSha256, action, approvedBy }`. `action`
- * is the one the entry grants, the action an `ACTION_KINDS` entry records
- * and otherwise `observe`; `approvedBy` is null unless the entry names an
- * approver `isApprover` accepts.
+ * is none: `{ status, kind, contentSha256, proseSha256, proseDropped,
+ * evidence, action, approvedBy }`. `proseSha256` is undefined for an entry
+ * that records none, and `proseDropped` says an earlier status entry for
+ * the id did record one, which no step of the kit leaves behind; `evidence`
+ * is the entry's, in a learning file's key order. `action` is the one the
+ * entry grants, the action an `ACTION_KINDS` entry records and otherwise
+ * `observe`; `approvedBy` is null unless the entry names an approver
+ * `isApprover` accepts.
  */
-function recordedState(ledger, id) {
+export function recordedState(ledger, id) {
   let state = null;
+  let proseEver = false;
   for (const entry of ledger) {
     if (entry?.learningId !== id || !Object.hasOwn(STATUS_AFTER, entry.kind)) continue;
+    const { signature, sessions, firstTs, lastTs, external } = entry.evidence;
+    proseEver ||= entry.proseSha256 !== undefined;
     state = {
       status: STATUS_AFTER[entry.kind],
       kind: entry.kind,
       contentSha256: entry.contentSha256,
+      proseSha256: entry.proseSha256,
+      proseDropped: proseEver && entry.proseSha256 === undefined,
+      evidence: { signature, sessions, firstTs, lastTs, external },
       action: ACTION_KINDS.includes(entry.kind) ? entry.action : 'observe',
       approvedBy: isApprover(entry.approvedBy) ? entry.approvedBy : null,
     };
@@ -392,16 +461,74 @@ const recordedActions = state =>
 
 /** Why the ledger does not vouch for `learning` as its file holds it, or
  * null when it does: its last status-changing entry must name the
- * learning's content and status, and grant its gate's action. */
+ * learning's gate, its title, why and evidence where the entry records
+ * their hash, and its status, and grant its gate's action. */
 export function unrecordedReason(learning, view) {
   const { id, status } = learning;
   if (!view.intact) return `${id}: the ledger cannot be read or its chain is broken, so it does not record this learning's status`;
   const state = recordedState(view.entries, id);
   if (state === null) return `${id}: the ledger does not record the status ${status} for this learning`;
   if (state.contentSha256 !== learning.sha256) return `${id}: the ledger records other content for this learning`;
+  if (state.proseDropped) return `${id}: the ledger's last entry for this learning records no hash of its title, why and evidence, though an earlier one does`;
+  if (state.proseSha256 !== undefined && state.proseSha256 !== proseSha256Of(learning)) return `${id}: the ledger records another title, why or evidence for this learning`;
   if (state.status !== status) return `${id}: the ledger does not record the status ${status} for this learning`;
   if (!recordedActions(state).includes(learning.gate.action)) return `${id}: the ledger records another action for this learning's gate`;
   return null;
+}
+
+/** Whether the ledger's last status entry for `id` records no hash of the
+ * learning's title, why and evidence: one drafted before the ledger did. */
+export const proseUnrecorded = (entries, id) => recordedState(entries, id)?.proseSha256 === undefined;
+
+/** The replay a learning file should hold given the ledger: the file's own
+ * when the last `replayed` entry for its gate says the same, or there is
+ * none; otherwise that entry's verdict and reason, the rest of a replay's
+ * record being in no ledger entry. */
+function recordedReplay(entries, learning) {
+  const detail = entries.findLast(e => e?.learningId === learning.id && e.kind === 'replayed' && e.contentSha256 === learning.sha256)?.detail;
+  const m = isString(detail) ? REPLAYED_DETAIL.exec(detail) : null;
+  if (m === null) return learning.replay;
+  const [, verdict, reason] = m;
+  return learning.replay?.verdict === verdict && learning.replay.reason === reason ? learning.replay : { verdict, reason };
+}
+
+/**
+ * The learnings in `state` whose file a step left behind its ledger entry,
+ * each as the file should read: the ledger is intact, the file's gate is the
+ * one the last status entry names, and that entry's status, action and
+ * evidence, with the replay the ledger records, make a learning the ledger
+ * vouches for. An action above `observe` is taken only from an entry that
+ * names an approver. A learning whose last entry `learn-land.mjs` finishes
+ * itself is left to it.
+ */
+function laggingLearnings(state) {
+  if (!state.view.intact) return [];
+  const out = [];
+  for (const learning of state.learnings) {
+    if (state.recorded.has(learning.id)) continue;
+    const held = recordedState(state.view.entries, learning.id);
+    if (held === null || held.contentSha256 !== learning.sha256 || FINISHED_BY_OWN_COMMAND.has(held.kind)) continue;
+    const [action] = recordedActions(held);
+    if (action === undefined) continue;
+    const updated = {
+      ...learning,
+      status: held.status,
+      gate: { ...learning.gate, action },
+      external: learning.external || held.evidence.external,
+      evidence: held.evidence,
+      replay: recordedReplay(state.view.entries, learning),
+    };
+    if (unrecordedReason(updated, state.view) === null) out.push(updated);
+  }
+  return out;
+}
+
+/** Rolls every lagging learning file forward to what the ledger records,
+ * under the lock, and returns the ids rewritten. */
+export function rollLearningsForward(root, write) {
+  const lagging = laggingLearnings(readState(root));
+  for (const updated of lagging) write(() => writeJson(learningPath(root, updated.id), updated));
+  return lagging.map(l => l.id);
 }
 
 /** Each readable learning the ledger vouches for, by id, with its recorded
@@ -603,42 +730,63 @@ export function rewriteLocalGates(root, write, state) {
   return rebuilt.changed;
 }
 
+const union = (a = [], b = []) => [...new Set([...a, ...b])].sort(idOrder);
+
+/** `result` with what a repair changed added to what it already reports:
+ * the gate ids as `repairedGates`, always on success and on an error only
+ * when there are any, and the learning files rolled forward as
+ * `rolledForward`, only when there are any. */
+export function withRepairs(result, { repairedGates, rolledForward }) {
+  const gates = union(result.repairedGates, repairedGates);
+  const rolled = union(result.rolledForward, rolledForward);
+  return {
+    ...result,
+    ...(result.error === undefined || gates.length > 0 ? { repairedGates: gates } : {}),
+    ...(rolled.length > 0 ? { rolledForward: rolled } : {}),
+  };
+}
+
 /**
- * Runs `step(write)` under the learnings lock once the local gate set is
- * repaired, and returns its result with the ids the repair changed as
- * `repairedGates`: always on success, on a refusal only when there are any.
+ * Runs `step(write)` under the learnings lock once lagging learning files
+ * are rolled forward and the local gate set is repaired, and returns its
+ * result with what that changed, as `withRepairs` adds it.
  */
 export function repairedStep(root, step) {
   return withLearningsLock(root, write => {
-    const repaired = repairLocalGates(root, write);
-    const result = step(write);
-    return result.error !== undefined && repaired.length === 0 ? result : { ...result, repairedGates: repaired };
+    const rolledForward = rollLearningsForward(root, write);
+    const repairedGates = repairLocalGates(root, write);
+    return withRepairs(step(write), { repairedGates, rolledForward });
   });
 }
 
-/** `{ error }` for a call refused before the lock was taken, once the
- * repair the call owes has run; a repair that cannot run leaves the
- * refusal as it is. */
-export function refuse(root, error) {
-  const result = repairedStep(root, () => ({ error }));
-  return result.error === error ? result : { error };
+/** `refusal`, a result met before the lock was taken, once the repair the
+ * call owes has run; a repair that cannot run leaves it as it is. */
+export function refuse(root, refusal) {
+  const result = repairedStep(root, () => refusal);
+  return result.error === refusal.error ? result : refusal;
 }
 
 /** The ids the ledger and the learning files disagree about: each readable
  * learning the ledger does not vouch for, and each id the ledger names that
  * has no learning file. */
-function ledgerMismatches(learnings, unreadable, view, recorded) {
-  const files = new Set([...learnings.map(l => l.id), ...unreadable]);
-  const unrecorded = learnings.filter(l => !recorded.has(l.id)).map(l => l.id);
-  const orphaned = new Set(view.entries.map(e => e?.learningId).filter(id => isId(id) && !files.has(id)));
-  return [...unrecorded, ...orphaned].sort(idOrder);
+function ledgerMismatches(state) {
+  const unrecorded = state.learnings.filter(l => !state.recorded.has(l.id)).map(l => l.id);
+  return [...unrecorded, ...fileless(state)].sort(idOrder);
 }
 
-/** `{ learning }` for the readable learning `id` in `state`, or `{ error }`. */
+/** `{ learning }` for the readable learning `id` in `state`, or an error:
+ * the id names nothing that can be read. */
 export function learningIn(state, id) {
-  if (state.unreadable.includes(id)) return { error: `${id}: the learning file does not read back as a learning` };
+  if (state.unreadable.includes(id)) return failed(`${id}: the learning file does not read back as a learning`);
   const learning = state.learnings.find(l => l.id === id);
-  return learning === undefined ? { error: `${id}: no such learning` } : { learning };
+  return learning === undefined ? failed(`${id}: no such learning`) : { learning };
+}
+
+/** The learning ids the ledger in `state` names that have no learning file,
+ * readable or not, in id order. */
+export function fileless(state) {
+  const files = new Set([...state.learnings.map(l => l.id), ...state.unreadable]);
+  return [...new Set(state.view.entries.map(e => e?.learningId).filter(id => isId(id) && !files.has(id)))].sort(idOrder);
 }
 
 /**
@@ -661,15 +809,14 @@ export function standingFor(state, signature) {
 }
 
 /**
- * The learnings whose last recorded status is `rejected` and that bar a
- * plain draft for `signature`, in id order: `{ id, kind: null }` for one
- * whose ledger entries name the signature itself, and `{ id, kind: { id,
- * title } }` for one that names another signature which a failure kind in
- * `kinds` labels together with this one. With no kinds, as when the
- * taxonomy cannot be read, only the signature itself counts. A draft after
- * any of them is a redraft.
+ * Every learning the ledger in `state` ties to `signature`, in id order:
+ * `{ id, kind: null }` for one whose ledger entries name the signature
+ * itself, and `{ id, kind: { id, title } }` for one that names another
+ * signature which a failure kind in `kinds` labels together with this one.
+ * With no kinds, as when the taxonomy cannot be read, only the signature
+ * itself counts.
  */
-export function rejectedFor(state, signature, kinds) {
+function tiedTo(state, signature, kinds) {
   const signatures = new Map();
   for (const e of state.view.entries) {
     if (!isId(e?.learningId) || !isString(e.evidence?.signature)) continue;
@@ -679,7 +826,6 @@ export function rejectedFor(state, signature, kinds) {
   const siblingKinds = kinds.filter(k => k.signatures.includes(signature));
   const out = [];
   for (const id of [...signatures.keys()].sort(idOrder)) {
-    if (recordedState(state.view.entries, id)?.status !== 'rejected') continue;
     const cited = signatures.get(id);
     if (cited.has(signature)) out.push({ id, kind: null });
     else {
@@ -690,11 +836,62 @@ export function rejectedFor(state, signature, kinds) {
   return out;
 }
 
-/** The rejected learnings `rejectedFor` returns, as kit text: each id, and
- * what it was drafted for, this signature or another of the failure kind
- * that ties it to this one. */
-const rejectedText = rejected => rejected
-  .map(r => `${r.id} (drafted for ${r.kind === null ? 'this signature' : `another signature of failure kind ${r.kind.id}`})`).join(', ');
+/** How a learning ended that speaks against drafting its recurrence again,
+ * in the words an error and a listing give it. */
+export const ENDINGS = Object.freeze({
+  rejected: 'rejected by the replay',
+  wrong: 'retired after a wrong mark',
+  suspended: 'retired after its gate was suspended',
+  owner: 'retired by the owner',
+});
+
+/** The key in `ENDINGS` for how the learning `id` ended, or null when it
+ * has not ended, or ended retired with nothing against it: by `tick`, its
+ * cited paths or its file gone, never marked wrong or suspended. */
+function endingOf(entries, id) {
+  const last = recordedState(entries, id);
+  if (last?.status === 'rejected') return 'rejected';
+  if (last?.status !== 'retired') return null;
+  const own = entries.filter(e => e?.learningId === id);
+  if (own.some(e => e.kind === 'wrong')) return 'wrong';
+  if (own.some(e => e.kind === 'suspended')) return 'suspended';
+  return last.approvedBy === 'owner' ? 'owner' : null;
+}
+
+/**
+ * The learnings tied to `signature` (`tiedTo`) that ended in a way that
+ * bars a plain draft for it, in id order, each `{ id, kind, ended }` with
+ * `ended` a key of `ENDINGS`: rejected by its replay, or retired after a
+ * wrong mark, after a suspension, or by the owner. A draft after any of
+ * them is a redraft, the owner's decision.
+ */
+export function earlierFor(state, signature, kinds) {
+  return tiedTo(state, signature, kinds)
+    .map(tie => ({ ...tie, ended: endingOf(state.view.entries, tie.id) }))
+    .filter(tie => tie.ended !== null);
+}
+
+/** The ids of the learnings tied to `signature` (`tiedTo`), other than
+ * `except`, that the ledger records a wrong mark for, in id order. */
+export function wrongMarkedFor(state, signature, kinds, except) {
+  const marked = new Set(state.view.entries.filter(e => e?.kind === 'wrong').map(e => e.learningId));
+  return tiedTo(state, signature, kinds).map(tie => tie.id).filter(id => id !== except && marked.has(id));
+}
+
+/** The learnings `earlierFor` returns, as kit text: each id, what it was
+ * drafted for, this signature or another of the failure kind that ties it
+ * to this one, and how it ended. */
+const earlierText = earlier => earlier
+  .map(e => `${e.id} (drafted for ${e.kind === null ? 'this signature' : `another signature of failure kind ${e.kind.id}`}, ${ENDINGS[e.ended]})`).join(', ');
+
+/** The ids of the learnings in `state` that are neither rejected nor
+ * retired and whose id the committed gate file holds for another gate, in
+ * id order. The gate hook applies the committed gate under that id and
+ * ignores the local one, and a landing over it is refused. */
+export function idCollisions(state) {
+  const committed = new Map(state.committed.map(g => [g.id, gateSha256(g)]));
+  return state.learnings.filter(l => !SETTLED.has(l.status) && committed.has(l.id) && committed.get(l.id) !== l.sha256).map(l => l.id);
+}
 
 function readCounter(root) {
   let text;
@@ -717,9 +914,9 @@ function readCounter(root) {
  * `{ error }`. Called under the lock, before the counter is advanced. */
 function nextId(root, state) {
   const counter = readCounter(root);
-  if (counter === null) return { error: 'the learning id counter cannot be read, so no id that was never used can be assigned' };
+  if (counter === null) return failed('the learning id counter cannot be read, so no id that was never used can be assigned');
   const committed = committedIdsInUse(root);
-  if (committed.unreadable) return { error: 'the committed gate file cannot be read, so no id that avoids its ids can be assigned' };
+  if (committed.unreadable) return failed('the committed gate file cannot be read, so no id that avoids its ids can be assigned');
   const used = [
     ...state.learnings.map(l => l.id),
     ...committed.ids,
@@ -727,18 +924,21 @@ function nextId(root, state) {
     ...(state.local.file ? learningIdsIn(state.local.file.gates) : []),
   ].map(idNumber);
   const highest = Math.max(counter, ...used);
-  if (highest >= ID_NUMBER_MAX) return { error: 'no learning id is left to assign' };
+  if (highest >= ID_NUMBER_MAX) return failed('no learning id is left to assign');
   return { id: `L${highest + 1}`, number: highest + 1 };
 }
 
 /** The ledger entry `kind` for `learning` under `identity`, the harness the
  * event happened under. `approvedBy` names who decided the step, null when
  * a rule did; `action` and `firing` are carried by the kinds that require
- * them. */
-export const ledgerEntry = (learning, identity, { kind, approvedBy = null, action, firing, detail }) => ({
+ * them. With `prose`, the entry also records the hash of the learning's
+ * title, why and evidence, which a status-changing entry does for every
+ * learning the ledger already vouches for in full. */
+export const ledgerEntry = (learning, identity, { kind, approvedBy = null, action, firing, detail }, prose = false) => ({
   kind,
   learningId: learning.id,
   contentSha256: learning.sha256,
+  proseSha256: prose ? proseSha256Of(learning) : undefined,
   evidence: learning.evidence,
   base: identity.base,
   learned: identity.learned,
@@ -756,9 +956,16 @@ export const ledgerEntry = (learning, identity, { kind, approvedBy = null, actio
  * the local gate file, which the change needs, is not a gate file, or when
  * the set would grow past its limit. A step that must not start a change it
  * cannot finish asks this before its first write.
+ *
+ * The entries record the hash of the learning's title, why and evidence
+ * when its last status entry does, or when one of `entries` is marked
+ * `bindsProse`: a step by the owner at a terminal whose run prints that
+ * text. Any other step on a learning drafted before the ledger recorded the
+ * hash leaves it unrecorded.
  */
 export function planTransition(state, { updated, entries, identity }) {
-  const records = entries.map(spec => ledgerEntry(updated, identity, spec));
+  const prose = !proseUnrecorded(state.view.entries, updated.id) || entries.some(spec => spec.bindsProse === true);
+  const records = entries.map(spec => ledgerEntry(updated, identity, spec, prose));
   const entriesAfter = [...state.view.entries, ...records];
   const held = recordedState(entriesAfter, updated.id);
   const after = {
@@ -768,14 +975,14 @@ export function planTransition(state, { updated, entries, identity }) {
     view: { ...state.view, entries: entriesAfter },
   };
   if (!state.local.file) {
-    if (updated.status === 'suspended' || keepsLocalGate(after, updated, held)) return { error: 'the local gate file is not a gate file; nothing was written' };
+    if (updated.status === 'suspended' || keepsLocalGate(after, updated, held)) return refused('the local gate file is not a gate file; nothing was written');
     return { records, gates: null };
   }
   const before = state.local.file.gates;
   const repair = repairedGates(before, after);
   const count = list => list.filter(isGateEntry).length;
   if (count(repair.gates) > GATE_LIMITS.gatesMax && count(repair.gates) > count(before)) {
-    return { error: `the local gate set would hold more than ${GATE_LIMITS.gatesMax} gates; nothing was written` };
+    return refused(`the local gate set would hold more than ${GATE_LIMITS.gatesMax} gates; nothing was written`);
   }
   return { records, gates: repair.modified ? repair.gates : null };
 }
@@ -810,11 +1017,13 @@ export function writeTransition(root, write, state, { updated, entries, identity
  * draft. At most one learning that is neither rejected nor retired stands
  * for a signature, by its file or, once the file is gone, by the ledger; a
  * learning file that does not read back may be one, so it refuses every
- * draft until it is mended or removed. A recurrence the replay has rejected
- * a learning for, by its signature or by another signature its failure kind
- * labels, is drafted again only with `redraft`, and its `proposed` entry
- * then names the learnings rejected. Returns `{ learning,
- * repairedGates }`, or `{ error }`.
+ * draft until it is mended or removed. The signature must be one a failure
+ * kind in `docs/harness/FAILURES.md` lists: only the owner names a failure,
+ * and nothing is drafted for one nobody named. A recurrence an earlier
+ * learning ended against (`earlierFor`), by its signature or by another
+ * signature its failure kind labels, is drafted again only with `redraft`,
+ * and its `proposed` entry then names those learnings. Returns `{ learning,
+ * repairedGates }`, or `{ error, exitCode }`.
  */
 export function draftLearning(root, draft, { redraft = false } = {}) {
   try {
@@ -825,31 +1034,39 @@ export function draftLearning(root, draft, { redraft = false } = {}) {
 }
 
 function draftUnguarded(root, draft, redraft) {
-  if (!isPlainObject(draft)) return refuse(root, 'draft: must be an object');
-  if (Object.keys(draft).some(k => !DRAFT_KEYS.has(k))) return refuse(root, 'draft: may have only the keys signature, title, why and gate');
+  const malformed = error => refuse(root, failed(error));
+  if (!isPlainObject(draft)) return malformed('draft: must be an object');
+  if (Object.keys(draft).some(k => !DRAFT_KEYS.has(k))) return malformed('draft: may have only the keys signature, title, why and gate');
   const { signature } = draft;
-  if (!isString(signature) || !SIGNATURE.test(signature)) return refuse(root, 'signature: must be 16 lowercase hex characters');
+  if (!isString(signature) || !SIGNATURE.test(signature)) return malformed('signature: must be 16 lowercase hex characters');
   const title = proseField('title', draft.title, TITLE_MAX);
-  if (title.error) return refuse(root, title.error);
+  if (title.error) return malformed(title.error);
   const why = proseField('why', draft.why, WHY_MAX);
-  if (why.error) return refuse(root, why.error);
+  if (why.error) return malformed(why.error);
   const drafted = draftedGate(draft.gate);
-  if (drafted.error) return refuse(root, drafted.error);
+  if (drafted.error) return malformed(drafted.error);
   const recurrence = currentRecurrence(root, r => r.signature === signature);
-  if (recurrence === undefined) return refuse(root, 'signature: not the signature of a current recurrence');
-  if (drafted.gate.tool !== recurrence.tool) return refuse(root, "gate: tool must be the recurrence's tool");
+  if (recurrence === undefined) return malformed('signature: not the signature of a current recurrence');
+  if (drafted.gate.tool !== recurrence.tool) return malformed("gate: tool must be the recurrence's tool");
   const kinds = failureKinds(root);
   const failureId = failureIdIn(kinds, signature);
+  if (failureId === null) {
+    return refuse(root, refused(`signature: no failure kind in ${FAILURES_PATH} lists this signature, and only the owner names a failure: `
+      + 'a learning is drafted once the owner has added it there, as `- signatures: <signature>` under a `## F<n> — <kind of failure>` heading'));
+  }
 
   return repairedStep(root, write => {
     const state = readState(root);
-    if (state.unreadable.length > 0) return { error: `learning ${state.unreadable[0]} does not read back as a learning, and may cover this signature; mend or remove its file first` };
-    if (!state.view.intact) return { error: 'the ledger cannot be read or its chain is broken, so no learning can be told settled and no id never used can be assigned' };
+    if (state.unreadable.length > 0) return refused(`learning ${state.unreadable[0]} does not read back as a learning, and may cover this signature; mend or remove its file first`);
+    if (!state.view.intact) return refused('the ledger cannot be read or its chain is broken, so no learning can be told settled and no id never used can be assigned');
     const standing = standingFor(state, signature);
-    if (standing !== null) return { error: `signature: learning ${standing} already covers this signature` };
-    const rejected = rejectedFor(state, signature, kinds);
-    if (rejected.length > 0 && !redraft) {
-      return { error: `signature: the replay rejected ${rejectedText(rejected)}; a new draft for this recurrence is the owner's decision, as \`learn --help\` documents` };
+    if (standing !== null) {
+      const gone = fileless(state).includes(standing) ? '; its learning file is gone, and `tick` records it retired, after which this recurrence can be drafted' : '';
+      return refused(`signature: learning ${standing} already covers this signature${gone}`);
+    }
+    const earlier = earlierFor(state, signature, kinds);
+    if (earlier.length > 0 && !redraft) {
+      return refused(`signature: an earlier learning for this recurrence did not hold: ${earlierText(earlier)}; a new draft for it is the owner's decision, as \`learn --help\` documents`);
     }
     const next = nextId(root, state);
     if (next.error) return next;
@@ -869,8 +1086,8 @@ function draftUnguarded(root, draft, redraft) {
       replay: null,
     };
     write(() => writeJson(join(repoDataDir(root), ID_COUNTER_FILE), { highest: next.number }));
-    const detail = rejected.length > 0 ? `a redraft; the replay had rejected ${rejectedText(rejected)}` : undefined;
-    write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'proposed', detail })));
+    const detail = earlier.length > 0 ? `a redraft; earlier: ${earlierText(earlier)}` : undefined;
+    write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'proposed', detail }, true)));
     write(() => writeJson(learningPath(root, learning.id), learning));
     return { learning };
   });
@@ -888,8 +1105,10 @@ function draftUnguarded(root, draft, redraft) {
  * marked external stays so.
  *
  * A learning the ledger does not vouch for is refused. A local gate file
- * that is not a gate file is left as it is, which refuses a pass. Returns
- * `{ replay, status, repairedGates }`, or `{ error }`.
+ * that is not a gate file is left as it is, which refuses a pass. The
+ * repair runs before the learning is read, so a replay whose last run
+ * stopped after its ledger entry finds the learning as that entry left it.
+ * Returns `{ replay, status, repairedGates }`, or `{ error, exitCode }`.
  */
 export function runTrial(root, id) {
   try {
@@ -900,27 +1119,33 @@ export function runTrial(root, id) {
 }
 
 function runTrialUnguarded(root, id) {
-  if (!isId(id)) return refuse(root, ID_ERROR);
-  const read = readLearning(root, id);
-  if (read.missing) return refuse(root, `${id}: no such learning`);
-  if (read.unreadable) return refuse(root, `${id}: the learning file does not read back as a learning`);
-  const { learning } = read;
-  if (learning.status !== 'candidate') return refuse(root, `${id} is ${learning.status}; only a candidate is replayed`);
-  const unrecorded = unrecordedReason(learning, readLedgerView(root));
-  if (unrecorded !== null) return refuse(root, unrecorded);
+  if (!isId(id)) return refuse(root, failed(ID_ERROR));
+  const ready = repairedStep(root, () => {
+    const state = readState(root);
+    const found = learningIn(state, id);
+    if (found.error) return found;
+    const { learning } = found;
+    if (learning.status !== 'candidate') return refused(`${id} is ${learning.status}; only a candidate is replayed`);
+    const unrecorded = unrecordedReason(learning, state.view);
+    return unrecorded === null ? { learning } : refused(unrecorded);
+  });
+  if (ready.error) return ready;
+  const { learning } = ready;
   const { signature, harness } = learning;
   const recurrence = currentRecurrence(root, r => r.signature === signature && r.base === harness.base && r.model === harness.model);
-  if (recurrence === undefined) return refuse(root, `${id}: its signature is no longer a current recurrence under the harness and model it was drafted for`);
+  if (recurrence === undefined) {
+    return withRepairs(refused(`${id}: its signature is no longer a current recurrence under the harness and model it was drafted for`), ready);
+  }
   const replay = replayGate(root, learning.gate, recurrence);
   const status = replay.verdict === 'pass' ? 'trial' : replay.verdict === 'fail' ? 'rejected' : 'candidate';
   const failureId = failureIdFor(root, signature);
 
-  return repairedStep(root, write => {
+  const done = repairedStep(root, write => {
     const state = readState(root);
     const current = state.learnings.find(l => l.id === id);
-    if (current?.status !== 'candidate' || current.sha256 !== learning.sha256) return { error: `${id} changed while it was replayed; nothing was written` };
+    if (current?.status !== 'candidate' || current.sha256 !== learning.sha256) return failed(`${id} changed while it was replayed; nothing was written`);
     const unrecordedNow = unrecordedReason(current, state.view);
-    if (unrecordedNow !== null) return { error: unrecordedNow };
+    if (unrecordedNow !== null) return refused(unrecordedNow);
     const updated = {
       ...current,
       failureId,
@@ -934,6 +1159,7 @@ function runTrialUnguarded(root, id) {
     const written = writeTransition(root, write, state, { updated, entries });
     return written.error === undefined ? { replay, status } : written;
   });
+  return withRepairs(done, ready);
 }
 
 /** True when the path at `path` does not exist; one that cannot be checked
@@ -954,43 +1180,51 @@ export function citesGone(root, learning) {
   return cites.length > 0 && cites.every(cite => isGone(join(root, cite)));
 }
 
-/** The ids of the learnings in `state` the ledger vouches for whose gate
- * warns or blocks and every path of whose `cites` is gone. Anything running
- * as this user can delete a file, so no rule retires an enforcing gate for
- * this; it stays in force until the owner retires it at a terminal. */
+/** The ids of the learnings in `state` the ledger vouches for that are
+ * promoted on this machine (`active-local`) and every path of whose `cites`
+ * is gone; a landed learning is not reported. Anything running as this user
+ * can delete a file, so no rule retires an enforcing gate for this; it
+ * stays in force until the owner retires it at a terminal. */
 export function citationsGone(root, state) {
   return recordedIn(state).filter(l => l.status === 'active-local' && citesGone(root, l)).map(l => l.id);
 }
 
 /**
  * Every learning on this machine for the repository, in id order:
- * `{ learnings, gatesToRepair, unapprovedGates, citationsGone,
- * ledgerMismatch, ledgerIntact, unreadable, approvals }`. The ledger, not a learning's
- * file, is the authority for its status. `gatesToRepair` are the ids whose
- * local gate entries the next step that writes removes, replaces or
- * restores, and every gate whose learning file cannot be read;
- * `unapprovedGates` the ids of the local gate entries above `observe` that
- * no approval in the ledger grants, which that step removes; both null when
- * the local gate file cannot be read. `citationsGone` are the enforcing
- * learnings whose cited paths are all gone, as `citationsGone` finds them.
- * `ledgerMismatch` are the ids of the
- * learnings the ledger does not vouch for (all of them when `ledgerIntact`
- * is false, since the ledger then records nothing) and the ids the ledger
- * names with no learning file; `unreadable` the ids whose learning file
- * does not read back as a learning; `approvals` every promotion in the
- * ledger, as `{ id, sha256, action, approvedBy, ts }`. `{ error }` when the
- * learnings cannot be listed.
+ * `{ learnings, gatesToRepair, unapprovedGates, citationsGone, idCollisions,
+ * ledgerMismatch, lagging, proseUnrecorded, ledgerIntact, unreadable,
+ * approvals }`. The ledger, not a learning's file, is the authority for its
+ * status. `gatesToRepair` are the ids whose local gate entries the next
+ * step that writes removes, replaces or restores, and every gate whose
+ * learning file cannot be read; `unapprovedGates` the ids of the local gate
+ * entries above `observe` that no approval in the ledger grants, which that
+ * step removes; both null when the local gate file cannot be read.
+ * `citationsGone` are the learnings promoted on this machine whose cited
+ * paths are all gone, as `citationsGone` finds them, and `idCollisions`
+ * those whose id the committed gate file holds for another gate
+ * (`idCollisions`). `ledgerMismatch` are the ids of the learnings the
+ * ledger does not vouch for (all of them when `ledgerIntact` is false, since
+ * the ledger then records nothing) and the ids the ledger names with no
+ * learning file; `lagging`, those of them whose file the next step that
+ * writes rolls forward to the ledger; `proseUnrecorded`, the learnings the
+ * ledger vouches for without a hash of their title, why and evidence;
+ * `unreadable` the ids whose learning file does not read back as a
+ * learning; `approvals` every promotion in the ledger, as `{ id, sha256,
+ * action, approvedBy, ts }`. An error when the learnings cannot be listed.
  */
 export function listLearnings(root) {
   try {
     const state = readState(root);
-    const { learnings, unreadable, view, recorded, local } = state;
+    const { learnings, unreadable, view, local } = state;
     return {
       learnings,
       gatesToRepair: local.file ? repairedGates(local.file.gates, state).changed : null,
       unapprovedGates: local.file ? unapprovedGateIds(local.file.gates, view.entries) : null,
       citationsGone: citationsGone(root, state),
-      ledgerMismatch: ledgerMismatches(learnings, unreadable, view, recorded),
+      idCollisions: idCollisions(state),
+      ledgerMismatch: ledgerMismatches(state),
+      lagging: laggingLearnings(state).map(l => l.id),
+      proseUnrecorded: recordedIn(state).filter(l => proseUnrecorded(view.entries, l.id)).map(l => l.id),
       ledgerIntact: view.intact,
       unreadable,
       approvals: approvalsIn(view.entries),
@@ -1024,13 +1258,13 @@ export function learningStats(root, id) {
 }
 
 function learningStatsUnguarded(root, id) {
-  if (!isId(id)) return { error: ID_ERROR };
+  if (!isId(id)) return failed(ID_ERROR);
   const read = readLearning(root, id);
-  if (read.missing) return { error: `${id}: no such learning` };
-  if (read.unreadable) return { error: `${id}: the learning file does not read back as a learning` };
+  if (read.missing) return failed(`${id}: no such learning`);
+  if (read.unreadable) return failed(`${id}: the learning file does not read back as a learning`);
   const view = readLedgerView(root);
   const unrecorded = unrecordedReason(read.learning, view);
-  if (unrecorded !== null) return { error: unrecorded };
+  if (unrecorded !== null) return refused(unrecorded);
   const { gates, sessionsUnreadable } = gateStats(root, view.entries, new Map([[id, read.learning.sha256]]), { places: true });
   const { firings, sessions, rerouted, places, wrong } = gates.get(id);
   const marked = new Set(view.entries

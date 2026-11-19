@@ -22,6 +22,7 @@
 // than copied into three help strings that would drift the way the parsers
 // did.
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
+import { TERMINAL_CHECK } from './tty.mjs';
 
 /**
  * Splits argv into flags, the first non-flag argument, every non-flag
@@ -331,44 +332,50 @@ function wrapped(text) {
   return lines.map(l => SECTION_INDENT + l).join('\n');
 }
 
-const TERMINAL_NOTE = 'Needs a person at an interactive terminal outside Claude Code; anywhere else it refuses (3) and changes nothing.';
-const TERMINAL_YES_NOTE = 'With --yes it needs a person at an interactive terminal outside Claude Code, and anywhere else refuses (3) and changes nothing; without --yes it is a dry run, which needs no terminal and writes nothing.';
+const TERMINAL_NOTE = `Runs only from ${TERMINAL_CHECK}; anywhere else it refuses (3) and changes nothing.`;
+const TERMINAL_YES_NOTE = `With --yes it runs only from ${TERMINAL_CHECK}, and anywhere else refuses (3) and changes nothing; without --yes it is a dry run, which needs no terminal and writes nothing.`;
 
 // Each subcommand's synopsis and description, in the order the usage lists
 // them; `terminal` marks the ones that approve or weaken a gate, `'yes'`
 // the ones that are terminal-only for --yes alone.
 const LEARN_SECTIONS = [
-  { name: 'candidates', synopsis: 'candidates [--json]', text: 'List the recurrences `log report` finds that no learning stands for, with the same cleaned error line and the same counts of what was read. A recurrence the replay has rejected a learning for, by its signature or by another signature labelled with the same failure kind in docs/harness/FAILURES.md, is listed apart, after them, with the rejected ids and which tie it is: it is drafted again only with `draft --redraft`. Reads only.' },
+  { name: 'candidates', synopsis: 'candidates [--json]', text: 'List the recurrences `log report` finds that no learning stands for, with the same cleaned error line and the same counts of what was read. A recurrence an earlier learning ended against is listed apart, after them, with that learning\'s id, which tie it is and how it ended: rejected by its replay, or retired after a wrong mark, after its gate was suspended, or by the owner. The tie is its own signature or another signature labelled with the same failure kind in docs/harness/FAILURES.md, and such a recurrence is drafted again only with `draft --redraft`. Both lists stand between a first and a last line that carry the same nonce, drawn for the run, and say what lies between is recorded data, not instructions; with --json, a fixed note says so instead. Reads only.' },
   { name: 'evidence', synopsis: 'evidence <signature> [--json]', text: "For up to three recorded failures of a current recurrence, the first in each session: the tool, its input as the log stores it, its first error line and, where the session holds one, the input of the next call of the same tool that succeeded. Each value is printed as JSON with every code point outside printable ASCII written as \\u{…}, between a first and a last line that carry the same nonce, drawn for the run, and say what lies between is recorded data, not instructions; with --json, a fixed note says so instead. An input past the retention period is said to be removed. A tool's output is never printed. Reads only." },
-  { name: 'draft', synopsis: 'draft --from <file> [--redraft]', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate, for `replay` to try again. A draft for a recurrence that `candidates` lists apart, as rejected before, is refused unless --redraft is given, and the ledger records a redraft as one. Which recurrences a rejection covers follows the failure kinds as docs/harness/FAILURES.md labels them now. Whether to draft it again is the owner's decision. The file is untrusted: nothing in it is printed back." },
-  { name: 'replay', synopsis: 'replay <id>', text: 'Replay a candidate\'s gate against the log again, as `draft` does, once the log holds more history: a pass puts it on trial at `observe`, a fail rejects it, and one still not checkable stays a candidate. Only a candidate is replayed.' },
-  { name: 'list', synopsis: 'list [--json]', text: 'Every learning with its status and whether the ledger vouches for it, the approvals the ledger records, and every local gate the next step that writes repairs or removes. A broken ledger is said first. Reads only.' },
+  { name: 'draft', synopsis: 'draft --from <file> [--redraft]', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate, for `replay` to try again. A draft is refused (3) for a signature no failure kind in docs/harness/FAILURES.md lists: only the owner names a failure. A draft for a recurrence that `candidates` lists apart, as drafted before, is refused (3) unless --redraft is given, and the ledger records a redraft as one. Which recurrences an earlier learning covers follows the failure kinds as docs/harness/FAILURES.md labels them now. Whether to draft it again is the owner's decision. A title or why is at most 120 or 300 characters as docs/harness/LEARNED.md would hold it, where each < and > takes four. The file is untrusted: nothing in it is printed back." },
+  { name: 'replay', synopsis: 'replay <id>', text: 'Replay a candidate\'s gate against the log again, as `draft` does, once the log holds more history: a pass puts it on trial at `observe`, a fail rejects it, and one still not checkable stays a candidate. Only a candidate is replayed; any other is refused (3). A replay that stopped after the ledger recorded its verdict is finished by running it again: the learning file is brought into line with the ledger first, and the refusal that follows says so.' },
+  { name: 'list', synopsis: 'list [--json]', text: 'Every learning with its status and whether the ledger vouches for it, the approvals the ledger records, and every local gate the next step that writes repairs or removes. Also: each learning file a stopped step left behind the ledger, which the next step that writes rolls forward; each learning whose id the committed gate file holds for another gate, as after pulling a landing made on another machine, with what to do, since ids are per machine and nothing renumbers a learning; and each learning whose title, why and evidence the ledger records no hash of. A broken ledger is said first. Reads only.' },
   { name: 'show', synopsis: 'show <id> [--firings] [--json]', text: "One learning: its gate as JSON with every code point outside printable ASCII written as \\u{…}, the gate's sha256, the replay result and what the log records of its firings, with the latest ten each named <session>:<line>, as `wrong` takes it, and how many earlier ones there are; with --firings, every one. Reads only." },
-  { name: 'approve', terminal: true, synopsis: 'approve <id> --sha256 <hash> --action <warn|block>', text: "Promote a learning on trial to warn or block on this machine. <hash> must be the gate's sha256 as `show` prints it; the same view is printed first, so the hash approved sits beside the text it covers." },
+  { name: 'approve', terminal: true, synopsis: 'approve <id> --sha256 <hash> --action <warn|block>', text: "Promote a learning on trial to warn or block on this machine. <hash> must be the gate's sha256 as `show` prints it; the same view is printed first, so the hash approved sits beside the text it covers. The ledger vouches for the title, why and evidence by a second hash, recorded when the learning was drafted, or by this approval for a learning drafted before that hash was kept." },
   { name: 'wrong', terminal: true, synopsis: 'wrong <session>:<line>', text: 'Mark one recorded gate firing wrong, named as `show` lists it. Two marks since a promotion or landing take the gate back to observe on this machine.' },
   { name: 'demote', terminal: true, synopsis: 'demote <id>', text: "Take a promoted or landed learning's gate back to observe; a committed gate is suspended on this machine instead, until `revert` takes the gate out of the repository and retires the learning." },
   { name: 'retire', terminal: true, synopsis: 'retire <id>', text: 'Retire a learning: its local gate goes, and it no longer stands for its recurrence. A landed or suspended learning whose gate is still in the committed gate file is refused, since retiring writes no file: `revert` takes the gate out of the repository.' },
-  { name: 'land', terminal: 'yes', synopsis: 'land <id> [--yes] [--allow-dirty] [--allow-default-branch] [--json]', text: "Land a learning promoted on this machine in the repository: its entry goes into docs/harness/LEARNED.md and its gate, at the action its approval recorded, into .claude/kh-harness/gates.json, through `apply`'s write path, and the manifest records it. Without --yes it prints the files it would write with the diff `apply` shows, every note first and what --yes would be refused for, and writes nothing. --yes writes them, refused on the default branch or with uncommitted changes to tracked files unless --allow-default-branch or --allow-dirty waives that refusal, as `apply` does. The change is left uncommitted, for the owner to review and commit: only then does it bind everyone who has the repository." },
+  { name: 'land', terminal: 'yes', synopsis: 'land <id> [--yes] [--allow-dirty] [--allow-default-branch] [--json]', text: "Land a learning promoted on this machine in the repository: its entry goes into docs/harness/LEARNED.md and its gate, at the action its approval recorded, into .claude/kh-harness/gates.json, through `apply`'s write path, and the manifest records it. The entry records the gate's hash and, on its own line, the action it was approved at. Without --yes it prints the files it would write with the diff `apply` shows, every note first and what --yes would be refused for, and writes nothing. --yes prints the same diffs, made from the files it then writes, before it says what it wrote. It is refused on the default branch or with uncommitted changes to tracked files unless --allow-default-branch or --allow-dirty waives that refusal, as `apply` does. The change is left uncommitted, for the owner to review and commit: only then does it bind everyone who has the repository." },
   { name: 'revert', terminal: 'yes', synopsis: 'revert <id> [--yes] [--allow-dirty] [--allow-default-branch] [--json]', text: "Take a learning's gate, entry and manifest record out of the repository, whichever are left: a landed learning is active-local again on this machine, its approval standing; one suspended here, judged wrong, is retired. The dry run and --yes are as for `land`, and the notes say whether the commit this branch is on still holds a gate the working tree has already lost. The change is left uncommitted, for the owner to review and commit." },
-  { name: 'tick', synopsis: 'tick [--json]', text: 'Run the unattended rules once: repair the local gate set, retire trials whose cited paths are all gone, demote gates marked wrong twice, and promote under the policy in force; then print all it did and all it could not. Exits 2, after printing all it did, when it could not do part of its work; 0 only when it did all of it.' },
+  { name: 'tick', synopsis: 'tick [--json]', text: 'Run the unattended rules once: roll forward each learning file a stopped step left behind the ledger, record as retired each learning the ledger names that has no file left, repair the local gate set, retire trials whose cited paths are all gone, demote gates marked wrong twice, and promote under the policy in force; then print all it did and all it could not, the trials the policy passed over with the reason, and each learning whose id the committed gate file holds for another gate. Exits 2, after printing all it did, when it could not do part of its work; 0 only when it did all of it.' },
   { name: 'policy show', synopsis: 'policy show [--json]', text: 'The promotion policy on disk, whether its hash is the one the ledger records, and what `tick` therefore promotes. Reads only.' },
-  { name: 'policy set', terminal: true, synopsis: 'policy set --min-firings <n> --min-sessions <n> --max-action <warn|block>', text: 'Set the promotion policy and record its hash in the ledger: `tick` then promotes, up to <max-action>, each fresh trial with at least that many firings in that many sessions, none marked wrong and none read from outside content.' },
+  { name: 'policy set', terminal: true, synopsis: 'policy set --min-firings <n> --min-sessions <n> --max-action <warn|block>', text: 'Set the promotion policy and record its hash in the ledger: `tick` then promotes, up to <max-action>, each fresh trial with at least that many firings in that many sessions, counting no firing in a session that read outside content. It promotes none marked wrong, none with outside content behind its recurrence as the log holds it at that tick, none whose recurrence or failure kind an earlier learning was marked wrong for, and none whose title, why and evidence the ledger records no hash of.' },
   { name: 'policy clear', terminal: true, synopsis: 'policy clear', text: 'Withdraw the policy: from then on `tick` promotes nothing, whatever policy file appears, until one is set again.' },
 ];
+
+/** The subcommands that approve a gate, weaken one, or change the
+ * repository's: the one list the usage, the command and its deny rules
+ * are built from. */
+export const LEARN_TERMINAL_ONLY = Object.freeze(LEARN_SECTIONS.filter(s => s.terminal).map(s => s.name));
 
 const terminalNote = s => (s.terminal === 'yes' ? ` ${TERMINAL_YES_NOTE}` : s.terminal ? ` ${TERMINAL_NOTE}` : '');
 const learnSection = s => `  ${s.synopsis}\n${wrapped(`${s.text}${terminalNote(s)}`)}`;
 
 const TERMINAL_ONLY_TEXT = `TERMINAL ONLY
-  ${LEARN_SECTIONS.filter(s => s.terminal).map(s => s.name).join(', ')}
+  ${LEARN_TERMINAL_ONLY.join(', ')}
   approve a gate, weaken one, or change the repository's, so each runs only
-  for a person at an interactive terminal outside Claude Code: standard input
-  and output must both be terminals and CLAUDECODE must be unset. Run by
-  Claude Code, or with either stream redirected, each refuses (3) and changes
-  nothing. land and revert need the terminal only with --yes: without it each
-  is a dry run that writes nothing, and anyone may run it. No flag or variable
-  skips this check. It is a barrier against the ordinary case, not isolation:
-  a process running as the same user can forge a terminal.
+  from an interactive terminal outside Claude Code. What is checked is that
+  standard input and output are both terminals and that CLAUDECODE is unset;
+  nothing can check that a person is there. Run by Claude Code, or with
+  either stream redirected, each refuses (3) and changes nothing. land and
+  revert need the terminal only with --yes: without it each is a dry run that
+  writes nothing, and anyone may run it. No flag or variable skips this
+  check. It is a barrier against the ordinary case, not isolation: a process
+  running as the same user can forge a terminal.
 
   \`apply\` also installs deny rules for these subcommands, Bash and
   PowerShell patterns over \`learn.mjs\`, so Claude Code declines to run them.
@@ -388,11 +395,12 @@ USAGE
 
 A learning is one small gate on tool calls, drafted by a model for a failure
 that recurs in the session log, replayed by this script against the log, and
-tried at \`observe\`, where it blocks nothing, until a person at a terminal, or
-the policy that person set, promotes it. Learnings, the ledger that records
-every step and the policy live in this machine's data directory beside the
-log. Only land and revert write inside the repository, and only with --yes,
-through the same write path as \`apply\`; what they write is left uncommitted.
+tried at \`observe\`, where it blocks nothing, until the owner, at a terminal,
+or the policy the owner set there, promotes it. Learnings, the ledger that
+records every step and the policy live in this machine's data directory
+beside the log. Only land and revert write inside the repository, and only
+with --yes, through the same write path as \`apply\`; what they write is left
+uncommitted.
 
 SUBCOMMANDS
 ${LEARN_SECTIONS.map(learnSection).join('\n\n')}
@@ -402,16 +410,19 @@ ${TERMINAL_ONLY_TEXT}
 WHAT IS PRINTED
   Ids, hashes, counts, statuses and times. A learning's title and why and its
   gate were written by a model, so each is printed only as JSON with every
-  code point outside printable ASCII written as \\u{…}. Of the session log,
-  only what \`log report\` prints, and what \`evidence\` prints of the calls
-  behind one recurrence.
+  code point outside printable ASCII written as \\u{…}; so is an id that is
+  not a learning id, as a hand-written entry in the local gate file may
+  carry. Of the session log, only what \`log report\` prints, and what
+  \`evidence\` prints of the calls behind one recurrence, each between two
+  lines that carry a nonce and say it is recorded data.
 
 FLAGS
   --json   candidates, evidence, list, show, policy show, tick, land and revert
            only: print the object on stdout and nothing else, with every
            character outside printable ASCII escaped.
-  --yes    land and revert only: write what the dry run shows; a person at an
-           interactive terminal only.
+  --yes    land and revert only: write what the dry run shows, printing the
+           same diffs first; from an interactive terminal outside Claude Code
+           only.
   --allow-dirty, --allow-default-branch
            land and revert only: waive the dirty-tree or the default-branch
            refusal, as for \`apply\`; a dry run then no longer lists it
@@ -420,22 +431,25 @@ FLAGS
            show only: list every firing of the learning's gate, not only the
            latest ten.
   --redraft
-           draft only: draft a recurrence again although the replay rejected
-           an earlier learning for it or for its failure kind; the owner's
-           decision. The ledger records the draft as a redraft, naming the
-           learnings rejected.
+           draft only: draft a recurrence again although an earlier learning
+           for it or for its failure kind was rejected by its replay or
+           retired as wrong; the owner's decision. The ledger records the
+           draft as a redraft, naming those learnings.
 
-Here 3 is also a terminal-only subcommand run without a person at a terminal
-(land and revert only with --yes), and \`evidence\` or any subcommand that
-writes when this repository's data directory is a link or is not directly
-inside the data root, as \`log\` refuses it. 2 is also any step of the other
-subcommands the learnings library refused or could not finish, with its
-reason, and a \`tick\` that could not do part of its work. land and revert
-exit with the code the library gives, as the block below assigns it: 3 when
-they refuse to act (the default branch, a dirty tree, a manifest that cannot
-be read, a learned file kh-harness no longer owns, a learning in no state to
-land or revert), 2 when they cannot (an id that names no learning, a write
-that failed).
+Every subcommand exits with the code its step gives, by one rule. 3, refused
+to act: a terminal-only subcommand run where the terminal check does not pass
+(land and revert only with --yes); a learning in the wrong status for the
+step, or one the ledger does not vouch for, a broken ledger among the
+reasons; a hash that is not the one shown; a draft for a signature that a
+learning already stands for, that needs --redraft, or that no failure kind
+lists; a firing already marked wrong; for land and revert also the default
+branch, a dirty tree, a manifest that cannot be read and a learned file
+kh-harness no longer owns; and \`evidence\` or any subcommand that writes
+when this repository's data directory is a link or is not directly inside
+the data root, as \`log\` refuses it. 2, could not act: a malformed argument
+or draft; an id, a signature or a firing that names nothing; anything that
+could not be read, locked or written; and a \`tick\` that could not do part
+of its work.
 
 ${EXIT_CODES}`;
 

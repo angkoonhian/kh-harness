@@ -138,7 +138,7 @@ function entryProblem(value, { stored }) {
   }
   if (value.detail !== undefined && typeof value.detail !== 'string') return 'detail is not a string';
   if (policy) return null;
-  if (Object.hasOwn(value, PROSE_FIELD) && !isSha256(value[PROSE_FIELD])) return `${PROSE_FIELD} is invalid`;
+  if (value[PROSE_FIELD] !== undefined && !isSha256(value[PROSE_FIELD])) return `${PROSE_FIELD} is invalid`;
   for (const [field, { kinds, valid }] of Object.entries(KIND_FIELDS)) {
     if (kinds.includes(value.kind)) {
       if (!valid(value[field])) return `${field} is missing or invalid for a ${value.kind} entry`;

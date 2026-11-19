@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { requireInteractive } from './tty.mjs';
+import { requireInteractive, TERMINAL_CHECK } from './tty.mjs';
 
 const tty = () => ({ isTTY: true });
 const pipe = () => ({});
@@ -39,4 +39,18 @@ test('a TTY inside a Claude Code session is not interactive', () => {
 
 test('CLAUDECODE set to an empty string still counts as set', () => {
   assert.equal(requireInteractive({ stdin: tty(), stdout: tty(), env: { CLAUDECODE: '' } }).ok, false);
+});
+
+test('the words every refusal uses name the three things checked, and claim no person', () => {
+  assert.equal(TERMINAL_CHECK, 'an interactive terminal outside Claude Code (standard input and output both terminals, CLAUDECODE unset)');
+  // Each condition the words name is one whose failure alone refuses.
+  for (const [named, failing] of [
+    [/standard input/, { stdin: pipe(), stdout: tty(), env: {} }],
+    [/output both terminals/, { stdin: tty(), stdout: pipe(), env: {} }],
+    [/CLAUDECODE unset/, { stdin: tty(), stdout: tty(), env: { CLAUDECODE: '1' } }],
+  ]) {
+    assert.match(TERMINAL_CHECK, named);
+    assert.equal(requireInteractive(failing).ok, false);
+  }
+  assert.doesNotMatch(TERMINAL_CHECK, /person|owner|human/);
 });

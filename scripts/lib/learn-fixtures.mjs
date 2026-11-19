@@ -10,15 +10,16 @@
 import { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { appendEvent, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
+import { FAILURES_PATH } from './failures-evidence.mjs';
 import { draftLearning, runTrial } from './learn-lib.mjs';
-import { readLedger } from './ledger.mjs';
+import { appendLedger, readLedger } from './ledger.mjs';
 import { FAILURE_EVENT, findRecurrences, SUCCESS_EVENT } from './recurrence.mjs';
 import { MIN_CLEAN_CALLS, MIN_CLEAN_SESSIONS } from './replay.mjs';
 
@@ -88,9 +89,23 @@ export function logClean(root) {
   for (const id of ids) log(root, id, HARNESS, ...Array.from({ length: perSession }, (_, i) => success(id, `npm run task-${i}`)));
 }
 
-/** A second recurrence, of the Read tool, in two more sessions. */
-export function logReadMistakes(root) {
+/** A second recurrence, of the Read tool, in two more sessions, named in
+ * the taxonomy unless `label` is false. */
+export function logReadMistakes(root, { label = true } = {}) {
   for (const id of ['three', 'four']) log(root, id, HARNESS, call(FAILURE_EVENT, id, 'Read', { file_path: 'missing.txt' }));
+  if (label) labelFailures(root);
+}
+
+/** Writes and commits a failure taxonomy that names every current
+ * recurrence as a failure kind of its own, `F1` onwards in the order
+ * `findRecurrences` gives them, as the owner would: a draft is refused for
+ * a signature no failure kind lists. */
+export function labelFailures(root) {
+  const kinds = findRecurrences(root).recurrences.map((r, i) => `## F${i + 1} — a ${r.tool} call that fails the same way\n- signatures: ${r.signature}\n`);
+  mkdirSync(join(root, FAILURES_PATH, '..'), { recursive: true });
+  writeFileSync(join(root, FAILURES_PATH), `# Failures\n\n${kinds.join('\n')}`);
+  git(root, 'add', '--', FAILURES_PATH);
+  git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'name the failures');
 }
 
 export function signatureOf(root, tool = 'Bash') {
@@ -112,11 +127,13 @@ export const draftFor = (root, over = {}) => ({
 });
 
 /** A repository whose log holds the mistakes and, unless `clean` is false,
- * enough clean history for a pass. */
-export function loggedRepo({ clean = true, files } = {}) {
+ * enough clean history for a pass, with the mistake named in the taxonomy
+ * unless `label` is false. */
+export function loggedRepo({ clean = true, files, label = true } = {}) {
   const root = repo(files);
   logMistakes(root);
   if (clean) logClean(root);
+  if (label) labelFailures(root);
   return root;
 }
 
@@ -139,6 +156,36 @@ export function drafted(root, over, options) {
 
 export const editLearning = (root, id, over) =>
   writeFileSync(learningFile(root, id), JSON.stringify({ ...JSON.parse(readFileSync(learningFile(root, id), 'utf8')), ...over }));
+
+export const storedLearning = (root, id) => JSON.parse(readFileSync(learningFile(root, id), 'utf8'));
+
+const bytesOrNull = path => (existsSync(path) ? readFileSync(path) : null);
+const putBack = (path, bytes) => (bytes === null ? rmSync(path, { force: true }) : writeFileSync(path, bytes));
+
+/**
+ * Runs `step`, then puts the learning file of `id` and the local gate file
+ * back as they were before it: the state a step leaves when it stops after
+ * its ledger entries and before its other writes, the ledger being written
+ * first. Returns `{ result, written }`, what `step` returned and the
+ * learning as the whole step had stored it.
+ */
+export function stoppedAfterLedger(root, id, step) {
+  const before = { learning: bytesOrNull(learningFile(root, id)), gates: bytesOrNull(localGatesPath(root)) };
+  const result = step();
+  const written = existsSync(learningFile(root, id)) ? storedLearning(root, id) : null;
+  putBack(learningFile(root, id), before.learning);
+  putBack(localGatesPath(root), before.gates);
+  return { result, written };
+}
+
+/** Rewrites the ledger as a kit that kept no hash of a learning's title,
+ * why and evidence wrote it: every entry without `proseSha256`, chained
+ * afresh. */
+export function withoutProseHashes(root) {
+  const entries = readLedger(root);
+  rmSync(join(repoDataDir(root), 'ledger.jsonl'));
+  for (const { ts: _ts, prev: _prev, proseSha256: _prose, ...entry } of entries) appendLedger(root, entry);
+}
 
 export function logFiring(root, sessionId, gate, toolUseId, over = {}) {
   log(root, sessionId, { type: 'gate_firing', gateId: gate.id, gateSha256: gateSha256(gate), action: gate.action, tool: gate.tool, tool_use_id: toolUseId, session_id: sessionId, ...over });
