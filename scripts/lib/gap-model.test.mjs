@@ -48,6 +48,12 @@ function gaps(stack, harness, exposures = [], git = { branch: 'main', isRepo: tr
 }
 const byId = (cs, id) => cs.find(c => c.id === id);
 
+// P0.kitskew runs every generator, which must see every other check as
+// buildProposals gives them; buildGaps hands a check only those before it.
+test('P0.kitskew is the last check', () => {
+  assert.equal(gaps(bareStack, bareHarness).at(-1).id, 'P0.kitskew');
+});
+
 test('every check uses a legal state', () => {
   for (const c of gaps(bareStack, bareHarness)) assert.ok(STATES.includes(c.state), `${c.id} -> ${c.state}`);
 });
