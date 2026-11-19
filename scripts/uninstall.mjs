@@ -2,7 +2,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readManifestResult, MANIFEST_PATH } from './lib/manifest.mjs';
+import { displayPath, readManifestResult, MANIFEST_PATH } from './lib/manifest.mjs';
 import { planUninstall, runUninstall } from './lib/uninstall-lib.mjs';
 import { settingsReformattedNote } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, UNINSTALL_USAGE } from './lib/cli.mjs';
@@ -68,14 +68,17 @@ function keptWhy(k) {
   return k.why;
 }
 
+// Every path and container printed below is the manifest's, a file in the
+// repository, so each goes through `displayPath` first.
+
 // A forged or malformed record can lack a container; it is still listed.
-const patchLabel = p => p.container ?? '(no container)';
+const patchLabel = p => (p.container === undefined ? '(no container)' : displayPath(p.container));
 
 // Print the plan
 if (plan.remove.length) {
   console.log('Will remove:');
   for (const r of plan.remove) {
-    console.log(`  ${r.path}`);
+    console.log(`  ${displayPath(r.path)}`);
   }
 }
 
@@ -89,7 +92,7 @@ if (plan.revert.length) {
 if (plan.keep.length) {
   console.log('Will keep:');
   for (const k of plan.keep) {
-    console.log(`  ${k.path} (${keptWhy(k)})`);
+    console.log(`  ${displayPath(k.path)} (${keptWhy(k)})`);
   }
 }
 
@@ -116,7 +119,7 @@ if (patchesOfAbsentFile.length) {
 function printAlreadyGone(heading, paths, patches) {
   if (paths.length === 0 && patches.length === 0) return;
   console.log(heading);
-  for (const path of paths) console.log(`  ${path}`);
+  for (const path of paths) console.log(`  ${displayPath(path)}`);
   for (const p of patches) console.log(`  ${patchLabel(p)} (no longer in .claude/settings.json)`);
 }
 printAlreadyGone('Already gone, so only the record of it is dropped:', plan.gone.map(g => g.path), patchesRemovedByHand);
@@ -145,7 +148,7 @@ if (plan.removeSettingsFile) {
 if (plan.removeDirs.length) {
   console.log('Will remove empty directories it created:');
   for (const dir of plan.removeDirs) {
-    console.log(`  ${dir}`);
+    console.log(`  ${displayPath(dir)}`);
   }
 }
 
@@ -175,7 +178,7 @@ console.log('');
 if (result.removed.length > 0) {
   console.log('Removed:');
   for (const path of result.removed) {
-    console.log(`  ${path}`);
+    console.log(`  ${displayPath(path)}`);
   }
 }
 
@@ -194,7 +197,7 @@ if (result.settingsReformatted) {
 if (result.removedDirs && result.removedDirs.length > 0) {
   console.log('Removed empty directories it created:');
   for (const dir of result.removedDirs) {
-    console.log(`  ${dir}`);
+    console.log(`  ${displayPath(dir)}`);
   }
 }
 
@@ -203,7 +206,7 @@ printAlreadyGone('Already gone (dropped from the record):', result.alreadyGone, 
 if (result.failed.length > 0) {
   console.log('Failed to remove:');
   for (const f of result.failed) {
-    console.log(`  ${f.path} (${f.reason})`);
+    console.log(`  ${displayPath(f.path)} (${f.reason})`);
   }
 }
 
@@ -211,7 +214,7 @@ if (result.failed.length > 0) {
 if (result.changedSincePlan.length > 0) {
   console.log('Changed since plan (kept):');
   for (const c of result.changedSincePlan) {
-    console.log(`  ${c.path} (${keptWhy(c)})`);
+    console.log(`  ${displayPath(c.path)} (${keptWhy(c)})`);
   }
 }
 
@@ -220,7 +223,7 @@ if (result.changedSincePlan.length > 0) {
 if (result.refused.length > 0) {
   console.log('Refused to remove (kept):');
   for (const r of result.refused) {
-    console.log(`  ${r.path} (${r.why})`);
+    console.log(`  ${displayPath(r.path)} (${r.why})`);
   }
 }
 
@@ -263,7 +266,7 @@ if (result.patchesNotReverted.length > 0) {
 if (plan.keep.length > 0 || result.patchesKept.length > 0) {
   console.log('Kept:');
   for (const k of plan.keep) {
-    console.log(`  ${k.path} (${keptWhy(k)})`);
+    console.log(`  ${displayPath(k.path)} (${keptWhy(k)})`);
   }
   for (const p of result.patchesKept) {
     console.log(`  ${patchLabel(p)} (${p.why})`);

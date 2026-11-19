@@ -20,7 +20,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // is a one-directional import, not a cycle.
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
-import { MANIFEST_PATH, readManifestResult } from './manifest.mjs';
+import { displayPath, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
@@ -1057,10 +1057,10 @@ const CHECKS = [
       const atKit = version => (version === null ? '' : ` at kit ${version}`);
       const evidence = [
         skew.versions,
-        ...skew.updates.map(p => `out of date: ${p.path}`),
-        ...skew.heldBack.map(h => `held back${atKit(h.version)}: ${h.path} (out of date, but kh-harness keeps ${h.causes.map(c => c.path).join(', ')} as ${h.causes.length === 1 ? 'it is' : 'they are'}, and its hook scripts are updated together or not at all)`),
-        ...skew.kept.map(k => `kept${atKit(k.version)}: ${k.path} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
-        ...skew.unproduced.map(path => `left alone: ${path} (this kit no longer generates it for this repository)`),
+        ...skew.updates.map(p => `out of date: ${displayPath(p.path)}`),
+        ...skew.heldBack.map(h => `held back${atKit(h.version)}: ${displayPath(h.path)} (out of date, but kh-harness keeps ${h.causes.map(c => c.path).join(', ')} as ${h.causes.length === 1 ? 'it is' : 'they are'}, and its hook scripts are updated together or not at all)`),
+        ...skew.kept.map(k => `kept${atKit(k.version)}: ${displayPath(k.path)} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
+        ...skew.unproduced.map(path => `left alone: ${displayPath(path)} (this kit no longer generates it for this repository)`),
         ...(skew.current.length ? [`${skew.current.length} kit-owned file${skew.current.length === 1 ? '' : 's'} match what this kit generates`] : []),
       ];
       if (!skew.updates.length) return { state: 'declared', evidence };

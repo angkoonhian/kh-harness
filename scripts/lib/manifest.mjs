@@ -172,4 +172,28 @@ export function contentMatches(bytes, expected) {
   return bytes.includes(0x0d) && sha256(normalizeLineEndings(bytes)) === expected;
 }
 
+// A path made only of these is printed as it is.
+const PLAIN_PATH = /^[A-Za-z0-9._/-]{1,200}$/;
+const DISPLAY_MAX = 200;
+
+/**
+ * A path, or any other string, read from the manifest, as it may be printed
+ * or written into `detect`'s report. The manifest is a file in the
+ * repository, so a pull request can put anything in it, and what is printed
+ * from it reaches a terminal, which acts on escape sequences, and a model,
+ * which reads a new line as a new statement. An ordinary path is returned
+ * unchanged; anything else comes back in double quotes, cut to
+ * `DISPLAY_MAX` characters, with every character outside printable ASCII,
+ * and the quote and the backslash, written as `\u{…}`.
+ */
+export function displayPath(path) {
+  const text = String(path);
+  if (PLAIN_PATH.test(text)) return text;
+  const shown = [...text.slice(0, DISPLAY_MAX)].map(ch => {
+    const code = ch.codePointAt(0);
+    return code >= 0x20 && code < 0x7f && ch !== '"' && ch !== '\\' ? ch : `\\u{${code.toString(16)}}`;
+  }).join('');
+  return `"${shown}${text.length > DISPLAY_MAX ? '...' : ''}"`;
+}
+
 export { MANIFEST_PATH };
