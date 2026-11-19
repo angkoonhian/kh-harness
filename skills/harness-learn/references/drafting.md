@@ -132,9 +132,13 @@ The replay is the script's, never yours to restate:
   `observe`, where it blocks nothing.
 - `fail` — it missed a mistake or fired where it should not. The learning
   is rejected.
-- `not-checkable` — the log does not yet hold enough clean history: at
-  least 20 clean calls of that tool across 2 sessions. The learning stays a
-  candidate, for `replay <id>` in a later run, once there is more.
+- `not-checkable` — the log cannot yet show it either way, and the command
+  says which part is missing. It does not hold enough clean history, which
+  is at least 20 clean calls of that tool across 2 sessions; or the
+  recurrence's own sessions record no successful call of the gate's tool,
+  so nothing there shows the gate leaves a good call alone; or a recorded
+  call could not be read or replayed. The learning stays a candidate, for
+  `replay <id>` in a later run, once there is more.
 
 `fail` and `not-checkable` are normal outcomes. Report the verdict and
 leave it as it is: one draft per recurrence per run. Never loosen or

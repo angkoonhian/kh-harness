@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { join, resolve } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
-import { GATES_PATH, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { GATES_PATH, readEvents, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { applyRetention, SEAL_IDLE_MS, sealClosedSessions } from '../../assets/scripts/harness-seal.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
@@ -466,7 +466,7 @@ test('show prints the gate, its hash, the replay and the stats', () => {
   const view = json(root, 'show', 'L1');
   assert.equal(view.gateSha256, learning.sha256);
   const { listedFirings, ...counts } = view.stats;
-  assert.deepEqual(counts, { firings: 1, sessions: 1, rerouted: 0, wrong: 0, wrongTotal: 0, sessionsUnreadable: 0 });
+  assert.deepEqual(counts, { firings: 1, sessions: 1, rerouted: 0, wrong: 0, wrongTotal: 0, sessionsUnreadable: 0, sessionsBeingSealed: 0 });
   assert.deepEqual(listedFirings.map(f => [f.sessionId, f.action]), [['fire-a', 'observe']]);
   assert.match(text, /^ {2}firings, all 1, the latest last, each as `wrong` takes it:$/m, text);
   assert.doesNotMatch(text, /not listed/);
@@ -484,6 +484,17 @@ function shownFiringLines(text, heading) {
   assert.ok(at !== -1, text);
   return lines.slice(at + 1).filter(l => /^ {4}\S/.test(l));
 }
+
+test('show says how many sessions hold events in a claimed or temporary file, which its counts leave out', () => {
+  const { root, learning } = trialRepo();
+  fired(root, 'fire-a', learning.gate);
+  fired(root, 'fire-b', learning.gate);
+  const file = join(repoDataDir(root), 'sessions', sessionFileName('fire-b'));
+  renameSync(file, `${file}.sealing`);
+  assert.match(ok(runLearn(root, 'show', 'L1')),
+    /^ {2}stats: fired 1 time in 1 session; .* in all; sessions with events in a claimed or temporary file, not read: 1$/m);
+  assert.equal(json(root, 'show', 'L1').stats.sessionsBeingSealed, 1);
+});
 
 test('show names the latest firings as wrong takes them, the latest last, says which are marked wrong and how many more there are', () => {
   const { root, gate } = promotedRepo('block');

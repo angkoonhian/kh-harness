@@ -407,6 +407,7 @@ test('the limits drafting.md states are the ones the validator and the replay ap
   assert.ok(drafting.includes(`one line, at most ${GATE_LIMITS.messageMax} characters, with no \`<\` or \`>\``));
   assert.ok(drafting.includes(`first ${GATE_LIMITS.inputMax} characters`));
   assert.match(drafting, new RegExp(`at\\s+least\\s+${MIN_CLEAN_CALLS}\\s+clean\\s+calls\\s+of\\s+that\\s+tool\\s+across\\s+${MIN_CLEAN_SESSIONS}\\s+sessions`));
+  assert.match(drafting, /recurrence's\s+own\s+sessions\s+record\s+no\s+successful\s+call\s+of\s+the\s+gate's\s+tool/, 'the other cause of not-checkable the replay gives');
   const root = loggedRepo();
   const draft = over => draftLearning(root, { signature: signatureOf(root), title: 't', why: 'w', gate: WATCH_GATE, ...over });
   assert.match(draft({ title: 'x'.repeat(121) }).error, /title: must be at most 120 characters/);

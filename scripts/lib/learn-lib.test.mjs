@@ -646,7 +646,7 @@ test('stats count firings across sessions', () => {
   mark('L1', 1);
   mark('L2', 2);
   const { places, ...counts } = learningStats(root, 'L1');
-  assert.deepEqual(counts, { firings: 5, sessions: 4, rerouted: 2, wrong: 1, wrongTotal: 1, sessionsUnreadable: 0 });
+  assert.deepEqual(counts, { firings: 5, sessions: 4, rerouted: 2, wrong: 1, wrongTotal: 1, sessionsUnreadable: 0, sessionsBeingSealed: 0 });
   // Where each counted firing is, as a wrong mark names it, oldest first;
   // only L1's own mark counts for it.
   assert.deepEqual(places.map(({ ts, ...place }) => place), [

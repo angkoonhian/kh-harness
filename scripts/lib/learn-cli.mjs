@@ -525,7 +525,8 @@ function statsLine(view) {
   if (view.stats === null) return `stats: not available: ${showCodePoints(view.statsError)}`;
   const s = view.stats;
   const unreadable = s.sessionsUnreadable > 0 ? `; sessions read only in part: ${s.sessionsUnreadable}` : '';
-  return `stats: fired ${plural(s.firings, 'time')} in ${plural(s.sessions, 'session')}; rerouted: ${s.rerouted}; marked wrong: ${s.wrong} since the last promotion or landing, ${s.wrongTotal} in all${unreadable}`;
+  const beingSealed = s.sessionsBeingSealed > 0 ? `; sessions with events in a claimed or temporary file, not read: ${s.sessionsBeingSealed}` : '';
+  return `stats: fired ${plural(s.firings, 'time')} in ${plural(s.sessions, 'session')}; rerouted: ${s.rerouted}; marked wrong: ${s.wrong} since the last promotion or landing, ${s.wrongTotal} in all${unreadable}${beingSealed}`;
 }
 
 export function renderShow(view) {

@@ -1139,7 +1139,7 @@ function landedRepo(gates, entries = gates) {
   for (const g of entries) {
     registry = upsertLearnedEntry(registry, {
       id: g.id, title: 'Not that', why: 'It failed twice.', enforcedBy: 'hook', pointer: GATES_PATH,
-      evidenceSummary: { signature: '0123456789abcdef', sessions: 2, firstTs: null, lastTs: null, external: false }, approvedSha256: gateSha256(g),
+      evidenceSummary: { signature: '0123456789abcdef', sessions: 2, firstTs: null, lastTs: null, external: false }, approvedSha256: gateSha256(g), approvedAction: g.action,
     }).text;
   }
   const gateFile = JSON.stringify({ schema: 1, generatedBy: `${STAMP_MARKER} 0.2.0. kh-harness manages this file.`, gates }, null, 2) + '\n';

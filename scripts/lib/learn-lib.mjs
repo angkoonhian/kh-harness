@@ -1241,7 +1241,9 @@ export function listLearnings(root) {
  * firings after which the next call of the gate's tool in that session
  * succeeded; `wrong`, the firings marked wrong since its last promotion or
  * landing, or ever when it had neither; `wrongTotal`, those marked wrong in all;
- * `sessionsUnreadable`; and `places`, where each of those firings is, oldest
+ * `sessionsUnreadable` and `sessionsBeingSealed`, the sessions whose events
+ * were read only in part or not at all, so every count is of what was
+ * read; and `places`, where each of those firings is, oldest
  * first: `{ sessionId, line, action, ts, markedWrong }`, `sessionId` and
  * `line` as a wrong mark names the firing and `markedWrong` whether the
  * ledger records a mark of it for this learning. Reads only. Returns
@@ -1264,13 +1266,13 @@ function learningStatsUnguarded(root, id) {
   const view = readLedgerView(root);
   const unrecorded = unrecordedReason(read.learning, view);
   if (unrecorded !== null) return refused(unrecorded);
-  const { gates, sessionsUnreadable } = gateStats(root, view.entries, new Map([[id, read.learning.sha256]]), { places: true });
+  const { gates, sessionsUnreadable, sessionsBeingSealed } = gateStats(root, view.entries, new Map([[id, read.learning.sha256]]), { places: true });
   const { firings, sessions, rerouted, places, wrong } = gates.get(id);
   const marked = new Set(view.entries
     .filter(e => e?.kind === 'wrong' && e.learningId === id && isPlainObject(e.firing))
     .map(e => placeKey(e.firing)));
   return {
-    firings, sessions, rerouted, wrong: wrong.sinceGrant, wrongTotal: wrong.total, sessionsUnreadable,
+    firings, sessions, rerouted, wrong: wrong.sinceGrant, wrongTotal: wrong.total, sessionsUnreadable, sessionsBeingSealed,
     places: places.toSorted(byTime).map(p => ({ ...p, markedWrong: marked.has(placeKey(p)) })),
   };
 }

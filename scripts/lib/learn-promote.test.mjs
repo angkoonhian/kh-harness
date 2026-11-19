@@ -352,7 +352,7 @@ test("log report and a learning's stats count its firings, reroutes and wrong ma
   const ledgerBefore = readLedger(root);
 
   const { places, ...stats } = learningStats(root, 'L1');
-  assert.deepEqual(stats, { firings: 4, sessions: 4, rerouted: 2, wrong: 1, wrongTotal: 2, sessionsUnreadable: 0 });
+  assert.deepEqual(stats, { firings: 4, sessions: 4, rerouted: 2, wrong: 1, wrongTotal: 2, sessionsUnreadable: 0, sessionsBeingSealed: 0 });
   assert.deepEqual(places.map(p => [p.sessionId, p.action, p.markedWrong]), [
     ['stats-a', 'observe', true], ['stats-b', 'warn', true], ['stats-c', 'block', false], ['stats-d', 'block', false],
   ]);

@@ -2,25 +2,15 @@
 //
 // Argument parsing and `--help` text for every entry point.
 //
-// Whole-branch review, F10: three entry points, three argument conventions.
-// `detect.mjs` and `apply.mjs` each carried their own identical copy of the
-// flag/target split and the unknown-flag warning; `uninstall.mjs` — the ONE
-// command that deletes files — had neither, so `uninstall --yes .` said
-// "repository not found: --yes" and `uninstall . --yse` silently did nothing
-// of what was asked. `detect.mjs`'s own comment explains why the warning
-// exists ("A typo like `--verfiy` used to be a silent no-op"); that reasoning
-// applies at least as much to the command that removes things.
+// Every command splits its arguments here, so a flag before the path and a
+// misspelled flag mean the same thing to each: an unknown flag is named on
+// stderr and never taken for the repository path, which matters most to the
+// commands that remove things.
 //
-// Whole-branch review, F5: and none of the three had a `--help`, while the
-// only document written for a user said the tool "cannot yet apply
-// anything". A user who cannot discover `--allow-dirty` exists reaches for
-// `--yes` on a dirty tree and does not understand the refusal. The text
-// lives here, next to the parser, because the flag names and the sentences
-// describing them must move together — and the three sentences that are
-// genuinely the same for every command (what the hooks execute, the exit
-// codes, where the manifest is) are written ONCE below and shared, rather
-// than copied into three help strings that would drift the way the parsers
-// did.
+// The usage text lives beside the parser because a flag's name and the
+// sentence describing it must change together. What is the same for every
+// command (what the hooks execute, the exit codes, where the manifest is) is
+// written once below and shared by each help text.
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { TERMINAL_CHECK } from './tty.mjs';
 
