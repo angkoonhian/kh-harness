@@ -150,7 +150,7 @@ export function buildLogReport(root) {
   };
 }
 
-const NOT_READ = 'not read, because the sessions directory could not be listed';
+export const NOT_READ = 'not read, because the sessions directory could not be listed';
 const indent = lines => lines.map(l => `  ${l}`);
 const times = n => (n === 1 ? '1 time' : `${n} times`);
 const sessionsWord = n => (n === 1 ? '1 session' : `${n} sessions`);
@@ -174,8 +174,13 @@ function recurrenceLines(r, taxonomyState) {
   ];
 }
 
-function recurrenceSection(report) {
-  const out = ['RECURRENCES (the same failure in two or more sessions under one harness and model)'];
+const RECURRENCES_HEADING = 'RECURRENCES (the same failure in two or more sessions under one harness and model)';
+
+/** The recurrences in `report.groups` as text for a person, under
+ * `heading`; `report` is `buildLogReport`'s shape, its groups possibly
+ * narrowed. */
+export function recurrenceSection(report, heading = RECURRENCES_HEADING) {
+  const out = [heading];
   if (report.groups.length === 0) return [...out, '  none found'];
   for (const g of report.groups) {
     out.push(`  harness ${g.base}, model ${g.model}`);
@@ -205,19 +210,26 @@ function gateSection(gates, ledger) {
   return out;
 }
 
+/** What a report says when there is no log to read. */
+export const noLogLine = report => `No log for this repository on this machine: ${report.location} does not exist, so nothing was read.`;
+
+/** Where a report read and how much of it could be read, one line each, for
+ * a report whose sessions directory could be listed. */
+export const readCountLines = report => [
+  `location: ${report.location}`,
+  `sessions read: ${report.sessionsRead}; of them unreadable, in whole or part: ${report.sessionsUnreadable}; unparseable lines: ${report.linesUnparseable}`,
+  `failures left out, because no harness and model was recorded before them: ${report.failuresUnattributed}`,
+];
+
 /** The report as text for a person. */
 export function renderReport(report) {
   const out = [];
   if (!report.exists) {
-    out.push(`No log for this repository on this machine: ${report.location} does not exist, so nothing was read.`);
+    out.push(noLogLine(report));
   } else if (report.sessionsUnlistable) {
     out.push('LOG REPORT', ...indent([`location: ${report.location}`, `sessions: ${NOT_READ}`, `recurrences and gate firings: ${NOT_READ}`]));
   } else {
-    out.push('LOG REPORT', ...indent([
-      `location: ${report.location}`,
-      `sessions read: ${report.sessionsRead}; of them unreadable, in whole or part: ${report.sessionsUnreadable}; unparseable lines: ${report.linesUnparseable}`,
-      `failures left out, because no harness and model was recorded before them: ${report.failuresUnattributed}`,
-    ]));
+    out.push('LOG REPORT', ...indent(readCountLines(report)));
     out.push('', ...recurrenceSection(report));
     out.push('', ...gateSection(report.gates, report.ledger));
   }

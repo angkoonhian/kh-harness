@@ -321,10 +321,30 @@ const TOOL_GATE_STEP = 30;
  * `KH_DATA_DIR` must add a rule for that location themselves. `Edit(...)`
  * also covers Write and the Bash file commands Claude Code recognises, but
  * not a program the agent runs that writes these files itself.
+ *
+ * They end with `learnCommandDenyRules`, which keep the agent from running
+ * what approves or weakens a learned gate.
  */
 export function toolGateDenyRules() {
   const inRepository = ['.claude/scripts/**', '.claude/kh-harness/**', '.claude/kh-harness.manifest.json', LEARNED_PATH].map(p => `Edit(/${p})`);
-  return [...inRepository, 'Edit(~/.claude/kh-harness/**)'];
+  return [...inRepository, 'Edit(~/.claude/kh-harness/**)', ...learnCommandDenyRules()];
+}
+
+// The `learn` subcommands that approve a gate or weaken one.
+const LEARN_TERMINAL_SUBCOMMANDS = ['approve', 'wrong', 'demote', 'retire', 'policy set', 'policy clear'];
+
+/**
+ * Deny rules for running the `learn` subcommands that approve or weaken a
+ * gate, in the Bash and the PowerShell tool. A rule's `*` stands for any
+ * text, so `*learn.mjs* approve*` matches the command with any path to the
+ * script, quoted or not, and any repository path before the subcommand; a
+ * deny rule applies to each part of a compound command. It matches the
+ * command text Claude writes and not the same program reached another way,
+ * so it is a second barrier: the subcommand's own terminal check is the one
+ * that holds then.
+ */
+export function learnCommandDenyRules() {
+  return LEARN_TERMINAL_SUBCOMMANDS.flatMap(name => [`Bash(*learn.mjs* ${name}*)`, `PowerShell(*learn.mjs* ${name}*)`]);
 }
 
 /**
@@ -344,7 +364,7 @@ function toolGateProposal({ kitVersion, check }) {
   }, {
     kind: 'settings-deny', step: TOOL_GATE_STEP,
     globs: toolGateDenyRules(),
-    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/",
+    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate, a second barrier behind their own terminal check",
   }];
 }
 

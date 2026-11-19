@@ -324,7 +324,7 @@ test('the hook never spawns a child process', () => {
 });
 
 test('the deny rules are anchored to the project root', () => {
-  const inRepository = toolGateDenyRules().filter(rule => !rule.startsWith('Edit(~/'));
+  const inRepository = toolGateDenyRules().filter(rule => rule.startsWith('Edit(') && !rule.startsWith('Edit(~/'));
   assert.deepEqual(inRepository, [
     'Edit(/.claude/scripts/**)',
     'Edit(/.claude/kh-harness/**)',

@@ -612,7 +612,7 @@ export function learningIn(state, id) {
  * or ledger entries name the signature, unless the ledger's last word on it
  * is a settled status and its file, if one is left, agrees.
  */
-function standingFor(state, signature) {
+export function standingFor(state, signature) {
   const files = new Map(state.learnings.map(l => [l.id, l]));
   const ids = new Set([...files.keys(), ...state.view.entries.map(e => e?.learningId).filter(isId)]);
   for (const id of [...ids].sort(idOrder)) {

@@ -132,7 +132,11 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  to the gate file, the manifest,
                                  docs/harness/LEARNED.md, and
                                  ~/.claude/kh-harness/ (this machine's log,
-                                 ledger, policy and local gates).
+                                 ledger, policy and local gates), and deny
+                                 rules for running the \`learn\` subcommands
+                                 that approve or weaken a gate: a second
+                                 barrier, behind their own check for a
+                                 person at a terminal.
 
   Session log (per event)        runs on every one of these events:
 ${indentedList(LOGGED_EVENTS)}
@@ -304,6 +308,113 @@ removal of a log directory that is a link or is not inside the data root.
 2 is also \`maintain\` when sealing could not run or its lock was lost.
 
 ${EXIT_CODES}`;
+
+const LEARN_COMMAND = 'node scripts/learn.mjs <path-to-repo>';
+
+const SECTION_INDENT = ' '.repeat(13);
+const USAGE_WIDTH = 80;
+
+/** `text` in lines of at most `USAGE_WIDTH` characters, each after
+ * `SECTION_INDENT`. */
+function wrapped(text) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    if (line && SECTION_INDENT.length + line.length + 1 + word.length > USAGE_WIDTH) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.map(l => SECTION_INDENT + l).join('\n');
+}
+
+const TERMINAL_NOTE = 'Needs a person at an interactive terminal outside Claude Code; anywhere else it refuses (3) and changes nothing.';
+
+// Each subcommand's synopsis and description, in the order the usage lists
+// them; `terminal` marks the ones that approve or weaken a gate.
+const LEARN_SECTIONS = [
+  { name: 'candidates', synopsis: 'candidates [--json]', text: 'List the recurrences `log report` finds that no learning stands for, with the same cleaned error line and the same counts of what was read. Reads only.' },
+  { name: 'draft', synopsis: 'draft --from <file>', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate. The file is untrusted: nothing in it is printed back." },
+  { name: 'list', synopsis: 'list [--json]', text: 'Every learning with its status and whether the ledger vouches for it, the approvals the ledger records, and every local gate the next step that writes repairs or removes. A broken ledger is said first. Reads only.' },
+  { name: 'show', synopsis: 'show <id> [--json]', text: "One learning: its gate as JSON with every code point outside printable ASCII written as \\u{…}, the gate's sha256, the replay result and what the log records of its firings. Reads only." },
+  { name: 'approve', terminal: true, synopsis: 'approve <id> --sha256 <hash> --action <warn|block>', text: "Promote a learning on trial to warn or block on this machine. <hash> must be the gate's sha256 as `show` prints it; the same view is printed first, so the hash approved sits beside the text it covers." },
+  { name: 'wrong', terminal: true, synopsis: 'wrong <session>:<line>', text: 'Mark one recorded gate firing wrong. Two marks since a promotion take the gate back to observe.' },
+  { name: 'demote', terminal: true, synopsis: 'demote <id>', text: "Take a promoted learning's gate back to observe; a committed gate is suspended on this machine instead, and that is final." },
+  { name: 'retire', terminal: true, synopsis: 'retire <id>', text: 'Retire a learning: its local gate goes, and it no longer stands for its recurrence.' },
+  { name: 'tick', synopsis: 'tick [--json]', text: 'Run the unattended rules once: repair the local gate set, retire trials whose cited paths are all gone, demote gates marked wrong twice, and promote under the policy in force; then print all it did and all it could not. Exits 0 whenever it ran.' },
+  { name: 'policy show', synopsis: 'policy show [--json]', text: 'The promotion policy on disk, whether its hash is the one the ledger records, and what `tick` therefore promotes. Reads only.' },
+  { name: 'policy set', terminal: true, synopsis: 'policy set --min-firings <n> --min-sessions <n> --max-action <warn|block>', text: 'Set the promotion policy and record its hash in the ledger: `tick` then promotes, up to <max-action>, each fresh trial with at least that many firings in that many sessions, none marked wrong and none read from outside content.' },
+  { name: 'policy clear', terminal: true, synopsis: 'policy clear', text: 'Withdraw the policy: from then on `tick` promotes nothing, whatever policy file appears, until one is set again.' },
+];
+
+const learnSection = s => `  ${s.synopsis}\n${wrapped(s.terminal ? `${s.text} ${TERMINAL_NOTE}` : s.text)}`;
+
+const TERMINAL_ONLY_TEXT = `TERMINAL ONLY
+  ${LEARN_SECTIONS.filter(s => s.terminal).map(s => s.name).join(', ')} approve a
+  gate or weaken one, so each runs only for a person at an interactive
+  terminal outside Claude Code: standard input and output must both be
+  terminals and CLAUDECODE must be unset. Run by Claude Code, or with either
+  stream redirected, each refuses (3) and changes nothing. No flag or
+  variable skips this check. It is a barrier against the ordinary case, not
+  isolation: a process running as the same user can forge a terminal.
+
+  \`apply\` also installs deny rules for these subcommands, Bash and
+  PowerShell patterns over \`learn.mjs\`, so Claude Code declines to run them.
+  That is a second barrier: a deny rule matches the command as Claude writes
+  it, not the same command reached another way, and then the terminal check
+  is the one that holds.`;
+
+export const LEARN_USAGE = `kh-harness learn — the learnings for one repository on this machine
+
+USAGE
+  ${LEARN_COMMAND} <subcommand> [arguments] [--json]
+  ${LEARN_COMMAND} <subcommand> --help
+
+A learning is one small gate on tool calls, drafted by a model for a failure
+that recurs in the session log, replayed by this script against the log, and
+tried at \`observe\`, where it blocks nothing, until a person at a terminal, or
+the policy that person set, promotes it. Learnings, the ledger that records
+every step and the policy live in this machine's data directory beside the
+log; no subcommand writes inside the repository.
+
+SUBCOMMANDS
+${LEARN_SECTIONS.map(learnSection).join('\n\n')}
+
+${TERMINAL_ONLY_TEXT}
+
+WHAT IS PRINTED
+  Ids, hashes, counts, statuses and times. A learning's title and why and its
+  gate were written by a model, so each is printed only as JSON with every
+  code point outside printable ASCII written as \\u{…}. Of the session log,
+  only what \`log report\` prints.
+
+FLAGS
+  --json   candidates, list, show, policy show and tick only: print the object
+           on stdout and nothing else, with every character outside printable
+           ASCII escaped.
+
+Here 3 is a terminal-only subcommand run without a person at a terminal. 2 is
+also any step the learnings library refused or could not finish, with its
+reason.
+
+${EXIT_CODES}`;
+
+/** The help for one `learn` subcommand, or null for a name that is not one. */
+export function learnHelp(name) {
+  const section = LEARN_SECTIONS.find(s => s.name === name);
+  if (section === undefined) return null;
+  return `kh-harness learn ${name}
+
+USAGE
+  ${LEARN_COMMAND} ${section.synopsis}
+
+${learnSection(section)}
+${section.terminal ? `\n${TERMINAL_ONLY_TEXT}\n` : ''}
+${EXIT_CODES}`;
+}
 
 /** True when the user asked for help. Accepted on every command, in the one
  * place that knows the spelling, so `-h` and `--help` cannot mean different

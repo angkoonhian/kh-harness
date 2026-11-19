@@ -314,7 +314,7 @@ function clearPolicyUnguarded(root, { interactive }) {
 
 /** The hash of the policy in force, from the ledger's last `policy` entry:
  * null when none was ever set or the last was withdrawn. */
-function recordedPolicySha256(entries) {
+export function recordedPolicySha256(entries) {
   let sha256 = null;
   for (const entry of entries) if (entry?.kind === 'policy') sha256 = entry.policySha256;
   return sha256;

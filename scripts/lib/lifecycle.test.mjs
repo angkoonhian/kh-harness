@@ -17,7 +17,7 @@ import { sha256, emptyManifest } from './manifest.mjs';
 // contradiction. Membership-tested against the real table rather than a
 // hand-maintained id list, so a capability added later is covered with no
 // test edit (same discipline as propose.test.mjs's coherence test).
-import { GENERATORS, toolGateDenyRules, SESSION_LOG_PATH } from './propose.mjs';
+import { GENERATORS, learnCommandDenyRules, toolGateDenyRules, SESSION_LOG_PATH } from './propose.mjs';
 import { DETECT, APPLY, UNINSTALL, git, run, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
 import { versionStamp } from './render.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
@@ -230,7 +230,8 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     assert.ok(s1.permissions.deny.includes('Edit(secrets/**)'), 'the user\'s own deny rule survives apply');
     const ours = s1.permissions.deny.filter(r => r !== 'Edit(secrets/**)');
     assert.ok(ours.length > 0, 'apply must add protected-path deny rules beside the user\'s own');
-    assert.ok(ours.every(r => r.startsWith('Edit(')), 'every added rule is an Edit(...) deny pattern');
+    const commands = new Set(learnCommandDenyRules());
+    assert.ok(ours.every(r => r.startsWith('Edit(') || commands.has(r)), 'every added rule is an Edit(...) deny pattern or one denying a terminal-only learn subcommand');
 
     // P2.scripts never writes to a manifest this tool is not allowed to touch.
     assert.equal(readFileSync(join(d, 'packages/api/package.json'), 'utf8'), JSON.stringify({ name: '@app/api', scripts: {} }),
@@ -978,6 +979,16 @@ test('apply then uninstall leaves git status clean', () => {
   const d = fixture();
   run(APPLY, d, '--yes');
   assert.ok(existsSync(join(d, SESSION_LOG_PATH)), 'fixture sanity: the logging hook was installed');
+  run(UNINSTALL, d, '--yes');
+  const status = execFileSync('git', ['-C', d, 'status', '--porcelain'], { encoding: 'utf8' });
+  assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
+});
+
+test('apply denies the terminal-only learn subcommands, and uninstall removes those rules leaving git status clean', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const deny = settings(d).permissions.deny;
+  for (const rule of learnCommandDenyRules()) assert.ok(deny.includes(rule), rule);
   run(UNINSTALL, d, '--yes');
   const status = execFileSync('git', ['-C', d, 'status', '--porcelain'], { encoding: 'utf8' });
   assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
