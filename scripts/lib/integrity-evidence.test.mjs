@@ -304,7 +304,7 @@ test('P5.integrity sits directly after P5.toolgate, and P0.kitskew stays last', 
 test('P5.integrity is n/a with no manifest, failing with its problems, declared otherwise, and never proposes', () => {
   const none = integrityGap(undefined, null);
   assert.equal(none.state, 'n/a');
-  assert.deepEqual(none.evidence, [`no ${MANIFEST_PATH}: nothing was installed`]);
+  assert.deepEqual(none.evidence, ['no manifest was read, so nothing was checked'], 'with no root the check read nothing, and says so');
   assert.equal(integrityGap(tempDir(), null).state, 'n/a', 'a repository with no manifest file');
 
   const { d, manifest } = installed(HOOKS);
