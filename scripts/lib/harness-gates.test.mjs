@@ -128,8 +128,8 @@ test('a message containing an angle bracket or an invisible character is rejecte
 
 test('a message the credential mask would change is rejected, and prose about credentials is not', () => {
   const token = 'gh' + 'p_' + 'A1b2C3d4'.repeat(5);
-  rejectsWith(gate({ message: `Authenticate with ${token} first.` }), /message must not hold a credential/);
-  rejectsWith(gate({ message: 'Run it with --pass' + 'word=hunter2hunter2 instead.' }), /message must not hold a credential/);
+  rejectsWith(gate({ message: `Authenticate with ${token} first.` }), /message must not contain a credential/);
+  rejectsWith(gate({ message: 'Run it with --pass' + 'word=hunter2hunter2 instead.' }), /message must not contain a credential/);
   assert.deepEqual(validateGate(gate({ message: 'Use Basic authentication or a Bearer token, never a password on the command line.' })), { ok: true });
 });
 

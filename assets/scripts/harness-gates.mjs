@@ -99,7 +99,7 @@ export function validateGate(gate) {
   // The hook prints a message as written. The sweep's floors, because a
   // message is prose the model is told to follow: `Basic authentication` is
   // an instruction, while a real token exceeds every floor.
-  if (maskText(message, { floors: 'sweep' }) !== message) return reject('message must not hold a credential: the mask applied to logged text would change it');
+  if (maskText(message, { floors: 'sweep' }) !== message) return reject('message must not contain a credential');
 
   if (gate.cites !== undefined) {
     if (!Array.isArray(gate.cites) || gate.cites.length > CITES_MAX) return reject(`cites must be an array of at most ${CITES_MAX} paths`);
