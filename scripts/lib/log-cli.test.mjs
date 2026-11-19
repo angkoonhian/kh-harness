@@ -16,7 +16,7 @@ import {
 } from './log-fixtures.mjs';
 import { logStatus, SESSION_LOG_SCRIPT } from './log-lib.mjs';
 
-const INTACT = { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: false };
+const INTACT = { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: false, tornTail: false };
 
 test('status on a repository with no log says so and exits 0', () => {
   const root = project();
@@ -202,6 +202,35 @@ test('status reports an altered session', () => {
   const text = runLog(root, 'status').stdout;
   assert.match(text, /altered: edited/);
   assert.match(text, /not intact/);
+  assert.match(text, /blob sweep: blocked, so content held in blobs is not being expired: sealed sessions do not match the index \(altered: edited\)/);
+});
+
+test('status says a chain broken between lines does not stop blob content expiring while the sealed files match', () => {
+  const root = project();
+  writeSession(root, 's1');
+  writeSession(root, 's2');
+  sealAll(root);
+  const index = join(repoDataDir(root), 'index.jsonl');
+  const [first, second] = readFileSync(index, 'utf8').split('\n');
+  writeFileSync(index, `${first}\n{"torn\n${second}\n`);
+  const json = statusJson(root);
+  assert.equal(json.index.brokenAt, 2);
+  assert.deepEqual(json.blobSweep, { skipped: false, reason: null });
+  const text = runLog(root, 'status').stdout;
+  assert.match(text, /chain broken at line 2/);
+  assert.match(text, /blob sweep: not blocked; every sealed session matches its latest index line/);
+});
+
+test('status says an unfinished last index line is not damage', () => {
+  const root = project();
+  writeSession(root, 's1');
+  sealAll(root);
+  writeFileSync(join(repoDataDir(root), 'index.jsonl'), '{"sessionId":"s2","sh', { flag: 'a' });
+  const json = statusJson(root);
+  assert.deepEqual(json.index, { ...INTACT, tornTail: true });
+  const text = runLog(root, 'status').stdout;
+  assert.match(text, /index: intact/);
+  assert.match(text, /the index ends in an unfinished line, left by an interrupted append; the next maintenance run removes it, and it is not damage/);
 });
 
 test('status lists a pending session apart from altered ones', () => {

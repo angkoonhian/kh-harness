@@ -74,7 +74,7 @@ function writeSession(root, sessionId, count = 2) {
   }
 }
 
-const INTACT = { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: false };
+const INTACT = { intact: true, brokenAt: null, sessionsMissing: [], sessionsAltered: [], sessionsPending: [], unreadable: false, tornTail: false };
 const LOCKED = 'the index lock could not be taken';
 const SWEPT = { skipped: false, reason: null };
 
@@ -602,9 +602,77 @@ test('a lost index line does not let the sweep remove a blob sealed content stil
   assert.deepEqual(result.blobSweep, { skipped: true, reason: 'sealed sessions do not match the index (altered: two-seals)' });
   assert.equal(existsSync(blobFile(root, blob)), true);
 
+});
+
+test('a chain broken in the middle does not stop the sweep while every sealed file matches its latest line', () => {
+  const root = tempDir('hk-log-sweep-break-');
+  writeConfig(root, { inlineCapBytes: 1024 });
+  writeSession(root, 'first', 1);
+  seal(root);
+  appendEvent(root, 'second', { type: 'PostToolUse', output: 'b'.repeat(4096) });
+  const referenced = eventsOf(root, 'second')[0].output.blob;
+  seal(root);
+  const raw = rawIndexLines(root);
   writeFileSync(dataFile(root, 'index.jsonl'), `${raw[0]}\n{"torn\n${raw[1]}\n`);
-  assert.deepEqual(applyRetention(root, {}).blobSweep, { skipped: true, reason: 'the index chain is broken at line 2' });
-  assert.equal(existsSync(blobFile(root, blob)), true);
+  const orphan = 'ef'.repeat(32);
+  writeFileSync(blobFile(root, orphan), 'x');
+  for (const sha of [referenced, orphan]) touchAgo(blobFile(root, sha), 2 * DAY_MS);
+
+  const check = verifyIndex(root);
+  assert.equal(check.brokenAt, 2);
+  assert.equal(check.intact, false, 'the break is still reported');
+  assert.equal(untrustedBecause(check), null, 'each session\'s latest line still names every blob its sealed content references');
+  assert.deepEqual(applyRetention(root, {}).blobSweep, SWEPT);
+  assert.equal(existsSync(blobFile(root, referenced)), true);
+  assert.equal(existsSync(blobFile(root, orphan)), false, 'blob content is expired again');
+});
+
+test('an unfinished last index line is not a break, and is dropped under the lock before the next append', () => {
+  const root = tempDir('hk-log-torn-');
+  for (const id of ['a', 'b']) writeSession(root, id);
+  seal(root);
+  const whole = readFileSync(dataFile(root, 'index.jsonl'), 'utf8');
+  writeFileSync(dataFile(root, 'index.jsonl'), `${whole}{"sessionId":"c","sha`);
+  assert.deepEqual(verifyIndex(root), { ...INTACT, tornTail: true }, 'an interrupted append damaged nothing that was sealed');
+  assert.equal(indexLineCount(root), 2);
+  assert.equal(readFileSync(dataFile(root, 'index.jsonl'), 'utf8').endsWith('"sha'), true, 'a read removes nothing');
+
+  writeSession(root, 'c');
+  assert.deepEqual(seal(root).sealed, ['c']);
+  const lines = rawIndexLines(root);
+  assert.equal(lines.length, 3);
+  assert.deepEqual(lines.map(l => JSON.parse(l).sessionId), ['a', 'b', 'c']);
+  assert.deepEqual(verifyIndex(root), INTACT);
+});
+
+test('retention drops an unfinished last index line too, when nothing is left to seal', () => {
+  const root = tempDir('hk-log-torn-retention-');
+  writeSession(root, 'a');
+  seal(root);
+  const whole = readFileSync(dataFile(root, 'index.jsonl'), 'utf8');
+  writeFileSync(dataFile(root, 'index.jsonl'), `${whole}{"sessionId":"a","sh`);
+  assert.deepEqual(applyRetention(root, {}).blobSweep, SWEPT);
+  assert.equal(readFileSync(dataFile(root, 'index.jsonl'), 'utf8'), whole);
+});
+
+test('a seal interrupted inside its index append, the line complete but unterminated, is done again', () => {
+  const root = tempDir('hk-log-torn-complete-');
+  writeSession(root, 'a');
+  writeSession(root, 'b', 3);
+  seal(root);
+  // As a crash one byte before the end of b's append leaves it: the line
+  // without its newline, the claimed events and the compressed file not yet
+  // renamed into place.
+  const content = gunzipSync(readFileSync(sealedFile(root, 'b')));
+  renameSync(sealedFile(root, 'b'), tempFile(root, 'b'));
+  writeFileSync(claimedFile(root, 'b'), content);
+  const whole = readFileSync(dataFile(root, 'index.jsonl'), 'utf8');
+  writeFileSync(dataFile(root, 'index.jsonl'), whole.slice(0, -1));
+
+  assert.deepEqual(seal(root).sealed, ['b'], 'its step never completed, so the session is sealed again from its claimed events');
+  assert.deepEqual(verifyIndex(root), INTACT);
+  assert.equal(eventsOf(root, 'b').length, 3, 'no event is lost or doubled');
+  assert.deepEqual(readdirSync(join(repoDataDir(root), 'sessions')).sort(), ['s-a.jsonl.gz', 's-b.jsonl.gz']);
 });
 
 /** A `gunzip` that counts its calls. */
