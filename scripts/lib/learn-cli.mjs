@@ -38,7 +38,7 @@ const SPECS = Object.freeze({
   draft: { args: [], flags: ['--from', '--redraft'], required: ['--from'] },
   replay: { args: ['<id>'], flags: [] },
   list: { args: [], flags: ['--json'] },
-  show: { args: ['<id>'], flags: ['--json'] },
+  show: { args: ['<id>'], flags: ['--firings', '--json'] },
   approve: { args: ['<id>'], flags: ['--sha256', '--action'], required: ['--sha256', '--action'] },
   wrong: { args: ['<session>:<line>'], flags: [] },
   demote: { args: ['<id>'], flags: [] },
@@ -62,7 +62,7 @@ export const TERMINAL_ONLY = Object.freeze(['approve', 'wrong', 'demote', 'retir
 export const WRITES = new Set(['draft', 'replay', 'tick', ...TERMINAL_ONLY]);
 
 // The flags that take no value; every other flag a subcommand owns takes one.
-const BOOLEAN_FLAGS = new Set(['--json', '--help', '--redraft', '--yes', '--allow-dirty', '--allow-default-branch']);
+const BOOLEAN_FLAGS = new Set(['--json', '--help', '--firings', '--redraft', '--yes', '--allow-dirty', '--allow-default-branch']);
 const VALUE_FLAGS = new Set(LEARN_SUBCOMMANDS.flatMap(name => SPECS[name].flags).filter(f => !BOOLEAN_FLAGS.has(f)));
 
 const DRAFT_MAX_BYTES = 65_536;
@@ -117,7 +117,7 @@ export function helpName(positionals) {
 
 /**
  * What the command line asks for: `{ target, name, args, values, json,
- * redraft, yes, allowDirty, allowDefaultBranch, ignored }`, `ignored` the
+ * firings, redraft, yes, allowDirty, allowDefaultBranch, ignored }`, `ignored` the
  * flags given that this subcommand does not own, or `{ error }`.
  */
 export function resolveCommand({ positionals, values, flags, problems }) {
@@ -138,6 +138,7 @@ export function resolveCommand({ positionals, values, flags, problems }) {
   return {
     target, name, args: rest, values,
     json: owned('--json'),
+    firings: owned('--firings'),
     redraft: owned('--redraft'),
     yes: owned('--yes'),
     allowDirty: owned('--allow-dirty'),
@@ -450,10 +451,11 @@ export function renderList(view) {
 /**
  * One learning as `show` and `approve` print it, read afresh: its gate and
  * hash, whether the ledger vouches for it and why not, what its `proposed`
- * entry says of the draft (that it was a redraft), its replay and its stats;
- * or `{ error }`. Reads only.
+ * entry says of the draft (that it was a redraft), its replay and its stats,
+ * with where its latest `SHOWN_FIRINGS` firings are, or every one with
+ * `allFirings`; or `{ error }`. Reads only.
  */
-export function showView(root, id) {
+export function showView(root, id, { allFirings = false } = {}) {
   if (!isId(id)) return { error: ID_ERROR };
   const state = readState(root);
   const found = learningIn(state, id);
@@ -468,26 +470,32 @@ export function showView(root, id) {
     title: learning.title, why: learning.why, signature: learning.signature, failureId: learning.failureId,
     external: learning.external, evidence: learning.evidence,
     gate: learning.gate, gateSha256: learning.sha256, replay: learning.replay,
-    stats: stats.error === undefined ? shownStats(stats) : null, statsError: stats.error ?? null,
+    stats: stats.error === undefined ? shownStats(stats, allFirings) : null, statsError: stats.error ?? null,
   };
 }
 
 /** How many of a learning's firings `show` lists: the latest. */
 export const SHOWN_FIRINGS = 10;
 
-/** The stats as `show` holds them: the counts, and where the latest
- * `SHOWN_FIRINGS` firings are, as `latestFirings`. */
-const shownStats = ({ places, ...counts }) => ({ ...counts, latestFirings: places.slice(-SHOWN_FIRINGS) });
+/** The stats as `show` holds them: the counts, and where the firings
+ * listed are, as `listedFirings`: the latest `SHOWN_FIRINGS`, or every one
+ * with `all`. */
+const shownStats = ({ places, ...counts }, all) => ({ ...counts, listedFirings: all ? places : places.slice(-SHOWN_FIRINGS) });
 
-/** The latest firings, each named as `wrong` takes it; nothing for a gate
- * that never fired. */
+const firingTime = ts => (ts === null ? 'no time recorded' : `at ${time(ts)}`);
+
+/** The firings listed, each named as `wrong` takes it, and how many more
+ * there are and how to see them; nothing for a gate that never fired. */
 function firingLines(view) {
-  const latest = view.stats?.latestFirings ?? [];
-  if (latest.length === 0) return [];
-  const which = latest.length === view.stats.firings ? 'the latest last' : `the latest ${latest.length} of ${view.stats.firings}, the latest last`;
+  const listed = view.stats?.listedFirings ?? [];
+  if (listed.length === 0) return [];
+  const { firings } = view.stats;
+  const which = listed.length === firings ? `all ${firings}` : `the latest ${listed.length} of ${firings}`;
+  const earlier = firings - listed.length;
   return [
-    `firings, ${which}, each as \`wrong\` takes it:`,
-    ...latest.map(f => `  ${sessionName(f.sessionId)}:${f.line}  ${action(f.action)}  at ${time(f.ts)}${f.markedWrong ? '  marked wrong' : ''}`),
+    `firings, ${which}, the latest last, each as \`wrong\` takes it:`,
+    ...listed.map(f => `  ${sessionName(f.sessionId)}:${f.line}  ${action(f.action)}  ${firingTime(f.ts)}${f.markedWrong ? '  marked wrong' : ''}`),
+    ...(earlier === 0 ? [] : [`${plural(earlier, 'earlier firing')} not listed: \`show ${ids([view.id])} --firings\` lists every one.`]),
   ];
 }
 

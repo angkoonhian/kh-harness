@@ -56,16 +56,15 @@ const blank = () => ({ fired: Object.fromEntries(GATE_ACTIONS.map(a => [a, 0])),
  * What the session log and `ledgerEntries` record of each gate:
  * `{ gates, sessionsRead, sessionsUnreadable, firingsMalformed }`, `gates`
  * mapping each gate id to `{ fired, firings, sessions, rerouted,
- * gateSha256s, places, wrong }`. `fired` counts its firings per action and
- * `firings` all of them; `sessions` is how many sessions hold one;
- * `gateSha256s` the content hashes it fired under; `places` is where each
- * of its firings is, `{ sessionId, line, action, ts }` in the order read,
- * `line` the firing's 1-based position in what `readEvents` returns for
- * the session, which is how a wrong mark names it, and `ts` its time or
- * null; `wrong` is
- * `{ sinceGrant, total }`, as `wrongSinceGrant` counts the first, or
- * null when `ledgerEntries` is null because the ledger cannot vouch for
- * what it holds.
+ * gateSha256s, wrong }`, and `places` too when `places` is true. `fired`
+ * counts its firings per action and `firings` all of them; `sessions` is
+ * how many sessions hold one; `gateSha256s` the content hashes it fired
+ * under; `wrong` is `{ sinceGrant, total }`, as `wrongSinceGrant` counts
+ * the first, or null when `ledgerEntries` is null because the ledger cannot
+ * vouch for what it holds; and `places` is where each of its firings is,
+ * `{ sessionId, line, action, ts }` in the order read, `line` the firing's
+ * 1-based position in what `readEvents` returns for the session, which is
+ * how a wrong mark names it, and `ts` its time or null.
  *
  * A firing counts when its gate id, action and tool are ones a gate can
  * have; any other is counted in `firingsMalformed` alone. With `contents`, a
@@ -82,7 +81,7 @@ const blank = () => ({ fired: Object.fromEntries(GATE_ACTIONS.map(a => [a, 0])),
  * read in full, whose counts are what did parse. Throws when the sessions
  * directory cannot be listed.
  */
-export function gateStats(root, ledgerEntries, contents = null) {
+export function gateStats(root, ledgerEntries, contents = null, { places = false } = {}) {
   const byGate = new Map(contents === null ? [] : [...contents.keys()].map(id => [id, blank()]));
   const ids = sessionIds(root);
   let sessionsUnreadable = 0;
@@ -103,7 +102,7 @@ export function gateStats(root, ledgerEntries, contents = null) {
         const g = byGate.get(event.gateId);
         g.fired[event.action]++;
         g.sessions.add(sessionId);
-        g.places.push({ sessionId, line: index + 1, action: event.action, ts: isString(event.ts) ? event.ts : null });
+        if (places) g.places.push({ sessionId, line: index + 1, action: event.action, ts: isString(event.ts) ? event.ts : null });
         if (isString(event.gateSha256) && SHA256.test(event.gateSha256)) g.gateSha256s.add(event.gateSha256);
         if (ABOVE_OBSERVE.has(event.action) && isString(event.tool_use_id)) awaiting.push({ g, tool: event.tool, toolUseId: event.tool_use_id });
       } else if (event.type === SUCCESS_EVENT || event.type === FAILURE_EVENT) {
@@ -121,8 +120,8 @@ export function gateStats(root, ledgerEntries, contents = null) {
     sessions: g.sessions.size,
     rerouted: g.rerouted,
     gateSha256s: [...g.gateSha256s].sort(),
-    places: g.places,
     wrong: marks === null ? null : (marks.get(id) ?? { sinceGrant: 0, total: 0 }),
+    ...(places ? { places: g.places } : {}),
   }]));
   return { gates, sessionsRead: ids.length, sessionsUnreadable, firingsMalformed };
 }

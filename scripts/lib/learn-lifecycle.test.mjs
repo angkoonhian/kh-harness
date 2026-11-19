@@ -18,12 +18,13 @@ import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmS
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
-import { LOCAL_GATES_FILE, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
+import { LOCAL_GATES_FILE, readEvents, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 import { SEAL_IDLE_MS } from '../../assets/scripts/harness-seal.mjs';
+import { parseFiringRef } from './learn-cli.mjs';
 import { landLearning, revertLearning } from './learn-land.mjs';
 import { approveLearning, markWrong } from './learn-promote.mjs';
 import {
-  APPLY, DETECT, fixture, git, LEARN, LOG, manifestOf, runRegisteredHook, runResult, sandboxDataDir, UNINSTALL,
+  APPLY, DETECT, fixture, git, LEARN, linesAfter, LOG, manifestOf, runRegisteredHook, runResult, sandboxDataDir, UNINSTALL,
 } from './lifecycle-fixtures.mjs';
 import { MIN_CLEAN_CALLS, MIN_CLEAN_SESSIONS } from './replay.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -49,6 +50,8 @@ const MINUTE_MS = 60_000;
 // checkable with nothing to spare: one call fewer and it would not be.
 const CLEAN_CALLS_PER_SESSION = Math.ceil(MIN_CLEAN_CALLS / MIN_CLEAN_SESSIONS);
 const CLEAN_COMMANDS = Array.from({ length: CLEAN_CALLS_PER_SESSION }, (_, i) => `node scripts/build.mjs --part ${i + 1}`);
+
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, m => `\\${m}`);
 
 const owner = (d, ...a) => git(d, '-c', 'user.email=owner@example.invalid', '-c', 'user.name=owner', ...a);
 
@@ -180,8 +183,8 @@ test('the learning loop end to end, through the real commands and the installed 
     return { mistake, fix };
   }
 
-  /** The firings `learn show L1` lists, `{ sessionId, line, action, marked }`
-   * each, `sessionId` and `line` as `wrong` takes them. */
+  /** The firings `learn show L1` lists, `{ ref, action, marked }` each,
+   * `ref` the `<session>:<line>` printed for `wrong`. */
   function shownFirings() {
     const lines = ok(learn('show', 'L1')).split('\n');
     const heading = lines.findIndex(l => /^ {2}firings, .*, each as `wrong` takes it:$/.test(l));
@@ -189,8 +192,7 @@ test('the learning loop end to end, through the real commands and the installed 
     return lines.slice(heading + 1).filter(l => /^ {4}\S/.test(l)).map(l => {
       const [ref, action, at, marked] = l.trim().split('  ');
       assert.match(at, /^at \d{4}-\d\d-\d\dT[\d:.]+Z$/, l);
-      const colon = ref.lastIndexOf(':');
-      return { sessionId: ref.slice(0, colon), line: Number(ref.slice(colon + 1)), action, marked: marked === 'marked wrong' };
+      return { ref, action, marked: marked === 'marked wrong' };
     });
   }
 
@@ -201,9 +203,31 @@ test('the learning loop end to end, through the real commands and the installed 
     return gate === undefined ? null : { fired: gate.fired, rerouted: gate.rerouted };
   }
 
+  // A failed subtest does not stop the ones after it, so each step after a
+  // failed one skips itself instead of running on the state that step left.
+  // Decided as the step starts: `t.test` can resolve before its subtest
+  // has run, so a decision made when the next step is queued is too early.
+  let failedStep = null;
+  const step = (name, fn) => t.test(name, async st => {
+    if (failedStep !== null) {
+      st.skip(`step ${failedStep} failed`);
+      return;
+    }
+    try {
+      await fn();
+    } catch (error) {
+      failedStep = name.slice(0, name.indexOf('.'));
+      throw error;
+    }
+  });
+
+  /** The event types the log holds for a session, as the log's own reader
+   * reads them. */
+  const recorded = id => readEvents(d, id).events.map(e => e.type);
+
   let beforeTree, signature, sha256;
 
-  await t.test('1. a repository on a feature branch with one commit', () => {
+  await step('1. a repository on a feature branch with one commit', () => {
     assert.equal(git(d, 'rev-list', '--count', 'HEAD').trim(), '1');
     assert.equal(git(d, 'branch', '--show-current').trim(), 'chore/harness');
     assert.equal(status(d), '', 'fixture sanity: the tree is clean');
@@ -211,10 +235,10 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.deepEqual(Object.keys(beforeTree).sort(), ['.claude/settings.json', 'package.json', 'tsconfig.json']);
   });
 
-  await t.test('2. apply --yes installs the hooks; detect reports the gate, the log and integrity as a fresh install has them', () => {
+  await step('2. apply --yes installs the hooks; detect reports the gate, the log and integrity as a fresh install has them', () => {
     const out = ok(runResult(APPLY, d, '--yes'));
     for (const script of ['session-log.mjs', 'tool-gate.mjs', 'loop-watch.mjs', 'harness-log.mjs', 'harness-seal.mjs', 'harness-gates.mjs']) {
-      assert.match(out, new RegExp(`^wrote {6}\\.claude/scripts/${script.replace('.', '\\.')}$`, 'm'), script);
+      assert.match(out, new RegExp(`^wrote {6}\\.claude/scripts/${escapeRegExp(script)}$`, 'm'), script);
     }
     const checks = detect();
     assert.equal(checks['P5.toolgate'].state, 'declared');
@@ -231,7 +255,7 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.equal(status(d), '');
   });
 
-  await t.test('3. the log is off until enabled, and enabling it writes nothing in the repository', () => {
+  await step('3. the log is off until enabled, and enabling it writes nothing in the repository', () => {
     const installed = tree(d);
     assert.match(ok(log('status')), /^No log for this repository on this machine: .+ does not exist\.$/m);
     assert.match(ok(log('enable')), /^The session log is enabled for .+ on this machine\.$/m);
@@ -242,7 +266,7 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.deepEqual(tree(d), installed);
   });
 
-  await t.test('4. sessions: the same call fails the same way in two of them, and two are clean', async () => {
+  await step('4. sessions: the same call fails the same way in two of them, and two are clean', async () => {
     // The first session carries every event a session can send beside its
     // tool calls; the gate hook has nothing to say yet.
     const a = session('session-a');
@@ -276,12 +300,25 @@ test('the learning loop end to end, through the real commands and the installed 
       if (i === 1) await s.send('PostModelSwitch', { from_model: MODEL, to_model: 'claude-sonnet-5', source: 'command' });
       await s.end();
     }));
+    // Every event each session sent is recorded, in order, with the harness
+    // line a session start and a model switch add.
+    const tools = n => Array.from({ length: n }, () => ['PreToolUse', 'PostToolUse']).flat();
+    assert.deepEqual(recorded('session-a'), [
+      'SessionStart', 'harness', 'InstructionsLoaded', 'UserPromptSubmit', 'PreToolUse', 'PostToolUseFailure',
+      'PreToolUse', 'PermissionRequest', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact', 'Stop', 'SessionEnd',
+    ]);
+    assert.deepEqual(recorded('session-b'), [
+      'SessionStart', 'harness', 'UserPromptSubmit', 'PreToolUse', 'PostToolUseFailure', 'PermissionDenied',
+      'PreToolUse', 'PostToolUse', 'StopFailure', 'UserPromptSubmit', 'Stop', 'SessionEnd',
+    ]);
+    assert.deepEqual(recorded('session-c'), ['SessionStart', 'harness', 'UserPromptSubmit', ...tools(CLEAN_CALLS_PER_SESSION), 'Stop', 'SessionEnd']);
+    assert.deepEqual(recorded('session-d'), ['SessionStart', 'harness', 'UserPromptSubmit', ...tools(CLEAN_CALLS_PER_SESSION), 'PostModelSwitch', 'harness', 'Stop', 'SessionEnd']);
     // The clean sessions' starts sealed the two before them; they wait for
     // the next session start.
     assert.match(ok(log('status')), /^ {2}sessions: 4.*; sealed: 2, with events not yet sealed: 2$/m);
   });
 
-  await t.test('5. log report shows one recurrence over two sessions, and learn candidates lists it, unlabelled', () => {
+  await step('5. log report shows one recurrence over two sessions, and learn candidates lists it, unlabelled', () => {
     const report = JSON.parse(ok(log('report', '--json')));
     const recurrences = report.groups.flatMap(g => g.recurrences);
     assert.equal(recurrences.length, 1, JSON.stringify(report.groups));
@@ -305,7 +342,7 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.match(candidates, /^RECURRENCES DRAFTED BEFORE, .*\n {2}none found$/m);
   });
 
-  await t.test('6. the owner names the failure in docs/harness/FAILURES.md, and log report shows the kind', () => {
+  await step('6. the owner names the failure in docs/harness/FAILURES.md, and log report shows the kind', () => {
     // The test stands in for the owner, writing the entry the scaffold's
     // FORMAT describes below its comment.
     appendFileSync(join(d, 'docs/harness/FAILURES.md'), `\n## F1 — The tests are started in watch mode\n- signatures: ${signature}\n`);
@@ -314,7 +351,7 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.deepEqual(JSON.parse(ok(log('report', '--json'))).groups[0].recurrences[0].failureKinds, ['F1']);
   });
 
-  await t.test('7. evidence shows both calls; a draft from a file replays to a pass and goes on trial at observe; git status is unchanged', () => {
+  await step('7. evidence shows both calls; a draft from a file replays to a pass and goes on trial at observe; git status is unchanged', () => {
     const evidence = ok(learn('evidence', signature));
     const lines = evidence.split('\n').map(l => l.trim());
     const begin = lines.findIndex(l => l.startsWith('BEGIN RECORDED DATA '));
@@ -359,16 +396,16 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.deepEqual(localGateIds(), ['L1']);
   });
 
-  await t.test('8. on trial, the mistake is allowed and recorded as one firing', async () => {
+  await step('8. on trial, the mistake is allowed and recorded as one firing', async () => {
     const decisions = await mistakeThenFix('session-e');
     assert.equal(decisions.mistake, null, 'observe blocks nothing and tells nobody');
     assert.equal(decisions.fix, null);
     assert.deepEqual(reportedFirings(), { fired: { observe: 1, warn: 0, block: 0 }, rerouted: 0 });
     assert.match(ok(learn('show', 'L1')), /^ {2}stats: fired 1 time in 1 session;/m);
-    assert.deepEqual(shownFirings().map(f => [f.sessionId, f.action]), [['session-e', 'observe']]);
+    assert.deepEqual(shownFirings().map(f => [parseFiringRef(f.ref).sessionId, f.action]), [['session-e', 'observe']]);
   });
 
-  await t.test('9. a second draft for the same recurrence is refused', () => {
+  await step('9. a second draft for the same recurrence is refused', () => {
     const path = join(draftDir, 'second.json');
     writeFileSync(path, JSON.stringify({
       signature,
@@ -383,7 +420,7 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.deepEqual(dataSnapshot(), data, 'the refused draft stored nothing');
   });
 
-  await t.test('10. approve is refused without a terminal; through the library, at a terminal, L1 is active at block', () => {
+  await step('10. approve is refused without a terminal; through the library, at a terminal, L1 is active at block', () => {
     const data = dataSnapshot();
     refusedForTerminal(learn('approve', 'L1', '--sha256', sha256, '--action', 'block'));
     assert.deepEqual(dataSnapshot(), data, 'the refused approval wrote nothing');
@@ -397,7 +434,7 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.match(list, /^ {2}local gate entries above observe that no approval grants: none$/m, list);
   });
 
-  await t.test('11. promoted, the gate hook denies the mistake with its message and allows the fix', async () => {
+  await step('11. promoted, the gate hook denies the mistake with its message and allows the fix', async () => {
     const s = session('session-f');
     await s.start();
     await s.send('UserPromptSubmit', { prompt: 'run the tests' });
@@ -409,7 +446,7 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.deepEqual(reportedFirings(), { fired: { observe: 1, warn: 0, block: 1 }, rerouted: 1 });
   });
 
-  await t.test('12. tick repairs nothing legitimate, and removes a local gate the ledger does not vouch for', () => {
+  await step('12. tick repairs nothing legitimate, and removes a local gate the ledger does not vouch for', async () => {
     const gates = readFileSync(localGatesPath, 'utf8');
     const quiet = ok(learn('tick'));
     for (const line of [
@@ -426,14 +463,20 @@ test('the learning loop end to end, through the real commands and the installed 
     file.gates.push({ id: 'L7', tool: 'Bash', field: 'command', match: { kind: 'literal', value: 'git push' }, action: 'block', message: 'Planted.' });
     writeFileSync(localGatesPath, JSON.stringify(file));
     assert.match(ok(learn('list')), /^ {2}local gate entries above observe that no approval grants: L7$/m);
+    // A session running meanwhile: the planted gate is live until the tick.
+    const s = session('session-tick');
+    await s.start();
+    assert.deepEqual(await s.bash('git push'), { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'kh-harness gate L7: Planted.' } });
     const repaired = ok(learn('tick'));
     assert.match(repaired, /^ {2}local gates no approval granted, removed: L7$/m, repaired);
     assert.match(repaired, /^NOT DONE\n {2}nothing$/m, repaired);
     assert.deepEqual(localGateIds(), ['L1']);
     assert.deepEqual(JSON.parse(readFileSync(localGatesPath, 'utf8')).gates, JSON.parse(gates).gates, 'the approved gate remains as it was');
+    assert.equal(await s.bash('git push'), null, 'and the planted gate no longer acts');
+    await s.end();
   });
 
-  await t.test('13. land: the dry run shows the diffs of the two files it writes; --yes needs a terminal; landed, exactly those two and the manifest change', () => {
+  await step('13. land: the dry run shows the diffs of the two files it writes; --yes needs a terminal; landed, exactly those two and the manifest change', () => {
     // The dry run shows the diffs `apply` shows: the two files the land
     // writes. The manifest is the kit's record of its writes, which `apply`
     // shows no diff of either.
@@ -446,7 +489,13 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.match(plan, /^\+ +"action": "block"$/m, plan);
     assert.match(plan, /^Dry run — nothing written\./m);
     assert.equal(status(d), '');
+    // A refused --yes still first brings the local gate set into line with
+    // the ledger, as every learn step that writes does; here there is
+    // nothing to repair, so the data directory is unchanged byte for byte.
+    // This is not a claim that a refusal never repairs.
+    const beforeLand = dataSnapshot();
     refusedForTerminal(learn('land', 'L1', '--yes'));
+    assert.deepEqual(dataSnapshot(), beforeLand, 'the refused land wrote nothing to the data directory');
     assert.equal(status(d), '');
     // A library call: landing writes the repository, which takes a person at
     // a terminal, which no child process has.
@@ -466,7 +515,7 @@ test('the learning loop end to end, through the real commands and the installed 
     owner(d, 'commit', '-q', '-m', 'land L1');
   });
 
-  await t.test('14. with the gate committed, the mistake is still denied, and the local gate file no longer carries it', async () => {
+  await step('14. with the gate committed, the mistake is still denied, and the local gate file no longer carries it', async () => {
     assert.deepEqual(localGateIds(), []);
     const decisions = await mistakeThenFix('session-g');
     assert.deepEqual(decisions.mistake, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `kh-harness gate L1: ${GATE_MESSAGE}` } });
@@ -474,20 +523,20 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.deepEqual(reportedFirings(), { fired: { observe: 1, warn: 0, block: 2 }, rerouted: 2 });
   });
 
-  await t.test('15. two wrong marks suspend the gate on this machine; the repository is untouched and the hook allows the call', async () => {
+  await step('15. two wrong marks suspend the gate on this machine; the repository is untouched and the hook allows the call', async () => {
     // The owner reads the two blocks off `learn show`, named as `wrong`
     // takes them.
     const blocks = shownFirings().filter(f => f.action === 'block');
-    assert.deepEqual(blocks.map(f => [f.sessionId, f.marked]), [['session-f', false], ['session-g', false]]);
+    assert.deepEqual(blocks.map(f => [parseFiringRef(f.ref).sessionId, f.marked]), [['session-f', false], ['session-g', false]]);
     const data = dataSnapshot();
-    refusedForTerminal(learn('wrong', `${blocks[0].sessionId}:${blocks[0].line}`));
+    refusedForTerminal(learn('wrong', blocks[0].ref));
     assert.deepEqual(dataSnapshot(), data, 'the refused mark wrote nothing');
     // Library calls: a wrong mark weakens a gate, which takes a person at a
     // terminal, which no child process has.
-    const first = markWrong(d, blocks[0], { interactive: AT_TERMINAL });
+    const first = markWrong(d, parseFiringRef(blocks[0].ref), { interactive: AT_TERMINAL });
     assert.equal(first.ok, true, first.error);
     assert.deepEqual([first.wrong, first.status], [1, 'landed']);
-    const second = markWrong(d, blocks[1], { interactive: AT_TERMINAL });
+    const second = markWrong(d, parseFiringRef(blocks[1].ref), { interactive: AT_TERMINAL });
     assert.equal(second.ok, true, second.error);
     assert.deepEqual([second.wrong, second.status], [2, 'suspended']);
     assert.equal(status(d), '', 'a suspension is this machine\'s alone');
@@ -502,7 +551,7 @@ test('the learning loop end to end, through the real commands and the installed 
     await s.end();
   });
 
-  await t.test('16. revert takes the gate out of the repository and retires the learning', () => {
+  await step('16. revert takes the gate out of the repository and retires the learning', () => {
     const plan = ok(learn('revert', 'L1'));
     assert.deepEqual(plan.split('\n').filter(l => /^--- \S+ {2}\[/.test(l)), [
       '--- .claude/kh-harness/gates.json  [P5.toolgate]',
@@ -511,7 +560,13 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.match(plan, /^- +"value": "npm test -- --watch"$/m, plan);
     assert.match(plan, /^Dry run — nothing written\./m);
     assert.equal(status(d), '');
+    // A refused --yes still first brings the local gate set into line with
+    // the ledger, as every learn step that writes does; here there is
+    // nothing to repair, so the data directory is unchanged byte for byte.
+    // This is not a claim that a refusal never repairs.
+    const beforeRevert = dataSnapshot();
     refusedForTerminal(learn('revert', 'L1', '--yes'));
+    assert.deepEqual(dataSnapshot(), beforeRevert, 'the refused revert wrote nothing to the data directory');
     assert.equal(status(d), '');
     // A library call: reverting writes the repository, which takes a person
     // at a terminal, which no child process has.
@@ -532,9 +587,9 @@ test('the learning loop end to end, through the real commands and the installed 
     owner(d, 'commit', '-q', '-m', 'revert L1');
   });
 
-  await t.test('17. uninstall leaves the repository as it was, but for the owner\'s failure taxonomy, and keeps the log', () => {
+  await step('17. uninstall leaves the repository as it was, but for the owner\'s failure taxonomy, and keeps the log', () => {
     const out = ok(runResult(UNINSTALL, d, '--yes'));
-    assert.match(out, /docs\/harness\/FAILURES\.md/, 'it says what it kept');
+    assert.deepEqual(linesAfter(out, 'Kept:'), ['docs/harness/FAILURES.md (ours-modified)'], out);
     // Compared with step 1, whose commit is still the first: the working
     // tree file by file, and what git finds changed in it since that
     // commit, the four commits the owner made here aside. The difference is
@@ -556,16 +611,16 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.equal(git(d, 'ls-files', '--others'), '', 'nothing untracked');
 
     assert.ok(existsSync(dataDir), 'the log is kept');
-    assert.match(ok(log('status')), /^ {2}sessions: 8.*; sealed: 7, with events not yet sealed: 1$/m);
+    assert.match(ok(log('status')), /^ {2}sessions: 9.*; sealed: 8, with events not yet sealed: 1$/m);
     assert.match(ok(learn('list')), /^ {2}L1 {2}retired /m, 'and its ledger');
   });
 
-  await t.test('18. log purge lists what it would remove, and with --yes removes the data directory', () => {
+  await step('18. log purge lists what it would remove, and with --yes removes the data directory', () => {
     const data = dataSnapshot();
     const dry = ok(log('purge'));
     assert.ok(dry.startsWith(`Would remove ${dataDir} (`), dry);
-    assert.match(dry, /, 8 sessions\):$/m, dry);
-    for (const entry of ['ledger.jsonl', 'learnings/', 'sessions/', 'gates.local.json', 'index.jsonl']) assert.match(dry, new RegExp(`^ {2}${entry.replace('.', '\\.')} {2}`, 'm'), entry);
+    assert.match(dry, /, 9 sessions\):$/m, dry);
+    for (const entry of ['ledger.jsonl', 'learnings/', 'sessions/', 'gates.local.json', 'index.jsonl']) assert.match(dry, new RegExp(`^ {2}${escapeRegExp(entry)} {2}`, 'm'), entry);
     assert.deepEqual(dataSnapshot(), data, 'the dry run removed nothing');
     assert.equal(ok(log('purge', '--yes')), `Removed ${dataDir}. The log for this repository on this machine is gone, and disabled.\n`);
     assert.equal(existsSync(dataDir), false);

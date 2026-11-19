@@ -23,7 +23,7 @@ import {
   draftFor, drafted, FIX_GATE, git, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, READ_GATE, repo, signatureOf, tempDir,
   trialRepo, useId, writeLocalGates,
 } from './learn-fixtures.mjs';
-import { DATA_MARKERS, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, renderRepositoryDone, SHOWN_FIRINGS, TERMINAL_ONLY } from './learn-cli.mjs';
+import { DATA_MARKERS, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, renderRepositoryDone, renderShow, SHOWN_FIRINGS, TERMINAL_ONLY } from './learn-cli.mjs';
 import { landLearning, revertLearning } from './learn-land.mjs';
 import { FAILURE_EVENT, SUCCESS_EVENT } from './recurrence.mjs';
 import { listLearnings, runTrial } from './learn-lib.mjs';
@@ -406,16 +406,27 @@ test('show prints the gate, its hash, the replay and the stats', () => {
   assert.ok(text.includes(REROUTED_MEANS), 'what rerouted counts is stated beside it');
   const view = json(root, 'show', 'L1');
   assert.equal(view.gateSha256, learning.sha256);
-  const { latestFirings, ...counts } = view.stats;
+  const { listedFirings, ...counts } = view.stats;
   assert.deepEqual(counts, { firings: 1, sessions: 1, rerouted: 0, wrong: 0, wrongTotal: 0, sessionsUnreadable: 0 });
-  assert.deepEqual(latestFirings.map(f => [f.sessionId, f.action]), [['fire-a', 'observe']]);
+  assert.deepEqual(listedFirings.map(f => [f.sessionId, f.action]), [['fire-a', 'observe']]);
+  assert.match(text, /^ {2}firings, all 1, the latest last, each as `wrong` takes it:$/m, text);
+  assert.doesNotMatch(text, /not listed/);
   assert.equal(view.replay.verdict, 'pass');
   const missing = runLearn(root, 'show', 'L9');
   assert.equal(missing.status, 2);
   assert.match(missing.stderr, /L9: no such learning/);
 });
 
-test('show names the latest firings as wrong takes them, the latest last, and says which are marked wrong', () => {
+/** `show`'s text and its firing lines, the lines after the heading that
+ * starts with `heading`. */
+function shownFiringLines(text, heading) {
+  const lines = text.split('\n');
+  const at = lines.findIndex(l => l.startsWith(`  firings, ${heading}`));
+  assert.ok(at !== -1, text);
+  return lines.slice(at + 1).filter(l => /^ {4}\S/.test(l));
+}
+
+test('show names the latest firings as wrong takes them, the latest last, says which are marked wrong and how many more there are', () => {
   const { root, gate } = promotedRepo('block');
   const refs = Array.from({ length: SHOWN_FIRINGS + 2 }, (_, i) => fired(root, `fire-${String(i).padStart(2, '0')}`, gate));
   const latest = refs.slice(-SHOWN_FIRINGS);
@@ -423,26 +434,64 @@ test('show names the latest firings as wrong takes them, the latest last, and sa
   assert.equal(marked.ok, true, marked.error);
 
   const text = ok(runLearn(root, 'show', 'L1'));
-  const lines = text.split('\n');
-  const heading = lines.indexOf(`  firings, the latest ${SHOWN_FIRINGS} of ${refs.length}, the latest last, each as \`wrong\` takes it:`);
-  assert.ok(heading !== -1, text);
-  const listed = lines.slice(heading + 1, heading + 1 + SHOWN_FIRINGS);
+  const listed = shownFiringLines(text, `the latest ${SHOWN_FIRINGS} of ${refs.length}, the latest last, each as \`wrong\` takes it:`);
   assert.deepEqual(listed.map(l => l.trim().split(/ {2}/)[0]), latest.map(r => `${r.sessionId}:${r.line}`), text);
   assert.ok(listed.every(l => / {2}block {2}at \d{4}-\d\d-\d\dT[\d:.]+Z/.test(l)), text);
   assert.deepEqual(listed.map(l => l.endsWith('  marked wrong')), latest.map((_, i) => i === 0), text);
+  assert.ok(text.split('\n').includes('  2 earlier firings not listed: `show L1 --firings` lists every one.'), text);
 
   const view = json(root, 'show', 'L1');
-  assert.deepEqual(view.stats.latestFirings.map(f => ({ sessionId: f.sessionId, line: f.line, action: f.action, markedWrong: f.markedWrong })),
+  assert.deepEqual(view.stats.listedFirings.map(f => ({ sessionId: f.sessionId, line: f.line, action: f.action, markedWrong: f.markedWrong })),
     latest.map((r, i) => ({ ...r, action: 'block', markedWrong: i === 0 })));
   assert.equal(view.stats.firings, refs.length);
   assert.equal(SHOWN_FIRINGS, 10);
   assert.match(learnHelp('show').replace(/\s+/g, ' '), /the latest ten each named <session>:<line>, as `wrong` takes it/, 'the help says how many');
 });
 
+test('show --firings lists every firing, in the same form, with the count', () => {
+  const { root, gate } = promotedRepo('block');
+  const refs = Array.from({ length: SHOWN_FIRINGS + 2 }, (_, i) => fired(root, `fire-${String(i).padStart(2, '0')}`, gate));
+  const text = ok(runLearn(root, 'show', 'L1', '--firings'));
+  const listed = shownFiringLines(text, `all ${refs.length}, the latest last, each as \`wrong\` takes it:`);
+  assert.deepEqual(listed.map(l => l.trim().split(/ {2}/)[0]), refs.map(r => `${r.sessionId}:${r.line}`), text);
+  assert.doesNotMatch(text, /not listed/);
+  assert.equal(json(root, 'show', 'L1', '--firings').stats.listedFirings.length, refs.length);
+  assert.equal(json(root, 'show', 'L1').stats.listedFirings.length, SHOWN_FIRINGS);
+  assert.match(learnHelp('show'), /show <id> \[--firings\] \[--json\]/);
+  const elsewhere = runLearn(root, 'list', '--firings');
+  assert.equal(elsewhere.status, 0, elsewhere.stderr);
+  assert.match(elsewhere.stderr, /--firings applies only to show; ignored\./);
+});
+
+test('show says a firing recorded with no time has none, in words', () => {
+  const { root, gate } = promotedRepo('block');
+  const { line } = fired(root, 'timed', gate);
+  // A line the writer did not stamp, as a hand edit or an older writer
+  // leaves it: the firing still counts and is named.
+  const path = join(repoDataDir(root), 'sessions', 's-untimed.jsonl');
+  writeFileSync(path, JSON.stringify({ type: 'gate_firing', gateId: 'L1', gateSha256: gateSha256(gate), action: 'block', tool: 'Bash', session_id: 'untimed' }) + '\n');
+  const listed = shownFiringLines(ok(runLearn(root, 'show', 'L1')), 'all 2, the latest last');
+  assert.deepEqual(listed.map(l => l.trim()), ['untimed:1  block  no time recorded', listed[1].trim()]);
+  assert.match(listed[1], new RegExp(`^ {4}timed:${line} {2}block {2}at \\d{4}-`));
+});
+
+test('show escapes a session id it cannot print as it is', () => {
+  const { root, gate } = promotedRepo('block');
+  fired(root, 'fire-a', gate);
+  const view = json(root, 'show', 'L1');
+  // No session id the log accepts needs escaping; the line is still built
+  // as everything else here is, so a view read some other way cannot carry
+  // a control character or a look-alike to the terminal.
+  view.stats.listedFirings[0].sessionId = 'evil\u202e\u001b[2Jid';
+  const text = renderShow(view);
+  assert.match(text, PRINTABLE);
+  assert.ok(text.includes('    "evil\\u{202E}\\u001b[2Jid":1  block  at '), text);
+});
+
 test('show lists no firing for a gate that never fired', () => {
   const { root } = trialRepo();
   assert.doesNotMatch(ok(runLearn(root, 'show', 'L1')), /each as `wrong` takes it/);
-  assert.deepEqual(json(root, 'show', 'L1').stats.latestFirings, []);
+  assert.deepEqual(json(root, 'show', 'L1').stats.listedFirings, []);
 });
 
 test('list shows every learning with its status and what the ledger says beside them', () => {

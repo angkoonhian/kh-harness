@@ -343,7 +343,7 @@ const LEARN_SECTIONS = [
   { name: 'draft', synopsis: 'draft --from <file> [--redraft]', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate, for `replay` to try again. A draft for a recurrence that `candidates` lists apart, as rejected before, is refused unless --redraft is given, and the ledger records a redraft as one. Which recurrences a rejection covers follows the failure kinds as docs/harness/FAILURES.md labels them now. Whether to draft it again is the owner's decision. The file is untrusted: nothing in it is printed back." },
   { name: 'replay', synopsis: 'replay <id>', text: 'Replay a candidate\'s gate against the log again, as `draft` does, once the log holds more history: a pass puts it on trial at `observe`, a fail rejects it, and one still not checkable stays a candidate. Only a candidate is replayed.' },
   { name: 'list', synopsis: 'list [--json]', text: 'Every learning with its status and whether the ledger vouches for it, the approvals the ledger records, and every local gate the next step that writes repairs or removes. A broken ledger is said first. Reads only.' },
-  { name: 'show', synopsis: 'show <id> [--json]', text: "One learning: its gate as JSON with every code point outside printable ASCII written as \\u{…}, the gate's sha256, the replay result and what the log records of its firings, the latest ten each named <session>:<line>, as `wrong` takes it. Reads only." },
+  { name: 'show', synopsis: 'show <id> [--firings] [--json]', text: "One learning: its gate as JSON with every code point outside printable ASCII written as \\u{…}, the gate's sha256, the replay result and what the log records of its firings, with the latest ten each named <session>:<line>, as `wrong` takes it, and how many earlier ones there are; with --firings, every one. Reads only." },
   { name: 'approve', terminal: true, synopsis: 'approve <id> --sha256 <hash> --action <warn|block>', text: "Promote a learning on trial to warn or block on this machine. <hash> must be the gate's sha256 as `show` prints it; the same view is printed first, so the hash approved sits beside the text it covers." },
   { name: 'wrong', terminal: true, synopsis: 'wrong <session>:<line>', text: 'Mark one recorded gate firing wrong, named as `show` lists it. Two marks since a promotion or landing take the gate back to observe on this machine.' },
   { name: 'demote', terminal: true, synopsis: 'demote <id>', text: "Take a promoted or landed learning's gate back to observe; a committed gate is suspended on this machine instead, until `revert` takes the gate out of the repository and retires the learning." },
@@ -416,6 +416,9 @@ FLAGS
            land and revert only: waive the dirty-tree or the default-branch
            refusal, as for \`apply\`; a dry run then no longer lists it
            among what --yes would be refused for.
+  --firings
+           show only: list every firing of the learning's gate, not only the
+           latest ten.
   --redraft
            draft only: draft a recurrence again although the replay rejected
            an earlier learning for it or for its failure kind; the owner's

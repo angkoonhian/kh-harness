@@ -92,7 +92,7 @@ const SUBCOMMANDS = {
     print(listView(listed), renderList);
   },
   'show'(root, command) {
-    const view = showView(root, command.args[0]);
+    const view = showView(root, command.args[0], { allFirings: command.firings });
     if (view.error !== undefined) fail(2, failureLine('show', view));
     print(view, renderShow);
   },

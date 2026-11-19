@@ -1047,7 +1047,7 @@ function learningStatsUnguarded(root, id) {
   const view = readLedgerView(root);
   const unrecorded = unrecordedReason(read.learning, view);
   if (unrecorded !== null) return { error: unrecorded };
-  const { gates, sessionsUnreadable } = gateStats(root, view.entries, new Map([[id, read.learning.sha256]]));
+  const { gates, sessionsUnreadable } = gateStats(root, view.entries, new Map([[id, read.learning.sha256]]), { places: true });
   const { firings, sessions, rerouted, places, wrong } = gates.get(id);
   const marked = new Set(view.entries
     .filter(e => e?.kind === 'wrong' && e.learningId === id && isPlainObject(e.firing))
