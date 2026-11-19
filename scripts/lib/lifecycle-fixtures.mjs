@@ -1,11 +1,12 @@
 // scripts/lib/lifecycle-fixtures.mjs
 //
 // NOT A TEST (named `*-fixtures.mjs`, so `npm test`'s glob skips it): the
-// repositories and CLI runners the three lifecycle suites share. Split out
-// in audit Tier 4 so the 1,487-line `lifecycle.test.mjs`, which bounded the
-// suite's wall time on its own, could become three files that run in
-// parallel.
-import { execFileSync } from 'node:child_process';
+// repositories, CLI runners and hook runner the lifecycle suites share.
+// Split out in audit Tier 4 so the 1,487-line `lifecycle.test.mjs`, which
+// bounded the suite's wall time on its own, could become three files that
+// run in parallel.
+import assert from 'node:assert/strict';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -15,6 +16,8 @@ import { SESSION_LOG_PATH } from './propose.mjs';
 export const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
 export const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
 export const UNINSTALL = resolve(import.meta.dirname, '..', 'uninstall.mjs');
+export const LOG = resolve(import.meta.dirname, '..', 'log.mjs');
+export const LEARN = resolve(import.meta.dirname, '..', 'learn.mjs');
 
 /**
  * Points `KH_DATA_DIR` at a fresh directory for this test process and
@@ -35,6 +38,33 @@ export const git = (d, ...a) => execFileSync('git', ['-C', d, ...a], { encoding:
 /** Runs a kit CLI and returns its stdout. Its stderr is captured, not
  * printed: a run that fails carries it on the thrown error's `stderr`. */
 export const run = (script, d, ...a) => execFileSync(process.execPath, [script, d, ...a], { encoding: 'utf8', stdio: 'pipe' });
+/** Runs a kit CLI and returns `{ status, stdout, stderr }`, whatever its
+ * exit code. Its standard streams are pipes, never a terminal. */
+export const runResult = (script, d, ...a) => spawnSync(process.execPath, [script, d, ...a], { encoding: 'utf8' });
+
+/**
+ * Runs the hook `script` that `d`'s settings register on `event`, from the
+ * path the registration names, with `payload` on stdin, as Claude Code runs
+ * a hook: in the project directory, with `CLAUDE_PROJECT_DIR` set to it.
+ * Resolves to `{ status, stdout, stderr }`, so the hooks Claude Code runs
+ * on one event in parallel can be run so here; fails the test when no
+ * registration on `event` names `script`.
+ */
+export function runRegisteredHook(d, event, script, payload) {
+  const arg = `\${CLAUDE_PROJECT_DIR}/.claude/scripts/${script}`;
+  const registered = (settings(d).hooks?.[event] ?? []).flatMap(m => m.hooks ?? []).some(h => h.command === 'node' && h.args?.[0] === arg);
+  assert.ok(registered, `${script} is registered on ${event}`);
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [arg.replace('${CLAUDE_PROJECT_DIR}', d)], { cwd: d, env: { ...process.env, CLAUDE_PROJECT_DIR: d } });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', status => resolvePromise({ status, stdout, stderr }));
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
 export const settings = d => JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
 export const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/kh-harness.manifest.json'), 'utf8'));
 
