@@ -615,7 +615,11 @@ the scrub misses, and the cost figures are on
 - The deny rules match the text `learn.mjs` followed, after a space, by a
   subcommand word, in the Bash and PowerShell tools. A command that reaches
   the script another way, through a package script or with the subcommand
-  quoted, is not caught by them, and only the terminal check stops it. An
+  quoted, is not caught by them, and only the terminal check stops it. In
+  the kit's own repository, whose `package.json` defines `learn` and `log`
+  scripts, `npm run learn -- approve …` and `npm run log -- purge --yes`
+  are such commands: neither holds the text `learn.mjs` or `log.mjs`, so
+  no deny rule matches it, and the terminal check is what refuses it. An
   unrelated command that holds that text, such as a commit message, is
   declined too.
 - The deny rules cover `land` and `revert` whole, so Claude Code also
