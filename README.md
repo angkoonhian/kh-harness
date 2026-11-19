@@ -298,6 +298,13 @@ Outside your repository, once the hooks are installed:
 
     npm test
 
+**`npm test` needs Node 22.1 or later**, a step above the Node 22 the kit
+itself needs: it runs the latency budget tests after the rest of the suite,
+alone, and leaves them out of the first run with `--test-skip-pattern`,
+which Node added in 22.1.0. The commands and the hooks the kit installs run
+on Node 22.0. `scripts/lib/latency-phase.test.mjs` holds this sentence to
+the flags the script uses.
+
 **The skill reads its own `references/` only under a real plugin install**
 (`claude plugin marketplace add ./` + `claude plugin install
 kh-harness@kh-harness-local`), confirmed by running it end to end. If you
