@@ -568,9 +568,58 @@ function reinjectProposal({ kitVersion, harness, check }) {
   }];
 }
 
+const KITSKEW_ID = 'P0.kitskew';
+
+/** What this kit generates at each path, from every generator but the skew
+ * check's own, called with the context `buildProposals` gives them. The
+ * first proposal for a path is kept: generators that share a file produce
+ * it identically (see `redactAssetProposal`). */
+function currentKitFiles({ kitVersion, harness, root, stack, checks, files, manifest }) {
+  const byPath = new Map();
+  for (const [id, gen] of Object.entries(GENERATORS)) {
+    if (id === KITSKEW_ID) continue;
+    const check = checks.find(c => c.id === id);
+    for (const p of gen({ kitVersion, harness, root, stack, checks, files, manifest, check })) {
+      if (p.kind === 'file' && !byPath.has(p.path)) byPath.set(p.path, p);
+    }
+  }
+  return byPath;
+}
+
+/** "installed kit 0.1.0, current kit 0.2.0", or the one version when they
+ * agree. */
+function kitVersions(installed, current) {
+  return installed === current ? `kit ${current}` : `installed kit ${installed}, current kit ${current}`;
+}
+
+/**
+ * Every file the manifest records, against what this kit generates for it
+ * today. `updates` are proposals for the files `recordedFileStatus` calls
+ * `update`; `kept` names the files that are not the kit's to write, with
+ * the status that says why; `unproduced` the recorded paths no generator
+ * produces for this repository any more, which are left alone.
+ */
+export function kitSkew({ kitVersion, harness, root, stack, checks, files, manifest }) {
+  const produced = currentKitFiles({ kitVersion, harness, root, stack, checks, files, manifest });
+  const versions = kitVersions(manifest.kitVersion, kitVersion);
+  const skew = { versions, current: [], updates: [], kept: [], unproduced: [] };
+  for (const entry of manifest.files) {
+    const p = produced.get(entry.path);
+    if (!p) {
+      skew.unproduced.push(entry.path);
+      continue;
+    }
+    const status = recordedFileStatus(root, manifest, entry, p.contents);
+    if (status === 'current') skew.current.push(entry.path);
+    else if (status === 'update') skew.updates.push({ ...p, reason: versions });
+    else skew.kept.push({ path: entry.path, why: status });
+  }
+  return skew;
+}
+
 /** Generators receive the full detection context and return proposals.
- * { kitVersion, harness, root, stack, checks, files, check } are available
- * to all generators — `check` is THIS generator's own entry from `checks`
+ * { kitVersion, harness, root, stack, checks, files, manifest, check } are
+ * available to all generators — `check` is THIS generator's own entry from `checks`
  * (buildProposals passes it alongside the full array), carrying the exact
  * `evidence` detect's own report already printed for it (see
  * `hookRegistrationReason`, above, which is why a settings-hook proposal's
@@ -611,6 +660,9 @@ const GENERATORS = {
   'P1.pathrules': pathRuleProposal,
   'P3.rules': rulesScaffoldProposal,
   'P3.reinject': reinjectProposal,
+  // Each update goes through `buildProposals`' recorded-path branch like any
+  // other proposal for a recorded file.
+  [KITSKEW_ID]: ctx => kitSkew(ctx).updates,
   // No entry for 'P3.intent', deliberately and permanently: like steps 6
   // and 7a, docs/INTENT.md is written by the skill after reading the
   // repository and gated on its full content (propose.test.mjs's "SECRET:
@@ -644,12 +696,13 @@ const GENERATORS = {
  * asset proposed exactly once per run regardless of how many generators
  * want it.
  *
- * A path the manifest already records is NOT simply skipped. Since the
- * upgrade-skew fix (see the comment inside the loop), a recorded file that
- * is still what we wrote (line endings aside), still carries our stamp, and
- * whose generated content has changed is re-proposed as an UPDATE —
- * exactly once per run. A recorded file the user edited or deleted is
- * still never re-proposed: their edit or deletion is a decision, not a
+ * A path the manifest already records is NOT simply skipped. A recorded
+ * file that is still what we wrote (line endings aside), still carries our
+ * stamp, and whose generated content has changed is re-proposed as an
+ * UPDATE — exactly once per run, and whatever its owning check's state,
+ * because `P0.kitskew`'s generator proposes every such file. A recorded
+ * file the user edited or deleted is still never re-proposed: their edit
+ * or deletion is a decision, not a
  * gap to re-fill ("a file already in the manifest is not re-proposed" in
  * propose.test.mjs pins the deleted case; the UPGRADE tests pin the rest).
  */
@@ -664,6 +717,24 @@ function onDiskCarriesStamp(root, relPath) {
   }
 }
 
+/**
+ * Where a recorded file stands against `contents`, what the kit generates
+ * for it now. Only `update` permits a write, and it needs all three: the
+ * file is still what we wrote, line endings aside (`edited` covers a
+ * user's edit and a deletion); the generated content differs (`current`
+ * otherwise, so `current` is also true of the bytes on disk); and the bytes
+ * on disk carry the kit's stamp, because the manifest is a file in the
+ * repository and a forged entry naming a user's own file with its real
+ * hash also classifies `ours-unmodified` (`unstamped`; uninstall-lib.mjs's
+ * `carriesOurStamp` refuses the same shape).
+ */
+function recordedFileStatus(root, manifest, entry, contents) {
+  if (classify(root, manifest, entry.path) !== 'ours-unmodified') return 'edited';
+  if (sha256(contents) === entry.sha256) return 'current';
+  if (!onDiskCarriesStamp(root, entry.path)) return 'unstamped';
+  return 'update';
+}
+
 export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files, generators = {} }) {
   const registry = { ...GENERATORS, ...generators };
   const recorded = new Map((manifest?.files ?? []).map(f => [f.path, f]));
@@ -674,38 +745,16 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
     if (c.state !== 'absent' || c.decidable === false) continue;
     const gen = registry[c.id];
     if (!gen) continue;
-    for (const p of gen({ kitVersion, harness, root, stack, checks, files, check: c })) {
+    for (const p of gen({ kitVersion, harness, root, stack, checks, files, manifest, check: c })) {
       if (p.kind === 'file' && alreadyWritten.has(p.path)) {
-        // UPGRADE SKEW (found by the Phase 3 trial on a real repository): a
-        // prior run's harness-redact.mjs was recorded in the manifest, so
-        // the dedupe kept the 0.1.0 copy while installing a hook that
-        // imports `parseRules` from it — a hook that died at import on
-        // every prompt. The original harness-kit design's manifest table
-        // ("Behaviour on re-run": matches manifest → "ours and unmodified —
-        // may be updated") always allowed this; apply-lib.mjs's
-        // `applyFileProposal` has implemented the update branch all along.
-        // Only this dedupe never offered it anything. So: a recorded path is
-        // re-proposed when, and only when, (a) `root` is known, (b)
-        // `classify` says the on-disk file is still identical, line endings aside, to what
-        // we wrote — a user's edit, or a deletion, keeps the old rule — (c)
-        // the on-disk bytes carry the kit's own stamp — whole-branch review,
-        // Important 2: the manifest is a file in the repository and a forged
-        // entry naming a user's real file with its real hash also classifies
-        // `ours-unmodified`; uninstall-lib.mjs refuses that exact shape via
-        // `carriesOurStamp`, and an UPDATE path that trusted the hash alone
-        // would be the write-side version of the hole uninstall closed — and
-        // (d) the generated content differs, so there is something to
-        // update. Once per run (review, Important 1): the first generator
-        // to want the stale asset gets the update; later ones in the same
-        // run see it in `recorded` no longer and in `alreadyWritten` still,
-        // so they skip — the "exactly once per run" promise in this
-        // function's docstring holds for updates as it does for new files.
-        // The `reason` says all of this, because it is printed at the gate.
+        // A recorded path is re-proposed, as an update, only when `root` is
+        // known and `recordedFileStatus` says `update`. Once per run: the
+        // first generator to want a stale file gets the update; later ones
+        // in the same run find it in `recorded` no longer and in
+        // `alreadyWritten` still, so they skip. The `reason` says why,
+        // because it is printed at the gate.
         const entry = recorded.get(p.path);
-        const upgradable = root && entry
-          && classify(root, manifest, p.path) === 'ours-unmodified'
-          && onDiskCarriesStamp(root, p.path)
-          && sha256(p.contents) !== entry.sha256;
+        const upgradable = root && entry && recordedFileStatus(root, manifest, entry, p.contents) === 'update';
         if (!upgradable) continue;
         recorded.delete(p.path);
         out.push({ ...p, checkId: c.id, reason: `update ${p.path} — unmodified since kh-harness wrote it, and the generated content has changed (${p.reason})` });

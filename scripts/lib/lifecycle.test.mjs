@@ -891,3 +891,46 @@ test('PHASE 3 LIFECYCLE: scaffold → fill → hook → uninstall keeps the fill
   assert.match(readFileSync(join(d, RULES), 'utf8'), /R1 — The test suite runs before any commit/);
   assert.match(out, /RULES\.md/, 'must say what it left behind');
 });
+
+// --- An installed harness can be upgraded ------------------------------------
+//
+// The kit that installed the hook script is made older after the fact: the
+// file holds what that kit generated and the manifest records it so. Every
+// check that owns the script stays `declared`.
+import { versionStamp } from './render.mjs';
+
+const KIT_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+const SESSION_BRIEF = '.claude/scripts/session-brief.mjs';
+
+function installedByAnOlderKit() {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'accept kh-harness settings patch');
+  const older = `#!/usr/bin/env node\n${versionStamp('0.0.1', 16, '//')}\nexport {};\n`;
+  writeFileSync(join(d, SESSION_BRIEF), older);
+  const m = manifestOf(d);
+  m.kitVersion = '0.0.1';
+  m.files.find(f => f.path === SESSION_BRIEF).sha256 = sha256(older);
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+  return d;
+}
+
+test('detect names the installed kit version and the current one when they differ', () => {
+  const d = installedByAnOlderKit();
+  const { checks } = JSON.parse(run(DETECT, d, '--json'));
+  assert.equal(checks.find(c => c.id === 'P4.sessionbrief').state, 'declared', 'fixture sanity');
+  const skew = checks.find(c => c.id === 'P0.kitskew');
+  assert.equal(skew?.state, 'absent');
+  const evidence = skew.evidence.join('\n');
+  assert.ok(evidence.includes('0.0.1') && evidence.includes(KIT_VERSION), evidence);
+  assert.ok(evidence.includes(SESSION_BRIEF), evidence);
+});
+
+test('a second apply after the update proposes nothing', () => {
+  const d = installedByAnOlderKit();
+  const out = run(APPLY, d, '--yes');
+  assert.match(out, /session-brief\.mjs/, out);
+  assert.ok(readFileSync(join(d, SESSION_BRIEF), 'utf8').includes(`kh-harness ${KIT_VERSION} `), 'the hook script is the current kit\'s');
+  assert.equal(manifestOf(d).kitVersion, KIT_VERSION);
+  assert.match(run(APPLY, d), /no actions/);
+});
