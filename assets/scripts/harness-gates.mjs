@@ -7,15 +7,21 @@
 //
 // Installed beside the other hook scripts and evaluated before every tool
 // call, so it imports only Node built-ins and sibling files, never spawns a
-// child process, and never builds a RegExp from gate data: every pattern
-// kind is matched by plain string code whose time is bounded by the input
-// length times `valueMax`.
+// child process, and never builds a RegExp from gate data. A gate inspects
+// only the first `inputMax` characters of its field; text beyond them is not
+// inspected. Every kind then runs in time linear in what it inspects.
+//
+// A rejection reason is fixed text naming the rule broken, never a key or
+// value taken from the file, since reasons are shown to the owner and the
+// model.
 import { createHash } from 'node:crypto';
 
 import { canonicalJson } from './harness-log.mjs';
 import { stripUnsafe } from './harness-redact.mjs';
 
-export const GATE_LIMITS = Object.freeze({ valueMax: 200, messageMax: 300, gatesMax: 200 });
+/** `inputMax` is how many leading characters of a field a gate inspects;
+ * a gate never sees text beyond them. */
+export const GATE_LIMITS = Object.freeze({ valueMax: 200, messageMax: 300, gatesMax: 200, inputMax: 262144 });
 
 const GATE_KEYS = new Set(['id', 'tool', 'field', 'match', 'action', 'message', 'cites']);
 const MATCH_KINDS = new Set(['literal', 'token', 'glob']);
@@ -23,14 +29,17 @@ const ACTIONS = new Set(['observe', 'warn', 'block']);
 const CITES_MAX = 10;
 const CITE_LENGTH_MAX = 200;
 
+// A value with fewer characters than this that are neither `*` nor
+// whitespace matches everything or nearly everything.
+const SIGNIFICANT_MIN = 3;
+
 // Segments that reach an object's prototype machinery rather than its data.
 const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 
-const ID = /^L[0-9]+$/;
+const ID = /^L[1-9][0-9]{0,8}$/;
 const FIELD = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
 const LINE_BREAK = /[\n\p{Zl}\p{Zp}]/u;
 const ANGLE_BRACKET = /[<>]/;
-const WORD_CHARACTER = /^[A-Za-z0-9_]$/;
 const DRIVE_PREFIX = /^[A-Za-z]:/;
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -44,14 +53,17 @@ function citeProblem(cite) {
   return null;
 }
 
+const significantLength = value => Array.from(value.replace(/[*\s]/gu, '')).length;
+
 /** Whether `gate` is a full gate of this language. A suspension entry is
  * not a gate; `parseGates` reads those. */
 export function validateGate(gate) {
   if (!isPlainObject(gate)) return reject('a gate must be a JSON object');
-  const unknown = Object.keys(gate).filter(k => !GATE_KEYS.has(k));
-  if (unknown.length > 0) return reject(`unknown key ${JSON.stringify(unknown[0])}`);
+  if (Object.keys(gate).some(k => !GATE_KEYS.has(k))) {
+    return reject('a gate may have only the keys id, tool, field, match, action, message and cites');
+  }
 
-  if (typeof gate.id !== 'string' || !ID.test(gate.id)) return reject('id must be L followed by digits');
+  if (typeof gate.id !== 'string' || !ID.test(gate.id)) return reject('id must be L followed by 1 to 9 digits, without a leading zero');
   if (typeof gate.tool !== 'string' || gate.tool.length === 0 || gate.tool.length > GATE_LIMITS.valueMax) {
     return reject(`tool must be a non-empty string of at most ${GATE_LIMITS.valueMax} characters`);
   }
@@ -70,6 +82,9 @@ export function validateGate(gate) {
   if (typeof match.value !== 'string' || match.value.length === 0 || match.value.length > GATE_LIMITS.valueMax) {
     return reject(`match.value must be a non-empty string of at most ${GATE_LIMITS.valueMax} characters`);
   }
+  if (significantLength(match.value) < SIGNIFICANT_MIN) {
+    return reject(`match.value must have at least ${SIGNIFICANT_MIN} characters that are neither * nor whitespace`);
+  }
 
   if (!ACTIONS.has(gate.action)) return reject('action must be observe, warn or block');
 
@@ -85,7 +100,7 @@ export function validateGate(gate) {
     if (!Array.isArray(gate.cites) || gate.cites.length > CITES_MAX) return reject(`cites must be an array of at most ${CITES_MAX} paths`);
     for (const cite of gate.cites) {
       const problem = citeProblem(cite);
-      if (problem !== null) return reject(`cites entry ${JSON.stringify(cite)} ${problem}`);
+      if (problem !== null) return reject(`cites: an entry ${problem}`);
     }
   }
   return { ok: true };
@@ -110,51 +125,83 @@ function resolveField(input, field) {
   return typeof value === 'string' ? value : undefined;
 }
 
-const isWordAt = (text, i) => i >= 0 && i < text.length && WORD_CHARACTER.test(text[i]);
+/** `A-Z`, `a-z`, `0-9` or `_` at index `i`; false outside the text. */
+function isWordAt(text, i) {
+  const c = text.charCodeAt(i);
+  return (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f;
+}
 
+/** For each prefix of `codes`, the length of its longest proper prefix that
+ * is also its suffix. */
+function borderTable(codes) {
+  const border = new Uint16Array(codes.length);
+  for (let i = 1, k = 0; i < codes.length; i++) {
+    while (k > 0 && codes[i] !== codes[k]) k = border[k - 1];
+    if (codes[i] === codes[k]) k++;
+    border[i] = k;
+  }
+  return border;
+}
+
+/**
+ * Whether `value` occurs in `text` with a non-word character or a string end
+ * on each side. A repeated `indexOf` from each failed occurrence would cost
+ * the text length times the value length when occurrences overlap at every
+ * position, so every occurrence is found in one Knuth-Morris-Pratt pass from
+ * the first.
+ */
 function tokenMatches(text, value) {
-  for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) {
-    if (!isWordAt(text, at - 1) && !isWordAt(text, at + value.length)) return true;
+  const first = text.indexOf(value);
+  if (first === -1) return false;
+  const codes = new Uint16Array(value.length);
+  for (let i = 0; i < value.length; i++) codes[i] = value.charCodeAt(i);
+  const border = borderTable(codes);
+  const last = codes.length - 1;
+  for (let i = first, k = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    while (k > 0 && c !== codes[k]) k = border[k - 1];
+    if (c !== codes[k]) continue;
+    if (k < last) {
+      k++;
+    } else {
+      if (!isWordAt(text, i - last - 1) && !isWordAt(text, i + 1)) return true;
+      k = border[last];
+    }
   }
   return false;
 }
 
 /**
- * Whether `pattern` matches the whole of `text`, where `*` is any run of
- * characters (`/` included) and `?` is one UTF-16 code unit; every other
- * character is literal. Two pointers, and on a mismatch only the most recent
- * `*` is retried one character further, so the work is at most the text
- * length times the pattern length.
+ * Whether `value` matches the whole of `text`, where `*` is any run of
+ * characters (`/` included) and every other character, `?` among them, is
+ * literal. The segments between stars are found left to right with
+ * `indexOf`, each from where the previous one ended, so the search only
+ * moves forward; the leftmost place for each is always the best one.
  */
-function globMatches(pattern, text) {
-  let p = 0;
-  let t = 0;
-  let star = -1;
-  let resume = 0;
-  while (t < text.length) {
-    if (p < pattern.length && pattern[p] === '*') {
-      star = p++;
-      resume = t;
-    } else if (p < pattern.length && (pattern[p] === '?' || pattern[p] === text[t])) {
-      p++;
-      t++;
-    } else if (star !== -1) {
-      p = star + 1;
-      t = ++resume;
-    } else {
-      return false;
-    }
+function globMatches(value, text) {
+  const segments = value.split('*');
+  if (segments.length === 1) return text === value;
+  const head = segments[0];
+  const tail = segments[segments.length - 1];
+  const tailStart = text.length - tail.length;
+  if (tailStart < head.length || !text.startsWith(head) || !text.endsWith(tail)) return false;
+  let at = head.length;
+  for (const segment of segments.slice(1, -1)) {
+    const found = text.indexOf(segment, at);
+    if (found === -1 || found + segment.length > tailStart) return false;
+    at = found + segment.length;
   }
-  while (p < pattern.length && pattern[p] === '*') p++;
-  return p === pattern.length;
+  return true;
 }
 
 /** Whether `gate` fires on this tool call. Only a string at the gate's field
- * can match; an unknown kind never does. */
+ * can match, and only its first `inputMax` characters are inspected, as if
+ * they were the whole field; an unknown kind never matches. */
 export function matchGate(gate, toolName, toolInput) {
   if (gate.tool !== toolName) return false;
-  const text = resolveField(toolInput, gate.field);
-  if (text === undefined) return false;
+  const field = resolveField(toolInput, gate.field);
+  if (field === undefined) return false;
+  const text = field.length > GATE_LIMITS.inputMax ? field.slice(0, GATE_LIMITS.inputMax) : field;
   const { kind, value } = gate.match;
   if (kind === 'literal') return text.includes(value);
   if (kind === 'token') return tokenMatches(text, value);
@@ -178,8 +225,7 @@ function readGateFile(text) {
     return { reason: 'the gate file is not valid JSON' };
   }
   if (!isPlainObject(file)) return { reason: 'the gate file must be a JSON object' };
-  const unknown = Object.keys(file).filter(k => !FILE_KEYS.has(k));
-  if (unknown.length > 0) return { reason: `the gate file has unknown key ${JSON.stringify(unknown[0])}` };
+  if (Object.keys(file).some(k => !FILE_KEYS.has(k))) return { reason: 'the gate file may have only the keys schema, gates and generatedBy' };
   if (file.schema !== 1) return { reason: 'the gate file must have schema 1' };
   if (!Array.isArray(file.gates)) return { reason: 'the gate file must have a gates array' };
   if (file.generatedBy !== undefined && typeof file.generatedBy !== 'string') return { reason: 'generatedBy must be a string' };
@@ -193,7 +239,7 @@ function suspensionProblem(entry) {
   if (keys.length !== 2 || !Object.hasOwn(entry, 'id') || entry.suspended !== true) {
     return 'a suspension must be exactly { id, suspended: true }';
   }
-  if (typeof entry.id !== 'string' || !ID.test(entry.id)) return 'id must be L followed by digits';
+  if (typeof entry.id !== 'string' || !ID.test(entry.id)) return 'id must be L followed by 1 to 9 digits, without a leading zero';
   return null;
 }
 
@@ -219,7 +265,7 @@ export function parseGates(text) {
     if (problem !== null) {
       result.rejected.push({ index, reason: problem });
     } else if (seen.has(entry.id)) {
-      result.rejected.push({ index, reason: `duplicate id ${entry.id}` });
+      result.rejected.push({ index, reason: 'duplicate id: an earlier entry has the same id' });
     } else if (!suspension && result.gates.length >= GATE_LIMITS.gatesMax) {
       result.rejected.push({ index, reason: `more than ${GATE_LIMITS.gatesMax} gates` });
     } else {
