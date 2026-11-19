@@ -64,7 +64,8 @@ const frozenByType = entries => Object.freeze(Object.fromEntries(Object.entries(
  * flag or a failure's first error line. The first error line is masked and
  * then cut to 300 characters when written, and with the tool and the input hash
  * it is a failure's signature, which recurrence detection and replay need
- * for as long as structure is kept. The writer's own `schema`, `ts` and
+ * for as long as structure is kept; `root` is the project root the failure
+ * happened under, which its error line's paths are made relative to. The writer's own `schema`, `ts` and
  * `pid` are kept on every event.
  */
 export const KEPT_FIELDS = frozenByType({
@@ -74,7 +75,7 @@ export const KEPT_FIELDS = frozenByType({
   PermissionRequest: [...IDENTITY, ...TOOL_CALL],
   PermissionDenied: [...IDENTITY, ...TOOL_CALL],
   PostToolUse: [...IDENTITY, ...TOOL_RESULT],
-  PostToolUseFailure: [...IDENTITY, ...TOOL_RESULT, 'firstErrorLine'],
+  PostToolUseFailure: [...IDENTITY, ...TOOL_RESULT, 'firstErrorLine', 'root'],
   SubagentStart: [...IDENTITY, 'agentType'],
   SubagentStop: [...IDENTITY, 'agentType', 'stopHookActive'],
   Stop: [...IDENTITY, 'stopHookActive'],

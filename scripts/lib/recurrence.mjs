@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { readEvents } from '../../assets/scripts/harness-log.mjs';
+import { keyedWorkTree, readEvents } from '../../assets/scripts/harness-log.mjs';
 import { CLAIMED_SUFFIX, listSessionFiles, PLAIN_SUFFIX, SEAL_TEMP_SUFFIX, SEALED_SUFFIX } from '../../assets/scripts/harness-seal.mjs';
 
 export const FAILURE_EVENT = 'PostToolUseFailure';
@@ -17,6 +17,9 @@ export const SUCCESS_EVENT = 'PostToolUse';
 /** The field a logged tool event names its tool in; the logging hook writes
  * the payload's `tool_name` there. */
 export const TOOL_FIELD = 'tool';
+
+// The status the logging hook gives a call the user interrupted.
+const INTERRUPTED = 'interrupted';
 
 const HARNESS_EVENT = 'harness';
 const EXTERNAL_EVENT = 'external_content';
@@ -46,11 +49,20 @@ function rootSpellings(root) {
   return [...spellings].map(s => s.replace(/\\/g, '/')).sort((a, b) => b.length - a.length);
 }
 
+// One pattern per root: a log is read event by event, and building a
+// pattern asks the file system for the root's real spelling.
+const rootPatterns = new Map();
+
 /** `root`, in any of its spellings and with either separator, where it is
  * not part of a longer path; case-insensitive on win32. */
 function rootPattern(root) {
-  const alternatives = rootSpellings(root).map(s => escapeRegExp(s).replace(/\//g, '[\\\\/]'));
-  return new RegExp(`(?<![\\w.-])(?:${alternatives.join('|')})(?![\\w.-])`, process.platform === 'win32' ? 'gi' : 'g');
+  if (!rootPatterns.has(root)) {
+    const alternatives = rootSpellings(root).map(s => escapeRegExp(s).replace(/\//g, '[\\\\/]'));
+    rootPatterns.set(root, new RegExp(`(?<![\\w.-])(?:${alternatives.join('|')})(?![\\w.-])`, process.platform === 'win32' ? 'gi' : 'g'));
+  }
+  const pattern = rootPatterns.get(root);
+  pattern.lastIndex = 0;
+  return pattern;
 }
 
 function relativiseRoot(line, root) {
@@ -77,16 +89,40 @@ export function normaliseError(line, root) {
   return relativiseRoot(line.replace(ANSI, ''), root).replace(HEX, '…').replace(DIGITS, '#');
 }
 
+// One answer per reader root, since it is asked for every event.
+const keyedWorkTrees = new Map();
+
+/**
+ * The root a failure's error line is made relative to. It is the project
+ * root the logging hook recorded with the failure; for a failure recorded
+ * without one, the work tree the log's key stands for (`keyedWorkTree`).
+ * Neither depends on the directory the reader was run from, so every
+ * worktree of a repository gives one failure one signature. The limit: a
+ * failure recorded without its root, in a repository whose common
+ * directory is not a `.git` directory, is still made relative to `root`.
+ */
+function rootOf(event, root) {
+  if (isString(event.root) && event.root.length > 0) return event.root;
+  if (!keyedWorkTrees.has(root)) keyedWorkTrees.set(root, keyedWorkTree(root));
+  return keyedWorkTrees.get(root);
+}
+
+/** Whether `event` records a tool call that failed; one the user
+ * interrupted did not fail. */
+const isFailure = event => event !== null && typeof event === 'object' && event.type === FAILURE_EVENT && event.status !== INTERRUPTED;
+
 /**
  * The first 16 hex of SHA-256 over a failure's tool name, input hash and
  * normalised first error line, or null for any event that is not a failure
- * carrying all three as strings.
+ * carrying all three as strings. An interrupted call is not a failure. The
+ * error line is normalised against `rootOf(event, root)`, `root` being
+ * where the reader was pointed.
  */
 export function failureSignature(event, root) {
-  if (event === null || typeof event !== 'object' || event.type !== FAILURE_EVENT) return null;
+  if (!isFailure(event)) return null;
   const { [TOOL_FIELD]: tool, inputHash, firstErrorLine } = event;
   if (!isString(tool) || !isString(inputHash) || !isString(firstErrorLine)) return null;
-  const key = JSON.stringify([tool, inputHash, normaliseError(firstErrorLine, root)]);
+  const key = JSON.stringify([tool, inputHash, normaliseError(firstErrorLine, rootOf(event, root))]);
   return createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16);
 }
 
@@ -134,9 +170,13 @@ function identityOf(event) {
  * `harness` event before each failure. A failure with no such event, or
  * whose latest one does not identify a harness and model, is never
  * evidence of recurrence: it is left out of every group and counted in
- * `failuresUnattributed`. Returns `{ recurrences, sessionsRead,
- * sessionsUnreadable, sessionsBeingSealed, sessionsOverLimit,
- * linesUnparseable, failuresUnattributed }`: every session listed is read
+ * `failuresUnattributed`. So is a failure that records no tool, first error
+ * line or input hash, which has no signature: `failuresWithoutSignature`
+ * counts those among them. A call the user interrupted is not a failure and
+ * is counted in `callsInterrupted` alone. Returns `{ recurrences,
+ * sessionsRead, sessionsUnreadable, sessionsBeingSealed, sessionsOverLimit,
+ * linesUnparseable, failuresUnattributed, failuresWithoutSignature,
+ * callsInterrupted }`: every session listed is read
  * and counted in `sessionsRead`, and one with a file that could not be read
  * is also counted in `sessionsUnreadable` while what it did yield is still
  * used. `sessionsBeingSealed` counts the sessions with events in a claimed
@@ -157,6 +197,8 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
   const sessionsOverLimit = [];
   let linesUnparseable = 0;
   let failuresUnattributed = 0;
+  let failuresWithoutSignature = 0;
+  let callsInterrupted = 0;
   for (const { id: sessionId } of sessions) {
     const { events, unparseable, unreadable, overLimit } = readEvents(root, sessionId);
     if (unreadable) sessionsUnreadable++;
@@ -169,8 +211,14 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
         identity = identityOf(event);
         return;
       }
+      if (event.type === FAILURE_EVENT && event.status === INTERRUPTED) callsInterrupted++;
+      if (!isFailure(event)) return;
       const signature = failureSignature(event, root);
-      if (signature === null) return;
+      if (signature === null) {
+        failuresWithoutSignature++;
+        failuresUnattributed++;
+        return;
+      }
       if (identity === null) {
         failuresUnattributed++;
         return;
@@ -179,7 +227,7 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
       const key = JSON.stringify([base, model, signature]);
       let entry = groups.get(key);
       if (entry === undefined) {
-        entry = { signature, tool: event[TOOL_FIELD], errorLine: normaliseError(event.firstErrorLine, root), base, model, sessions: new Map(), count: 0, external: false, firstTs: null, lastTs: null };
+        entry = { signature, tool: event[TOOL_FIELD], errorLine: normaliseError(event.firstErrorLine, rootOf(event, root)), base, model, sessions: new Map(), count: 0, external: false, firstTs: null, lastTs: null };
         groups.set(key, entry);
       }
       entry.count++;
@@ -207,5 +255,7 @@ export function findRecurrences(root, { minSessions = 2 } = {}) {
     sessionsOverLimit,
     linesUnparseable,
     failuresUnattributed,
+    failuresWithoutSignature,
+    callsInterrupted,
   };
 }

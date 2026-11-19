@@ -139,7 +139,10 @@ const FIELDS_BY_EVENT = {
   PermissionRequest: toolCall,
   PermissionDenied: p => ({ ...toolCall(p), ...carried(p, { reason: 'reason' }) }),
   PostToolUse: p => toolResult(p, 'ok', p.tool_response),
-  PostToolUseFailure: p => toolResult(p, failureStatus(p), p.error),
+  // The project root, so a reader in another worktree of the repository
+  // makes the error line's paths relative to the root they were printed
+  // under, not to its own.
+  PostToolUseFailure: p => ({ ...toolResult(p, failureStatus(p), p.error), root: projectRoot() }),
   SubagentStart: p => carried(p, { agent_type: 'agentType' }),
   SubagentStop: p => carried(p, { agent_type: 'agentType', stop_hook_active: 'stopHookActive' }),
   Stop: p => carried(p, { stop_hook_active: 'stopHookActive' }),

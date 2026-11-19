@@ -288,7 +288,7 @@ test('the report counts what it could not read', () => {
   assert.deepEqual([json.gates.sessionsRead, json.gates.sessionsUnreadable], [5, 1]);
   const text = reportText(root);
   assert.match(text, /sessions read: 5; of them unreadable, in whole or part: 1; unparseable lines: 1/);
-  assert.match(text, /failures left out, because no harness and model was recorded before them: 2/);
+  assert.match(text, /failures left out of every recurrence: 2 \(no harness and model recorded before them: 2; no first error line or input hash recorded: 0\)/);
 });
 
 test('the report accounts for a session whose events are in a claimed file, and names one over the read limit', () => {
@@ -312,6 +312,20 @@ test('the report accounts for a session whose events are in a claimed file, and 
   assert.match(text, /sessions with events in a claimed or temporary file, which are not read until a maintenance run finishes sealing them: 1/);
   assert.match(text, /sessions larger than this command reads, counted as unreadable: big/);
   assert.match(text, /in 2 sessions, 2 times/, 'the recurrence is still found in the sessions that were read');
+});
+
+test('the report says how many calls were interrupted and how many failures record no signature', () => {
+  const root = project();
+  const { firstErrorLine: _line, ...noLine } = failure();
+  log(root, 'a', harness(), failure(), failure({ status: 'interrupted', firstErrorLine: '[Request interrupted by user for tool use]' }));
+  log(root, 'b', harness(), failure(), noLine);
+  log(root, 'c', failure());
+  const json = reportJson(root);
+  assert.deepEqual([json.failuresUnattributed, json.failuresWithoutSignature, json.callsInterrupted], [2, 1, 1]);
+  const text = reportText(root);
+  assert.match(text, /failures left out of every recurrence: 2 \(no harness and model recorded before them: 1; no first error line or input hash recorded: 1\)/);
+  assert.match(text, /calls interrupted while a tool ran, which are not failures: 1/);
+  assert.doesNotMatch(text, /Request interrupted/);
 });
 
 test('with no log it says nothing was read', () => {

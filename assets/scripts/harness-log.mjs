@@ -14,7 +14,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
 import { canonicalJson, maskText, safeSessionId, SCRUB_MARK } from './harness-redact.mjs';
@@ -158,6 +158,19 @@ export function repoKey(root) {
 
 export function repoDataDir(root) {
   return join(dataRoot(), repoKey(root));
+}
+
+/**
+ * The work tree the repository's key stands for: the directory holding the
+ * common `.git` directory, which is the same from every worktree of the
+ * repository and from any directory inside one. Outside git it is `root`
+ * itself, and so it is where the common directory is not a `.git` directory
+ * (a bare repository with worktrees, a submodule), which has no one work
+ * tree every worktree shares.
+ */
+export function keyedWorkTree(root) {
+  const common = gitCommonDir(root);
+  return common !== null && basename(common) === '.git' ? dirname(common) : resolve(root);
 }
 
 function readJson(path) {

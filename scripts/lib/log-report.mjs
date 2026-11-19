@@ -125,6 +125,8 @@ export function buildLogReport(root) {
     sessionsOverLimit: null,
     linesUnparseable: null,
     failuresUnattributed: null,
+    failuresWithoutSignature: null,
+    callsInterrupted: null,
     groups: null,
     taxonomy: { path: FAILURES_PATH, state: taxonomy.state },
     gates: null,
@@ -140,18 +142,8 @@ export function buildLogReport(root) {
   } catch {
     return { ...report, sessionsUnlistable: true };
   }
-  const { recurrences, sessionsRead, sessionsUnreadable, sessionsBeingSealed, sessionsOverLimit, linesUnparseable, failuresUnattributed } = found;
-  return {
-    ...report,
-    sessionsRead,
-    sessionsUnreadable,
-    sessionsBeingSealed,
-    sessionsOverLimit,
-    linesUnparseable,
-    failuresUnattributed,
-    groups: groupRecurrences(recurrences, taxonomy),
-    gates,
-  };
+  const { recurrences, ...counts } = found;
+  return { ...report, ...counts, groups: groupRecurrences(recurrences, taxonomy), gates };
 }
 
 export const NOT_READ = 'not read, because the sessions directory could not be listed';
@@ -226,7 +218,8 @@ export const readCountLines = report => [
     ? [`sessions with events in a claimed or temporary file, which are not read until a maintenance run finishes sealing them: ${report.sessionsBeingSealed}`]
     : []),
   ...(report.sessionsOverLimit.length > 0 ? [`sessions larger than this command reads, counted as unreadable: ${report.sessionsOverLimit.join(', ')}`] : []),
-  `failures left out, because no harness and model was recorded before them: ${report.failuresUnattributed}`,
+  `failures left out of every recurrence: ${report.failuresUnattributed} (no harness and model recorded before them: ${report.failuresUnattributed - report.failuresWithoutSignature}; no first error line or input hash recorded: ${report.failuresWithoutSignature})`,
+  ...(report.callsInterrupted > 0 ? [`calls interrupted while a tool ran, which are not failures: ${report.callsInterrupted}`] : []),
 ];
 
 /** The report as text for a person. */
