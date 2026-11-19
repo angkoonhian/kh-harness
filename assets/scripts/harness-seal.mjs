@@ -394,6 +394,7 @@ function sealSession(root, sessionId, kinds, index, now, held) {
     return false;
   }
   const content = joined(sealed, claimed);
+  held();
   writeTemp(tempPath, content);
   appendIndexLine(root, index, sealRecord(sessionId, content), held);
   held();
@@ -637,7 +638,10 @@ function expireSession(root, sessionId, index, held, gunzip) {
   if (sealed === null) return 'absent';
   if (!matchesIndex(sealed, index.latest.get(sessionId))) return 'unverifiable';
   const { content, removed } = withoutContent(sealed);
-  if (removed) writeTemp(tempPath, content);
+  if (removed) {
+    held();
+    writeTemp(tempPath, content);
+  }
   appendIndexLine(root, index, { ...sealRecord(sessionId, content), contentExpired: true }, held);
   if (removed) {
     held();
@@ -704,12 +708,22 @@ function readVerified(root) {
   return new Map(entries.filter(([sessionId, entry]) => safeSessionId(sessionId) === sessionId && isVerifiedEntry(entry)));
 }
 
-/** Writes the record to a temporary sibling and renames it into place. */
+const serialisedVerified = verified => JSON.stringify({ schema: 1, sessions: Object.fromEntries([...verified].sort(([a], [b]) => (a < b ? -1 : 1))) });
+
+/** Whether `name` is one of the record's temporary siblings. */
+const isVerifiedTemp = name => name.startsWith(`${VERIFIED_FILE}.`) && name.endsWith('.tmp');
+
+/** Writes the record to a temporary sibling and renames it into place,
+ * first removing any sibling a crashed run left. */
 function writeVerified(root, verified, held) {
   const path = verifiedPath(root);
+  for (const name of readdirSync(repoDataDir(root)).filter(isVerifiedTemp)) {
+    held();
+    rmSync(join(repoDataDir(root), name), { force: true });
+  }
   const temp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   try {
-    writeFileSync(temp, JSON.stringify({ schema: 1, sessions: Object.fromEntries(verified) }), { flag: 'wx', mode: 0o600 });
+    writeFileSync(temp, serialisedVerified(verified), { flag: 'wx', mode: 0o600 });
     held();
     renameSync(temp, path);
   } finally {
@@ -794,9 +808,10 @@ export function applyRetention(root, {
         if (index.appendFailed) return skip('an index append failed');
       }
       const verified = readVerified(root);
+      const before = serialisedVerified(verified);
       const check = checkIndex(root, { withinBudget, gunzip, verified });
       try {
-        writeVerified(root, verified, held);
+        if (serialisedVerified(verified) !== before) writeVerified(root, verified, held);
       } catch (error) {
         rethrowLockLost(error);
         // the record is an optimisation: the next run hashes again
