@@ -513,8 +513,8 @@ const CHECKS = [
       // just installed is absent.
       //
       // What is NAMED as evidence is still only what the SCAN list already
-      // surfaced. That is `registeredHook`'s own discipline a few hundred
-      // lines above, for the same reason: a path the scan list shows is one
+      // surfaced. That is `registeredHook`'s own discipline
+      // (hook-evidence.mjs), for the same reason: a path the scan list shows is one
       // the user chose to make visible, while a path found by a disk read
       // alone may be one they deliberately kept out of git — and this
       // evidence is serialised into `docs/harness/detect.json`, which IS
