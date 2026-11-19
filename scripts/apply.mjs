@@ -92,7 +92,9 @@ if (manifestResult.state === 'corrupt') {
   process.exit(3);
 }
 const manifest = manifestResult.manifest ?? emptyManifest(KIT_VERSION);
-const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion: KIT_VERSION });
+// The checks are given the manifest as `detect` gives it, null when there
+// is none, so the two commands report one repository the same way.
+const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest: manifestResult.manifest, kitVersion: KIT_VERSION });
 
 // Whole-branch review, F9: this command runs `listFiles`, `detectStack`,
 // `detectHarness`, `detectExposures` and `buildGaps` — the same work

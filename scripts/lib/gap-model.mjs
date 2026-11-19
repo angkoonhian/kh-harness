@@ -63,6 +63,17 @@ function proposalVia(def) {
 const MAX_INSTRUCTION_LINES = 150;
 
 /**
+ * Why a check that reads the manifest was given none: `corrupt` when the
+ * file is there and cannot be read as a manifest, `missing` when it is not
+ * there, and `unread` when no `root` was given to look under. `manifest`
+ * is null for all three, and a check must not report one as another.
+ */
+function manifestAbsence(root) {
+  if (root === undefined) return 'unread';
+  return readManifestResult(root).state === 'corrupt' ? 'corrupt' : 'missing';
+}
+
+/**
  * `hook`, a hook check's verdict, unless the hook is not registered and
  * `apply` will not install it because its script is held (`heldScripts`):
  * the check then stays absent, proposes nothing, and says which files hold
@@ -766,7 +777,7 @@ const CHECKS = [
   },
   {
     id: 'P5.toolgate', step: 30, phase: 5,
-    lookedFor: ['a PreToolUse hook in .claude/settings.json'],
+    lookedFor: ['a PreToolUse hook in .claude/settings.json', 'the deny rules the gate hook is installed with, in the settings in effect'],
     // Decided from the hook registry and the deny rules in effect. Which
     // gates exist is learned later, so neither the gate files nor the
     // session log is read here, and nothing executes, so it is never
@@ -794,14 +805,29 @@ const CHECKS = [
     // Files are compared with the manifest and gates with their approvals;
     // nothing executes, so it is never `verified`. Nothing is proposed:
     // restoring a file or approving a gate is the owner's decision.
-    // `manifest` is null both when there is none and when it is corrupt, so
-    // which of the two is read again here.
-    check: ({ manifest, root }) => {
+    // With no manifest there is no recorded file to check, but the kit can
+    // still be here: a gate file is checked against its approvals all the
+    // same, and a registered kit hook whose script nothing records is a
+    // finding, not an absence.
+    check: ({ manifest, root, harness }) => {
       if (!manifest) {
-        if (root !== undefined && readManifestResult(root).state === 'corrupt') {
+        const absence = manifestAbsence(root);
+        if (absence === 'corrupt') {
           return { state: 'failing', evidence: [`${MANIFEST_PATH} could not be read as a manifest, so the kit's files could not be checked against it`] };
         }
-        return { state: 'n/a', evidence: [`no ${MANIFEST_PATH}: nothing was installed`] };
+        if (absence === 'unread') return { state: 'n/a', evidence: ['no manifest was read, so nothing was checked'] };
+        const registered = GENERATOR_SCRIPT_PATHS.filter(script =>
+          Object.values(harness.claudeDir.hookRegistrations ?? {}).flat().some(r => r.script === script));
+        const { problems, summary } = integrityEvidence(root, { files: [] });
+        const unrecorded = registered.length === 0 ? [] : [
+          `${registered.length} kh-harness hook script${registered.length === 1 ? ' is' : 's are'} registered in .claude/settings.json (${registered.join(', ')}), ` +
+          `but no ${MANIFEST_PATH} records what kh-harness wrote, so ${registered.length === 1 ? 'it' : 'they'} could not be checked against it`,
+        ];
+        if (unrecorded.length || problems.length) return { state: 'failing', evidence: [...unrecorded, ...problems] };
+        return {
+          state: 'n/a',
+          evidence: [`no ${MANIFEST_PATH}: no installed file is recorded, so none was checked`, 'no kh-harness hook is registered in .claude/settings.json', ...summary.slice(1)],
+        };
       }
       if (root === undefined) throw new TypeError('buildGaps: P5.integrity needs `root` once there is a manifest — without it no recorded file can be read.');
       const { problems, summary } = integrityEvidence(root, manifest);
@@ -1049,7 +1075,14 @@ const CHECKS = [
     id: 'P0.kitskew', step: 2, phase: 0,
     lookedFor: [`the files ${MANIFEST_PATH} records, against what this kit generates for them`],
     check: ({ manifest, kitVersion, harness, root, stack, checks, files }) => {
-      if (!manifest?.files.length) return { state: 'n/a', evidence: [`${MANIFEST_PATH} records no installed file`] };
+      if (!manifest) {
+        const absence = manifestAbsence(root);
+        if (absence === 'corrupt') {
+          return { state: 'failing', evidence: [`${MANIFEST_PATH} could not be read as a manifest, so no installed file was compared with what this kit generates`] };
+        }
+        return { state: 'n/a', evidence: [absence === 'missing' ? `no ${MANIFEST_PATH}: no file is recorded as installed` : 'no manifest was read, so no installed file was compared'] };
+      }
+      if (!manifest.files.length) return { state: 'n/a', evidence: [`${MANIFEST_PATH} records no installed file`] };
       if (kitVersion === undefined || root === undefined) {
         throw new TypeError('buildGaps: P0.kitskew needs `kitVersion` and `root` once the manifest records a file — without them every recorded file would be judged against a kit that was never named.');
       }
