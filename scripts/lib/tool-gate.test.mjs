@@ -352,6 +352,16 @@ test('a rejected gate is skipped and the rest still apply', () => {
   });
 });
 
+test('a hand-edited gate whose message holds a credential is rejected, never printed', () => {
+  const root = project();
+  const token = 'gh' + 'p_' + 'A1b2C3d4'.repeat(5);
+  writeCommitted(root, gateFile([gate('L1', { action: 'block', message: `Use ${token} to authenticate.` })]));
+  const output = runHook(root, call('secret-message-1', 'rm -rf build'));
+  assert.deepEqual(output, {
+    systemMessage: 'kh-harness: 1 entry in the committed gate file .claude/kh-harness/gates.json was rejected and does not apply; its other gates do.',
+  });
+});
+
 test('unparseable stdin, another event and a payload without a tool name are nothing to do', () => {
   const root = project();
   writeCommitted(root, gateFile([gate('L1', { action: 'block' })]));

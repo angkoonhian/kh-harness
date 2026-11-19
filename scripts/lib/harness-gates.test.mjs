@@ -126,6 +126,13 @@ test('a message containing an angle bracket or an invisible character is rejecte
   rejectsWith(gate({ message: 'tag \u{e0041}' }), /message/);
 });
 
+test('a message the credential mask would change is rejected, and prose about credentials is not', () => {
+  const token = 'gh' + 'p_' + 'A1b2C3d4'.repeat(5);
+  rejectsWith(gate({ message: `Authenticate with ${token} first.` }), /message must not hold a credential/);
+  rejectsWith(gate({ message: 'Run it with --pass' + 'word=hunter2hunter2 instead.' }), /message must not hold a credential/);
+  assert.deepEqual(validateGate(gate({ message: 'Use Basic authentication or a Bearer token, never a password on the command line.' })), { ok: true });
+});
+
 test('a message must be a single non-empty line within the limit', () => {
   rejectsWith(gate({ message: 'one\ntwo' }), /message/);
   rejectsWith(gate({ message: 'one\u2028two' }), /message/);

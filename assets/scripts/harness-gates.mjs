@@ -17,7 +17,7 @@
 import { createHash } from 'node:crypto';
 
 import { canonicalJson } from './harness-log.mjs';
-import { stripUnsafe } from './harness-redact.mjs';
+import { maskText, stripUnsafe } from './harness-redact.mjs';
 
 /** `inputMax` is how many leading characters of a field a gate inspects;
  * a gate never sees text beyond them. */
@@ -97,6 +97,10 @@ export function validateGate(gate) {
   if (LINE_BREAK.test(message)) return reject('message must be a single line');
   if (stripUnsafe(message) !== message) return reject('message must not contain control or invisible characters');
   if (ANGLE_BRACKET.test(message)) return reject('message must not contain < or >');
+  // The hook prints a message as written. The sweep's floors, because a
+  // message is prose the model is told to follow: `Basic authentication` is
+  // an instruction, while a real token exceeds every floor.
+  if (maskText(message, { floors: 'sweep' }) !== message) return reject('message must not hold a credential: the mask applied to logged text would change it');
 
   if (gate.cites !== undefined) {
     if (!Array.isArray(gate.cites) || gate.cites.length > CITES_MAX) return reject(`cites must be an array of at most ${CITES_MAX} paths`);
