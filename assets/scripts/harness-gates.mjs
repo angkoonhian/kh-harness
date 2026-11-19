@@ -16,8 +16,7 @@
 // model.
 import { createHash } from 'node:crypto';
 
-import { canonicalJson } from './harness-log.mjs';
-import { maskText, stripUnsafe } from './harness-redact.mjs';
+import { canonicalJson, maskText, stripUnsafe } from './harness-redact.mjs';
 
 /** `inputMax` is how many leading characters of a field a gate inspects;
  * a gate never sees text beyond them. */

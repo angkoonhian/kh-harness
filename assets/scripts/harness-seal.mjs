@@ -33,8 +33,8 @@ import { appendFileSync, closeSync, openSync, readdirSync, readFileSync, renameS
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
-import { BLOBS_DIR, canonicalJson, parsedObject, readConfig, repoDataDir, sessionFileName, SESSIONS_DIR } from './harness-log.mjs';
-import { safeSessionId } from './harness-redact.mjs';
+import { BLOBS_DIR, parsedObject, readConfig, repoDataDir, sessionFileName, SESSIONS_DIR } from './harness-log.mjs';
+import { canonicalJson, safeSessionId } from './harness-redact.mjs';
 
 /** Appended to a session's file name (`sessionFileName`): the file its
  * unsealed events are claimed into while they are sealed, and the

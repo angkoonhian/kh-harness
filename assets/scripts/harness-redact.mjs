@@ -397,6 +397,28 @@ export function maskText(text, options) {
   return parts.join('');
 }
 
+// --- Canonical JSON ----------------------------------------------------------
+
+function serialiseSorted(value) {
+  if (Array.isArray(value)) return `[${value.map(serialiseSorted).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const members = Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${serialiseSorted(value[k])}`);
+    return `{${members.join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * JSON with object keys sorted recursively and no whitespace, so equal
+ * values hash equally whatever order their keys were written in. Keys are
+ * sorted as strings, so `"10"` precedes `"9"`; arrays keep their order.
+ * `value` is first passed through `JSON.stringify`'s own rules (`toJSON`,
+ * dropped `undefined`), and must therefore be JSON-serialisable.
+ */
+export function canonicalJson(value) {
+  return serialiseSorted(JSON.parse(JSON.stringify(value)));
+}
+
 // --- Bounding what reaches stderr -----------------------------------------
 //
 // Shared so neither hook's bound can silently drift out of sync with the
