@@ -10,10 +10,11 @@ import { join, resolve } from 'node:path';
 
 import { GATE_LIMITS } from '../../assets/scripts/harness-gates.mjs';
 import { LEARN_USAGE, LOG_USAGE } from './cli.mjs';
-import { candidatesView, DATA_MARKERS, listView, renderCandidates, renderList, TERMINAL_ONLY } from './learn-cli.mjs';
+import { candidatesView, listView, renderCandidates, renderList, TERMINAL_ONLY } from './learn-cli.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { draftFor, drafted, FIX_GATE, loggedRepo, logReadMistakes, signatureOf, WATCH_GATE } from './learn-fixtures.mjs';
 import { draftLearning, listLearnings, runTrial } from './learn-lib.mjs';
+import { DATA_MARKERS } from './log-report.mjs';
 import { MIN_CLEAN_CALLS, MIN_CLEAN_SESSIONS } from './replay.mjs';
 
 const SKILL_DIR = resolve(import.meta.dirname, '..', '..', 'skills', 'harness-learn');
