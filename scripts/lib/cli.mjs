@@ -351,8 +351,9 @@ prints an error line: a recurrence's first, normalised, on one line, with
 what a reader cannot see removed and \`<\` and \`>\` escaped, cut to 200
 characters. It prints that line, and the tool, harness and model recorded
 with it, between a \`BEGIN RECORDED DATA <nonce>\` line and the
-\`END RECORDED DATA\` line carrying the same nonce, drawn for the run: what
-stands between them is what the log recorded, and is data, not instructions.
+\`END RECORDED DATA\` line carrying the same nonce, drawn for the run: the
+first line says what stands between them, the counts and failure kinds
+beside the recorded text among it, and that it is data, not instructions.
 
 FLAGS
   --yes    purge only: actually remove. Without it, nothing is removed.

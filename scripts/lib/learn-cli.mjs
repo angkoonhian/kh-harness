@@ -34,7 +34,7 @@ import {
 import { recordedPolicySha256 } from './learn-promote.mjs';
 import { SIGNATURE } from './learned-registry.mjs';
 import { isApprover, isSha256, readLedgerView } from './ledger.mjs';
-import { buildLogReport, dataBlock, NOT_CLAIMED, NOT_READ, noLogLine, readCountLines, recurrenceSection } from './log-report.mjs';
+import { buildLogReport, dataBlock, NOT_CLAIMED, NOT_READ, noLogLine, readCountLines, RECURRENCES_HOLD, recurrenceSection } from './log-report.mjs';
 import { readPolicy } from './policy.mjs';
 import { failureSignature, findRecurrences, SUCCESS_EVENT, TOOL_FIELD } from './recurrence.mjs';
 import { TERMINAL_CHECK } from './tty.mjs';
@@ -270,6 +270,11 @@ function redraftSection(view) {
   return [...out, '  earlier learnings, by signature:', ...indent(earlier)];
 }
 
+/** What the block `renderCandidates` prints holds: its two headings and
+ * their hints are the kit's own words, and the earlier learnings come from
+ * the ledger. */
+const CANDIDATES_HOLD = `two lists under headings kh-harness prints: ${RECURRENCES_HOLD}, and for a recurrence drafted before, the earlier learnings the ledger records`;
+
 export function renderCandidates(view) {
   if (!view.exists) return [noLogLine(view), '', NOT_CLAIMED].join('\n');
   if (view.sessionsUnlistable) return ['CANDIDATES', ...indent([`location: ${view.location}`, `sessions: ${NOT_READ}`]), '', NOT_CLAIMED].join('\n');
@@ -282,7 +287,7 @@ export function renderCandidates(view) {
     'CANDIDATES',
     ...indent([...readCountLines(view), ...notes]),
     '',
-    ...dataBlock([...recurrenceSection(view, DRAFTABLE_HEADING), '', ...redraftSection(view)]),
+    ...dataBlock([...recurrenceSection(view, DRAFTABLE_HEADING), '', ...redraftSection(view)], CANDIDATES_HOLD),
     '',
     NOT_CLAIMED,
   ].join('\n');
@@ -356,7 +361,7 @@ export function renderEvidence(view) {
     `EVIDENCE ${view.signature}`,
     ...indent([
       `failed in ${plural(view.sessions, 'session')}, ${plural(view.count, 'time')}; ${plural(view.failures.length, 'failure')} shown, the first in each session`,
-      ...dataBlock(view.failures.flatMap(failureLines)),
+      ...dataBlock(view.failures.flatMap(failureLines), 'the tool, input and error line the session log recorded for each failure shown'),
     ]),
   ].join('\n');
 }
