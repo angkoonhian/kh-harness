@@ -7,11 +7,8 @@ import { planUninstall, runUninstall } from './lib/uninstall-lib.mjs';
 import { settingsReformattedNote } from './lib/apply-lib.mjs';
 import { parseArgv, refuseExtraArguments, warnUnknown, wantsHelp, UNINSTALL_USAGE } from './lib/cli.mjs';
 
-// Whole-branch review, F10: this was `process.argv[2]` with no flag parsing
-// at all, so `uninstall --yes .` reported `repository not found: --yes` and
-// exited 2, and `uninstall . --yse` silently removed nothing of what was
-// asked — in the one command of the three that deletes files. It uses the
-// same parser and the same unknown-flag warning as `detect` and `apply` now.
+// Parsed by the one parser every entry point uses (cli.mjs), with its
+// unknown-flag warning: this is the command that deletes files.
 const KNOWN_FLAGS = new Set(['--yes']);
 
 const argv = process.argv.slice(2);
@@ -135,13 +132,11 @@ function printLeftInPlace(heading, paths) {
 }
 printLeftInPlace('Will leave in place (written by `detect`, which records nothing as installed; delete it by hand if you do not want it):', plan.leftInPlace);
 
-// Task 9b (coordinator round 2, finding 1): the preview is the path a
-// cautious user reaches for first, and a preview that under-reports what
-// --yes will actually do is worse than no preview — they approve one
-// thing and get a different, larger one. These two predictions come from
-// the exact same questions runUninstall's own real outcome asks (see
-// planUninstall's own comments on `removeSettingsFile` and `removeDirs`),
-// not a second, independently-reasoned guess at what the real run will do.
+// The preview is the path a cautious user reaches for first, and one that
+// under-reports what --yes will do has them approve one thing and get a
+// larger one. So the plan also predicts the settings file and the
+// directories --yes removes, by the questions the real run asks of its own
+// outcome (see `planUninstall`).
 if (plan.removeSettingsFile) {
   console.log('Will remove (now empty, created by kh-harness):');
   console.log(`  ${plan.removeSettingsFile}`);
@@ -184,18 +179,15 @@ if (result.removed.length > 0) {
   }
 }
 
-// Task 9b, finding 5: apply.mjs already discloses a settings.json reformat
-// caused by its own parse-and-re-serialise write; uninstall rewrites the
-// same file the same way while reverting a patch, and must disclose it the
-// same way rather than leaving a user to discover the diff unannounced.
+// Reverting a patch parses and re-serialises settings.json as applying one
+// does, and discloses a reformat in the same sentence.
 if (result.settingsReformatted) {
   console.log(settingsReformattedNote('reverting the patch(es) above'));
 }
 
-// Task 9b, finding 4: directories this tool itself created (never one that
-// existed before it, and never one still holding anything) are cleaned up
-// once uninstall leaves them empty — disclosed here the same way a removed
-// file is.
+// Directories this tool created (never one that existed before it, and
+// never one still holding anything) are removed once uninstall leaves them
+// empty, and listed as a removed file is.
 if (result.removedDirs && result.removedDirs.length > 0) {
   console.log('Removed empty directories it created:');
   for (const dir of result.removedDirs) {
@@ -212,7 +204,6 @@ if (result.failed.length > 0) {
   }
 }
 
-// Report files that changed since plan (defect 1)
 if (result.changedSincePlan.length > 0) {
   console.log('Changed since plan (kept):');
   for (const c of result.changedSincePlan) {
@@ -281,10 +272,9 @@ if (result.removed.length === 0 && result.failed.length === 0 && result.changedS
   console.log('nothing was left behind');
 }
 
-// Exit 2 if any removal failed or was refused, a file changed since plan, a
-// recorded settings patch is still registered (audit Tier 2, finding 15:
-// this used to exit 0 with a hook left live), or settings/manifest could
-// not be handled.
+// Exit 2 if any removal failed or was refused, a file changed since the
+// plan, a recorded settings patch is still registered and could not be
+// reverted, or the settings file or the manifest could not be handled.
 if (result.failed.length > 0 || result.changedSincePlan.length > 0 || result.refused.length > 0 || result.patchesNotReverted.length > 0 || result.settingsReadFailed || result.settingsWriteFailed || result.manifestWriteFailed || result.manifestDeleteFailed) {
   process.exit(2);
 }

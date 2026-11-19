@@ -40,19 +40,15 @@ if (!existsSync(root)) {
 
 const git = gitInfo(root);
 
-// The manifest is read before the gates (Task 9b, finding 3) so the dirty-
-// tree gate can tell the user's own uncommitted work apart from the tool's
-// own prior writes — see `writeGateRefusals` in apply-lib.mjs.
+// The manifest is read before the gates, so the dirty-tree gate can tell
+// the user's own uncommitted work apart from the tool's own prior writes —
+// see `writeGateRefusals` in apply-lib.mjs.
 //
-// Coordinator finding (Major): a manifest file that EXISTS but cannot be
-// read as our schema must refuse the run, not be silently treated as "no
-// manifest" — acting on that assumption writes a fresh EMPTY manifest at
-// the end of this run (see writeManifest below), permanently losing the
-// record of every file a prior install wrote. Those files become
-// invisible to `uninstall` forever, with no notice. Same contract as the
-// default-branch and dirty-tree refusals: exit 3, name the file, no
-// automatic repair. The corrupt-manifest refusal after detection fires
-// whatever the gates decide.
+// A manifest file that exists but cannot be read as our schema refuses the
+// run, below, with or without --yes. Treated as "no manifest", the run
+// would end by writing a fresh empty one, and the record of every file a
+// prior install wrote would be lost: those files would be invisible to
+// `uninstall` for good. Exit 3, the file named, no automatic repair.
 const manifestResult = readManifestResult(root);
 
 const refusals = writeGateRefusals({
@@ -60,9 +56,8 @@ const refusals = writeGateRefusals({
   allowDefaultBranch: flags.has('--allow-default-branch'), allowDirty: flags.has('--allow-dirty'),
 });
 // Both gates waived over a git failure: the run proceeds, and the checks
-// treat the directory as not under version control (P4.remote may propose a
-// remote). Said once, as `detect` says it, so the waiver never makes the
-// failure silent.
+// treat the directory as not under version control. Said once, as `detect`
+// says it, so the waiver never makes the failure silent.
 if (git.error && refusals.length === 0) {
   process.stderr.write(`kh-harness: ${git.error} — proceeding with both gates waived; the checks treat this directory as not under version control.\n`);
 }
@@ -71,11 +66,9 @@ if (flags.has('--yes') && refusals.length) {
   process.exit(3);
 }
 
-// Whole-branch review, F9: `nested` was destructured away and discarded.
-// `detect`'s own comment calls this disclosure load-bearing because "a
-// report that omits it makes a partial scan look complete" — which is at
-// least as true of a run that is about to WRITE into the incompletely
-// scanned repository.
+// `nested` is kept and reported below: a run that omits it makes a partial
+// scan look complete, and this run is about to write into the repository it
+// scanned.
 const { files, nested, unreadableDirs } = listFiles(root);
 const stack = detectStack(root, files);
 const harness = detectHarness(root, files);
@@ -96,21 +89,14 @@ const manifest = manifestResult.manifest ?? emptyManifest(KIT_VERSION);
 // is none, so the two commands report one repository the same way.
 const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest: manifestResult.manifest, kitVersion: KIT_VERSION });
 
-// Whole-branch review, F9: this command runs `listFiles`, `detectStack`,
-// `detectHarness`, `detectExposures` and `buildGaps` — the same work
-// `detect` does — and then printed only proposals and diffs. A user who runs
-// `apply --yes` without first running `detect` was never told about a live
-// token THIS RUN had just found, the nested repositories it did not descend
-// into, or the questions it could not answer. "detect reports, apply writes"
-// is a defensible division of labour, but nothing said so, and `apply` is
-// perfectly usable standalone.
-//
-// Printed BEFORE any write, and before the "no actions" early exit, so it
-// reaches the user on every path. The exposure block comes from the SAME
-// renderer `detect` uses (`exposureSectionLines`, report.mjs), not a second
-// copy of the formatting, and the questions are counted by the SAME
-// function (`deriveCouldNotDerive`) so neither can drift from what `detect`
-// would say.
+// This command does the detection `detect` does, and is usable without it,
+// so it says what that detection found: a credential finding, the nested
+// repositories it did not descend into, and the questions it could not
+// answer. Printed before any write, and before the "no actions" early exit,
+// so it reaches the user on every path. The exposure block comes from the
+// renderer `detect` uses (`exposureSectionLines`, report.mjs) and the
+// questions from the function it uses (`deriveCouldNotDerive`), so neither
+// can differ from what `detect` would say.
 const questions = deriveCouldNotDerive({ stack, checks, nested, profile });
 function reportWhatDetectionFound() {
   const out = [];
@@ -124,8 +110,6 @@ function reportWhatDetectionFound() {
     out.push(`kh-harness: ${nested.length} nested repositor${was} detected and NOT scanned (${nested.map(n => n.path).join(', ')}). Everything below covers this repository only; each nested repository must be assessed separately.`);
     out.push('');
   }
-  // Printed inline (audit Tier 4, finding 20): this used to point at
-  // `detect` for sentences this run already held.
   if (questions.length) {
     const s = questions.length === 1 ? '' : 's';
     out.push(`kh-harness: ${questions.length} question${s} this run could not answer:`);
@@ -138,25 +122,19 @@ reportWhatDetectionFound();
 
 const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });
 
-// Files this kit previously wrote whose content on disk no longer matches
-// what the manifest recorded. propose.mjs never re-proposes a file the user
-// has EDITED or DELETED — even once its check looks 'absent' again — a
-// user's edit or deletion is a decision, not a gap to re-fill (see "a file
-// already in the manifest is not re-proposed" in propose.test.mjs). Such a
-// file therefore never reaches applyProposals, so its drift must be
-// surfaced here instead, independent of whatever else this run does or
-// doesn't propose. Silent drift is drift the user never finds out about.
+// Files this kit wrote whose content on disk no longer matches what the
+// manifest recorded. propose.mjs never proposes again a file the user has
+// edited or deleted, even once its check looks absent: the edit or the
+// deletion is a decision, not a gap to fill. Such a file never reaches
+// `applyProposals`, so its drift is reported here, whatever else this run
+// proposes.
 //
-// This is computed BEFORE the apply and reported after it. Since the
-// upgrade-skew fix, propose.mjs DOES re-propose a recorded file — but only
-// one that classifies `ours-unmodified` (identical to the manifest up to line endings,
-// stamped), as an update. That is why computing drift first stays correct:
-// drift is the `ours-modified` set, an update touches only `ours-unmodified`
-// files, and writing one re-records its hash, so no file can move INTO the
-// modified set because of anything this run writes. If an update path for
-// modified files is ever added, this must move below applyProposals — it
-// would otherwise report a pre-apply snapshot as though it were the state
-// the user is left with.
+// Computed before the apply and reported after it. That stays correct
+// because the only recorded file propose.mjs writes is one that classifies
+// `ours-unmodified`, as an update, and writing it records its new hash: no
+// file can move into the modified set because of anything this run writes.
+// An update path for modified files would have to move this below
+// `applyProposals`.
 const drift = (manifest.files ?? [])
   .filter(f => classify(root, manifest, f.path) === 'ours-modified')
   .map(f => f.path);
@@ -185,17 +163,15 @@ process.stdout.write(
   `kh-harness: ${proposals.length} action${proposals.length === 1 ? '' : 's'} to close ` +
   `${gapCount} capability gap${gapCount === 1 ? '' : 's'} for ${root}\n\n`,
 );
-// renderDiff is read-only, but it is not infallible by construction — it is
-// a backstop, not the primary defence (readSettingsResult's shape checks
-// are), for the same reason applyProposals is wrapped below: the preview is
-// the DEFAULT path, the one a cautious user reaches for first, and it must
-// never escape as a raw stack trace and exit 1. The CLI's contract is exit
-// 0/2/3, nothing else.
-// Under --yes the labels and reasons are printed and FILE diffs are not
-// (audit Tier 3, finding 19: a first run printed them twice, 1,833 lines
-// each time). The dry run is where those are; --yes reports what it wrote,
-// below. A settings patch — a hook entry or deny rules — is a few lines and
-// the most security-relevant thing this tool writes, so it is still shown.
+// The preview is read-only, but it is wrapped like `applyProposals` below:
+// it is the default path, the one a cautious user reaches for first, and it
+// must never escape as a stack trace and exit 1. The CLI's contract is exit
+// 0, 2 or 3.
+//
+// Under --yes the labels and reasons are printed and file diffs are not:
+// the dry run is where those are, and --yes reports what it wrote, below. A
+// settings patch — a hook entry or deny rules — is a few lines and the most
+// security-relevant thing this tool writes, so it is still shown.
 const showFileDiffs = !flags.has('--yes');
 const preview = diffRenderer(root);
 try {
@@ -237,63 +213,47 @@ if (settingsProblem) {
   process.exit(2);
 }
 
-// Coordinator finding (Minor): a settings-hook/deny write re-serialises
-// the WHOLE file (`serializeSettings`: the file's own BOM, indentation and
-// trailing newline are kept) — if the user's own settings.json was not already in
-// exactly that form (compact, a different key order, ...), applying a
-// patch reformats everything else in the file too, not just what is
-// listed above. Captured BEFORE applyProposals runs, since that call may rewrite
-// the very file this checks. Ruled, not fixed (see docs/task-8b-report.md,
-// finding 7): preserving the original formatting needs a format-preserving
-// JSON editor — a dependency, or a parser this project would have to
-// maintain — and that is a worse trade than disclosing a reformat.
-//
-// Whole-branch review, F7: the predicate itself used to live here, as a
-// second copy that had already drifted from `uninstall-lib.mjs`'s — it
-// compared against `JSON.stringify(...) + '\n'` unconditionally, so a
-// settings.json already in exactly this tool's own form but with no trailing
-// newline was misclassified and this note was printed over a diff with
-// nothing reformatted in it. `isCanonicalJson` (apply-lib.mjs, which compares
-// against the same `serializeSettings` both writers call) is the one predicate
-// both callers read now.
+// A settings write re-serialises the whole file (`serializeSettings`: the
+// file's own BOM, indentation and trailing newline are kept). If the user's
+// settings.json was not already in that form (compact, say), applying a
+// patch normalises the rest of the file too, and that is disclosed below.
+// Asked before `applyProposals` runs, since that call rewrites the file
+// this reads. Keeping every byte of the original formatting would need a
+// format-preserving JSON editor, a dependency or a parser to maintain, and
+// disclosing the reformat is the better trade.
 function readRawIfPresent(path) {
   if (!existsSync(path)) return null;
   try { return readFileSync(path, 'utf8'); } catch { return null; }
 }
 const settingsWasCanonical = isCanonicalJson(readRawIfPresent(join(root, SETTINGS_PATH)));
 
-// applyProposals itself never throws on an I/O failure encountered while
-// applying (see apply-lib.mjs) — a partial batch is returned normally, with
-// `failed` naming what stopped it, so the manifest below always reflects
-// reality. This try/catch is the backstop for anything else: a proposal
-// whose target fails the allowlist or containment check (pass 1) still
-// throws, and that must never escape as a raw stack trace and exit 1 — the
-// CLI's contract is exit 0/2/3, nothing else.
+// `applyProposals` never throws on an I/O failure met while applying (see
+// apply-lib.mjs): a partial batch is returned normally, with `failed` naming
+// what stopped it, so the manifest below always describes what was written.
+// This try/catch is for anything else: a proposal whose target fails the
+// allowlist or containment check (pass 1) still throws, and that must not
+// escape as a stack trace and exit 1.
 let result;
 try {
   result = applyProposals({ root, proposals, manifest, kitVersion: KIT_VERSION });
 } catch (err) {
   process.stderr.write(`kh-harness: apply failed: ${err && err.message ? err.message : String(err)}\n`);
-  // Nothing was written — pass 1 validates the whole batch before pass 2
-  // touches anything — but drift was already computed above and is just as
-  // true on this path as on any other. Dropping it here would contradict the
-  // reason it is reported independently of what this run proposes.
+  // Nothing was written: pass 1 validates the whole batch before pass 2
+  // touches anything. The drift computed above is as true on this path as
+  // on any other.
   reportDrift();
   process.exit(2);
 }
 
-// Written even when a failure stopped the batch partway through: the
-// manifest must always describe exactly what is actually on disk, so the
-// next run (and uninstall) can act on it correctly.
+// Written straight after the settings file, and even when a failure stopped
+// the batch partway: the manifest must describe what is on disk, so the
+// next run and `uninstall` can act on it.
 //
-// This is the one write in the whole tool that must not fail silently, and
-// it is therefore the one that must not be left unguarded. If it throws
-// (`.claude` present as a plain file, a full disk, a read-only tree) the
-// files just written are on disk with no manifest entry — which means every
-// later run classifies them `theirs` and `uninstall` can never remove them.
-// That is exactly the un-installability trap this tool exists to avoid, so
-// the failure is reported loudly, by path, and exits 2 rather than escaping
-// as a raw stack trace and exit 1.
+// This is the one write that must not fail silently. If it throws (`.claude`
+// present as a plain file, a full disk, a read-only tree) the files just
+// written are on disk with no manifest entry, every later run classifies
+// them `theirs`, and `uninstall` can never remove them. So the failure is
+// reported by path and exits 2.
 let manifestError = null;
 try {
   writeManifest(root, result.manifest);
@@ -304,7 +264,7 @@ try {
 for (const w of result.written) {
   process.stdout.write(`wrote      ${w.path}\n`);
   // chmod is a no-op on Windows: the execute bit lives in git's index there,
-  // and only the user can put it in (audit Tier 4, finding 27).
+  // and only the user can put it in.
   if (w.mode && process.platform === 'win32') {
     process.stdout.write(`note: Windows cannot record the execute bit — run \`git update-index --chmod=+x ${w.path}\` before committing\n`);
   }

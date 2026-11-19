@@ -13,27 +13,22 @@ const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', 
  * records. Returns null — not [] — when git fails, so callers can tell
  * "nothing found" from "could not look".
  *
- * `-z` IS NOT OPTIONAL, and nothing in this file may ask git for a path
+ * `-z` is not optional, and nothing in this file may ask git for a path
  * without it. With `core.quotePath` at its default (`true`) git applies
  * C-quoting to every path it prints, so a name holding any non-ASCII byte —
  * `src/café.ts`, a CJK filename, an emoji in a documentation tree — arrives
  * as the literal `"src/caf\303\251.ts"`, surrounding double quotes and octal
  * escapes included, and a path holding a literal newline is split across two
- * records. Every consumer in this tool then treats that literal as a path:
- * `detect-exposure.mjs`'s `statSync` threw ENOENT, the credential scanner
- * skipped the file with no record anywhere that it had, and `P0.security`
- * reported `verified / no credential patterns matched` over a plaintext
- * token (whole-branch review, F1). `languages()` missed it too, because the
- * quoted form ends in `.ts"`, so the profile silently fell back to
- * `generic`.
+ * records. Every consumer in this tool would then treat that literal as a
+ * path: the credential scanner would fail to open the file and skip it, with
+ * `P0.security` reporting `verified` over a plaintext token, and
+ * `languages()` would miss it too, because the quoted form ends in `.ts"`.
  *
- * That was the fourth, and by far the worst, of the blind spots enumerated
- * below: the only one that disarmed a security check rather than narrowing a
- * proposal. It is fixed here, at the one place paths enter the tool, rather
- * than un-escaped at each consumer — un-escaping is a second, driftable
- * answer to a question `-z` removes outright. `-c core.quotePath=false`
- * would also stop the quoting but would still break on a path containing a
- * newline, so it is not used.
+ * It is prevented here, at the one place paths enter the tool, not
+ * un-escaped at each consumer: un-escaping is a second answer to a question
+ * `-z` removes outright. `-c core.quotePath=false` would also stop the
+ * quoting but would still break on a path containing a newline, so it is
+ * not used.
  *
  * Note for anyone splitting these records: the NUL is a terminator, not a
  * separator, so the last element is always `''` and `filter(Boolean)` is what
@@ -85,21 +80,17 @@ function isExcludedPath(entry) {
 // missed proposal in that rare configuration is the acceptable direction for
 // this to fail — it is not fixed here.
 //
-// There WAS a fourth, undisclosed blind spot, and unlike these three it was
-// not a trade-off: git's C-quoting of non-ASCII path names made every file
-// with such a name invisible to the credential scanner while `P0.security`
-// still reported `verified`. It is gone — see `gitPaths` above, which is now
-// the only way this file asks git for a path. It is named here, in the same
-// list, because the list is where the next person will look to find out what
-// this scan cannot see, and an enumeration that silently omits the one entry
-// that mattered is how a reader concludes the list is exhaustive.
+// Not a blind spot, and named here because this list is where a reader
+// looks for what the scan cannot see: a path whose name holds a non-ASCII
+// byte. git quotes such a name unless asked not to, and `gitPaths` above,
+// the only way this file asks git for a path, asks.
 function detectNestedRepositories(root) {
   const nested = [];
-  // Audit Tier 3, finding 17: `listFiles` used to ask git a fourth time for
-  // `ls-files -co --exclude-standard`, which is exactly the paths of `-s`
-  // (fetched here for the gitlink scan) plus `-o --exclude-standard` (fetched
-  // here for nested repositories). Both answers are returned beside `nested`
-  // so `listFiles` derives the list instead; ~80 ms per spawn on Windows.
+  // `ls-files -co --exclude-standard`, the list `listFiles` wants, is
+  // exactly the paths of `-s` (fetched here for the gitlink scan) plus
+  // `-o --exclude-standard` (fetched here for nested repositories). Both
+  // answers are returned beside `nested` so `listFiles` derives the list
+  // without a further spawn, which costs ~80 ms on Windows.
   let tracked = null;
   let untracked = null;
   try {
@@ -108,8 +99,8 @@ function detectNestedRepositories(root) {
 
     // Detect submodules: entries with mode 160000 in git ls-files -s. Each
     // record is `<mode> <object> <stage>\t<path>`; the path begins after
-    // the first TAB and may itself hold spaces (audit Tier 2, finding 6: a
-    // whitespace split recorded `my sub dir` as `my`).
+    // the first TAB and may itself hold spaces, so it is never found by
+    // splitting on whitespace.
     const staged = gitPaths(root, ['ls-files', '-s']);
     if (staged !== null) tracked = [];
     for (const line of staged ?? []) {
@@ -210,12 +201,10 @@ function detectNestedRepositories(root) {
  * a directory walk on NTFS repositories containing node_modules.
  *
  * Goes through `gitPaths`, like every other path question in this file, so
- * `-z` cannot be dropped from one call site and kept at the others — which is
- * exactly how F1 happened (`apply.mjs`'s `hasTrackedChanges` half-knew about
- * git's quoting and stripped the surrounding quotes without un-escaping the
- * octal; this module did not know at all). `gitPaths` returning `null` is the
- * one signal that distinguishes "git could not look" from "git found
- * nothing", and only the former may fall through to the walk.
+ * `-z` cannot be dropped from one call site and kept at the others.
+ * `gitPaths` returning `null` is the one signal that distinguishes "git
+ * could not look" from "git found nothing", and only the former may fall
+ * through to the walk.
  */
 export function listFiles(root) {
   const { nested, tracked, untracked } = detectNestedRepositories(root);
@@ -234,13 +223,11 @@ export function listFiles(root) {
     return { files, source: 'git', nested, unreadableDirs: [] };
   }
 
-  // Fallback: a directory walk that PRUNES at the directory. Audit Tier 2,
-  // finding 14: `readdirSync(root, { recursive: true })` enumerated every
-  // entry under node_modules and only then dropped them by path component —
-  // 2.6 s for 20,000 files where skipping the directory takes milliseconds.
-  // Regular files only, never through a symlink or a Windows junction (the
-  // recursive readdir DID descend into a junction — measured by the test
-  // that now pins this), POSIX-relative paths.
+  // Fallback: a directory walk that prunes at the directory. A recursive
+  // `readdirSync` would enumerate every entry under node_modules before
+  // dropping them, seconds where skipping the directory takes milliseconds,
+  // and would descend into a Windows junction. Regular files only, never
+  // through a symlink or a junction, POSIX-relative paths.
   return { ...walkFiles(root), source: 'walk', nested };
 }
 

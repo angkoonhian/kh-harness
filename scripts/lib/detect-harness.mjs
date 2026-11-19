@@ -4,40 +4,15 @@ import { readIfPresent, existsAny } from './scan.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { git, isNotRepository } from './git-info.mjs';
 import { toolGateDenyRules } from './propose.mjs';
-// THIS IMPORT DIRECTION IS DELIBERATE. DO NOT "FIX" IT BY COPYING THE
-// FUNCTION BACK INTO scripts/lib/.
-//
-// Everywhere else in this codebase, `assets/` is DATA that `scripts/lib/`
-// reads and ships; nothing in `scripts/lib/` imports from it. So this line
-// looks like a mistake, and the obvious correction — duplicate `findHandoff`
-// here — would reintroduce F4 from the final whole-branch review, which is
-// the finding this import exists to make impossible.
-//
-// Why it has to run this way. `findHandoff` answers "where is this
-// repository's handoff file", and TWO things must answer it identically:
-// `detect-harness.mjs` (which credits `P4.handoff`) and
-// `assets/scripts/session-brief.mjs` (the SessionStart hook that reads the
-// file). The hook is copied verbatim into a user's `.claude/scripts/`, where
-// the only module beside it is `harness-redact.mjs` — so a constant or
-// function living in `scripts/lib/` could NEVER reach it. The only possible
-// shared home is the asset, and therefore the only possible direction is
-// this one.
-//
-// What duplicating it cost last time, measured: `detect` reported
-// `P4.handoff declared / docs/HANDOFF.md`, and three lines later installed a
-// hook that printed `kh-harness: no HANDOFF.md in this repository yet.`
-// into every session — a falsehood the same tool had just disproved, placed
-// in the model's own context as a premise to reason from. The two lists had
-// not been written to disagree; they were written once each, by different
-// hands, which is all it takes.
-//
-// It costs nothing at runtime: `harness-redact.mjs` imports only node
-// builtins and has no side effects at import, and the copy installed in a
-// user's repository gains no new dependency from this.
-//
-// See `findHandoff`'s own comment for the other half of F4 — why the HOOK
-// was widened to look where detection credits, rather than detection
-// narrowed to look only where the hook did.
+// `findHandoff` is imported from the installed asset, and must not be
+// copied into scripts/lib/. It answers "where is this repository's handoff
+// file", and two things must answer it identically: this module, which
+// credits `P4.handoff`, and `assets/scripts/session-brief.mjs`, the
+// SessionStart hook that reads the file. The hook is copied into a user's
+// `.claude/scripts/`, where nothing under scripts/lib/ can reach it, so the
+// only possible shared home is the asset. With two copies, `detect` can
+// report `P4.handoff declared / docs/HANDOFF.md` and then install a hook
+// that tells every session there is no handoff file.
 import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
 import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
@@ -86,27 +61,20 @@ function parseSettings(root, rel) {
 }
 
 /**
- * Every `permissions.deny` entry this repository actually has in effect, from
- * BOTH project settings files, in file order, deduplicated. Never throws: a
- * missing file, unparseable JSON, or a missing/malformed `deny` array
- * contributes nothing rather than an error.
+ * Every `permissions.deny` entry this repository has in effect, from both
+ * project settings files, in file order, deduplicated. Never throws: a
+ * missing file, unparseable JSON, or a missing or malformed `deny` array
+ * contributes nothing.
  *
- * Whole-branch review, F8: this read `.claude/settings.json` ALONE while
- * `hookEvents`, three fields away, read `SETTINGS_FILES` — both of them. Both
- * fields answer the same question ("what is configured here"), and Claude
- * Code merges the two files, so a deny rule in the gitignored, machine-local
- * `.claude/settings.local.json` is as much in effect as one in
- * `settings.json`. The consequence of the asymmetry was measured: a user
- * keeping their deny rules in `settings.local.json` was told `P2.protected`
- * was `absent` with EMPTY evidence — the one thing that check's own comment
- * says it must always do is "name what of theirs was found instead, so
- * adding rules alongside it is never a surprise" — and `apply --yes` then
- * wrote the identical rule a second time, into the other file.
+ * Both files, as the hook registry reads both: Claude Code merges them, so
+ * a deny rule in the gitignored, machine-local `.claude/settings.local.json`
+ * is as much in effect as one in `settings.json`. Read from one alone, a
+ * user keeping their rules in the local file is told `P2.protected` is
+ * absent with no evidence, and `apply` writes the identical rule a second
+ * time into the other file.
  *
- * This is also the single source for the COUNT (`denyRules`) and the
- * redacted LIST (`denyRuleList`) below, which used to parse and walk the
- * settings file twice. They are the length and the contents of one thing;
- * they cannot now report different lengths.
+ * The one source for the count (`denyRules`) and the redacted list
+ * (`denyRuleList`): they are the length and the contents of one thing.
  */
 function denyRulesInEffect(root) {
   const out = [];
@@ -118,26 +86,18 @@ function denyRulesInEffect(root) {
   return out;
 }
 
-// Task 8b: gap-model.mjs's P2.protected used to decide `declared` from
-// `denyRules > 0` alone — ANY existing deny rule, regardless of what it
-// protects, satisfied the whole capability. A user who denies edits to
-// their own secrets directory was told their lockfile and migrations were
-// protected too. `denyRuleList`, below, gives gap-model.mjs the actual
-// rule STRINGS so it can compare against what its own generator would
-// produce (protected-evidence.mjs's `protectedPathCandidates`, wrapped as
-// `Edit(...)`) instead of a bare count.
+// `denyRuleList` gives gap-model.mjs the rule strings, so P2.protected can
+// judge what the rules cover: a bare count would let a rule denying edits
+// to a secrets directory read as protecting the lockfile.
 //
-// `harness` is serialised wholesale into docs/harness/detect.json and
-// printed on every run — the same reason `hookEvents` below never records
-// a raw hook COMMAND, only a resolved script path. A `permissions.deny`
-// rule is ordinarily a path-shaped permission pattern (the shape every
-// rule this tool itself ever writes takes), but apply-lib.mjs's own
-// comment on `settingsDenyPreview` already flags that a `Bash(...)`
-// deny rule can embed a literal credential as its argument. So each entry
-// here is kept verbatim ONLY when it starts with one of the tools whose
-// argument is a path, never a command or URL — `Bash(...)`, `WebFetch(...)`
-// and anything unrecognised become `null`, the same "present, but not
-// shown" convention `hookEvents`' unresolvable commands already use.
+// `harness` is serialised whole into docs/harness/detect.json and printed
+// on every run, which is why a hook is recorded by its resolved script and
+// never by its command. A `permissions.deny` rule is ordinarily a
+// path-shaped permission pattern, but a `Bash(...)` rule can embed a
+// literal credential as its argument. So an entry is kept verbatim only
+// when it starts with one of the tools whose argument is a path;
+// `Bash(...)`, `WebFetch(...)` and anything unrecognised become `null`:
+// present, but not shown.
 const DENY_RULE_SAFE_PREFIXES = ['Edit(', 'Read(', 'Write(', 'Glob(', 'Grep(', 'NotebookEdit('];
 
 // The rules the kit installs with its gate hook, kept verbatim so
@@ -164,30 +124,15 @@ function redactDenyRule(rule) {
  * Every `.md` rule file under `.claude/rules/`, read off DISK, recursively,
  * POSIX-relative to `root`.
  *
- * Whole-branch review, F2. This was `under(files, '.claude/rules/')` — the
- * SCAN list — while every sibling `.claude/` question in this object reads
- * the file off disk. On a workspace that gitignores `.claude/`, the scan list
- * is permanently empty there, so `detect` said `P1.pathrules absent →
- * scaffold .claude/rules/` on every run, forever, while `apply` — a second
- * later, on the same tree, with the files on disk and in its own manifest —
- * said "this repository already satisfies every applicable step". Two
- * commands of one tool contradicting each other, with a proposal that could
- * never be satisfied.
+ * Off disk, not from the scan list, like every other `.claude/` question a
+ * check decides from: on a workspace that gitignores `.claude/` the scan
+ * list is empty there for good, and `detect` would propose scaffolding
+ * `.claude/rules/` on every run while `apply`, on the same tree, said
+ * there was nothing to do.
  *
- * The three hook checks were given exactly this treatment for exactly this
- * repository shape (see `registeredHook`'s "not visible to the file scan —
- * .claude/ may be gitignored" branch); `P1.pathrules` was the one that was
- * not. What drifted was never the DERIVATION — `pathrules-evidence.mjs` is
- * correctly shared with the generator — it was the other half of the
- * question, PRESENCE, which no check ever shared with anything.
- *
- * `.md` only, and that is the second half of F2: the old call passed no
- * suffix, so a stray `.DS_Store` or `.gitkeep` credited the capability.
- * Claude Code discovers only `.md` under `.claude/rules/`, and discovers it
- * recursively — hence `recursive: true`, which also preserves the old
- * prefix-match behaviour for a rule file in a subdirectory. Every other
- * `under(...)` call in this object already passed `'.md'`; `rules` was the
- * only one that did not.
+ * `.md` only: Claude Code discovers only `.md` under `.claude/rules/`, so
+ * a stray `.DS_Store` or `.gitkeep` must not credit the capability. It
+ * discovers them recursively, hence `recursive: true`.
  *
  * Never throws: a missing directory, `.claude/rules` present as a plain
  * file, or an unreadable directory all yield `[]`.
@@ -211,13 +156,12 @@ function claudeRuleFiles(root) {
  * The script a hook command runs, resolved against the repository's file list,
  * or null when nothing resolves.
  *
- * The command string is NEVER recorded. Secrets live in a command's arguments,
- * not in a program name, and one of the two files hookEvents reads —
- * `.claude/settings.local.json` — is gitignored and on the credential
- * scanner's always-probe list precisely because it holds machine-local
- * secrets. Masking the command against a pattern list would only narrow that
- * leak: the guarantee would depend on the list being complete, and this very
- * wave fixed I1 because that list was missing a common credential shape.
+ * The command string is never recorded. Secrets live in a command's
+ * arguments, not in a program name, and one of the two files the registry
+ * is read from, `.claude/settings.local.json`, is gitignored and on the
+ * credential scanner's always-probe list because it holds machine-local
+ * secrets. Masking the command against a pattern list would only narrow
+ * that leak, since the guarantee would depend on the list being complete.
  * Omission does not depend on anything.
  *
  * A token survives only if it is already a path in this repository — the same
@@ -266,9 +210,9 @@ function hookRegistrations(root, files) {
     if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) continue;
     for (const [event, matchers] of Object.entries(hooks)) {
       for (const matcher of Array.isArray(matchers) ? matchers : []) {
-        // Tier 2 review, Important 1: the matcher decides WHEN a hook fires,
-        // so it is recorded beside the resolved script — our per-edit sensor
-        // under `Bash` is not a per-edit sensor. Normalised by the same
+        // The matcher decides when a hook fires, so it is recorded beside
+        // the resolved script: our per-edit sensor under `Bash` is not a
+        // per-edit sensor. Normalised by the same
         // function the write-time dedupe uses. Never the command string.
         const m = normalizeMatcher(typeof matcher?.matcher === 'string' ? matcher.matcher : undefined);
         const entrySha256 = matcherEntrySha256(matcher);
@@ -301,18 +245,12 @@ const PROJECT_DOC_EXTENSIONS = ['.md', '.markdown', '.rst', '.adoc', '.txt'];
 const KIT_OUTPUT_PREFIXES = ['docs/harness/', '.claude/'];
 const KIT_OUTPUT_FILES = new Set(['CLAUDE.md', 'AGENTS.md', 'HANDOFF.md', 'docs/HANDOFF.md', INTENT_PATH]);
 
-// Coordinator finding: `requirements.txt`/`constraints.txt` are Python
-// dependency manifests, not documentation — this codebase already treats
-// `requirements*.txt` this way (see gap-model.mjs's P1.bootstrap comment
-// and protected-evidence.mjs's `pairedRequirementsFiles`, both keyed on the
-// same pip naming convention). Excluding these specific, already-classified
-// names is NOT narrowing `PROJECT_DOC_EXTENSIONS` by guessing an extension
-// is unlikely to be docs — `.txt` stays wide for every genuinely unknown
-// file. It is using a fact this project already holds about one pip-
-// specific name, the same way `isKitOutput` already excludes files this
-// kit itself writes. Matches both the flat form (`requirements.txt`,
-// `requirements-dev.txt`) and the directory form (`requirements/base.txt`),
-// same two shapes `protected-evidence.mjs`'s own regex covers.
+// `requirements.txt` and `constraints.txt` are Python dependency
+// manifests, not documentation, as protected-evidence.mjs's
+// `pairedRequirementsFiles` also takes them to be. Excluding these names is
+// not guessing that `.txt` is unlikely to be documentation: `.txt` stays
+// wide for every unknown file. Matches the flat form (`requirements.txt`,
+// `requirements-dev.txt`) and the directory form (`requirements/base.txt`).
 const DEPENDENCY_MANIFEST_RE = /(^|\/)(requirements|constraints)[^/]*\.txt$|(^|\/)(requirements|constraints)\/[^/]*\.txt$/;
 
 const isDoc = f => DOC_EXTENSIONS.some(e => f.toLowerCase().endsWith(e));
@@ -451,38 +389,31 @@ export function detectHarness(root, files, { env } = {}) {
     instructions: { path: instructionsPath, lines: lineCount(claudeMd ?? agentsMd) },
     agentsMd: agentsMd != null ? 'AGENTS.md' : null,
     claudeDir: {
-      // Task 9b, finding 6: this used to read `files` (the tracked/scan-
-      // visible list) while its own siblings below — denyRules,
-      // denyRuleList, hookEvents — read `.claude/settings.json` directly
-      // off disk via parseSettings. Under a gitignored `.claude/`, that
-      // made `settings: false` sit next to `denyRules: 2` populated from
-      // the very file `settings` just denied existed — a machine-readable
-      // falsehood a later tool would trust. Both now come from the SAME read
-      // as their siblings, so they cannot disagree with them. Each is
-      // `absent`, `unreadable` or `ok`: a file that is there but cannot be
-      // used must never read as a file that is not there.
+      // Read off disk, as `denyRules`, `denyRuleList` and
+      // `hookRegistrations` below are: taken from the scan list, a
+      // gitignored `.claude/` would put "no settings file" beside deny
+      // rules read from that very file. Each is `absent`, `unreadable` or
+      // `ok`: a file that is there but cannot be used must never read as a
+      // file that is not there.
       settings: readSettings(root, SETTINGS_PATH).state,
       localSettings: readSettings(root, LOCAL_SETTINGS_PATH).state,
-      // Whole-branch review, F8: both of these come from the SAME read of
-      // BOTH settings files now — see `denyRulesInEffect`. They are the
-      // length and the contents of one list.
+      // One read of both settings files (`denyRulesInEffect`): the length
+      // and the contents of one list.
       denyRules: denyInEffect.length,
       denyRuleList: denyInEffect.map(redactDenyRule),
-      // File inventory, scan-visible only, and deliberately left that way:
-      // NOTHING decides a capability's state from `hooks`, `agents`, `skills`
-      // or `commands` (a hook is credited from `hookRegistrations`, and
-      // `rules`, the one inventory field a check does read, is the disk read
-      // after them). Widening these to a disk read
-      // would buy no decision and would print the names of files a user
-      // deliberately kept out of git into `docs/harness/detect.json`, which
-      // IS committed. See `registeredHook`'s own comment on that discipline.
-      // Checked while fixing F2, and left alone on purpose.
+      // File inventory, scan-visible only, deliberately: nothing decides a
+      // capability's state from `hooks`, `agents`, `skills` or `commands`
+      // (a hook is credited from `hookRegistrations`, and `rules`, the one
+      // inventory field a check does read, is the disk read after them).
+      // Reading these off disk would buy no decision and would print the
+      // names of files a user kept out of git into
+      // `docs/harness/detect.json`, which is committed.
       hooks: under(files, '.claude/scripts/'),
       hookRegistrations: registrations,
       agents: under(files, '.claude/agents/', '.md'),
       skills: under(files, '.claude/skills/', '.md'),
       commands: under(files, '.claude/commands/', '.md'),
-      // Read off disk, like every other field a check decides from — F2.
+      // Read off disk, like every other field a check decides from.
       rules: claudeRuleFiles(root),
     },
     otherEditors: files.filter(f => OTHER_EDITOR_PREFIXES.some(p => f === p || f.startsWith(p + '/'))).sort(),
@@ -491,12 +422,12 @@ export function detectHarness(root, files, { env } = {}) {
     // all — so P1.architecture can tell "there is none" from "I only know
     // three filenames". See gap-model.mjs.
     docPointers: docPointers(claudeMd ?? agentsMd, files),
-    // Capped (audit Tier 4, finding 23): a repository with hundreds of
-    // documentation-shaped files listed every one of them in the committed
-    // report. The first 25 in sorted order, and the total beside them.
+    // Capped, so a repository with hundreds of documentation-shaped files
+    // does not list every one in the committed report: the first 25 in
+    // sorted order, and the total beside them.
     projectDocs: allDocs.slice(0, PROJECT_DOCS_LISTED),
     projectDocCount: allDocs.length,
-    // F4: the same function session-brief.mjs resolves its own path with.
+    // The function session-brief.mjs resolves its own path with.
     handoff: findHandoff(root),
     bootstrap: existsAny(root, BOOTSTRAP_CANDIDATES),
     gitattributes: files.includes('.gitattributes'),

@@ -28,9 +28,9 @@ import { readJsonFile, stripBom, UTF8_BOM } from './read-json.mjs';
  * else is not "ours" merely because it shares that path. The manifest file
  * itself is always ours: it is this tool's own bookkeeping, and a run that
  * updates it (new `installedAt`, a new file entry) is expected to leave it
- * modified if the user has ever committed it. So is `detect`'s report
- * (audit Tier 4, finding 21): its `generatedAt` changes on every run, and
- * a user who commits it was refused on every apply that followed a detect.
+ * modified if the user has ever committed it. So is `detect`'s report: its
+ * `generatedAt` changes on every run, so a user who commits it would be
+ * refused on every apply that followed a detect.
  * A corrupt manifest cannot be trusted to name what is ours, so nothing is
  * excused then and the gate is at its strictest; a missing one (a first
  * run) still excuses the fixed paths.
@@ -48,15 +48,15 @@ function ownedByUs(manifestResult) {
  * True only for changes to tracked files NOT already accounted for by
  * `ignorePaths` — new, untracked files are not this tool's problem either
  * way. Without `ignorePaths`, this tool's own first `apply --yes` dirties
- * any tracked `.claude/settings.json` it patches, so a plain second run
- * refused with no recourse but `--allow-dirty`, which waives the gate for
- * every OTHER uncommitted change too. The gate still exists, and still
- * refuses, for anything genuinely not ours.
+ * any tracked `.claude/settings.json` it patches, and a plain second run
+ * would be refused with no recourse but `--allow-dirty`, which waives the
+ * gate for every other uncommitted change too. The gate still refuses for
+ * anything that is not ours.
  *
- * `-z` for the same reason `scan.mjs`'s `gitPaths` uses it: git's quoted
- * output escapes non-ASCII bytes in octal, which made `.claude/caf\303\251.md`
- * compare unequal to the owned entry for the same file, so this tool's OWN
- * prior write looked like the user's uncommitted work.
+ * `-z` for the reason `scan.mjs`'s `gitPaths` uses it: git's quoted output
+ * escapes non-ASCII bytes in octal, and `.claude/caf\303\251.md` would
+ * compare unequal to the owned entry for the same file, so this tool's own
+ * prior write would look like the user's uncommitted work.
  *
  * Porcelain v1 in `-z` mode: each record is `XY<space><path>`, NUL-
  * terminated, and a rename or copy emits the NEW path in its own record
@@ -65,10 +65,10 @@ function ownedByUs(manifestResult) {
  * matters is the new one, so the original-path record is consumed and never
  * tested.
  *
- * Returns `{ dirty, error }`. Audit Tier 1, finding 3: a failed `git status`
- * used to read as "clean", which waived the gate on exactly the repositories
- * where git could not be trusted to answer. An error is the caller's to
- * refuse on.
+ * Returns `{ dirty, error }`. A failed `git status` is an error, never
+ * "clean": read as clean it would waive the gate on exactly the
+ * repositories where git cannot be trusted to answer. An error is the
+ * caller's to refuse on.
  */
 function trackedChanges(root, ignorePaths) {
   let out;
@@ -94,19 +94,18 @@ function trackedChanges(root, ignorePaths) {
  * The two refusals that protect `git diff` as the record of what this tool
  * did — the default branch and a dirty tree — as the sentences a write
  * prints before exiting 3, or, on a dry run, prints as notes after the
- * diffs. A dry run writes nothing, so there is nothing to refuse (audit
- * finding 5). Every command that writes into the repository asks this one
+ * diffs. A dry run writes nothing, so there is nothing to refuse. Every
+ * command that writes into the repository asks this one
  * function, so the commands cannot disagree. `git` is `gitInfo(root)`,
  * `manifestResult` is `readManifestResult(root)`, and `verb` names the
  * command in the refusal ("apply", "land").
  *
- * Audit Tier 1, finding 3, the three bypasses this closes: a repository with
- * no commits (an unborn `main` is `main` — `gitInfo` reads the symbolic
- * ref, not a commit); a default branch not named `main` or `master`
- * (`defaultBranches` adds `init.defaultBranch` and `origin/HEAD`); and a git
- * that cannot answer at all (not installed, "dubious ownership"), which used
- * to read as "not a repository" and waive both gates — it now refuses unless
- * BOTH waivers are given, because neither gate could run.
+ * Three cases the gates must not be bypassed by: a repository with no
+ * commits (an unborn `main` is `main`: `gitInfo` reads the symbolic ref,
+ * not a commit); a default branch not named `main` or `master`
+ * (`defaultBranches` adds `init.defaultBranch` and `origin/HEAD`); and a
+ * git that cannot answer at all (not installed, "dubious ownership"), which
+ * is refused unless both waivers are given, because neither gate could run.
  */
 export function writeGateRefusals({ root, git, manifestResult, allowDefaultBranch, allowDirty, verb }) {
   if (git.error) {
@@ -208,8 +207,7 @@ const DIFF_LINE_BAILOUT = 3000;
 // Never CLAUDE.md: the file most likely to hold decisions that cannot be
 // re-derived from source. No generator proposes it — P1.instructions is a
 // prompt, and the skill drafts docs/harness/CLAUDE.proposed.md itself for
-// the user to merge — so the allowlist refuses it outright rather than
-// carrying a redirect no proposal could reach (audit Tier 4, finding 27).
+// the user to merge — so the allowlist refuses it outright.
 const ALLOWED_EXACT = new Set(['HANDOFF.md', 'docs/ARCHITECTURE.md', 'docs/INTENT.md']);
 const ALLOWED_PREFIXES = ['docs/harness/', '.claude/', 'scripts/'];
 
@@ -246,32 +244,23 @@ export function assertAllowed(relPath) {
 }
 
 /**
- * Task 9b (coordinator round 2, finding 2 — "the one I care most about"):
- * uninstall-lib.mjs's directory cleanup used to carry its OWN, hand-
- * maintained allowlist of directories it may remove — a second list
- * answering the same question `assertAllowed` already answers for writes.
- * Two lists of what this tool may touch diverge eventually, and when they
- * do here the consequence is a file-removal mistake (removing something
- * apply could never write, or refusing to remove something it did), which
- * is worse than a duplicated predicate anywhere else in this codebase.
- *
- * `isAllowedDirectory` is not a second list: it is the SAME `ALLOWED_EXACT`
- * / `ALLOWED_PREFIXES` constants `assertAllowed` reads, reinterpreted for a
- * directory rather than a file. A directory is allowed exactly when it:
+ * The allowlist question for a directory, asked by uninstall-lib.mjs's
+ * directory cleanup. It is not a second list: it reads the `ALLOWED_EXACT`
+ * and `ALLOWED_PREFIXES` constants `assertAllowed` reads, so what this tool
+ * may remove cannot diverge from what it may write. A directory is allowed
+ * exactly when it:
  *   - equals one of `ALLOWED_PREFIXES` with its trailing slash stripped
- *     (`.claude`, `scripts`, `docs/harness`) — the directories this tool's
- *     OWN generators write directly under; or
- *   - sits UNDER one of those prefixes (`.claude/scripts`, `.claude/rules`,
- *     `.claude/scripts/`); or
- *   - is the PARENT directory of one of `ALLOWED_EXACT`'s own file paths
- *     (`docs`, the parent of `docs/ARCHITECTURE.md`) — a directory no
- *     prefix names, but one a real write can still bring into existence.
+ *     (`.claude`, `scripts`, `docs/harness`), the directories the
+ *     generators write directly under; or
+ *   - sits under one of those prefixes (`.claude/scripts`, `.claude/rules`);
+ *     or
+ *   - is the parent directory of one of `ALLOWED_EXACT`'s file paths
+ *     (`docs`, the parent of `docs/ARCHITECTURE.md`): a directory no
+ *     prefix names, but one a write can bring into existence.
  *
- * Deliberately does not duplicate `assertAllowed`'s absolute-path/`..`/`.git`
- * checks — a directory path reaching this function has already cleared
- * those as plain path-syntax safety (uninstall-lib.mjs's own guard, and
- * `assertContained` afterward); this function answers only the allowlist
- * question, the one that must never drift from what writes are allowed.
+ * It does not repeat `assertAllowed`'s absolute-path, `..` and `.git`
+ * checks: a directory path reaching it has cleared those in
+ * uninstall-lib.mjs's own guard, and `assertContained` follows.
  */
 export function isAllowedDirectory(relDir) {
   const normalized = relDir.split('\\').join('/');
@@ -405,10 +394,10 @@ function unifiedDiff(before, after, label) {
  * True for a `hooks` block the merge can safely traverse —
  * `{ "<Event>": [ { "matcher"?, "hooks"?: [ … ] } ] }`, the containers Claude
  * Code documents; the types inside them are not judged — or for an absent
- * one. Audit Tier 2, finding 7: `readSettingsResult` validated
- * `permissions` and not `hooks`, so `{"hooks":{"Stop":{}}}` passed the read,
- * `addHookEntry` then threw a TypeError on `.push`, and `--yes` exited 2
- * after a dry run that had shown a clean diff. Exported for its test only.
+ * one. Checked at the read, like `permissions`: `{"hooks":{"Stop":{}}}`
+ * that passed it would make `addHookEntry` throw on `.push`, and `--yes`
+ * fail after a dry run that had shown a clean diff. Exported for its test
+ * only.
  */
 export function isWellFormedHooks(hooks) {
   if (hooks === undefined) return true;
@@ -470,46 +459,27 @@ export function unusableSettingsReason(root) {
 }
 
 /**
- * Task 9b, finding 5: this tool's own write always appended a trailing
- * newline, even to a file that had none — the single most common
- * one-line diff after an otherwise content-identical round trip (a plain
- * `JSON.stringify(x, null, 2)` never ends in one). `raw` is the file's
- * exact original text (`null` when it did not exist, i.e. being created
- * fresh — a brand-new file keeps the conventional trailing newline).
- * Deliberately narrow: this matches ONE byte, not the original's line
- * endings or indentation — see apply.mjs's own `alreadyCanonical` comment
- * (and this project's standing ruling against a format-preserving JSON
- * editor) for why the rest of the reformat stays disclosed, not fixed.
+ * The trailing newline a settings write ends with: the file's own. `raw` is
+ * the file's original text, or null for a file being created, which gets
+ * the conventional newline. A write that always appended one would add a
+ * one-line diff to a file that had none. Narrow on purpose: this matches
+ * one byte, and `serializeSettings` the indentation; the rest of a reformat
+ * is disclosed, not prevented.
  */
 function matchingNewline(raw) {
   return raw != null && !raw.endsWith('\n') ? '' : '\n';
 }
 
 /**
- * Was this JSON file ALREADY in exactly the form this tool writes — the same
- * `JSON.stringify(x, null, detectIndent(raw))` plus the same trailing-newline
- * decision? If
- * so, applying a patch cannot have reformatted anything else, and the
- * reformat disclosure must not be printed.
- *
- * Whole-branch review, F7: this question had two implementations, and they
- * had drifted. `apply.mjs`'s `alreadyCanonical` compared against
- * `JSON.stringify(...) + '\n'` unconditionally; `uninstall-lib.mjs`'s
- * `wasCanonical` used `matchingNewline` — added on this branch precisely so
- * the tool stops appending a newline to a file that had none. So a
- * `settings.json` already in exactly the form this tool writes, but without
- * a trailing newline, was misclassified as non-canonical and `apply` printed
- * "was reformatted … whitespace/indentation may now differ throughout the
- * file" over a diff that was 35 insertions and no reformatting at all.
- *
- * The comment on the correct copy said it "mirrors apply.mjs's own
- * `alreadyCanonical`". It did not mirror it; it corrected it. One predicate
- * now, built on the `serializeSettings` both writers call.
+ * True when this JSON file is already in exactly the form this tool writes
+ * (`serializeSettings` of its own content gives back its own text). A patch
+ * then cannot have reformatted anything else, and the reformat disclosure
+ * must not be printed. The one predicate both writers of the file ask,
+ * built on the serialiser both call.
  *
  * `raw == null` means the file did not exist, so there was nothing to
- * reformat; an unreadable or unparseable file never reaches a settings write
- * at all. Both answer `true` — the disclosure's absence is the honest
- * outcome in both cases.
+ * reformat; an unparseable file never reaches a settings write at all. Both
+ * answer `true`.
  */
 export function isCanonicalJson(raw) {
   if (raw == null) return true;
@@ -533,9 +503,8 @@ export function serializeSettings(value, raw) {
 
 /**
  * The indentation `raw` uses — a tab, or the run of spaces on its first
- * indented line — so a settings write keeps it (audit Tier 4, finding 22: a
- * four-space file came back re-indented throughout, the one change this
- * tool promised not to make). Two spaces for a compact file, and for a file
+ * indented line — so a settings write keeps it, and a four-space file does
+ * not come back re-indented throughout. Two spaces for a compact file, and for a file
  * being created (`raw` null). Exported for its test; writers go through
  * `serializeSettings`.
  */
@@ -547,19 +516,13 @@ export function detectIndent(raw) {
 }
 
 /**
- * Task 9b (coordinator round 2, finding 3): apply.mjs and uninstall.mjs
- * each parse and re-serialise `.claude/settings.json` — applying a patch,
- * and reverting one — and each used to carry its OWN, near-identical
- * sentence disclosing that the rest of the file may have been reformatted
- * along with it. Two independently-worded copies of the same disclosure
- * drift: this project's verification already caught the two differ in a
- * small way ("beyond what was listed" vs. "beyond what was reverted"). One
- * sentence, one place; `verb` is the only thing that legitimately differs
- * between the two callers ("applying the patch above" / "reverting the
- * patch(es) above"). Since audit Tier 4 (finding 22) both writers keep the
- * file's indentation and trailing newline, so the disclosure is narrower
- * than it was: key order and inline spacing (Tier 4 final review,
- * Important 3).
+ * The one sentence that discloses a settings.json reformat. apply.mjs and
+ * uninstall.mjs both parse and re-serialise the file, applying a patch and
+ * reverting one, and both print this, so the two cannot word it
+ * differently; `verb` is all that differs ("applying the patch above",
+ * "reverting the patch(es) above"). Both writers keep the file's
+ * indentation and trailing newline, so what is disclosed is key order and
+ * inline spacing.
  */
 export function settingsReformattedNote(verb) {
   return `note       .claude/settings.json was re-serialised while ${verb} — its content is ` +
@@ -686,9 +649,8 @@ export function renderDiff(root, proposal) {
  * `chmod` is injected (defaulting to the real `chmodSync`) for the same
  * reason `verify.mjs`'s `run` is injectable: real POSIX mode bits are not
  * observable on every platform this project is developed on (Windows'
- * `chmodSync` has no execute-bit concept `stat().mode` can report — a
- * review confirmed the bits are genuinely unobservable there, not merely
- * untested), but the CALL this function makes is the same production line
+ * `chmodSync` has no execute-bit concept `stat().mode` can report), but
+ * the call this function makes is the same production line
  * regardless of OS. Injecting `chmod` lets a test pin that line directly,
  * on every platform, rather than asserting an effect one platform cannot
  * produce.
@@ -712,24 +674,18 @@ function upsertFileEntry(files, entry) {
 }
 
 /**
- * Task 9b, finding 4: uninstall used to leave behind every directory apply
- * had to create to write its own files — on a repository with no `.claude/`
- * at all beforehand, a complete uninstall still left an empty `.claude/`,
- * `.claude/scripts/` and `scripts/` behind. The fix needs to know, at
- * uninstall time, which directories THIS tool actually brought into
- * existence — never one that already existed, and never one a later
- * `rmdir` could be wrong to touch merely because it happens to be empty
- * NOW. That provenance has to be recorded at the moment of creation, since
- * "is this directory empty" on its own cannot answer "did we create it" —
- * a user's own, separately-empty directory of the same name is
- * indistinguishable from ours after the fact.
+ * Records, in `nextManifest.dirsCreated`, each directory this write is
+ * about to bring into existence, so uninstall can remove it once it is
+ * empty. That has to be recorded at the moment of creation: "is this
+ * directory empty" cannot answer "did we create it", since a user's own
+ * empty directory of the same name looks the same afterwards. A directory
+ * that already exists is never recorded.
  *
- * Called BEFORE `writeFileDeep`'s own `mkdirSync(..., { recursive: true })`
- * so every ancestor directory's existence is checked against the real
- * filesystem as it stood before this write, not after. `nextManifest` is
- * mutated in place and de-duplicated via a Set — safe to call once per
- * write even when an earlier write in the same batch already created a
- * shared ancestor (e.g. two files landing in `.claude/scripts/`).
+ * Called before the write's own `mkdirSync(..., { recursive: true })`, so
+ * each ancestor is checked against the filesystem as it stood before the
+ * write. `nextManifest` is mutated in place and de-duplicated, so it is
+ * safe to call once per write when an earlier write in the batch created a
+ * shared ancestor.
  */
 function recordCreatedDirs(root, nextManifest, relPath) {
   const dir = dirname(relPath.split('\\').join('/'));
@@ -986,10 +942,9 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   }
   writeSettingsBatch({ root, batch, nextManifest, patched, failed, replaceSettings });
 
-  // The version that last WROTE, not the one that first created the
-  // manifest (audit Tier 2, finding 8): a 0.2.0 asset on disk under a
-  // manifest still saying 0.1.0 was a false record. A run that changed
-  // nothing leaves it alone.
+  // The version that last wrote, not the one that first created the
+  // manifest. A run that changed nothing leaves it alone. It says nothing
+  // of a file that run did not write: `P0.kitskew` reads each file's stamp.
   if (written.length || patched.length) nextManifest.kitVersion = kitVersion;
 
   return { written, patched, skipped, failed, manifest: nextManifest };

@@ -38,19 +38,13 @@ const HARNESS_LOG_PATH = '.claude/scripts/harness-log.mjs';
 const HARNESS_SEAL_PATH = '.claude/scripts/harness-seal.mjs';
 
 /**
- * Task 9b, finding 2: a settings-hook proposal's own `reason` used to be a
- * hardcoded "no <event> hook registered in .claude/settings.json" — true
- * only when the event is genuinely empty. When a user already has an
- * UNRELATED hook on the same event (the exact shape hook-evidence.mjs's
- * `registeredHook` exists to disclose, never suppress), that sentence is
- * printed immediately above apply-lib.mjs's own diff caveat
- * "(appended after N existing hooks.<event> entries, ...)" — two adjacent,
- * self-contradicting claims about the same file. `detect` already gets this
- * right (hook-evidence.mjs's `registeredHook`, evidence: "<event> already
- * holds a hook that is not this kit's: <path>"); this reuses that EXACT text — the
- * check's own `evidence`, passed through from buildProposals, never a
- * second independently-worded copy that could drift from it — rather than
- * writing a third phrasing.
+ * A settings-hook proposal's `reason`: the check's own evidence, which is
+ * what `detect` printed for it, or "no <event> hook registered" when there
+ * is none. A fixed sentence would be false whenever the event already holds
+ * a hook of the user's, and would sit directly above the preview's own
+ * "(appended after N existing hooks.<event> entries, ...)". Reusing the
+ * evidence text means the proposal cannot word it differently from
+ * `registeredHook` (hook-evidence.mjs).
  */
 function hookRegistrationReason(event, check) {
   const evidence = check?.evidence ?? [];
@@ -98,25 +92,19 @@ function protectedPathProposal({ stack, files }) {
  * EXACTLY — PostToolUse fires for every tool otherwise, and the hook has
  * nothing to say about a Bash or Read call.
  *
- * Whole-branch review, F11: this comment used to say the matcher covers "the
- * tools that actually edit a file", which is not what it selects. From the
- * hooks reference, on matcher evaluation: a matcher containing only letters,
- * digits, `_`, `-`, spaces, `,` and `|` is an exact string or a `|`/`,`-
- * separated list of exact strings; only a matcher containing some OTHER
- * character is treated as an unanchored regular expression. `Write|Edit` is
- * letters and a pipe, so it is two exact strings, and it therefore does NOT
- * fire for `NotebookEdit` or for the legacy `MultiEdit`.
+ * From the hooks reference, on matcher evaluation: a matcher containing only
+ * letters, digits, `_`, `-`, spaces, `,` and `|` is an exact string or a
+ * `|`/`,`-separated list of exact strings; only a matcher containing some
+ * other character is treated as an unanchored regular expression.
+ * `Write|Edit` is letters and a pipe, so it is two exact strings, and it
+ * does not fire for `NotebookEdit` or for the legacy `MultiEdit`.
  *
- * That costs almost nothing today and is NOT changed here, deliberately —
- * widening a matcher changes what executes in a user's repository, which is
- * not a comment fix. `NotebookEdit` carries `notebook_path`, not
- * `file_path`, so lint-touched.mjs would read `undefined` and exit 0 anyway;
- * and the hook only covers `.ts/.tsx/.js/.jsx/.mjs/.cjs/.py`, none of which
- * is a notebook. RECOMMENDATION, for whoever picks this up: if notebook
- * linting is ever wanted, the matcher and `lint-touched.mjs`'s payload
- * reading must change together — the matcher alone would register a hook
- * that fires and does nothing, which is the false-assurance shape this
- * project has already paid for twice.
+ * That costs almost nothing: `NotebookEdit` carries `notebook_path`, not
+ * `file_path`, so lint-touched.mjs would read `undefined` and exit 0, and
+ * the hook only covers `.ts/.tsx/.js/.jsx/.mjs/.cjs/.py`, none of which is
+ * a notebook. If notebook linting is ever wanted, the matcher and
+ * `lint-touched.mjs`'s payload reading must change together: the matcher
+ * alone would register a hook that fires and does nothing.
  */
 /** The tools the per-edit sensor fires for — see the comment above. Named
  * so `P2.sensor` (gap-model.mjs) judges a registration against exactly what
@@ -186,8 +174,6 @@ function stopgateProposal({ kitVersion, stack, check }) {
   return [...files, {
     kind: 'settings-hook', event: 'Stop', step: 10,
     entry: execEntry(VERIFY_TOUCHED_PATH),
-    // See the matching comment on P2.sensor's own settings-hook proposal —
-    // this is review finding 5's fix, applied identically here.
     requiresFiles: requiredFiles(files),
     reason,
   }];
@@ -419,37 +405,24 @@ function bootstrapProposal({ kitVersion, stack, files, root }) {
 const PATH_RULE_STEP = 7;
 
 /**
- * Coordinator finding (round 3, Major, "the serious one"): `pkg.name` —
- * repository data a dependency or a contributor controls, not something
- * this tool derived — used to be interpolated unescaped INTO the template's
- * maintainer comment. A manifest name containing `-->` closes that HTML
- * comment early, turning everything after it into agent-loadable text:
- * exactly the "comments, not content" invariant this whole scaffold exists
- * to uphold, broken by the one piece of untrusted data it carried. The fix
- * is not escaping `-->` inside the comment — untrusted data inside a
- * comment delimiter is the wrong SHAPE of fix, because the next delimiter
- * nobody thought to escape (a stray `<!--` reopening, say) reintroduces the
- * same hole. Instead: the comment (see path-rule.md.tmpl) is now FULLY
- * STATIC — it contains no placeholder at all.
+ * What of a package reaches a path-rule file, and why its name does not.
  *
- * Round 4 then capped the heading's `pkg.name` at 80 characters, reasoning
- * that a SHORT fragment reads as corrupt data rather than an instruction.
- * Round 5 (coordinator): that was still a BOUNDING fix on the same shape —
- * 80 characters is ample room for a complete hostile sentence; truncation
- * bounded the length and did nothing about legibility. The static-comment
- * redesign in round 3 held against an attack never explicitly anticipated
- * BECAUSE it removed the shape (untrusted data inside a delimiter)
- * entirely, rather than narrowing it. The same move applies here: `pkg.name`
- * — attacker-authored PROSE from a file's contents — is dropped from the
- * heading ENTIRELY. The heading now shows `pkg.dir` instead: the directory
- * identifies the package exactly as well (the file is already named after
- * it, and the frontmatter glob already IS it), and a directory comes from
- * the repository's own FILESYSTEM LAYOUT, not from parsing a string a
- * dependency or contributor chose freely inside a file's content — the
- * same reason a `path` or `dir` field is treated as real evidence
- * throughout this codebase while a `name`/script BODY never is (see
- * detect-stack.mjs's own comment on why `scripts` carries names, never
- * bodies). `pkg.name` is no longer passed to the template at all.
+ * `pkg.name` is repository data a dependency or a contributor controls, not
+ * something this tool derived. Inside the template's maintainer comment, a
+ * name containing `-->` would close that HTML comment early and turn
+ * everything after it into text an agent loads. Escaping `-->` is the wrong
+ * shape of fix, since the next delimiter nobody thought to escape reopens
+ * the hole: the comment (see path-rule.md.tmpl) is fully static and holds
+ * no placeholder at all.
+ *
+ * The heading does not show the name either, at any length: 80 characters
+ * is ample room for a complete hostile sentence. It shows `pkg.dir`, which
+ * identifies the package as well (the file is named after it, and the
+ * frontmatter glob is it) and comes from the repository's own filesystem
+ * layout, not from a string chosen freely inside a file's content: the
+ * reason a `path` or `dir` field is treated as evidence throughout this
+ * codebase while a `name` or a script body never is. `pkg.name` is not
+ * passed to the template.
  */
 
 /** Markdown ATX headings are single physical lines; a newline in `dir`
@@ -492,7 +465,7 @@ function sanitizeForYamlDoubleQuoted(value) {
  * P1.pathrules CHECK — see that module's own header for why) derives purely
  * from the workspace's own directory layout. The body is deliberately left
  * for the user to fill: the conventions a package needs are theirs, and
- * inventing them is the failure this project exists to avoid (brief, Task 6).
+ * inventing them is the failure this project exists to avoid.
  *
  * VERIFIED against Claude Code's own documentation
  * (https://code.claude.com/docs/en/memory, sections "Organize rules with
@@ -535,18 +508,9 @@ function sanitizeForYamlDoubleQuoted(value) {
  * instead of deny rules or install steps: write only what detection
  * proved, and say so.
  *
- * The heading shows `pkg.dir`, never `pkg.name` (coordinator, round 5): the
- * directory already identifies the package everywhere else in this file —
- * the proposal's own `path` is named after it, and the frontmatter `glob`
- * already IS it — so showing the package's declared NAME there adds a
- * second identifier for the one thing, and that name is attacker-authored
- * prose from a file's content in a way a directory, read off the
- * repository's own filesystem layout, structurally cannot be. One
- * identifier for one thing, taken from the one source that cannot carry a
- * sentence, closes the heading as an injection vector rather than merely
- * narrowing it — see `sanitizeForHeading`'s own comment for why the
- * character/length cap is kept on `dir` anyway, as insurance, not as the
- * fix.
+ * The heading shows `pkg.dir`, never `pkg.name`: see the comment above
+ * `sanitizeForHeading`, and that function's own comment for why the
+ * character and length cap is kept on `dir` anyway.
  */
 function pathRuleProposal({ kitVersion, stack }) {
   return pathRuleTargets(stack).map(t => ({
@@ -1052,16 +1016,9 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
   return out;
 }
 
-// Exported for propose.test.mjs's generic coherence test: "every check that
-// advertises a proposal, and has a generator registered for its id, must
-// actually produce something when applied." That test iterates over the
-// CHECKS a real detection run produces and membership-tests each one's id
-// against this table (`c.id in GENERATORS`), rather than a hand-maintained
-// list of ids, so a capability added here later is automatically covered —
-// a planted new drifting generator is caught with no test edit (see the
-// coherence test's own comment). This is deliberately a review correction:
-// coordinator finding that caught P1.bootstrap drifting from its own
-// generator (a pyproject-only Python repo: `detect` advertised a proposal,
-// `apply` produced nothing) without any test failing, because nothing
-// checked the two against each other.
+// `GENERATORS` is exported for propose.test.mjs's coherence test: every
+// check that advertises a proposal and has a generator registered for its id
+// must produce something when applied. The test membership-tests each real
+// check's id against this table, not a hand-kept list of ids, so a
+// capability added here later is covered with no test edit.
 export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };
