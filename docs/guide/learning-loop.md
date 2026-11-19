@@ -167,9 +167,10 @@ without the counts, which no ledger entry holds. Two kinds are left to
 their own command: a `landed` or `reverted` entry is finished by
 `learn land` or `learn revert`, since each is half of a change to the
 repository. A learning the ledger names that has no file at all is
-recorded retired by `tick`, after which its recurrence can be drafted
-again; one that is landed or suspended while the committed gate file still
-holds its gate is reported instead.
+recorded retired by `tick` only when the ledger last records it at
+`observe` and no entry for it names an approver, after which its
+recurrence can be drafted again; any other is reported and left as the
+ledger has it, so the file put back is the learning it was.
 
 **A learning drafted before the second hash.** Its ledger entries carry no
 hash of the title, why and evidence. Its gate, status and action are
@@ -432,7 +433,7 @@ stopped step is finished, `P5.integrity` reports what it left as failing.
 | A revert stopped after part or all of its ledger entries | `learn revert <id> --yes` | Recognised from the ledger's last entries; only what is missing is written, and a manifest record left behind is removed. |
 | A learned file edited by hand, still holding the learning | restore it from git, or take the learning out of it by hand, then `learn revert <id> --yes` | Refused (exit 3) until then; the refusal says both ways. |
 | A step other than land or revert that stopped after its ledger entry (a replay, an approval, a demotion, a retirement) | the same command again, or `learn tick` | The learning file is rolled forward from the ledger first. The same command then refuses (exit 3), since the learning is already in the new status, and says the file was brought into line. |
-| A learning the ledger names whose file is gone | `learn tick` | Recorded retired, and its recurrence can be drafted again. One landed or suspended whose gate is still committed is listed under `NOT DONE` instead: restore the file, or take the gate and entry out by hand. |
+| A learning the ledger names whose file is gone | `learn tick` | Recorded retired when the ledger last records it at `observe` and names no approver for it, and its recurrence can be drafted again. Any other is listed under `NOT DONE` and left as it is: restore the file. |
 | A local learning whose id a pulled landing also uses | `learn retire <id>`, then draft again with `--redraft` | `list`, `show` and `tick` report it until then; the committed gate is the one applied. |
 | The ledger's last line is unterminated (an append that stopped partway) | nothing | Every reader passes over it, and the next append removes it. |
 | A gate, entry or record under the same id at another hash | — | Refused, never removed: it is not this learning's. |

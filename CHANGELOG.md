@@ -88,8 +88,11 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A learning file a stopped step left behind the ledger is rolled forward
   from the ledger by the same command run again, by any step that writes,
   or by `tick`; `landed` and `reverted` entries are left to `learn land`
-  and `learn revert`. `tick` records as retired a learning the ledger
-  names that has no file left.
+  and `learn revert`, each of which finishes its own stop only when the
+  ledger vouches for the file's title, why and evidence. `tick` records as
+  retired a learning the ledger names that has no file left, when the
+  ledger last records it at `observe` and names no approver for it; any
+  other is reported and left, and restoring its file restores it.
 - `learn list`, `show` and `tick` report a local learning whose id the
   committed gate file holds for another gate. Ids are per machine and
   nothing renumbers a learning.

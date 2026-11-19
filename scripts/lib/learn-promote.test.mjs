@@ -958,18 +958,47 @@ test('a retirement stopped after its ledger entry is finished by the same comman
   assert.equal(kinds(root).filter(k => k === 'L1:retired').length, 1);
 });
 
-test('a learning whose file is gone while the committed file holds its gate is not recorded retired, and tick says what settles it', () => {
+const FILE_GONE = id => `${id}: its learning file is gone, and the ledger records an action above observe or an approver for it, so it was not recorded retired; restoring the file is what lets a step change it again`;
+
+test('tick does not retire an approved learning whose file is gone, and the restored file works as before', () => {
+  const { root, gate } = promotedRepo('block');
+  const file = readFileSync(learningFile(root, 'L1'));
+  rmSync(learningFile(root, 'L1'));
+  const ledger = kinds(root);
+
+  const ticked = tick(root);
+  assert.deepEqual([ticked.retiredFileGone, ticked.errors], [[], [FILE_GONE('L1')]]);
+  assert.deepEqual(kinds(root), ledger, 'the ledger is left alone');
+  assert.deepEqual(draftLearning(root, draftFor(root)),
+    refused('signature: learning L1 already covers this signature; its learning file is gone, and `tick` does not retire a learning the ledger records an action above observe or an approver for: restoring the file is what lets a step change it again'));
+
+  writeFileSync(learningFile(root, 'L1'), file);
+  const restored = tick(root);
+  assert.deepEqual([restored.retiredFileGone, restored.errors, restored.repairedGates], [[], [], ['L1']]);
+  assert.equal(statusOf(root), 'active-local');
+  assert.deepEqual(localGates(root).gates, [gate]);
+  assert.ok(denied(hookOn(root, MISTAKE)), 'the gate the owner approved blocks again');
+});
+
+test('tick does not retire a learning the owner demoted back to trial whose file is gone', () => {
+  const { root } = promotedRepo('block');
+  assert.equal(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'trial');
+  rmSync(learningFile(root, 'L1'));
+  const ticked = tick(root);
+  assert.deepEqual([ticked.retiredFileGone, ticked.errors], [[], [FILE_GONE('L1')]]);
+  assert.equal(kinds(root).at(-1), 'L1:demoted');
+});
+
+test('a suspended learning whose file is gone is not recorded retired, with its gate committed or taken out by hand', () => {
   const { root } = suspendedRepo();
   rmSync(learningFile(root, 'L1'));
   const ticked = tick(root);
-  assert.deepEqual(ticked.retiredFileGone, []);
-  assert.deepEqual(ticked.errors, [`L1: its learning file is gone while ${GATES_PATH} still holds its gate, so it was not recorded retired; restoring the file, or taking its gate and entry out of the repository by hand, lets tick settle it`]);
-  assert.deepEqual(localGates(root).gates, [{ id: 'L1', suspended: true }], 'the suspension the owner\'s marks earned still stands');
+  assert.deepEqual([ticked.retiredFileGone, ticked.errors], [[], [FILE_GONE('L1')]]);
+  assert.deepEqual(localGates(root).gates, [{ id: 'L1', suspended: true }], 'the suspension the marks earned still stands');
   assert.equal(denied(hookOn(root, MISTAKE)), false);
   commitFile(root, GATES_PATH, JSON.stringify({ schema: 1, gates: [] }));
-  const settled = tick(root);
-  assert.deepEqual([settled.retiredFileGone, settled.errors], [['L1'], []]);
-  assert.deepEqual(localGates(root).gates, []);
+  const after = tick(root);
+  assert.deepEqual([after.retiredFileGone, after.errors], [[], [FILE_GONE('L1')]]);
 });
 
 // --- what ended an earlier learning ------------------------------------------

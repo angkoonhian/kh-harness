@@ -960,8 +960,8 @@ revert that takes the gate out, and differs by status:
     node scripts/learn.mjs <path-to-repo> tick [--json]
 
 The unattended rules, run once: roll forward each learning file a stopped
-step left behind the ledger, record as retired each learning the ledger
-names that has no file left, repair this machine's gate file from the
+step left behind the ledger, record as retired each unapproved learning
+the ledger names that has no file left, repair this machine's gate file from the
 ledger, retire trials whose cited paths are all gone, demote gates marked
 wrong twice, and promote under the policy in force. Prints what it did and
 what it could not do, the trials the policy passed over with the reason,
@@ -975,11 +975,14 @@ the ledger records no hash of its title, why and evidence, and, every
 trial at once, while `docs/harness/FAILURES.md` could not be read or is
 over 1 MiB.
 
-A landed or suspended learning whose file is gone while the committed gate
-file still holds its gate is not recorded retired, since that would lift a
-suspension and leave nothing to revert it by; `tick` lists it under
-`NOT DONE` and exits 2 until the file is restored or the gate and entry
-are taken out of the repository by hand.
+A learning whose file is gone is recorded retired only when the ledger
+last records it at `observe` and no entry for it names an approver: a
+draft stopped before it wrote its file, or a candidate or trial nobody
+approved, demoted or marked. Any other is left as the ledger has it, since
+`retired` is terminal, would lift a suspension, and would let the
+recurrence be drafted and promoted again; `tick` lists it under `NOT DONE`
+and exits 2 until the file is restored, after which the learning is what
+it was.
 
 ```
 TICK

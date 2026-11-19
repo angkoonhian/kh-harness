@@ -29,9 +29,9 @@ import { writeFileAtomic } from './atomic-write.mjs';
 import { FAILURES_PATH, failuresNotRead, readFailures } from './failures-evidence.mjs';
 import { FIRING_EVENT, gateStats, wrongSinceGrant } from './gate-stats.mjs';
 import {
-  citationsGone, citesGone, codeOf, failed, fileless, gateActionsFor, ID_ERROR, idCollisions, isId, isPlainObject, learningIn,
+  citationsGone, citesGone, codeOf, failed, fileless, FILELESS_KEPT, gateActionsFor, ID_ERROR, idCollisions, isId, isPlainObject, learningIn,
   ledgerEntry, proseUnrecorded, readFailure, readState, recordedIn, recordedState, refuse, refused, repairedStep, repairLocalGates,
-  rewriteLocalGates, rollLearningsForward, SETTLED, unapprovedGateIds, unrecordedReason, withLearningsLock, writeTransition, wrongMarkedFor,
+  retiredWhenFileless, rewriteLocalGates, rollLearningsForward, SETTLED, unapprovedGateIds, unrecordedReason, withLearningsLock, writeTransition, wrongMarkedFor,
 } from './learn-lib.mjs';
 import { appendLedger, isSha256 } from './ledger.mjs';
 import { checkedPolicy, policyAllows, readPolicy, removePolicy, writePolicy } from './policy.mjs';
@@ -353,9 +353,10 @@ export function recordedPolicySha256(entries) {
  *   - the roll forward of each learning file a step left behind its ledger
  *     entry (`rolledForward`);
  *   - a `retired` entry for each id the ledger names that has no learning
- *     file and is not settled (`retiredFileGone`), so its recurrence can be
- *     drafted again; one whose gate the committed file still holds is left,
- *     and `errors` says what settles it;
+ *     file, is not settled, is last recorded at `observe` and has no entry
+ *     naming an approver (`retiredFileGone`), so its recurrence can be
+ *     drafted again; any other fileless id is left as the ledger has it, and
+ *     `errors` says that restoring the file is what settles it;
  *   - the gate repair, which removes every local gate the ledger does not
  *     grant, the ones nobody approved among them (`unapprovedRemoved`);
  *   - retirement of each learning on trial every path of whose `cites` is
@@ -445,20 +446,21 @@ function tickUnguarded(root, { now = Date.now }) {
 
 /**
  * Records `retired` for each id the ledger in `state` names that has no
- * learning file and is not settled: whatever step lost the file, a draft
- * stopped before it wrote one among them, nothing can move such a learning,
- * and it would stand for its signature for good. One the ledger last
- * recorded as landed or suspended, whose gate the committed file still
- * holds, is left as it is: a `retired` entry would lift its suspension and
- * leave nothing to revert it by.
+ * learning file, is not settled, and `retiredWhenFileless`: a draft stopped
+ * before it wrote its file, or a candidate or trial nobody approved, which
+ * nothing else can move and which would stand for its signature for good.
+ * Any other fileless id keeps its ledger entries, so the file put back is
+ * the learning it was: a `retired` entry is terminal, would lift a
+ * suspension, and would let the recurrence be drafted and promoted again as
+ * though nobody had judged it.
  */
 function retireFileless(root, write, state, result) {
   const { base, learned } = harnessIdentity(root);
   for (const id of fileless(state)) {
     const last = recordedState(state.view.entries, id);
     if (last === null || SETTLED.has(last.status)) continue;
-    if (COMMITTED_STATUSES.has(last.status) && state.committed.some(g => g.id === id && gateSha256(g) === last.contentSha256)) {
-      result.errors.push(`${id}: its learning file is gone while ${GATES_PATH} still holds its gate, so it was not recorded retired; restoring the file, or taking its gate and entry out of the repository by hand, lets tick settle it`);
+    if (!retiredWhenFileless(state.view.entries, id)) {
+      result.errors.push(`${id}: its learning file is gone, and ${FILELESS_KEPT} it, so it was not recorded retired; restoring the file is what lets a step change it again`);
       continue;
     }
     const { contentSha256, proseSha256, evidence } = last;

@@ -784,6 +784,16 @@ export function fileless(state) {
   return [...new Set(state.view.entries.map(e => e?.learningId).filter(id => isId(id) && !files.has(id)))].sort(idOrder);
 }
 
+/** Whether `tick` records the fileless learning `id` retired: only one the
+ * ledger last records at `observe` and names no approver for in any entry.
+ * A lost file must not end a learning somebody approved, demoted or marked,
+ * since `retired` is terminal and the restored file could not undo it. */
+export const retiredWhenFileless = (entries, id) =>
+  recordedState(entries, id)?.action === 'observe' && !entries.some(e => e?.learningId === id && isApprover(e.approvedBy));
+
+/** What is said of a fileless learning `tick` does not retire. */
+export const FILELESS_KEPT = 'the ledger records an action above observe or an approver for';
+
 /**
  * The id of a learning that stands for `signature`, or null: one whose file
  * or ledger entries name the signature, unless the ledger's last word on it
@@ -1028,6 +1038,15 @@ export function draftLearning(root, draft, { redraft = false } = {}) {
   }
 }
 
+/** What a refused draft adds when the learning standing for its signature
+ * has no file: whether `tick` settles it. */
+function filelessNote(state, id) {
+  if (!fileless(state).includes(id)) return '';
+  return retiredWhenFileless(state.view.entries, id)
+    ? '; its learning file is gone, and `tick` records it retired, after which this recurrence can be drafted'
+    : `; its learning file is gone, and \`tick\` does not retire a learning ${FILELESS_KEPT}: restoring the file is what lets a step change it again`;
+}
+
 function draftUnguarded(root, draft, redraft) {
   const malformed = error => refuse(root, failed(error));
   if (!isPlainObject(draft)) return malformed('draft: must be an object');
@@ -1059,8 +1078,7 @@ function draftUnguarded(root, draft, redraft) {
     if (!state.view.intact) return refused('the ledger cannot be read or its chain is broken, so no learning can be told settled and no id never used can be assigned');
     const standing = standingFor(state, signature);
     if (standing !== null) {
-      const gone = fileless(state).includes(standing) ? '; its learning file is gone, and `tick` records it retired, after which this recurrence can be drafted' : '';
-      return refused(`signature: learning ${standing} already covers this signature${gone}`);
+      return refused(`signature: learning ${standing} already covers this signature${filelessNote(state, standing)}`);
     }
     const earlier = earlierFor(state, signature, kinds);
     if (earlier.length > 0 && !redraft) {
