@@ -605,11 +605,11 @@ test('docPointers excludes docs/INTENT.md and docs/harness/RULES.md — phase-3 
   assert.deepEqual(run(d).docPointers, ['docs/wiki/README.md'], 'only the repository\'s own documentation is credited');
 });
 
-test("denyRuleList keeps the kit's log purge rules verbatim, and no purge rule that is not exactly one of them", () => {
+test("denyRuleList keeps the kit's log purge --yes rules verbatim, and no purge rule that is not exactly one of them", () => {
   const d = repo();
   const purge = commandDenyRules().filter(rule => rule.includes('log.mjs'));
-  assert.equal(purge.length, 2, 'fixture sanity');
-  const lookalikes = ['Bash(*log.mjs* purge --yes SECRET*)', 'Bash(log.mjs purge*)'];
+  assert.equal(purge.length, 4, 'fixture sanity');
+  const lookalikes = ['Bash(*log.mjs* purge --yes SECRET*)', 'Bash(*log.mjs* purge*)'];
   write(d, '.claude/settings.json', JSON.stringify({ permissions: { deny: [...purge, ...lookalikes] } }));
   assert.deepEqual(run(d).claudeDir.denyRuleList, [...purge, null, null]);
 });

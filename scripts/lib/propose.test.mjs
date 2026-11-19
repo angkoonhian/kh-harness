@@ -1843,17 +1843,18 @@ test('every script the kit ships under assets/scripts/ is one it installs, so no
 test('every sibling an installed script imports, statically or dynamically, is among the scripts it is installed with', () => {
   // Read with patterns of this test's own, not the generator's.
   const IMPORTS = [/\bfrom\s+['"]\.\/([\w.-]+\.mjs)['"]/g, /\bimport\(\s*['"]\.\/([\w.-]+\.mjs)['"]\s*\)/g];
-  let found = 0;
+  const found = new Set();
   for (const path of INSTALLED_SCRIPT_PATHS) {
     for (const pattern of IMPORTS) {
       for (const [, name] of assetOf(path).matchAll(pattern)) {
-        found += 1;
+        found.add(path);
         assert.ok(loadedSiblings(path).includes(`.claude/scripts/${name}`), `${path} imports ./${name}`);
         assert.ok(everyLoadedSibling(path).includes(`.claude/scripts/${name}`), `${path} is installed with ./${name}`);
       }
     }
   }
-  assert.ok(found >= INSTALLED_SCRIPT_PATHS.length - 1, 'fixture sanity: the patterns find imports');
+  assert.deepEqual(INSTALLED_SCRIPT_PATHS.filter(path => !found.has(path)), [SESSION_LOG_PATH, TOOL_GATE_PATH, REDACT_PATH],
+    'fixture sanity: the patterns find an import in every script but the two that name their siblings in a table, which the next test covers, and the module that loads none');
 });
 
 test('a script is installed with what its modules load in turn, and the gate hook with the table of siblings it imports by name', () => {
@@ -2107,23 +2108,51 @@ test('the logging hook and its three modules are updated together or not at all'
   assert.ok(kitskew(ctx2.checks).evidence.includes(`held back at kit 0.1.9: ${SESSION_LOG_PATH} (out of date, but kh-harness keeps ${HARNESS_SEAL_PATH} as it is, and its hook scripts are updated together or not at all)`), JSON.stringify(kitskew(ctx2.checks).evidence));
 });
 
-// --- `log purge` is denied beside the learn subcommands ---------------------
+// --- `log purge --yes` is denied beside the learn subcommands ---------------
 
-const PURGE_RULES = ['Bash(*log.mjs* purge*)', 'PowerShell(*log.mjs* purge*)'];
+const PURGE_RULES = [
+  'Bash(*log.mjs* purge*--yes*)', 'Bash(*log.mjs*--yes* purge*)',
+  'PowerShell(*log.mjs* purge*--yes*)', 'PowerShell(*log.mjs*--yes* purge*)',
+];
 
-test('the command deny rules are one list: the eight learn subcommands and log purge, each for Bash and for PowerShell', () => {
+test('the command deny rules are one list: the eight learn subcommands and log purge --yes, each for Bash and for PowerShell', () => {
   assert.deepEqual(commandDenyRules(), [...learnCommandDenyRules(), ...PURGE_RULES]);
   assert.equal(learnCommandDenyRules().length, 16);
   assert.deepEqual(toolGateDenyRules().slice(-commandDenyRules().length), commandDenyRules(), 'the gate hook is installed with every one');
 });
 
-test('an install made before log purge was denied is proposed exactly its two rules', () => {
+test('the log purge rules match --yes before or after the subcommand, and never the dry run', () => {
+  // A rule's `*` stands for any text, and the rule must match the whole command.
+  const matches = (rule, command) => {
+    const pattern = rule.slice(rule.indexOf('(') + 1, -1).split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+    return new RegExp(`^${pattern}$`, 's').test(command);
+  };
+  for (const tool of ['Bash', 'PowerShell']) {
+    const denied = command => commandDenyRules().filter(rule => rule.startsWith(`${tool}(*log.mjs*`)).some(rule => matches(rule, command));
+    for (const command of [
+      'node scripts/log.mjs . purge --yes',
+      'node scripts/log.mjs --yes . purge',
+      'node scripts/log.mjs . --yes purge',
+      'node "C:/kit/scripts/log.mjs" /some/repo purge --json --yes',
+      'cd /some/repo && node ../kit/scripts/log.mjs . purge --yes; echo done',
+    ]) assert.equal(denied(command), true, `${tool}: ${command}`);
+    for (const command of [
+      'node scripts/log.mjs . purge',
+      'node scripts/log.mjs . purge --json',
+      'node scripts/log.mjs . status',
+      'node scripts/log.mjs . report --json',
+      'node scripts/log.mjs . maintain',
+    ]) assert.equal(denied(command), false, `${tool}: ${command}`);
+  }
+});
+
+test('an install made before log purge --yes was denied is proposed exactly its four rules', () => {
   const older = toolGateDenyRules().filter(rule => !PURGE_RULES.includes(rule));
   const harness = gateInstalled(older);
   const gap = toolgateGap(PROFILE_STACKS.generic, harness);
   assert.equal(gap.state, 'absent');
-  assert.equal(gap.evidence.at(-1), `2 of the ${toolGateDenyRules().length} deny rules the gate hook is installed with are missing: ${PURGE_RULES.join(', ')}`);
+  assert.equal(gap.evidence.at(-1), `4 of the ${toolGateDenyRules().length} deny rules the gate hook is installed with are missing: ${PURGE_RULES.join(', ')}`);
   const ps = buildProposals({ checks: [gap], manifest: null, kitVersion: '0.2.0', harness, stack: PROFILE_STACKS.generic, files: [] });
   assert.deepEqual(ps.map(p => [p.kind, p.globs]), [['settings-deny', PURGE_RULES]]);
-  assert.match(ps[0].reason, /and \`log purge\`, which removes this machine's ledger, learnings, policy and local gates/);
+  assert.match(ps[0].reason, /and \`log purge --yes\`, which removes this machine's ledger, learnings, policy and local gates/);
 });

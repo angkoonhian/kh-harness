@@ -264,7 +264,8 @@ export const LEARN_TERMINAL_SUBCOMMANDS = Object.freeze(['approve', 'wrong', 'de
  * `*learn.mjs* approve*` matches the command with any path to the script,
  * quoted or not, and any repository path before the subcommand; a deny rule
  * applies to each part of a compound command. */
-const denyRunning = (script, subcommand) => [`Bash(*${script}* ${subcommand}*)`, `PowerShell(*${script}* ${subcommand}*)`];
+const COMMAND_TOOLS = Object.freeze(['Bash', 'PowerShell']);
+const denyRunning = (script, subcommand) => COMMAND_TOOLS.map(tool => `${tool}(*${script}* ${subcommand}*)`);
 
 /**
  * Deny rules for running the `learn` subcommands that approve a gate,
@@ -277,15 +278,23 @@ export function learnCommandDenyRules() {
 }
 
 /**
+ * Deny rules for running `log purge --yes`, which removes this machine's
+ * ledger, learnings, policy and local gates, and with them every gate
+ * promoted here and every local suspension. `log.mjs` takes a flag before
+ * or after the subcommand, so each tool has a rule for either order. The dry
+ * run, which carries no `--yes` and removes nothing, matches neither.
+ */
+function purgeDenyRules() {
+  return COMMAND_TOOLS.flatMap(tool => [`${tool}(*log.mjs* purge*--yes*)`, `${tool}(*log.mjs*--yes* purge*)`]);
+}
+
+/**
  * Every command deny rule the kit installs, the one list `detect` keeps
  * verbatim, `P5.toolgate` requires, an older install is topped up from and
- * `uninstall` may revert: the `learn` rules, and `log purge`, which removes
- * this machine's ledger, learnings, policy and local gates, and with them
- * every gate promoted here and every local suspension. `log purge` is
- * denied whole, its dry run too, as `land` and `revert` are.
+ * `uninstall` may revert: the `learn` rules and the `log purge --yes` ones.
  */
 export function commandDenyRules() {
-  return [...learnCommandDenyRules(), ...denyRunning('log.mjs', 'purge')];
+  return [...learnCommandDenyRules(), ...purgeDenyRules()];
 }
 
 /** The deny rules the gate hook is installed with that the settings in
@@ -314,7 +323,7 @@ function toolGateProposal({ kitVersion, check, harness, manifest, root }) {
   const deny = missing.length === 0 ? [] : [{
     kind: 'settings-deny', step: TOOL_GATE_STEP,
     globs: missing,
-    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate and \`log purge\`, which removes this machine's ledger, learnings, policy and local gates: a second barrier behind their own terminal check",
+    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate and \`log purge --yes\`, which removes this machine's ledger, learnings, policy and local gates: a second barrier behind their own terminal check",
   }];
   if (toolGateHookRegistered({ harness, manifest, root })) return deny;
   const files = hookFiles(TOOL_GATE_PATH, kitVersion);

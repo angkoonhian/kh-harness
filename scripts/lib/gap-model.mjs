@@ -790,7 +790,7 @@ const CHECKS = [
     // hook enforces, or running what approves it.
     check: ({ harness, manifest, root, heldScript }) => {
       const hook = registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH,
-        'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine\'s kh-harness data directory, and deny running the learn subcommands that approve or weaken a gate and `log purge`, which removes them',
+        'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine\'s kh-harness data directory, and deny running the learn subcommands that approve or weaken a gate and `log purge --yes`, which removes them',
         { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS });
       if (hook.state !== 'declared') return unlessHeld(hook, TOOL_GATE_PATH, heldScript);
       const missing = missingToolGateDenyRules(harness);

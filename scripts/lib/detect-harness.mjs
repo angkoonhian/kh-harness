@@ -102,7 +102,7 @@ const DENY_RULE_SAFE_PREFIXES = ['Edit(', 'Read(', 'Write(', 'Glob(', 'Grep(', '
 
 // The rules the kit installs with its gate hook, kept verbatim so
 // `P5.toolgate` can tell which are present: its command rules, against the
-// `learn` subcommands and `log purge`, and its rule for the data directory
+// `learn` subcommands and `log purge --yes`, and its rule for the data directory
 // under the home directory. Only these exact strings, which the kit wrote
 // and which hold nothing of the user's: any other command rule may carry an
 // argument of theirs.

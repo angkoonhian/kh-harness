@@ -164,7 +164,7 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  ledger, policy and local gates), and deny
                                  rules for running the \`learn\` subcommands
                                  that approve or weaken a gate, and \`log
-                                 purge\`, which removes them with this
+                                 purge --yes\`, which removes them with this
                                  machine's ledger: a second barrier, behind
                                  their own check for an interactive terminal
                                  outside Claude Code.

@@ -58,9 +58,10 @@ directory (including any script of the owner's kept there),
 `~/.claude/kh-harness/`, and running the eight `learn` subcommands that
 approve a gate, weaken one or change the repository's (`approve`, `wrong`,
 `demote`, `retire`, `land`, `revert`, `policy set`, `policy clear`; `land`
-and `revert` whole, their dry runs included), and running `log purge`,
-which removes this machine's ledger, learnings, policy and local gates
-(whole, its dry run included). The step is `declared` only when the hook and every one
+and `revert` whole, their dry runs included), and running `log purge
+--yes`, which removes this machine's ledger, learnings, policy and local
+gates (with `--yes` before or after the subcommand; its dry run, which
+removes nothing, is not denied). The step is `declared` only when the hook and every one
 of these rules are present; an existing install missing some is proposed
 exactly those.
 

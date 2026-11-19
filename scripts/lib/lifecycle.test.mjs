@@ -231,7 +231,7 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     const ours = s1.permissions.deny.filter(r => r !== 'Edit(secrets/**)');
     assert.ok(ours.length > 0, 'apply must add protected-path deny rules beside the user\'s own');
     const commands = new Set(commandDenyRules());
-    assert.ok(ours.every(r => r.startsWith('Edit(') || commands.has(r)), 'every added rule is an Edit(...) deny pattern or one of the kit\'s command rules: a terminal-only learn subcommand, or log purge');
+    assert.ok(ours.every(r => r.startsWith('Edit(') || commands.has(r)), 'every added rule is an Edit(...) deny pattern or one of the kit\'s command rules: a terminal-only learn subcommand, or log purge --yes');
 
     // P2.scripts never writes to a manifest this tool is not allowed to touch.
     assert.equal(readFileSync(join(d, 'packages/api/package.json'), 'utf8'), JSON.stringify({ name: '@app/api', scripts: {} }),
@@ -990,12 +990,13 @@ test('apply then uninstall leaves git status clean', () => {
   assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
 });
 
-test('apply denies the terminal-only learn subcommands, and uninstall removes those rules leaving git status clean', () => {
+test('apply denies the terminal-only learn subcommands and log purge --yes, and uninstall removes those rules leaving git status clean', () => {
   const d = fixture();
   run(APPLY, d, '--yes');
   const deny = settings(d).permissions.deny;
   for (const rule of learnCommandDenyRules()) assert.ok(deny.includes(rule), rule);
-  for (const rule of ['Bash(*log.mjs* purge*)', 'PowerShell(*log.mjs* purge*)']) assert.ok(deny.includes(rule), rule);
+  for (const rule of ['Bash(*log.mjs* purge*--yes*)', 'Bash(*log.mjs*--yes* purge*)', 'PowerShell(*log.mjs* purge*--yes*)', 'PowerShell(*log.mjs*--yes* purge*)']) assert.ok(deny.includes(rule), rule);
+  assert.equal(deny.some(rule => /log\.mjs\* purge\*\)$/.test(rule)), false, 'no rule denies the dry run');
   run(UNINSTALL, d, '--yes');
   const status = execFileSync('git', ['-C', d, 'status', '--porcelain'], { encoding: 'utf8' });
   assert.equal(status.trim(), '', `git status must be clean after the full cycle; got:\n${status}`);
@@ -1123,6 +1124,6 @@ test('uninstall finishes after the owner removes one kit hook entry by hand', ()
   assert.equal(git(d, 'status', '--porcelain'), '');
 });
 
-test('an install made before log purge was denied is given its two rules alone, and uninstall still leaves git status clean', () => {
+test('an install made before log purge --yes was denied is given its four rules alone, and uninstall still leaves git status clean', () => {
   olderInstallIsRepaired(new Set(commandDenyRules().filter(rule => rule.includes('log.mjs'))));
 });

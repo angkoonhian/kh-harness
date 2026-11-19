@@ -269,6 +269,6 @@ test('--help needs no entry among a command\'s known flags: it is answered befor
   }
 });
 
-test('the execution disclosure says log purge is denied with the learn subcommands, and why', () => {
-  assert.match(disclosed, /deny rules for running the `learn` subcommands that approve or weaken a gate, and `log purge`, which removes them with this machine's ledger/);
+test('the execution disclosure says log purge --yes is denied with the learn subcommands, and why', () => {
+  assert.match(disclosed, /deny rules for running the `learn` subcommands that approve or weaken a gate, and `log purge --yes`, which removes them with this machine's ledger/);
 });
