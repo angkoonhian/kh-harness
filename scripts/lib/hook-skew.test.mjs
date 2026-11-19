@@ -2,12 +2,13 @@
 //
 // Every installed hook beside an older or missing sibling module. `apply`
 // leaves a hand-edited script in place, so a hook can find itself beside the
-// shared module of an earlier release; `fixtures/harness-redact.0.1.0.mjs.gz`
-// is that module as release 0.1.0 shipped it (commit 681189d), compressed so
-// that the repository's own credential sweep, which reads every source file,
-// does not read a second copy of the credential table's comments. Whatever
-// the sibling's state, a hook exits 0, writes nothing to stderr, and says at
-// most one thing per session.
+// shared module of an earlier release;
+// `fixtures/harness-redact.0.1.0.mjs.gz.b64` is that module as release 0.1.0
+// shipped it (commit 681189d), gzipped and then base64-encoded: the
+// repository's own credential sweep reads every source file and would read
+// a second copy of the credential table's comments, and no tracked file
+// under scripts/ may hold a NUL byte. Whatever the sibling's state, a hook
+// exits 0, writes nothing to stderr, and says at most one thing per session.
 //
 // Every test runs against a temporary KH_DATA_DIR and HK_MARKER_DIR.
 import { test, after } from 'node:test';
@@ -23,7 +24,7 @@ import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const REPO = resolve(import.meta.dirname, '..', '..');
 const ASSETS = join(REPO, 'assets', 'scripts');
-const OLD_REDACT = gunzipSync(readFileSync(join(import.meta.dirname, 'fixtures', 'harness-redact.0.1.0.mjs.gz')));
+const OLD_REDACT = gunzipSync(Buffer.from(readFileSync(join(import.meta.dirname, 'fixtures', 'harness-redact.0.1.0.mjs.gz.b64'), 'utf8'), 'base64'));
 const OLD_REDACT_SOURCE = '681189d:assets/scripts/harness-redact.mjs';
 
 const made = [];

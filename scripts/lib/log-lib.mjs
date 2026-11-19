@@ -335,13 +335,13 @@ export const formatBytes = n => {
   return `${value.toFixed(1)} ${units[unit]} (${n} bytes)`;
 };
 
-/** Where the hook is registered, as a clause: on all the logged events, on
- * some, on none, or not known. */
+/** Where the hook is registered, as a clause: on every logged event, on
+ * some of them, on none, or not known. */
 function hookClause(events, problem) {
   if (events === null) return `${problem}: whether the hook is registered could not be told`;
   if (events.registered === 0) return `the hook is not registered in ${SETTINGS_PATH}`;
-  const on = events.registered === events.logged ? `all ${events.logged}` : `${events.registered} of the ${events.logged}`;
-  return `the hook is registered on ${on} logged events in ${SETTINGS_PATH}`;
+  if (events.registered === events.logged) return `the hook is registered in ${SETTINGS_PATH}`;
+  return `the hook is registered on ${events.registered} of the ${events.logged} logged events in ${SETTINGS_PATH}`;
 }
 
 function ledgerLine(s) {
