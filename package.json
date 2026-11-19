@@ -6,6 +6,7 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "test": "node --test \"scripts/lib/**/*.test.mjs\"",
-    "detect": "node scripts/detect.mjs"
+    "detect": "node scripts/detect.mjs",
+    "log": "node scripts/log.mjs"
   }
 }
