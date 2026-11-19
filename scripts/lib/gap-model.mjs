@@ -20,7 +20,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // is a one-directional import, not a cycle.
 import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, kitSkew, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
-import { MANIFEST_PATH } from './manifest.mjs';
+import { MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
@@ -765,8 +765,15 @@ const CHECKS = [
     // Files are compared with the manifest and gates with their approvals;
     // nothing executes, so it is never `verified`. Nothing is proposed:
     // restoring a file or approving a gate is the owner's decision.
+    // `manifest` is null both when there is none and when it is corrupt, so
+    // which of the two is read again here.
     check: ({ manifest, root }) => {
-      if (!manifest) return { state: 'n/a', evidence: [`no readable ${MANIFEST_PATH}: nothing installed is recorded to check against`] };
+      if (!manifest) {
+        if (root !== undefined && readManifestResult(root).state === 'corrupt') {
+          return { state: 'failing', evidence: [`${MANIFEST_PATH} could not be read as a manifest, so the kit's files could not be checked against it`] };
+        }
+        return { state: 'n/a', evidence: [`no ${MANIFEST_PATH}: nothing was installed`] };
+      }
       if (root === undefined) throw new TypeError('buildGaps: P5.integrity needs `root` once there is a manifest — without it no recorded file can be read.');
       const { problems, summary } = integrityEvidence(root, manifest);
       return problems.length ? { state: 'failing', evidence: problems } : { state: 'declared', evidence: summary };

@@ -14,6 +14,7 @@ import { TOOL_GATE_PATH, HARNESS_GATES_PATH } from './propose.mjs';
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
 import { APPLY, DETECT, fixture, run, sandboxDataDir } from './lifecycle-fixtures.mjs';
 
 sandboxDataDir();
@@ -214,6 +215,27 @@ test('a recorded path that could reach the terminal unsafely is named by its pos
   assert.deepEqual(integrityEvidence(d, manifest).problems, [`modified since kh-harness wrote it: the file at position 3 in ${MANIFEST_PATH}`]);
 });
 
+test('a recorded harness path that resolves outside the repository is named by its position', () => {
+  const { d, manifest } = installed(HOOKS);
+  manifest.files.push({ path: '.claude/scripts/../../../outside.mjs', sha256: 'a'.repeat(64) });
+  const r = integrityEvidence(d, manifest);
+  assert.deepEqual(r.problems, [`the file at position 3 in ${MANIFEST_PATH} resolves outside the repository, so it was not read`]);
+});
+
+test('a gate file larger than the gate hook loads is named, and one at the limit is read', () => {
+  const g = gate('L1');
+  const { d, manifest } = installed(HOOKS);
+  write(d, LEARNED_PATH, registryFor([g]));
+  const text = gateFile([g]);
+  write(d, GATES_PATH, text + ' '.repeat(GATE_FILE_MAX_BYTES - Buffer.byteLength(text)));
+  assert.deepEqual(integrityEvidence(d, manifest).problems, []);
+
+  write(d, GATES_PATH, text + ' '.repeat(GATE_FILE_MAX_BYTES + 1 - Buffer.byteLength(text)));
+  assert.deepEqual(integrityEvidence(d, manifest).problems, [
+    `${GATES_PATH} is larger than ${GATE_FILE_MAX_BYTES} bytes, so the gate hook ignores it and none of its gates apply`,
+  ]);
+});
+
 // --- The check ---------------------------------------------------------------
 
 const stack = { languages: [], packageManager: null, isWorkspace: false, packages: [], ci: [] };
@@ -234,7 +256,8 @@ test('P5.integrity sits directly after P5.toolgate, and P0.kitskew stays last', 
 test('P5.integrity is n/a with no manifest, failing with its problems, declared otherwise, and never proposes', () => {
   const none = integrityGap(undefined, null);
   assert.equal(none.state, 'n/a');
-  assert.deepEqual(none.evidence, [`no readable ${MANIFEST_PATH}: nothing installed is recorded to check against`]);
+  assert.deepEqual(none.evidence, [`no ${MANIFEST_PATH}: nothing was installed`]);
+  assert.equal(integrityGap(tempDir(), null).state, 'n/a', 'a repository with no manifest file');
 
   const { d, manifest } = installed(HOOKS);
   const clean = integrityGap(d, manifest);
@@ -249,6 +272,15 @@ test('P5.integrity is n/a with no manifest, failing with its problems, declared 
     assert.equal(c.proposal, null);
     assert.equal(c.via, null);
   }
+});
+
+test('P5.integrity is failing when the manifest is corrupt', () => {
+  const d = tempDir();
+  write(d, MANIFEST_PATH, '{ "schema": 1, "files": [');
+  const c = integrityGap(d, null);
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [`${MANIFEST_PATH} could not be read as a manifest, so the kit's files could not be checked against it`]);
+  assert.equal(c.proposal, null);
 });
 
 test('P5.integrity throws when given a manifest without the root to read it against', () => {

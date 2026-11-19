@@ -89,7 +89,7 @@ const HOOK_EVENT = 'PreToolUse';
 
 /** Above this a gate file is not read: `GATE_LIMITS.gatesMax` gates fit in
  * far less, and the file is read before every tool call. */
-const GATE_FILE_MAX_BYTES = 1024 * 1024;
+export const GATE_FILE_MAX_BYTES = 1024 * 1024;
 
 const ACTION_RANK = { observe: 0, warn: 1, block: 2 };
 

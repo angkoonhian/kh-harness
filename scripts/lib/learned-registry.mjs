@@ -104,8 +104,8 @@ const refuse = field => ({ error: `learned entry: ${field} is missing or malform
  * One learned entry as a registry section: the `## <id> — <title>` heading
  * and its key lines, ending in a newline. `id` is `L` and a number;
  * `enforcedBy` one of `ENFORCERS`; `pointer` one token; `evidenceSummary`
- * `{ signature, sessions, firstTs, lastTs, external }` with ISO timestamps,
- * in order, or null; `approvedSha256` 64 lowercase hex characters. `title`
+ * `{ signature, sessions, firstTs, lastTs, external }`, required, with ISO
+ * timestamps or null, in order; `approvedSha256` 64 lowercase hex characters. `title`
  * and `why` are cleaned (see `cleanLine`); either with nothing left is
  * refused.
  */

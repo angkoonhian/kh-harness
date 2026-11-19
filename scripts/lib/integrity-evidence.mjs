@@ -18,13 +18,14 @@
 // the registry are all files a pull request can edit. So an id is printed
 // only when it is a gate id and a path only when it is plain; anything else
 // is named by its position.
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { classify, MANIFEST_PATH } from './manifest.mjs';
 import { GATE_ID, gateSha256, parseGates } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules } from '../../assets/scripts/harness-redact.mjs';
+import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
 
 const SCRIPTS_DIR = '.claude/scripts/';
 const PLAIN_PATH = /^[A-Za-z0-9._/-]{1,200}$/;
@@ -45,6 +46,29 @@ function readRepoFile(root, rel) {
   }
 }
 
+/** As `readRepoFile`, or `{ tooLarge: true }` for a file of more than
+ * `maxBytes`, of which no more than one byte past `maxBytes` is read. */
+function readBoundedRepoFile(root, rel, maxBytes) {
+  const p = join(root, rel);
+  if (!existsSync(p)) return { absent: true };
+  let fd;
+  try {
+    fd = openSync(p, 'r');
+    const buf = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buf.length) {
+      const n = readSync(fd, buf, length, buf.length - length, null);
+      if (n === 0) break;
+      length += n;
+    }
+    return length > maxBytes ? { tooLarge: true } : { text: buf.toString('utf8', 0, length) };
+  } catch {
+    return { unreadable: true };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /** Pushes a line for each recorded machinery file that is modified or
  * missing, and returns the line that counts the intact ones. */
 function machinery(root, manifest, problems) {
@@ -53,9 +77,10 @@ function machinery(root, manifest, problems) {
   manifest.files.forEach(({ path }, i) => {
     if (seen.has(path) || !isMachinery(path)) return;
     seen.add(path);
-    // `theirs` here is a recorded path that resolves outside the
-    // repository, which is not a file of this repository's harness.
+    // With the path recorded, `classify` answers `theirs` only when it
+    // resolves outside the repository, and then reads nothing.
     const state = classify(root, manifest, path);
+    if (state === 'theirs') problems.push(`the file at position ${i + 1} in ${MANIFEST_PATH} resolves outside the repository, so it was not read`);
     if (state === 'ours-unmodified') intact++;
     if (state !== 'ours-modified') return;
     const name = PLAIN_PATH.test(path) && !path.split('/').includes('..') ? path : `the file at position ${i + 1} in ${MANIFEST_PATH}`;
@@ -70,8 +95,12 @@ function machinery(root, manifest, problems) {
  * and cannot be read as one. Pushes a line for the file, or for each entry
  * that is not a gate. */
 function committedGates(root, problems) {
-  const read = readRepoFile(root, GATES_PATH);
+  const read = readBoundedRepoFile(root, GATES_PATH, GATE_FILE_MAX_BYTES);
   if (read.absent) return { gates: [], present: false };
+  if (read.tooLarge) {
+    problems.push(`${GATES_PATH} is larger than ${GATE_FILE_MAX_BYTES} bytes, so the gate hook ignores it and none of its gates apply`);
+    return null;
+  }
   if (read.unreadable) {
     problems.push(`${GATES_PATH} exists but could not be read`);
     return null;
