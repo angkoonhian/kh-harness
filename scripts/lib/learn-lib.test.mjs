@@ -12,10 +12,10 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
-import { appendEvent, GATES_PATH, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
+import { appendEvent, GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
-import { draftLearning, learningStats, listLearnings, runTrial } from './learn-lib.mjs';
+import { draftLearning, gateActionsFor, learningStats, listLearnings, runTrial } from './learn-lib.mjs';
 import { appendLedger, readLedger, verifyLedger } from './ledger.mjs';
 import { FAILURE_EVENT, findRecurrences, SUCCESS_EVENT } from './recurrence.mjs';
 import { MIN_CLEAN_CALLS, MIN_CLEAN_SESSIONS } from './replay.mjs';
@@ -83,16 +83,23 @@ function logClean(root) {
   for (const id of ids) log(root, id, HARNESS, ...Array.from({ length: perSession }, (_, i) => success(id, `npm run task-${i}`)));
 }
 
-function theSignature(root) {
-  const { recurrences } = findRecurrences(root);
-  assert.equal(recurrences.length, 1);
-  return recurrences[0].signature;
+/** A second recurrence, of the Read tool, in two more sessions. */
+function logReadMistakes(root) {
+  for (const id of ['three', 'four']) log(root, id, HARNESS, call(FAILURE_EVENT, id, 'Read', { file_path: 'missing.txt' }));
+}
+
+function signatureOf(root, tool = 'Bash') {
+  const found = findRecurrences(root).recurrences.filter(r => r.tool === tool);
+  assert.equal(found.length, 1);
+  return found[0].signature;
 }
 
 const WATCH_GATE = { tool: 'Bash', field: 'command', match: { kind: 'token', value: '--watch' }, message: 'Run the tests once; watch mode needs a terminal.' };
+const FIX_GATE = { ...WATCH_GATE, match: { kind: 'literal', value: FIX } };
+const READ_GATE = { tool: 'Read', field: 'file_path', match: { kind: 'literal', value: 'missing.txt' }, message: 'That file does not exist.' };
 
 const draftFor = (root, over = {}) => ({
-  signature: theSignature(root),
+  signature: signatureOf(root, (over.gate ?? WATCH_GATE).tool),
   title: 'Tests run once, never in watch mode',
   why: 'Watch mode waits for a terminal that an agent session does not have.',
   gate: WATCH_GATE,
@@ -108,8 +115,13 @@ function loggedRepo({ clean = true, files } = {}) {
   return root;
 }
 
+const learningFile = (root, id) => join(repoDataDir(root), 'learnings', `${id}.json`);
 const localGatesPath = root => join(repoDataDir(root), LOCAL_GATES_FILE);
 const localGates = root => JSON.parse(readFileSync(localGatesPath(root), 'utf8'));
+const writeLocalGates = (root, gates) => {
+  mkdirSync(repoDataDir(root), { recursive: true });
+  writeFileSync(localGatesPath(root), JSON.stringify({ schema: 1, gates }));
+};
 const kinds = root => readLedger(root).map(e => `${e.learningId}:${e.kind}`);
 
 function drafted(root, over) {
@@ -117,6 +129,18 @@ function drafted(root, over) {
   assert.ok(result.learning, result.error);
   return result.learning;
 }
+
+/** Holds the lock file at `path` as a live writer other than this one. */
+function holdLock(path) {
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, JSON.stringify({ pid: process.pid, token: 'another-writer' }));
+  return () => rmSync(path, { force: true });
+}
+
+test('a learning gate carries observe only while it is a candidate, rejected or on trial', () => {
+  for (const status of ['candidate', 'rejected', 'trial']) assert.deepEqual(gateActionsFor(status), ['observe']);
+  for (const status of ['active-local', 'landed', 'suspended', 'retired', 'unknown']) assert.deepEqual(gateActionsFor(status), []);
+});
 
 test('a draft for an unknown signature is refused', () => {
   const root = loggedRepo();
@@ -129,6 +153,7 @@ test('a draft for an unknown signature is refused', () => {
 test('a draft is validated in full before anything is stored, and an error never quotes the draft', () => {
   const root = loggedRepo();
   const secretish = 'zzqq-value-zzqq';
+  const credential = ['gh', 'p_', 'A1b2C3d4E5f6G7h8I9j0K1l2'].join('');
   const cases = [
     [{ signature: 42 }, 'signature: must be 16 lowercase hex characters'],
     [{ title: `two\n${secretish}` }, 'title: must be a single line'],
@@ -141,12 +166,18 @@ test('a draft is validated in full before anything is stored, and an error never
     [{ gate: { ...WATCH_GATE, match: { kind: 'regex', value: secretish } } }, 'gate: match.kind must be literal, token or glob'],
     [{ gate: { ...WATCH_GATE, tool: 'Shell' } }, "gate: tool must be the recurrence's tool"],
     [{ gate: [secretish] }, 'gate: must be an object'],
+    [{ gate: { ...WATCH_GATE, message: `Never paste ${credential}.` } }, 'gate: message must not contain a credential'],
+    [{ gate: { ...WATCH_GATE, match: { kind: 'literal', value: ['--tok', 'en=', secretish].join('') } } }, 'gate: match.value must not contain a credential'],
+    [{ gate: { ...WATCH_GATE, match: { kind: 'literal', value: `--wa​tch` } } }, 'gate: match.value must not contain control or invisible characters'],
+    [{ gate: { ...WATCH_GATE, field: credential } }, 'gate: field must not contain a credential'],
+    [{ gate: { ...WATCH_GATE, tool: `Ba​sh` } }, 'gate: tool must not contain control or invisible characters'],
+    [{ gate: { ...WATCH_GATE, cites: [`docs/${credential}.md`] } }, 'gate: cites must not contain a credential'],
     [{ extra: secretish }, 'draft: may have only the keys signature, title, why and gate'],
   ];
   for (const [over, error] of cases) {
-    const result = draftLearning(root, draftFor(root, over));
+    const result = draftLearning(root, { ...draftFor(root), ...over });
     assert.deepEqual(result, { error }, JSON.stringify(over));
-    assert.ok(!result.error.includes(secretish));
+    assert.ok(!result.error.includes(secretish) && !result.error.includes(credential));
   }
   assert.deepEqual(draftLearning(root, null), { error: 'draft: must be an object' });
   assert.equal(existsSync(join(repoDataDir(root), 'learnings')), false);
@@ -155,7 +186,7 @@ test('a draft is validated in full before anything is stored, and an error never
 
 test('a draft is stored as a candidate with its evidence and recorded as proposed', () => {
   const root = loggedRepo();
-  const signature = theSignature(root);
+  const signature = signatureOf(root);
   mkdirSync(join(root, 'docs/harness'), { recursive: true });
   writeFileSync(join(root, FAILURES_PATH), `## F1 — watch mode\n- signatures: ${signature}\n`);
   const learning = drafted(root);
@@ -175,14 +206,14 @@ test('a draft is stored as a candidate with its evidence and recorded as propose
     harness: { base: 'base-one', model: 'model-one' },
     replay: null,
   });
-  assert.deepEqual(JSON.parse(readFileSync(join(repoDataDir(root), 'learnings', 'L1.json'), 'utf8')), learning);
+  assert.deepEqual(JSON.parse(readFileSync(learningFile(root, 'L1'), 'utf8')), learning);
   const [entry] = readLedger(root);
   assert.equal(entry.kind, 'proposed');
   assert.equal(entry.learningId, 'L1');
   assert.equal(entry.contentSha256, learning.sha256);
   assert.deepEqual(entry.evidence, learning.evidence);
   assert.equal(entry.approvedBy, null);
-  assert.deepEqual(listLearnings(root), { learnings: [learning], orphanGates: [], unreadable: [] });
+  assert.deepEqual(listLearnings(root), { learnings: [learning], gatesToRepair: [], ledgerMismatch: [], unreadable: [] });
 });
 
 test('a title and why are stripped of what cannot be seen and masked before they are stored', () => {
@@ -191,7 +222,7 @@ test('a title and why are stripped of what cannot be seen and masked before they
   const learning = drafted(root, { title: `Never​ paste ${token}`, why: `The ‮agent pasted ${token} into a command.` });
   assert.equal(learning.title, 'Never paste ***');
   assert.equal(learning.why, 'The agent pasted *** into a command.');
-  assert.ok(!readFileSync(join(repoDataDir(root), 'learnings', 'L1.json'), 'utf8').includes(token));
+  assert.ok(!readFileSync(learningFile(root, 'L1'), 'utf8').includes(token));
 });
 
 test('a learning from a recurrence with outside content is marked external', () => {
@@ -214,6 +245,7 @@ test('a passing draft becomes an observe gate in the local set and nothing in th
   const root = loggedRepo();
   const before = git(root, 'status', '--porcelain', '--untracked-files=all');
   const learning = drafted(root);
+  const identityBefore = harnessIdentity(root);
   const result = runTrial(root, learning.id);
   assert.equal(result.replay.verdict, 'pass', result.replay.reason);
   assert.equal(result.status, 'trial');
@@ -223,17 +255,19 @@ test('a passing draft becomes an observe gate in the local set and nothing in th
   assert.equal(stored.status, 'trial');
   assert.deepEqual(stored.replay, result.replay);
   assert.deepEqual(kinds(root), ['L1:proposed', 'L1:replayed', 'L1:trial']);
-  const replayed = readLedger(root)[1];
+  const [, replayed, trial] = readLedger(root);
   assert.equal(replayed.detail, `pass: ${result.replay.reason}`);
-  const trial = readLedger(root)[2];
-  assert.notEqual(trial.learned, replayed.learned, 'the trial entry names the learned set with the new gate in it');
+  assert.equal(replayed.learned, identityBefore.learned, 'written before the gate, the entries name the set without it');
+  assert.equal(trial.learned, identityBefore.learned);
+  assert.notEqual(harnessIdentity(root).learned, identityBefore.learned);
   assert.equal(verifyLedger(root).intact, true);
+  assert.deepEqual(listLearnings(root).ledgerMismatch, []);
   assert.equal(git(root, 'status', '--porcelain', '--untracked-files=all'), before);
 });
 
 test('a failing draft is recorded as rejected and writes no gate', () => {
   const root = loggedRepo();
-  const learning = drafted(root, { gate: { ...WATCH_GATE, match: { kind: 'literal', value: FIX } } });
+  const learning = drafted(root, { gate: FIX_GATE });
   const result = runTrial(root, learning.id);
   assert.equal(result.replay.verdict, 'fail');
   assert.equal(result.status, 'rejected');
@@ -275,6 +309,19 @@ test('a candidate that is already on trial is not replayed again', () => {
   assert.deepEqual(kinds(root), ['L1:proposed', 'L1:replayed', 'L1:trial']);
 });
 
+test('a learning file edited to another action does not read back, and its gate never goes live', () => {
+  const root = loggedRepo();
+  const learning = drafted(root);
+  for (const action of ['block', 'warn']) {
+    writeFileSync(learningFile(root, 'L1'), JSON.stringify({ ...learning, gate: { ...learning.gate, action } }));
+    assert.deepEqual(listLearnings(root), { learnings: [], gatesToRepair: [], ledgerMismatch: [], unreadable: ['L1'] });
+    assert.deepEqual(runTrial(root, 'L1'), { error: 'L1: the learning file does not read back as a learning' });
+    assert.deepEqual(learningStats(root, 'L1'), { error: 'L1: the learning file does not read back as a learning' });
+  }
+  assert.equal(existsSync(localGatesPath(root)), false);
+  assert.deepEqual(kinds(root), ['L1:proposed']);
+});
+
 test('an id that is malformed or names no learning is refused', () => {
   const root = loggedRepo();
   for (const id of ['../L1', 'L0', 'l1', 42]) {
@@ -287,13 +334,15 @@ test('an id that is malformed or names no learning is refused', () => {
 
 test('ids are never reused after a rejection', () => {
   const root = loggedRepo();
-  const first = drafted(root, { gate: { ...WATCH_GATE, match: { kind: 'literal', value: FIX } } });
+  const first = drafted(root, { gate: FIX_GATE });
   assert.equal(runTrial(root, first.id).status, 'rejected');
-  const second = drafted(root);
-  assert.equal(second.id, 'L2');
-  rmSync(join(repoDataDir(root), 'learnings', 'L2.json'));
-  rmSync(join(repoDataDir(root), 'learnings', 'L1.json'));
+  assert.equal(drafted(root).id, 'L2');
+  rmSync(learningFile(root, 'L2'));
+  rmSync(learningFile(root, 'L1'));
   assert.equal(drafted(root).id, 'L3', 'a removed learning keeps its number');
+  rmSync(learningFile(root, 'L3'));
+  rmSync(join(repoDataDir(root), 'learning-ids.json'));
+  assert.equal(drafted(root).id, 'L4', 'the ledger keeps the number when the counter is lost');
 });
 
 test('ids start above the highest id in the committed gate file', () => {
@@ -302,48 +351,107 @@ test('ids start above the highest id in the committed gate file', () => {
   assert.equal(drafted(root).id, 'L8');
 });
 
-test('a committed gate file that cannot be read assigns no id', () => {
-  const root = loggedRepo({ files: { [GATES_PATH]: '{ not json' } });
-  assert.deepEqual(draftLearning(root, draftFor(root)), { error: 'the committed gate file cannot be read, so no id that avoids its ids can be assigned' });
-  assert.equal(existsSync(join(repoDataDir(root), 'learnings')), false);
+test('a committed gate file that exists and cannot be read assigns no id', () => {
+  const error = { error: 'the committed gate file cannot be read, so no id that avoids its ids can be assigned' };
+  const notJson = loggedRepo({ files: { [GATES_PATH]: '{ not json' } });
+  assert.deepEqual(draftLearning(notJson, draftFor(notJson)), error);
+  const directory = loggedRepo({ files: { [`${GATES_PATH}/keep`]: 'x' } });
+  assert.deepEqual(draftLearning(directory, draftFor(directory)), error);
+  for (const root of [notJson, directory]) {
+    assert.equal(existsSync(join(repoDataDir(root), 'learnings')), false);
+    assert.deepEqual(readLedger(root), []);
+  }
 });
 
 test('a gate left in the local set without its learning on trial is reported and repaired', () => {
   const root = loggedRepo();
   const learning = drafted(root);
-  // A write of the gate that outlived the step after it.
+  // A gate the step after its write never reached, beside one with no
+  // learning at all.
   const suspension = { id: 'L40', suspended: true };
   const stray = { ...WATCH_GATE, id: 'L41', action: 'observe' };
-  mkdirSync(repoDataDir(root), { recursive: true });
-  writeFileSync(localGatesPath(root), JSON.stringify({ schema: 1, gates: [suspension, { ...learning.gate }, stray] }));
-  assert.deepEqual(listLearnings(root).orphanGates, ['L1', 'L41']);
+  writeLocalGates(root, [suspension, { ...learning.gate }, stray]);
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['L1', 'L41']);
 
   const result = runTrial(root, learning.id);
   assert.deepEqual(result.repairedGates, ['L1', 'L41']);
   assert.equal(result.status, 'trial');
   assert.deepEqual(localGates(root).gates, [suspension, learning.gate]);
-  assert.deepEqual(listLearnings(root).orphanGates, []);
+  assert.deepEqual(listLearnings(root).gatesToRepair, []);
+});
+
+test('a local gate whose action, content or id disagrees with its trial learning is replaced by the learning\'s own', () => {
+  const root = loggedRepo();
+  logReadMistakes(root);
+  const trial = drafted(root);
+  assert.equal(runTrial(root, trial.id).status, 'trial');
+  const { gate } = trial;
+  writeLocalGates(root, [{ ...gate, action: 'block' }, { ...gate, match: { kind: 'literal', value: 'npm' } }, gate, gate]);
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['L1']);
+  const other = drafted(root, { gate: READ_GATE });
+  assert.deepEqual(runTrial(root, other.id).repairedGates, ['L1']);
+  assert.deepEqual(localGates(root).gates.filter(g => g.id === 'L1'), [gate]);
+
+  writeLocalGates(root, []);
+  assert.deepEqual(listLearnings(root).gatesToRepair, ['L1'], 'a trial learning with no gate in the set');
+});
+
+test('a learning whose status disagrees with its last ledger entry is reported', () => {
+  const root = loggedRepo();
+  const learning = drafted(root);
+  // As a step leaves it when it stops after its ledger entry.
+  appendLedger(root, { kind: 'trial', learningId: 'L1', contentSha256: learning.sha256, evidence: learning.evidence, base: 'b', learned: 'l', approvedBy: null });
+  assert.deepEqual(listLearnings(root).ledgerMismatch, ['L1']);
+  appendLedger(root, { kind: 'wrong', learningId: 'L1', contentSha256: learning.sha256, evidence: learning.evidence, base: 'b', learned: 'l', approvedBy: 'owner' });
+  assert.deepEqual(listLearnings(root).ledgerMismatch, ['L1'], 'a kind that changes no status is not the last word');
+  writeFileSync(learningFile(root, 'L1'), JSON.stringify({ ...learning, status: 'trial' }));
+  assert.deepEqual(listLearnings(root).ledgerMismatch, []);
 });
 
 test('a local gate file that is not a gate file is never overwritten', () => {
   const root = loggedRepo();
   const learning = drafted(root);
-  mkdirSync(repoDataDir(root), { recursive: true });
   writeFileSync(localGatesPath(root), '[1, 2');
   assert.deepEqual(runTrial(root, learning.id), { error: 'the local gate file is not a gate file; nothing was written' });
   assert.equal(readFileSync(localGatesPath(root), 'utf8'), '[1, 2');
   assert.equal(listLearnings(root).learnings[0].status, 'candidate');
-  assert.equal(listLearnings(root).orphanGates, null, 'an unreadable local gate file is not reported as holding no orphan');
+  assert.equal(listLearnings(root).gatesToRepair, null, 'an unreadable local gate file is not reported as needing no repair');
   assert.deepEqual(kinds(root), ['L1:proposed']);
 });
 
-test('a learning file that does not read back as a learning is reported, not used', () => {
+test('a learning file that does not read back is reported, not used, and blocks new drafts', () => {
   const root = loggedRepo();
+  logReadMistakes(root);
   const learning = drafted(root);
-  const path = join(repoDataDir(root), 'learnings', 'L1.json');
-  writeFileSync(path, JSON.stringify({ ...learning, gate: { ...learning.gate, match: { kind: 'literal', value: 'npm' } } }));
-  assert.deepEqual(listLearnings(root), { learnings: [], orphanGates: [], unreadable: ['L1'] });
+  writeFileSync(learningFile(root, 'L1'), JSON.stringify({ ...learning, gate: { ...learning.gate, match: { kind: 'literal', value: 'npm' } } }));
+  assert.deepEqual(listLearnings(root), { learnings: [], gatesToRepair: [], ledgerMismatch: [], unreadable: ['L1'] });
   assert.deepEqual(runTrial(root, 'L1'), { error: 'L1: the learning file does not read back as a learning' });
+  assert.deepEqual(draftLearning(root, draftFor(root, { gate: READ_GATE })),
+    { error: 'learning L1 does not read back as a learning, and may cover this signature; mend or remove its file first' });
+});
+
+test('a learnings lock held by another writer returns an error and writes nothing', () => {
+  const root = loggedRepo();
+  const release = holdLock(join(repoDataDir(root), 'learnings.lock'));
+  try {
+    assert.deepEqual(draftLearning(root, draftFor(root)), { error: 'another process holds the learnings lock; nothing was written' });
+  } finally {
+    release();
+  }
+  assert.equal(existsSync(join(repoDataDir(root), 'learnings')), false);
+  assert.deepEqual(readLedger(root), []);
+});
+
+test('a ledger that cannot be appended stops the step before the learning is stored', () => {
+  const root = loggedRepo();
+  const release = holdLock(join(repoDataDir(root), 'ledger.jsonl.lock'));
+  try {
+    assert.deepEqual(draftLearning(root, draftFor(root)), { error: 'the step stopped partway (ELOCKED); listLearnings reports what it left disagreeing' });
+  } finally {
+    release();
+  }
+  assert.equal(existsSync(learningFile(root, 'L1')), false, 'no state without its ledger entry');
+  assert.equal(drafted(root).id, 'L2', 'the id the stopped step took is not assigned again');
 });
 
 function logFiring(root, sessionId, gate, toolUseId, over = {}) {
@@ -391,15 +499,24 @@ function mtimes(dir) {
 }
 
 test('nothing in this module writes inside the repository', () => {
-  const root = loggedRepo({ files: { [GATES_PATH]: JSON.stringify({ schema: 1, gates: [] }), [FAILURES_PATH]: '# Failures\n' } });
+  const root = loggedRepo({ clean: false, files: { [GATES_PATH]: JSON.stringify({ schema: 1, gates: [] }), [FAILURES_PATH]: '# Failures\n' } });
   const status = git(root, 'status', '--porcelain', '--untracked-files=all', '--ignored');
   const before = mtimes(root);
+
+  const failing = drafted(root, { gate: FIX_GATE });
+  assert.equal(runTrial(root, failing.id).status, 'rejected');
   const passing = drafted(root);
-  runTrial(root, passing.id);
-  const failing = draftLearning(root, draftFor(root));
-  assert.ok(failing.error);
+  assert.equal(runTrial(root, passing.id).status, 'candidate', 'not checkable without clean history');
+  writeLocalGates(root, [{ ...WATCH_GATE, id: 'L41', action: 'observe' }]);
+  logClean(root);
+  const trial = runTrial(root, passing.id);
+  assert.equal(trial.status, 'trial');
+  assert.deepEqual(trial.repairedGates, ['L41']);
+  assert.ok(draftLearning(root, draftFor(root)).error);
   listLearnings(root);
   learningStats(root, passing.id);
+  gateActionsFor('trial');
+
   assert.equal(git(root, 'status', '--porcelain', '--untracked-files=all', '--ignored'), status);
   assert.deepEqual(mtimes(root), before);
 });
