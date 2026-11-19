@@ -285,16 +285,24 @@ function loopWatchProposal({ kitVersion, check }) {
 const TOOL_GATE_STEP = 30;
 
 /**
- * The deny rules for the kit's protected surface: the hook scripts and the
- * gate interpreter, the gate file, the manifest and the learned registry.
- * Each is a `/path` rule: in the project's `.claude/settings.json` that
- * resolves against the session's primary working directory and matches only
- * there, where a bare `path` deny rule would match at any depth. `Edit(...)`
+ * The deny rules for the kit's protected surface: the whole `.claude/scripts/`
+ * directory (the hook scripts, the gate interpreter, and any script of the
+ * owner's kept there), the committed gate file, the manifest, the learned
+ * registry, and this machine's data directory (the session log, the ledger,
+ * the policy file and the machine-local gates).
+ *
+ * The repository paths are `/path` rules: in the project's
+ * `.claude/settings.json` that resolves against the session's primary
+ * working directory and matches only there, where a bare `path` deny rule
+ * would match at any depth. The data directory is a `~/path` rule, from the
+ * home directory, and covers only the default data root: an owner who sets
+ * `KH_DATA_DIR` must add a rule for that location themselves. `Edit(...)`
  * also covers Write and the Bash file commands Claude Code recognises, but
  * not a program the agent runs that writes these files itself.
  */
 export function toolGateDenyRules() {
-  return ['.claude/scripts/**', '.claude/kh-harness/**', '.claude/kh-harness.manifest.json', 'docs/harness/LEARNED.md'].map(p => `Edit(/${p})`);
+  const inRepository = ['.claude/scripts/**', '.claude/kh-harness/**', '.claude/kh-harness.manifest.json', 'docs/harness/LEARNED.md'].map(p => `Edit(/${p})`);
+  return [...inRepository, 'Edit(~/.claude/kh-harness/**)'];
 }
 
 /**
@@ -314,7 +322,7 @@ function toolGateProposal({ kitVersion, check }) {
   }, {
     kind: 'settings-deny', step: TOOL_GATE_STEP,
     globs: toolGateDenyRules(),
-    reason: 'deny edits to the hook scripts, the gate file, the manifest and the learned registry',
+    reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/",
   }];
 }
 

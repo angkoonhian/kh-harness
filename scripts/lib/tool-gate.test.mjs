@@ -29,14 +29,19 @@
 // `Edit(src/components/**)` match only at their anchored location". A bare
 // `path` is relative to the current directory, and as a deny rule matches at
 // any depth. "Claude Code checks file permissions against `Edit(path)` and
-// `Read(path)` rules": `Write` is covered by `Edit(...)`.
+// `Read(path)` rules": `Write` is covered by `Edit(...)`. A `~/path` pattern
+// is a "Path from home directory" (`Read(~/Documents/*.pdf)` matches
+// `/Users/alice/Documents/*.pdf`), and "To write a rule in user settings that
+// applies inside every project, use a `//` absolute path or a `~/`
+// home-relative path" — so `~/` names the home directory whichever settings
+// file holds the rule.
 //
 // Every test runs against a temporary KH_DATA_DIR and HK_MARKER_DIR.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import { GATE_LIMITS, gateSha256 } from '../../assets/scripts/harness-gates.mjs';
@@ -49,6 +54,7 @@ import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'tool-gate.mjs');
 const FORBID_SPAWN = resolve(import.meta.dirname, 'session-log-forbid-spawn.cjs');
+const PROBES = resolve(import.meta.dirname, 'tool-gate-probes.cjs');
 
 const PAYLOAD_EXAMPLE = {
   session_id: 'abc123',
@@ -178,22 +184,50 @@ test('warn and block act with the session log disabled', () => {
   assert.equal(existsSync(repoDataDir(root)), false);
 });
 
+const SUSPENDED_ONE = 'kh-harness: 1 committed gate is suspended on this machine; `learn` lists them.';
+
 test('a local suspension disables a committed gate', () => {
   const root = project();
   writeCommitted(root, gateFile([gate('L1', { action: 'block' }), gate('L2', { action: 'warn', match: { kind: 'literal', value: 'build' } })]));
-  writeLocal(root, gateFile([{ id: 'L1', suspended: true }]));
-  assert.deepEqual(runHook(root, call('suspend-1', 'rm -rf build')), context('kh-harness gate L2: Move files to the trash folder instead of deleting them.'),
-    'the suspended gate is skipped and the next one that matches acts');
-  assert.deepEqual(firings(root, 'suspend-1').map(f => f.gateId), ['L2']);
+  writeLocal(root, gateFile([{ id: 'L1', suspended: true }, { id: 'L7', suspended: true }]));
+  const warned = context('kh-harness gate L2: Move files to the trash folder instead of deleting them.');
+  assert.deepEqual(runHook(root, call('suspend-1', 'rm -rf build')), { systemMessage: SUSPENDED_ONE, ...warned },
+    'the suspended gate is skipped, the next one that matches acts, and the person is told; a suspension of no committed gate is not counted');
+  assert.deepEqual(runHook(root, call('suspend-1', 'rm -rf build')), warned, 'told once per session');
+  assert.deepEqual(firings(root, 'suspend-1').map(f => f.gateId), ['L2', 'L2']);
+  assert.deepEqual(runHook(root, call('suspend-2', 'npm test')), { systemMessage: SUSPENDED_ONE }, 'every session is told');
 });
 
-test('a local gate replaces the committed gate with the same id', () => {
+const IGNORED = n => `kh-harness: ${n} ${n === 1 ? 'entry' : 'entries'} in this machine's gate file gates.local.json tried to replace a committed gate with a weaker or different rule and ${n === 1 ? 'was' : 'were'} ignored.`;
+
+test('a local gate replaces the committed one only as the same rule with an action at least as strong', () => {
   const root = project();
-  writeCommitted(root, gateFile([gate('L1', { action: 'block' })]));
-  const local = gate('L1', { action: 'warn', message: 'This machine only warns.' });
-  writeLocal(root, gateFile([local]));
-  assert.deepEqual(runHook(root, call('replace-1', 'rm -rf build')), context('kh-harness gate L1: This machine only warns.'));
-  assert.deepEqual(firings(root, 'replace-1').map(f => f.gateSha256), [gateSha256(local)]);
+  writeCommitted(root, gateFile([gate('L1', { action: 'warn' })]));
+  const stronger = gate('L1', { action: 'block' });
+  writeLocal(root, gateFile([stronger]));
+  assert.deepEqual(runHook(root, call('replace-1', 'rm -rf build')), denial('kh-harness gate L1: Move files to the trash folder instead of deleting them.'));
+  assert.deepEqual(firings(root, 'replace-1').map(f => [f.gateSha256, f.action]), [[gateSha256(stronger), 'block']]);
+
+  writeLocal(root, gateFile([gate('L1', { action: 'warn' })]));
+  assert.deepEqual(runHook(root, call('replace-2', 'rm -rf build')), context('kh-harness gate L1: Move files to the trash folder instead of deleting them.'),
+    'the same action is not weaker');
+});
+
+test('a weaker or different local gate with a committed id is ignored, and the person is told', () => {
+  const root = project();
+  const blocked = denial('kh-harness gate L1: Move files to the trash folder instead of deleting them.');
+  writeCommitted(root, gateFile([gate('L1', { action: 'block' }), gate('L2', { action: 'block', match: { kind: 'literal', value: 'zzz' } })]));
+  writeLocal(root, gateFile([
+    gate('L1', { action: 'observe' }),
+    gate('L2', { action: 'block', match: { kind: 'literal', value: 'qqq' } }),
+    gate('L3', { action: 'warn', tool: 'Read', field: 'file_path' }),
+  ]));
+  assert.deepEqual(runHook(root, call('weaker-1', 'rm -rf build')), { systemMessage: IGNORED(2), ...blocked }, 'the committed block stays in force');
+  assert.deepEqual(runHook(root, call('weaker-1', 'rm -rf build')), blocked, 'told once per session');
+  assert.deepEqual(firings(root, 'weaker-1').map(f => [f.gateId, f.action]), [['L1', 'block'], ['L1', 'block']]);
+
+  writeLocal(root, gateFile([gate('L1', { action: 'block', message: 'A different message is a different rule.' })]));
+  assert.deepEqual(runHook(root, call('weaker-2', 'rm -rf build')), { systemMessage: IGNORED(1), ...blocked });
 });
 
 test('gates are tried in ascending order of their number and only the first that matches acts', () => {
@@ -290,20 +324,94 @@ test('the hook never spawns a child process', () => {
 });
 
 test('the deny rules are anchored to the project root', () => {
-  assert.deepEqual(toolGateDenyRules(), [
+  const inRepository = toolGateDenyRules().filter(rule => !rule.startsWith('Edit(~/'));
+  assert.deepEqual(inRepository, [
     'Edit(/.claude/scripts/**)',
     'Edit(/.claude/kh-harness/**)',
     'Edit(/.claude/kh-harness.manifest.json)',
     'Edit(/docs/harness/LEARNED.md)',
   ]);
-  for (const rule of toolGateDenyRules()) assert.match(rule, /^Edit\(\/[^/]/, `${rule}: one leading slash anchors at the project root; two would be absolute`);
+  for (const rule of inRepository) assert.match(rule, /^Edit\(\/[^/]/, `${rule}: one leading slash anchors at the project root; two would be absolute`);
+});
+
+test('the default per-machine data directory is protected by a home-relative deny rule', () => {
+  assert.deepEqual(toolGateDenyRules().filter(rule => rule.startsWith('Edit(~/')), ['Edit(~/.claude/kh-harness/**)']);
+  const env = { ...process.env };
+  delete env.KH_DATA_DIR;
+  const root = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `import { dataRoot } from ${JSON.stringify(new URL('../../assets/scripts/harness-log.mjs', import.meta.url).href)}; process.stdout.write(dataRoot());`],
+  { encoding: 'utf8', env });
+  assert.equal(root.stdout, join(homedir(), '.claude', 'kh-harness'), 'the rule names the default data root');
+});
+
+test('a suspension in the committed file is a rejected entry', () => {
+  const root = project();
+  writeCommitted(root, gateFile([gate('L1', { action: 'block' }), { id: 'L1', suspended: true }, { id: 'L2', suspended: true }]));
+  assert.deepEqual(runHook(root, call('committed-suspension-1', 'rm -rf build')), {
+    systemMessage: 'kh-harness: 2 entries in the committed gate file .claude/kh-harness/gates.json were rejected and do not apply; its other gates do.',
+    ...denial('kh-harness gate L1: Move files to the trash folder instead of deleting them.'),
+  });
+});
+
+test('a gate file larger than 1 MB is not read', () => {
+  const root = project();
+  const g = gate('L1', { action: 'block' });
+  writeCommitted(root, JSON.stringify({ schema: 1, gates: [g], generatedBy: 'x'.repeat(1024 * 1024) }));
+  assert.deepEqual(runHook(root, call('large-1', 'rm -rf build')), {
+    systemMessage: 'kh-harness: the committed gate file .claude/kh-harness/gates.json could not be read, so none of its gates apply.',
+  });
+  writeCommitted(root, JSON.stringify({ schema: 1, gates: [g], generatedBy: 'x'.repeat(1024 * 1024 - 1000) }));
+  assert.deepEqual(runHook(root, call('large-2', 'rm -rf build')), denial('kh-harness gate L1: Move files to the trash folder instead of deleting them.'),
+    'a file just under the bound is read');
+});
+
+test('a failure to find the local file reports it unreadable and the committed gates still apply', () => {
+  const root = project({ enabled: false });
+  writeCommitted(root, gateFile([gate('L1', { action: 'block' })]));
+  const env = { ...process.env, CLAUDE_PROJECT_DIR: root, KH_DATA_DIR: '', KH_THROW_HOMEDIR: '1' };
+  const result = spawnSync(process.execPath, ['--require', PROBES, HOOK], { input: JSON.stringify(call('nohome-1', 'rm -rf build')), encoding: 'utf8', env });
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, '');
+  assert.deepEqual(JSON.parse(result.stdout), {
+    systemMessage: NOT_READ,
+    ...denial('kh-harness gate L1: Move files to the trash folder instead of deleting them.'),
+  });
+});
+
+/** A copy of the hook in its own directory beside the siblings `present`
+ * names, each with the contents given, or the real module when true. */
+function installedCopy(present) {
+  const dir = tempDir('hk-gate-copy-');
+  writeFileSync(join(dir, 'tool-gate.mjs'), readFileSync(HOOK, 'utf8'));
+  for (const [name, contents] of Object.entries(present)) {
+    writeFileSync(join(dir, name), contents === true ? readFileSync(join(dirname(HOOK), name), 'utf8') : contents);
+  }
+  return join(dir, 'tool-gate.mjs');
+}
+
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports one kept or modified, run `uninstall --yes` and then `apply --yes`.';
+
+test('a missing or older sibling module gives the person one line and exits 0', () => {
+  const root = project();
+  writeCommitted(root, gateFile([gate('L1', { action: 'block' })]));
+  const missing = installedCopy({ 'harness-redact.mjs': true, 'harness-log.mjs': true });
+  assert.deepEqual(runHook(root, call('sibling-1', 'rm -rf build'), { script: missing }), {
+    systemMessage: `kh-harness gate hook: .claude/scripts/harness-gates.mjs is missing or cannot be loaded, so no gate applies — ${REMEDY}`,
+  });
+  const older = installedCopy({ 'harness-redact.mjs': true, 'harness-log.mjs': 'export const GATES_PATH = 1;\n', 'harness-gates.mjs': true });
+  assert.deepEqual(runHook(root, call('sibling-2', 'rm -rf build'), { script: older }), {
+    systemMessage: `kh-harness gate hook: .claude/scripts/harness-log.mjs is older than this hook and lacks what it needs, so no gate applies — ${REMEDY}`,
+  });
+  const whole = installedCopy({ 'harness-redact.mjs': true, 'harness-log.mjs': true, 'harness-gates.mjs': true });
+  assert.deepEqual(runHook(root, call('sibling-3', 'rm -rf build'), { script: whole }), denial('kh-harness gate L1: Move files to the trash folder instead of deleting them.'),
+    'fixture sanity: the copy works with every sibling present');
 });
 
 // Measured on the development machine (win32, Node 24) on 2026-11-19, on a
 // quiet machine, with `GATE_LIMITS.gatesMax` gates of which none matches and
 // an input field of `GATE_LIMITS.inputMax` characters: the hook's median was
-// 102 to 118 ms against 62 to 73 ms for a bare `node -e 0`, so it adds about
-// 40 to 45 ms. The budget bounds what the hook adds over a bare start,
+// 93 to 118 ms against 55 to 73 ms for a bare `node -e 0`, so it adds about
+// 38 to 45 ms. The budget bounds what the hook adds over a bare start,
 // measured in interleaved runs that share the same load.
 const ADDED_LATENCY_BUDGET_MS = 100;
 

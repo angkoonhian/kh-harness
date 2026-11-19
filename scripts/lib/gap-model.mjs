@@ -827,7 +827,7 @@ const CHECKS = [
     // later, so neither the gate files nor the session log is read here, and
     // nothing executes, so it is never `verified`.
     check: ({ harness, manifest, root }) => registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH,
-      'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, and deny edits to the hook scripts, the gate file, the manifest and the learned registry',
+      'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, and deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine\'s kh-harness data directory',
       { manifest, root }),
   },
   {

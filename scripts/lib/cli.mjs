@@ -96,9 +96,18 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  .claude/kh-harness/gates.json and this
                                  machine's own gate file. It can BLOCK the
                                  call when a gate with action \`block\`
-                                 matches. It executes nothing, and no gate
-                                 exists until one is learned and promoted, so
-                                 until then it does nothing.`;
+                                 matches; a \`warn\` gate's message reaches
+                                 the model alongside the tool's result, after
+                                 the call has run. It executes nothing, and no
+                                 gate exists until one is learned and
+                                 promoted, so until then it does nothing.
+                                 Installed with it: deny rules for edits to
+                                 the WHOLE .claude/scripts/ directory,
+                                 including any script of yours kept there,
+                                 to the gate file, the manifest,
+                                 docs/harness/LEARNED.md, and
+                                 ~/.claude/kh-harness/ (this machine's log,
+                                 ledger, policy and local gates).`;
 
 export const EXIT_CODES = `EXIT CODES
   0  did what it said
