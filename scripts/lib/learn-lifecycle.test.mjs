@@ -378,7 +378,7 @@ test('the learning loop end to end, through the real commands and the installed 
     sha256 = /^draft: stored as L1, a candidate; gate sha256 ([0-9a-f]{64})$/.exec(drafted[0])?.[1];
     assert.ok(sha256, drafted.join('\n'));
     // The replay's own account: the clean history meets the floors.
-    assert.equal(drafted[1], `replay: pass: "the gate fired on all 2 mistakes, on none of 2 successful calls that followed them, and on none of ${MIN_CLEAN_CALLS} calls of the gate's tool in ${MIN_CLEAN_SESSIONS} sessions with no failure of this signature"`);
+    assert.equal(drafted[1], `replay: pass: "the gate fired on all 2 mistakes, on none of 2 successful calls of the gate's tool in the recurrence's sessions, and on none of ${MIN_CLEAN_CALLS} calls of the gate's tool in ${MIN_CLEAN_SESSIONS} sessions with no failure of this signature"`);
     assert.match(drafted[2], /^status: trial; its gate is in this machine's local gate set at observe, where it blocks nothing\./);
     assert.equal(status(d), committed);
     assert.equal(committed, '');

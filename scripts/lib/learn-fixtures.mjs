@@ -88,9 +88,10 @@ export function logClean(root) {
   for (const id of ids) log(root, id, HARNESS, ...Array.from({ length: perSession }, (_, i) => success(id, `npm run task-${i}`)));
 }
 
-/** A second recurrence, of the Read tool, in two more sessions. */
+/** A second recurrence, of the Read tool, in two more sessions, each with a
+ * Read that worked: a replay needs a good call of the gate's tool there. */
 export function logReadMistakes(root) {
-  for (const id of ['three', 'four']) log(root, id, HARNESS, call(FAILURE_EVENT, id, 'Read', { file_path: 'missing.txt' }));
+  for (const id of ['three', 'four']) log(root, id, HARNESS, call(FAILURE_EVENT, id, 'Read', { file_path: 'missing.txt' }), read(id));
 }
 
 export function signatureOf(root, tool = 'Bash') {
