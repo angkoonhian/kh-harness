@@ -1119,9 +1119,8 @@ test('a patch record with no container is listed as (no container)', () => {
 });
 
 // The learned registry and the committed gate file hold what the kit wrote
-// for each landed learning, so their body is not an empty scaffold; they are
-// removed only while untouched and holding nothing but learnings the manifest
-// records.
+// for each landed learning. A landed learning is the owner's, so the two
+// files go only when they hold none, and stay or go together.
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH } from '../../assets/scripts/harness-redact.mjs';
@@ -1132,9 +1131,9 @@ const LEARNED_TEMPLATE = readFileSync(new URL('../../assets/templates/LEARNED.md
 const learnedGate = (id, value) => ({ id, tool: 'Bash', field: 'command', match: { kind: 'token', value }, message: 'Not that.', action: 'block' });
 
 /** A repository holding the learned files for `gates`, written and recorded
- * as a land writes them, with `recorded` the learnings the manifest names
- * and `entries` the gates the registry holds an entry for. */
-function landedRepo(gates, recorded = gates, entries = gates) {
+ * as a land writes them, with `entries` the gates the registry holds an
+ * entry for. */
+function landedRepo(gates, entries = gates) {
   let registry = render(LEARNED_TEMPLATE, { kitVersion: '0.2.0' });
   for (const g of entries) {
     registry = upsertLearnedEntry(registry, {
@@ -1147,11 +1146,31 @@ function landedRepo(gates, recorded = gates, entries = gates) {
     { kind: 'file', path: LEARNED_PATH, step: 30, contents: registry, checkId: 'P5.toolgate', reason: 'r' },
     { kind: 'file', path: GATES_PATH, step: 30, contents: gateFile, checkId: 'P5.toolgate', reason: 'r' },
   ]);
-  return { d, manifest: { ...manifest, learnings: recorded.map(g => ({ id: g.id, gateSha256: gateSha256(g) })) } };
+  return { d, manifest: { ...manifest, learnings: gates.map(g => ({ id: g.id, gateSha256: gateSha256(g) })) } };
 }
 
-test('LEARNED.md and gates.json holding only recorded learnings are removed on uninstall', () => {
+test('LEARNED.md and gates.json that hold landed learnings are both kept, each with its count, though untouched and recorded', () => {
   const { d, manifest } = landedRepo([learnedGate('L1', '--watch'), learnedGate('L2', '--force')]);
+  const plan = planUninstall({ root: d, manifest });
+  assert.deepEqual(plan.keep, [
+    { path: LEARNED_PATH, why: 'holds-landed-learnings', learnings: 2 },
+    { path: GATES_PATH, why: 'holds-landed-learnings', learnings: 2 },
+  ]);
+  assert.deepEqual(plan.remove, []);
+
+  // A plan that says otherwise is not obeyed either.
+  const forced = { ...plan, remove: [{ path: LEARNED_PATH }, { path: GATES_PATH }], keep: [] };
+  const result = runUninstall({ root: d, manifest, plan: forced });
+  assert.deepEqual(result.removed, []);
+  assert.deepEqual(result.changedSincePlan.map(c => c.why), ['holds-landed-learnings', 'holds-landed-learnings']);
+  assert.equal(JSON.parse(readFileSync(join(d, GATES_PATH), 'utf8')).gates.length, 2, 'the committed gates are still there');
+  const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
+  assert.deepEqual(after.files.map(f => f.path), [LEARNED_PATH, GATES_PATH]);
+  assert.deepEqual(after.learnings.map(l => l.id), ['L1', 'L2'], 'and still recorded as landed');
+});
+
+test('learned files that hold no learning are removed, and the manifest with them', () => {
+  const { d, manifest } = landedRepo([]);
   const plan = planUninstall({ root: d, manifest });
   assert.deepEqual(plan.remove.map(r => r.path), [LEARNED_PATH, GATES_PATH]);
   assert.deepEqual(plan.keep, []);
@@ -1162,50 +1181,52 @@ test('LEARNED.md and gates.json holding only recorded learnings are removed on u
   assert.equal(existsSync(join(d, MANIFEST_PATH)), false);
 });
 
-test('a LEARNED.md the owner edited is kept on uninstall', () => {
-  const { d, manifest } = landedRepo([learnedGate('L1', '--watch')]);
+test('an edited LEARNED.md that holds no learning keeps the gate file with it', () => {
+  const { d, manifest } = landedRepo([]);
   writeFileSync(join(d, LEARNED_PATH), readFileSync(join(d, LEARNED_PATH), 'utf8') + '\nA note of the owner\'s own.\n');
   const plan = planUninstall({ root: d, manifest });
-  assert.deepEqual(plan.keep, [{ path: LEARNED_PATH, why: 'ours-modified' }]);
-  assert.deepEqual(plan.remove.map(r => r.path), [GATES_PATH]);
-  const result = runUninstall({ root: d, manifest, plan });
-  assert.deepEqual(result.removed, [GATES_PATH]);
-  assert.match(readFileSync(join(d, LEARNED_PATH), 'utf8'), /A note of the owner's own/);
-  const after = JSON.parse(readFileSync(join(d, MANIFEST_PATH), 'utf8'));
-  assert.deepEqual(after.files.map(f => f.path), [LEARNED_PATH]);
-  assert.deepEqual(after.learnings, [], 'with the gate file gone no learning is landed any more');
-});
-
-test('a learned file holding a learning the manifest does not record is kept, and says why', () => {
-  const gates = [learnedGate('L1', '--watch'), learnedGate('L2', '--force')];
-  const { d, manifest } = landedRepo(gates, gates.slice(0, 1));
-  const plan = planUninstall({ root: d, manifest });
-  assert.deepEqual(plan.keep, [{ path: LEARNED_PATH, why: 'unrecorded-learning' }, { path: GATES_PATH, why: 'unrecorded-learning' }]);
+  assert.deepEqual(plan.keep, [{ path: LEARNED_PATH, why: 'ours-modified' }, { path: GATES_PATH, why: 'learned-partner-kept', partner: LEARNED_PATH }]);
   assert.deepEqual(plan.remove, []);
-  const forced = { remove: [{ path: LEARNED_PATH }, { path: GATES_PATH }], keep: [], revert: [], keepPatches: [], gonePatches: [] };
-  const result = runUninstall({ root: d, manifest, plan: forced });
-  assert.deepEqual(result.removed, []);
-  assert.deepEqual(result.changedSincePlan.map(c => c.why), ['unrecorded-learning', 'unrecorded-learning']);
+  const result = runUninstall({ root: d, manifest, plan: { ...plan, remove: [{ path: GATES_PATH }] } });
+  assert.deepEqual(result.removed, [], 'the real run keeps the gate file too');
   assert.equal(existsSync(join(d, GATES_PATH)), true);
 });
 
-test('the learned files are kept together when either holds a learning the manifest does not record', () => {
-  const [l1, l2] = [learnedGate('L1', '--watch'), learnedGate('L2', '--force')];
-  const gateOnly = landedRepo([l1, l2], [l1], [l1]);
-  const plan = planUninstall({ root: gateOnly.d, manifest: gateOnly.manifest });
-  assert.deepEqual(plan.keep, [{ path: LEARNED_PATH, why: 'gate-file-kept' }, { path: GATES_PATH, why: 'unrecorded-learning' }],
-    'the registry stays while the gate file does, so no committed gate is left without its entry');
-  const result = runUninstall({ root: gateOnly.d, manifest: gateOnly.manifest, plan: { ...plan, remove: [{ path: LEARNED_PATH }] } });
-  assert.deepEqual(result.removed, []);
-  assert.equal(existsSync(join(gateOnly.d, LEARNED_PATH)), true);
-
-  const entryOnly = landedRepo([l1], [l1], [l1, l2]);
-  assert.deepEqual(planUninstall({ root: entryOnly.d, manifest: entryOnly.manifest }).keep,
-    [{ path: LEARNED_PATH, why: 'unrecorded-learning' }, { path: GATES_PATH, why: 'unrecorded-learning' }]);
+test('a registry entry with no gate keeps both files, and so does a gate with no entry', () => {
+  const gate = learnedGate('L1', '--watch');
+  const entryOnly = landedRepo([], [gate]);
+  assert.deepEqual(planUninstall({ root: entryOnly.d, manifest: entryOnly.manifest }).keep, [
+    { path: LEARNED_PATH, why: 'holds-landed-learnings', learnings: 1 },
+    { path: GATES_PATH, why: 'learned-partner-kept', partner: LEARNED_PATH },
+  ]);
+  const gateOnly = landedRepo([gate], []);
+  assert.deepEqual(planUninstall({ root: gateOnly.d, manifest: gateOnly.manifest }).keep, [
+    { path: LEARNED_PATH, why: 'learned-partner-kept', partner: GATES_PATH },
+    { path: GATES_PATH, why: 'holds-landed-learnings', learnings: 1 },
+  ]);
 });
 
-test('a learned file whose learning the manifest records under another gate hash is kept', () => {
-  const gate = learnedGate('L1', '--watch');
-  const { d, manifest } = landedRepo([gate], [{ ...gate, message: 'Another message.' }]);
-  assert.deepEqual(planUninstall({ root: d, manifest }).keep.map(k => k.why), ['unrecorded-learning', 'unrecorded-learning']);
+test('a gate file that cannot be read as one is not shown to hold no learning: it is kept, and the registry with it', () => {
+  const { d, manifest } = landedRepo([]);
+  const garbled = '{ "gates": ';
+  writeFileSync(join(d, GATES_PATH), garbled);
+  // Even recorded at its real hash, as a forged manifest would have it.
+  const forged = { ...manifest, files: manifest.files.map(f => (f.path === GATES_PATH ? { ...f, sha256: sha256(garbled) } : f)) };
+  assert.deepEqual(planUninstall({ root: d, manifest: forged }).keep, [
+    { path: LEARNED_PATH, why: 'learned-partner-kept', partner: GATES_PATH },
+    { path: GATES_PATH, why: 'unreadable-learned-file' },
+  ]);
+});
+
+test('uninstall says how many landed learnings each kept file holds and that learn revert takes each out, and exits 0', () => {
+  const { d, manifest } = landedRepo([learnedGate('L1', '--watch')]);
+  writeManifest(d, manifest);
+  for (const flags of [[], ['--yes']]) {
+    const r = spawnSync(process.execPath, [fileURLToPath(UNINSTALL_CLI), d, ...flags], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    for (const path of [LEARNED_PATH, GATES_PATH]) {
+      assert.ok(r.stdout.includes(`  ${path} (holds 1 landed learning, which is yours: \`learn revert <id>\` takes each out of the repository, and uninstall removes this file once it holds none)`), r.stdout);
+    }
+  }
+  assert.equal(existsSync(join(d, GATES_PATH)), true);
 });
