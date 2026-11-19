@@ -1,10 +1,10 @@
 // scripts/lib/ledger.mjs
 //
-// The learning ledger: one line per event in a learning's life, appended
-// to `ledger.jsonl` in the repository's per-machine data directory and
-// hash-chained, each line carrying the SHA-256 of the line before it. It is
-// never committed, so no merge can break the chain. Only the kit's CLI
-// writes it.
+// The learning ledger: one line per event in a learning's life, and one per
+// promotion policy the owner set, appended to `ledger.jsonl` in the
+// repository's per-machine data directory and hash-chained, each line
+// carrying the SHA-256 of the line before it. It is never committed, so no
+// merge can break the chain. Only the kit's CLI writes it.
 import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,7 +13,7 @@ import { canonicalJson, repoDataDir } from '../../assets/scripts/harness-log.mjs
 import { safeSessionId } from '../../assets/scripts/harness-redact.mjs';
 import { isProcessAlive, LOCK_STALE_MS, withFileLock } from './file-lock.mjs';
 
-export const LEDGER_KINDS = Object.freeze(['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong']);
+export const LEDGER_KINDS = Object.freeze(['proposed', 'replayed', 'rejected', 'trial', 'promoted', 'demoted', 'suspended', 'retired', 'landed', 'reverted', 'wrong', 'policy']);
 
 /** How old a ledger lock without a readable owner must be before it is
  * broken; one whose writer is alive never is. */
@@ -47,13 +47,27 @@ const EVIDENCE_FIELDS = {
   external: v => typeof v === 'boolean',
 };
 
-const ENTRY_FIELDS = {
+// The kind that records a promotion policy rather than a learning's event.
+const POLICY_KIND = 'policy';
+
+const COMMON_FIELDS = {
   kind: v => LEDGER_KINDS.includes(v),
-  learningId: isNonEmptyString,
-  contentSha256: isSha256,
   base: isNonEmptyString,
   learned: isNonEmptyString,
+};
+
+const LEARNING_FIELDS = {
+  learningId: isNonEmptyString,
+  contentSha256: isSha256,
   approvedBy: v => v === null || isApprover(v),
+};
+
+// A policy entry names no learning and carries no evidence: only the hash of
+// the policy the owner set, so a policy file nobody recorded promotes
+// nothing.
+const POLICY_FIELDS = {
+  policySha256: isSha256,
+  approvedBy: v => v === 'owner',
 };
 
 const FIRING_KEYS = ['sessionId', 'line'];
@@ -71,8 +85,8 @@ const KIND_FIELDS = {
   },
 };
 
-const STORED_FIELDS = {
-  ...ENTRY_FIELDS,
+// What `appendLedger` adds to every entry it stores.
+const STAMP_FIELDS = {
   ts: isTimestamp,
   prev: v => v === null || isSha256(v),
 };
@@ -88,17 +102,27 @@ function evidenceProblem(evidence) {
   return null;
 }
 
-/** Why `value` is not an entry under `fields`, the `KIND_FIELDS` its kind
- * carries, `evidence` and an optional string `detail`, or null when it is
- * one. */
-function entryProblem(value, fields) {
+/**
+ * Why `value` is not a ledger entry, or null when it is one. A policy entry
+ * is the common fields, `POLICY_FIELDS` and an optional string `detail`;
+ * any other is the common fields, `LEARNING_FIELDS`, the `KIND_FIELDS` its
+ * kind carries, `evidence` and an optional string `detail`. `stored` adds
+ * the fields `appendLedger` stamps on.
+ */
+function entryProblem(value, { stored }) {
   if (!isPlainObject(value)) return 'entry is not an object';
+  if (!COMMON_FIELDS.kind(value.kind)) return 'kind is missing or invalid';
+  const policy = value.kind === POLICY_KIND;
+  const fields = { ...COMMON_FIELDS, ...(policy ? POLICY_FIELDS : LEARNING_FIELDS), ...(stored ? STAMP_FIELDS : {}) };
+  const optional = policy ? ['detail'] : ['evidence', 'detail', ...Object.keys(KIND_FIELDS)];
   for (const key of Object.keys(value)) {
-    if (key !== 'evidence' && key !== 'detail' && !Object.hasOwn(fields, key) && !Object.hasOwn(KIND_FIELDS, key)) return `unknown field "${key}"`;
+    if (!Object.hasOwn(fields, key) && !optional.includes(key)) return `unknown field "${key}"`;
   }
   for (const [field, valid] of Object.entries(fields)) {
     if (!valid(value[field])) return `${field} is missing or invalid`;
   }
+  if (value.detail !== undefined && typeof value.detail !== 'string') return 'detail is not a string';
+  if (policy) return null;
   for (const [field, { kinds, valid }] of Object.entries(KIND_FIELDS)) {
     if (kinds.includes(value.kind)) {
       if (!valid(value[field])) return `${field} is missing or invalid for a ${value.kind} entry`;
@@ -106,7 +130,6 @@ function entryProblem(value, fields) {
       return `${field} is carried only by a ${kinds.join(' or ')} entry`;
     }
   }
-  if (value.detail !== undefined && typeof value.detail !== 'string') return 'detail is not a string';
   return evidenceProblem(value.evidence);
 }
 
@@ -136,6 +159,22 @@ function splitLines(buf) {
   return lines;
 }
 
+/** The fields of a valid `entry` the ledger stores, copied so nothing
+ * beyond its schema rides along. */
+function recordedFields(entry) {
+  const { kind, base, learned, approvedBy, detail } = entry;
+  if (kind === POLICY_KIND) return { kind, policySha256: entry.policySha256, base, learned, approvedBy, detail };
+  const { learningId, contentSha256, evidence, action, firing } = entry;
+  const { signature, sessions, firstTs, lastTs, external } = evidence;
+  return {
+    kind, learningId, contentSha256,
+    evidence: { signature, sessions, firstTs, lastTs, external },
+    base, learned, approvedBy, action,
+    firing: firing === undefined ? undefined : { sessionId: firing.sessionId, line: firing.line },
+    detail,
+  };
+}
+
 /**
  * Appends one event to the ledger, adding `ts` (now) and `prev` (the
  * SHA-256 of the previous line's bytes, null for the first line). Throws,
@@ -145,10 +184,9 @@ function splitLines(buf) {
  * writer is still running.
  */
 export function appendLedger(root, entry, { now = Date.now, isAlive = isProcessAlive } = {}) {
-  const problem = entryProblem(entry, ENTRY_FIELDS);
+  const problem = entryProblem(entry, { stored: false });
   if (problem !== null) throw new Error(`ledger entry refused: ${problem}`);
-  const { kind, learningId, contentSha256, evidence, base, learned, approvedBy, action, firing, detail } = entry;
-  const { signature, sessions, firstTs, lastTs, external } = evidence;
+  const fields = recordedFields(entry);
   const dir = repoDataDir(root);
   mkdirSync(dir, { recursive: true });
   // The read of the last line and the append that chains to it are one step
@@ -157,15 +195,7 @@ export function appendLedger(root, entry, { now = Date.now, isAlive = isProcessA
     const buf = ledgerBytes(root) ?? Buffer.alloc(0);
     const lines = splitLines(buf);
     const prev = lines.length === 0 ? null : sha256Hex(lines.at(-1));
-    const record = {
-      kind, learningId, contentSha256,
-      evidence: { signature, sessions, firstTs, lastTs, external },
-      base, learned, approvedBy, action,
-      firing: firing === undefined ? undefined : { sessionId: firing.sessionId, line: firing.line },
-      detail,
-      ts: new Date(now()).toISOString(),
-      prev,
-    };
+    const record = { ...fields, ts: new Date(now()).toISOString(), prev };
     // A torn last line stays a line of its own, which `verifyLedger` reports.
     const torn = buf.length > 0 && buf.at(-1) !== NEWLINE;
     assertHeld();
@@ -209,7 +239,7 @@ export function verifyLedger(root) {
     } catch {
       return { intact: false, brokenAt: i + 1 };
     }
-    if (entryProblem(parsed, STORED_FIELDS) !== null) return { intact: false, brokenAt: i + 1 };
+    if (entryProblem(parsed, { stored: true }) !== null) return { intact: false, brokenAt: i + 1 };
     if (i === 0 && parsed.prev !== null) return { intact: false, brokenAt: 1 };
     if (i > 0 && parsed.prev !== sha256Hex(lines[i - 1])) return { intact: false, brokenAt: i };
   }

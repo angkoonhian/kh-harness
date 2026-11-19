@@ -18,7 +18,7 @@ import {
   logReadMistakes, MISTAKE, mtimes, READ_GATE, repo, success, trialRepo, useId, WATCH_GATE, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { learningStats, listLearnings, runTrial } from './learn-lib.mjs';
-import { approveLearning, demoteLearning, markWrong, retireLearning, tick } from './learn-promote.mjs';
+import { approveLearning, demoteLearning, markWrong, retireLearning, setPolicy, tick } from './learn-promote.mjs';
 import { appendLedger, readLedger, verifyLedger } from './ledger.mjs';
 import { readPolicy, writePolicy } from './policy.mjs';
 import { SUCCESS_EVENT } from './recurrence.mjs';
@@ -67,6 +67,13 @@ const commitFile = (root, path, text) => {
   git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', `add ${path}`);
 };
 const repoStatus = root => git(root, 'status', '--porcelain', '--untracked-files=all', '--ignored');
+
+/** Sets `policy` as the owner would at a terminal and returns its hash. */
+function ownerPolicy(root, policy) {
+  const set = setPolicy(root, policy, { interactive: AT_TERMINAL });
+  assert.equal(set.ok, true, set.error);
+  return set.sha256;
+}
 
 const NO_TERMINAL = what => ({ error: `${what} needs a person at an interactive terminal outside Claude Code; nothing was written` });
 
@@ -161,8 +168,8 @@ test('a gate written into the local set without an approval is listed, and tick 
   assert.deepEqual(listed.approvals, []);
   const ticked = tick(root);
   assert.deepEqual(ticked.unapprovedRemoved, ['L1', 'L50']);
-  assert.deepEqual(ticked.repairedGates, ['L1', 'L50']);
-  assert.deepEqual(localGates(root).gates, [{ id: 'L51', suspended: true }, learning.gate], 'the trial gate is restored at observe');
+  assert.deepEqual(ticked.repairedGates, ['L1', 'L50', 'L51'], 'a suspension the ledger does not account for goes too');
+  assert.deepEqual(localGates(root).gates, [learning.gate], 'the trial gate is restored at observe');
   assert.equal(denied(hookOn(root, MISTAKE)), false);
   assert.deepEqual(listLearnings(root).unapprovedGates, []);
 });
@@ -182,12 +189,12 @@ test('a refused call still removes a gate the ledger does not grant', () => {
 
 test('with a broken ledger every learned local gate is removed, and tick promotes nothing and says so', () => {
   const { root } = promotedRepo('block');
-  writePolicy(root, POLICY);
+  ownerPolicy(root, POLICY);
   writeFileSync(join(repoDataDir(root), 'ledger.jsonl'), 'not json\n', { flag: 'a' });
   assert.deepEqual(listLearnings(root).gatesToRepair, ['L1']);
   assert.deepEqual(tick(root, { now: () => Date.parse('2026-11-19T12:00:00.000Z') }), {
     promoted: [], demoted: [], retired: [], suspended: [], citationsGone: [],
-    unapprovedRemoved: ['L1'], repairedGates: ['L1'], ledgerIntact: false, policy: 'ok',
+    unapprovedRemoved: ['L1'], repairedGates: ['L1'], gateFileRewritten: false, ledgerIntact: false, policy: 'ok', policyUnrecorded: false,
     errors: ['the ledger cannot be read or its chain is broken, so nothing was retired, demoted or promoted'],
   });
   assert.deepEqual(localGates(root).gates, []);
@@ -200,7 +207,7 @@ test('with no policy, tick promotes nothing', () => {
   for (const s of ['fire-a', 'fire-b', 'fire-c']) fired(root, s, learning.gate);
   assert.deepEqual(tick(root), {
     promoted: [], demoted: [], retired: [], suspended: [], citationsGone: [],
-    unapprovedRemoved: [], repairedGates: [], ledgerIntact: true, policy: 'absent', errors: [],
+    unapprovedRemoved: [], repairedGates: [], gateFileRewritten: false, ledgerIntact: true, policy: 'absent', policyUnrecorded: false, errors: [],
   });
   assert.equal(statusOf(root), 'trial');
   assert.deepEqual(localGates(root).gates, [learning.gate]);
@@ -213,7 +220,7 @@ test('with no policy, tick promotes nothing', () => {
 
 test('under a policy, a qualifying trial is promoted and the ledger names the policy hash', () => {
   const { root, learning } = trialRepo();
-  const sha = writePolicy(root, POLICY);
+  const sha = ownerPolicy(root, POLICY);
   fired(root, 'fire-a', learning.gate);
   assert.deepEqual(tick(root).promoted, [], 'one firing in one session is short of the policy');
   fired(root, 'fire-b', learning.gate);
@@ -238,7 +245,7 @@ test('a learning with external evidence is never promoted by policy', () => {
   const learning = drafted(root);
   assert.equal(learning.external, true);
   assert.equal(runTrial(root, 'L1').status, 'trial');
-  writePolicy(root, { ...POLICY, minTrialFirings: 1, minTrialSessions: 1 });
+  ownerPolicy(root, { ...POLICY, minTrialFirings: 1, minTrialSessions: 1 });
   for (const s of ['fire-a', 'fire-b', 'fire-c']) fired(root, s, learning.gate);
   assert.deepEqual(tick(root).promoted, []);
   assert.equal(statusOf(root), 'trial');
@@ -247,7 +254,7 @@ test('a learning with external evidence is never promoted by policy', () => {
 
 test('a trial marked wrong is not promoted by policy, and a demoted one is promoted again only by the owner', () => {
   const { root, learning } = trialRepo();
-  writePolicy(root, POLICY);
+  ownerPolicy(root, POLICY);
   const ref = fired(root, 'fire-a', learning.gate);
   fired(root, 'fire-b', learning.gate);
   assert.equal(markWrong(root, ref, { interactive: AT_TERMINAL }).status, 'trial');
@@ -255,7 +262,7 @@ test('a trial marked wrong is not promoted by policy, and a demoted one is promo
 
   const other = promotedRepo('warn');
   assert.ok(demoteLearning(other.root, 'L1', { interactive: AT_TERMINAL }).ok);
-  writePolicy(other.root, POLICY);
+  ownerPolicy(other.root, POLICY);
   for (const s of ['fire-a', 'fire-b', 'fire-c']) fired(other.root, s, other.learning.gate);
   assert.deepEqual(tick(other.root).promoted, []);
   assert.equal(statusOf(other.root), 'trial');
@@ -331,6 +338,8 @@ test('a committed gate marked wrong twice is suspended on this machine', () => {
   const output = hookOn(root, MISTAKE);
   assert.equal(denied(output), false, 'the committed gate no longer blocks here');
   assert.match(output.systemMessage, /suspended on this machine/);
+  assert.deepEqual(tick(root).repairedGates, [], 'a suspension the ledger records survives the repair');
+  assert.deepEqual(localGates(root).gates, [{ id: 'L1', suspended: true }]);
   assert.equal(repoStatus(root), before);
   assert.equal(readFileSync(join(root, GATES_PATH), 'utf8'), committed);
 });
@@ -399,7 +408,7 @@ test('demotion and retirement by hand need a person at a terminal', () => {
 
 test('a learning the ledger does not record is never changed', () => {
   const { root, learning } = promotedRepo('block');
-  writePolicy(root, POLICY);
+  ownerPolicy(root, POLICY);
   editLearning(root, 'L1', { status: 'trial', gate: learning.gate });
   for (const s of ['fire-a', 'fire-b']) fired(root, s, learning.gate);
   const entries = readLedger(root).length;
@@ -446,7 +455,7 @@ test('tick writes nothing inside the repository', () => {
   }
   const other = drafted(root, { gate: READ_GATE });
   assert.equal(runTrial(root, other.id).status, 'trial');
-  writePolicy(root, { ...POLICY, maxAction: 'block' });
+  ownerPolicy(root, { ...POLICY, maxAction: 'block' });
   for (const s of ['fire-a', 'fire-b']) fired(root, s, other.gate);
   writeLocalGates(root, [learning.gate, other.gate, { ...READ_GATE, id: 'L60', action: 'block' }]);
   rmSync(join(root, 'docs/watch.md'));
@@ -464,4 +473,126 @@ test('tick writes nothing inside the repository', () => {
 
   assert.equal(repoStatus(root), before);
   assert.deepEqual(mtimes(root), times);
+});
+
+/** A repository with an external Bash learning L1 on trial. */
+function externalTrialRepo() {
+  const root = repo();
+  logMistakes(root);
+  log(root, 'one', { type: 'external_content', session_id: 'one', tool: 'WebFetch' });
+  logClean(root);
+  const learning = drafted(root);
+  assert.equal(learning.external, true);
+  assert.equal(runTrial(root, 'L1').status, 'trial');
+  return { root, learning };
+}
+
+test('an external learning whose file is edited to say otherwise is still never promoted by policy', () => {
+  const { root, learning } = externalTrialRepo();
+  editLearning(root, 'L1', { external: false, evidence: { ...learning.evidence, external: false } });
+  assert.deepEqual(listLearnings(root).ledgerMismatch, [], 'the edit leaves a learning the ledger still vouches for');
+  ownerPolicy(root, { ...POLICY, minTrialFirings: 1, minTrialSessions: 1 });
+  for (const s of ['fire-a', 'fire-b', 'fire-c']) fired(root, s, learning.gate);
+  assert.deepEqual(tick(root).promoted, []);
+  assert.equal(statusOf(root), 'trial');
+});
+
+test('a hand-written suspension placed before an approved gate does not switch it off unseen', () => {
+  const { root, gate } = promotedRepo('block');
+  writeLocalGates(root, [{ id: 'L1', suspended: true }, gate]);
+  const listed = listLearnings(root);
+  assert.equal(listed.learnings[0].status, 'active-local');
+  assert.deepEqual(listed.gatesToRepair, ['L1'], 'the suspension is reported');
+  assert.deepEqual(tick(root).repairedGates, ['L1']);
+  assert.deepEqual(localGates(root).gates, [gate]);
+  assert.ok(denied(hookOn(root, MISTAKE)), 'the approved gate is in force again');
+  assert.deepEqual(listLearnings(root).gatesToRepair, []);
+});
+
+test('a policy file written without a ledger record promotes nothing and tick says so', () => {
+  const { root, learning } = trialRepo();
+  writePolicy(root, POLICY);
+  for (const s of ['fire-a', 'fire-b']) fired(root, s, learning.gate);
+  const ticked = tick(root);
+  assert.equal(ticked.policy, 'ok');
+  assert.equal(ticked.policyUnrecorded, true);
+  assert.deepEqual(ticked.promoted, []);
+  assert.equal(statusOf(root), 'trial');
+});
+
+test('a policy set at a terminal promotes a qualifying trial', () => {
+  const { root, learning } = trialRepo();
+  const set = setPolicy(root, POLICY, { interactive: AT_TERMINAL });
+  assert.deepEqual(set, { ok: true, sha256: readPolicy(root).sha256, repairedGates: [] });
+  const entry = readLedger(root).at(-1);
+  assert.deepEqual([entry.kind, entry.policySha256, entry.approvedBy], ['policy', set.sha256, 'owner']);
+  assert.equal(verifyLedger(root).intact, true);
+  for (const s of ['fire-a', 'fire-b']) fired(root, s, learning.gate);
+  const ticked = tick(root);
+  assert.equal(ticked.policyUnrecorded, false);
+  assert.deepEqual(ticked.promoted, ['L1']);
+  assert.equal(readLedger(root).at(-1).approvedBy, `policy:${set.sha256}`);
+});
+
+test('editing the policy file after it was set stops promotion until it is set again', () => {
+  const { root, learning } = trialRepo();
+  ownerPolicy(root, { ...POLICY, minTrialFirings: 50 });
+  for (const s of ['fire-a', 'fire-b']) fired(root, s, learning.gate);
+  writePolicy(root, POLICY);
+  const ticked = tick(root);
+  assert.equal(ticked.policyUnrecorded, true);
+  assert.deepEqual(ticked.promoted, [], 'a more lenient file nobody set promotes nothing');
+  ownerPolicy(root, POLICY);
+  assert.deepEqual(tick(root).promoted, ['L1']);
+});
+
+test('setPolicy without an interactive terminal is refused and writes nothing', () => {
+  const { root } = trialRepo();
+  const entries = readLedger(root).length;
+  for (const interactive of [NOT_AT_TERMINAL, undefined, { ok: 'yes' }]) {
+    assert.deepEqual(setPolicy(root, POLICY, { interactive }), NO_TERMINAL('setting a policy'));
+  }
+  assert.deepEqual(setPolicy(root, POLICY), NO_TERMINAL('setting a policy'));
+  assert.deepEqual(setPolicy(root, { ...POLICY, maxAction: 'observe' }, { interactive: AT_TERMINAL }), { error: "policy: maxAction must be 'warn' or 'block'" });
+  assert.deepEqual(readPolicy(root), { state: 'absent' });
+  assert.equal(readLedger(root).length, entries);
+
+  writeFileSync(join(repoDataDir(root), 'ledger.jsonl'), 'not json\n', { flag: 'a' });
+  assert.equal(setPolicy(root, POLICY, { interactive: AT_TERMINAL }).error,
+    'the ledger cannot be read or its chain is broken, so the policy cannot be recorded; nothing was written');
+  assert.deepEqual(readPolicy(root), { state: 'absent' });
+});
+
+test('a gate entry is judged against the approval in force, not one its learning has since lost', () => {
+  const { root, learning } = promotedRepo('warn');
+  assert.ok(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).ok);
+  writeLocalGates(root, [{ ...learning.gate, action: 'warn' }]);
+  assert.deepEqual(listLearnings(root).unapprovedGates, ['L1'], 'the warn approval was withdrawn by the demotion');
+  assert.deepEqual(tick(root).unapprovedRemoved, ['L1']);
+  assert.deepEqual(localGates(root).gates, [learning.gate]);
+});
+
+test('a committed entry that only reuses a learning\'s id does not make its demotion a suspension', () => {
+  const { root, gate } = promotedRepo('block');
+  commitFile(root, GATES_PATH, JSON.stringify({ schema: 1, gates: [{ ...READ_GATE, id: 'L1', action: 'warn' }] }));
+  for (const s of ['fire-a', 'fire-b']) assert.ok(markWrong(root, fired(root, s, gate), { interactive: AT_TERMINAL }).ok);
+  assert.equal(statusOf(root), 'trial');
+  assert.equal(kinds(root).at(-1), 'L1:demoted');
+});
+
+test('a local gate file that is not a gate file is rebuilt by tick from an intact ledger, and left with a broken one', () => {
+  const { root, gate } = promotedRepo('block');
+  writeFileSync(localGatesPath(root), '{ not a gate file');
+  const ticked = tick(root);
+  assert.equal(ticked.gateFileRewritten, true);
+  assert.deepEqual(ticked.repairedGates, ['L1']);
+  assert.deepEqual(localGates(root), { schema: 1, gates: [gate] });
+  assert.ok(denied(hookOn(root, MISTAKE)));
+
+  writeFileSync(localGatesPath(root), '{ not a gate file');
+  writeFileSync(join(repoDataDir(root), 'ledger.jsonl'), 'not json\n', { flag: 'a' });
+  const broken = tick(root);
+  assert.equal(broken.gateFileRewritten, false);
+  assert.ok(broken.errors.includes('the local gate file is not a gate file, and with the ledger broken it cannot be rebuilt; it was left as it is'));
+  assert.equal(readFileSync(localGatesPath(root), 'utf8'), '{ not a gate file');
 });
