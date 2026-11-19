@@ -5,7 +5,7 @@
 // marker directory.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -169,6 +169,27 @@ test('unparseable stdin exits 0 and writes nothing', () => {
     assertSilentSuccess(runHook(root, stdin));
   }
   assert.equal(existsSync(join(repoDataDir(root), 'sessions')), false);
+});
+
+test('a caller that never closes stdin still gets exit 0 within the bound, and nothing is recorded', async () => {
+  const root = enabledProject();
+  const code = await new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [HOOK], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: root, HK_STDIN_TIMEOUT_MS: '200' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const deadline = setTimeout(() => {
+      child.kill();
+      reject(new Error('the hook did not exit within the stdin bound'));
+    }, 5000);
+    child.on('exit', exitCode => {
+      clearTimeout(deadline);
+      resolvePromise(exitCode);
+    });
+    child.stdin.write('{"hook_event_name":"PostToolUse"');
+  });
+  assert.equal(code, 0);
+  assert.equal(existsSync(join(repoDataDir(root), 'sessions')), false, 'a payload cut short is not an event');
 });
 
 test('a payload whose session id cannot name a file writes nothing', () => {

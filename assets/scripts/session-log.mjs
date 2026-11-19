@@ -346,16 +346,36 @@ function siblingNotice(payload) {
   return firstTelling(projectRoot(), sessionId, sentence) ? sentence : null;
 }
 
-async function readStdin() {
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8');
+// A hard ceiling on how long reading stdin may block; see lint-touched.mjs's
+// STDIN_TIMEOUT_MS for why the read is asynchronous.
+const STDIN_TIMEOUT_MS = Number(process.env.HK_STDIN_TIMEOUT_MS) || 5_000;
+
+function readStdin(timeoutMs) {
+  return new Promise(resolve => {
+    let data = '';
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(data), timeoutMs);
+    try {
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', chunk => { data += chunk; });
+      process.stdin.on('end', () => finish(data));
+      process.stdin.on('error', () => finish(data));
+    } catch {
+      finish('');
+    }
+  });
 }
 
 async function main() {
   let payload;
   try {
-    payload = JSON.parse(await readStdin());
+    payload = JSON.parse(await readStdin(STDIN_TIMEOUT_MS));
   } catch {
     return;
   }
@@ -384,5 +404,6 @@ if (isEntryPoint()) {
   } catch {
     // a failure to record must not reach Claude Code
   }
-  process.exitCode = 0;
+  // Not `exitCode`: a stdin the caller never closed would keep the process.
+  process.exit(0);
 }
