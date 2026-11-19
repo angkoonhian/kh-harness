@@ -12,7 +12,7 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 // comment on why the parser lives there); re-exported below so uninstall-
 // lib.mjs reads every producible path from this one module, as it does for
 // the other five.
-import { RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
@@ -301,7 +301,7 @@ const TOOL_GATE_STEP = 30;
  * not a program the agent runs that writes these files itself.
  */
 export function toolGateDenyRules() {
-  const inRepository = ['.claude/scripts/**', '.claude/kh-harness/**', '.claude/kh-harness.manifest.json', 'docs/harness/LEARNED.md'].map(p => `Edit(/${p})`);
+  const inRepository = ['.claude/scripts/**', '.claude/kh-harness/**', '.claude/kh-harness.manifest.json', LEARNED_PATH].map(p => `Edit(/${p})`);
   return [...inRepository, 'Edit(~/.claude/kh-harness/**)'];
 }
 
