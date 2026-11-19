@@ -170,7 +170,7 @@ test('a second draft for a signature whose learning the replay rejected is refus
   const before = mtimes(repoDataDir(root));
   const ledgerBefore = readLedger(root);
   assert.deepEqual(draftLearning(root, draftFor(root)),
-    { error: 'signature: the replay rejected L1 for this signature; a new draft for it is made only as a redraft (--redraft)' });
+    { error: "signature: the replay rejected L1 for this recurrence; a new draft for it is the owner's decision, as `learn --help` documents" });
   assert.deepEqual(mtimes(repoDataDir(root)), before);
   assert.deepEqual(readLedger(root), ledgerBefore);
   assert.equal(existsSync(learningFile(root, 'L2')), false);
@@ -181,7 +181,7 @@ test('with redraft the second draft is accepted, and its proposed entry says it 
   const result = draftLearning(root, draftFor(root), { redraft: true });
   assert.equal(result.learning?.id, 'L2', result.error);
   const proposed = readLedger(root).filter(e => e.kind === 'proposed');
-  assert.deepEqual(proposed.map(e => [e.learningId, e.detail]), [['L1', undefined], ['L2', 'a redraft; the replay had rejected L1 for this signature']]);
+  assert.deepEqual(proposed.map(e => [e.learningId, e.detail]), [['L1', undefined], ['L2', 'a redraft; the replay had rejected L1 for this recurrence']]);
   assert.equal(runTrial(root, 'L2').status, 'trial');
 });
 
@@ -189,6 +189,40 @@ test('redraft changes nothing for a signature no learning was rejected for', () 
   const root = loggedRepo();
   assert.equal(draftLearning(root, draftFor(root), { redraft: true }).learning?.id, 'L1');
   assert.equal(readLedger(root).find(e => e.kind === 'proposed').detail, undefined);
+});
+
+/** A rejected Bash L1 beside a Read recurrence, with `kinds` written as the
+ * failure taxonomy: each `[title, tools]`, `tools` naming the recurrences
+ * the kind labels. */
+function siblingRepo(kinds) {
+  const root = loggedRepo();
+  logReadMistakes(root);
+  assert.equal(runTrial(root, drafted(root, { gate: FIX_GATE }).id).status, 'rejected');
+  const body = kinds.map(([title, tools], i) => `## F${i + 3} — ${title}\n- signatures: ${tools.map(t => signatureOf(root, t)).join(', ')}\n`).join('\n');
+  mkdirSync(join(root, 'docs', 'harness'), { recursive: true });
+  writeFileSync(join(root, FAILURES_PATH), `# Failures\n\n${body}`);
+  return root;
+}
+
+const readDraft = root => draftFor(root, { gate: READ_GATE });
+
+test('a draft for a sibling signature of a rejected learning\'s failure kind is refused without redraft', () => {
+  const root = siblingRepo([['Tests run in watch mode', ['Bash', 'Read']]]);
+  assert.deepEqual(draftLearning(root, readDraft(root)),
+    { error: "signature: the replay rejected L1 (failure kind F3) for this recurrence; a new draft for it is the owner's decision, as `learn --help` documents" });
+  assert.equal(draftLearning(root, readDraft(root), { redraft: true }).learning?.id, 'L2');
+  assert.equal(readLedger(root).filter(e => e.kind === 'proposed').at(-1).detail, 'a redraft; the replay had rejected L1 (failure kind F3) for this recurrence');
+});
+
+test('a rejection under another failure kind, or with no readable taxonomy, leaves a recurrence draftable', () => {
+  const apart = siblingRepo([['Tests run in watch mode', ['Bash']], ['A file read that does not exist', ['Read']]]);
+  assert.equal(draftLearning(apart, readDraft(apart)).learning?.id, 'L2');
+  const unreadable = loggedRepo();
+  logReadMistakes(unreadable);
+  assert.equal(runTrial(unreadable, drafted(unreadable, { gate: FIX_GATE }).id).status, 'rejected');
+  mkdirSync(join(unreadable, FAILURES_PATH), { recursive: true });
+  assert.equal(draftLearning(unreadable, readDraft(unreadable)).learning?.id, 'L2', 'the exact-signature rule alone');
+  assert.match(draftLearning(unreadable, draftFor(unreadable)).error, /rejected L1 for this recurrence/);
 });
 
 test('a retired learning leaves its signature draftable without redraft; a live candidate still covers it', () => {
@@ -292,16 +326,16 @@ test('an id that is malformed or names no learning is refused', () => {
 
 test('ids are never reused after a rejection', () => {
   const root = loggedRepo();
-  const rejected = () => {
-    const learning = drafted(root, { gate: FIX_GATE }, { redraft: true });
+  const rejected = options => {
+    const learning = drafted(root, { gate: FIX_GATE }, options);
     assert.equal(runTrial(root, learning.id).status, 'rejected');
     return learning.id;
   };
   assert.equal(rejected(), 'L1');
-  assert.equal(rejected(), 'L2');
+  assert.equal(rejected({ redraft: true }), 'L2');
   rmSync(learningFile(root, 'L2'));
   rmSync(learningFile(root, 'L1'));
-  assert.equal(rejected(), 'L3', 'a removed learning keeps its number');
+  assert.equal(rejected({ redraft: true }), 'L3', 'a removed learning keeps its number');
   rmSync(learningFile(root, 'L3'));
   rmSync(join(repoDataDir(root), 'learning-ids.json'));
   assert.equal(drafted(root, undefined, { redraft: true }).id, 'L4', 'the ledger keeps the number when the counter is lost');

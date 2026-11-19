@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 
 import { readEvents } from '../../assets/scripts/harness-log.mjs';
 import { REROUTED_MEANS } from './gate-stats.mjs';
-import { ID_ERROR, isId, learningIn, learningStats, readState, rejectedFor, standingFor, unrecordedReason } from './learn-lib.mjs';
+import { failureKinds, ID_ERROR, isId, learningIn, learningStats, readState, rejectedFor, standingFor, unrecordedReason } from './learn-lib.mjs';
 import { recordedPolicySha256 } from './learn-promote.mjs';
 import { isApprover, readLedger, verifyLedger } from './ledger.mjs';
 import { buildLogReport, NOT_CLAIMED, NOT_READ, noLogLine, readCountLines, recurrenceSection } from './log-report.mjs';
@@ -203,33 +203,39 @@ const withRepairs = (result, lines) => {
 
 /**
  * `log report`'s view of the log, its groups narrowed to the recurrences no
- * learning stands for and the replay never rejected a learning for; in
- * `rejectedGroups`, those it did, each with the `rejected` ids, which only a
- * redraft may draft again; with whether the ledger could be read and which
- * learning files do not read back, since either can hide a learning that
- * stands.
+ * learning stands for and `rejectedFor` finds no rejected learning for; in
+ * `rejectedGroups`, those it does, each with its `rejected` learnings, which
+ * only a redraft may draft again; with whether the ledger could be read
+ * and which learning files do not read back, since either can hide a
+ * learning that stands.
  */
 export function candidatesView(root) {
   const report = buildLogReport(root);
   const state = readState(root);
+  const kinds = failureKinds(root);
   const unclaimed = r => standingFor(state, r.signature) === null;
   const narrowed = keep => (report.groups === null ? null
     : report.groups.map(g => ({ ...g, recurrences: keep(g.recurrences) })).filter(g => g.recurrences.length > 0));
-  const groups = narrowed(rs => rs.filter(r => unclaimed(r) && rejectedFor(state, r.signature).length === 0));
+  const groups = narrowed(rs => rs.filter(r => unclaimed(r) && rejectedFor(state, r.signature, kinds).length === 0));
   const rejectedGroups = narrowed(rs => rs.filter(unclaimed)
-    .map(r => ({ ...r, rejected: rejectedFor(state, r.signature) })).filter(r => r.rejected.length > 0));
+    .map(r => ({ ...r, rejected: rejectedFor(state, r.signature, kinds) })).filter(r => r.rejected.length > 0));
   const { gates, ledger, notClaimed, ...read } = report;
   return { ...read, groups, rejectedGroups, ledgerIntact: state.view.intact, learningsUnreadable: state.unreadable };
 }
 
 const REJECTED_HEADING = 'RECURRENCES DRAFTED BEFORE, WHOSE REPLAY REJECTED THE DRAFT (a new draft is made only with --redraft)';
 
-/** The recurrences a rejected learning cites, as `recurrenceSection` shows
- * them, each followed by the ids the replay rejected. */
+/** A rejected learning and what ties it to the recurrence. A failure
+ * kind's title is the owner's text, so it is printed escaped. */
+const rejectedBy = r => (r.kind === null ? `${ids([r.id])} (the same signature)`
+  : `${ids([r.id])} (the same failure kind, ${ids([r.kind.id])} ${visible(r.kind.title)})`);
+
+/** The recurrences a rejected learning bars, as `recurrenceSection` shows
+ * them, each followed by the learnings the replay rejected. */
 function rejectedSection(view) {
   const out = recurrenceSection({ ...view, groups: view.rejectedGroups }, REJECTED_HEADING);
   if (view.rejectedGroups.length === 0) return out;
-  const rejected = view.rejectedGroups.flatMap(g => g.recurrences).map(r => `  ${r.signature}: rejected ${ids(r.rejected)}`);
+  const rejected = view.rejectedGroups.flatMap(g => g.recurrences).map(r => `  ${r.signature}: rejected ${r.rejected.map(rejectedBy).join(', ')}`);
   return [...out, '  learnings the replay rejected, by signature:', ...indent(rejected)];
 }
 

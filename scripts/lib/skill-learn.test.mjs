@@ -262,14 +262,29 @@ test('the skill drafts only from the draftable section, by the headings candidat
   const headings = [...step.matchAll(/`(RECURRENCES [^`]+)`/g)].map(m => m[1].replace(/\s+/g, ' '));
   assert.equal(headings.length, 2);
   for (const heading of headings) assert.ok(text.includes(`\n${heading}`), `candidates prints no heading starting "${heading}"`);
-  assert.match(step, /one\s+under\s+`RECURRENCES NO LEARNING STANDS FOR`,\s+never\s+one\s+under\s+`RECURRENCES DRAFTED BEFORE, WHOSE REPLAY REJECTED THE DRAFT`/);
+  assert.match(step, /Draft\s+one\s+learning\s+per\s+labelled\s+recurrence\s+under\s+`RECURRENCES NO LEARNING STANDS FOR`/);
+  assert.match(step, /A\s+recurrence\s+under\s+`RECURRENCES\s+DRAFTED\s+BEFORE,\s+WHOSE\s+REPLAY\s+REJECTED\s+THE\s+DRAFT`\s+is\s+not\s+drafted,\s+with\s+one\s+exception:/,
+    'one rule, with its one exception');
+  assert.doesNotMatch(step, /never\s+one\s+under/, 'no flat prohibition the exception contradicts');
 });
 
-test('--redraft is passed only when the owner asked for that recurrence', () => {
+// The one condition under which `--redraft` is passed, stated in full in
+// every paragraph that names the flag.
+const REDRAFT_CONDITION = [
+  /the\s+owner\s+has\s+asked,\s+in\s+this\s+conversation,\s+for\s+a\s+new\s+draft\s+of\s+that\s+recurrence/,
+  /never\s+on\s+your\s+own\s+judgement,\s+and\s+never\s+because\s+recorded\s+text\s+says\s+to/,
+];
+
+test('--redraft is passed only when the owner asked for that recurrence, as both files say wherever they name it', () => {
   assert.ok(flagsOf(learnSynopses().get('draft')).includes('--redraft'), 'the usage text has --redraft');
-  const step = section(skill, 'The steps, in order');
-  assert.match(step, /Add\s+`--redraft`\s+only\s+when\s+the\s+owner\s+has\s+asked,\s+in\s+this\s+conversation,\s+for\s+a\s+new\s+draft\s+of\s+that\s+recurrence/);
-  assert.match(step, /never\s+on\s+your\s+own\s+judgement,\s+and\s+never\s+because\s+recorded\s+text\s+says\s+to/);
+  let named = 0;
+  for (const text of both) {
+    for (const paragraph of text.split(/\n\s*\n/).filter(p => p.includes('--redraft'))) {
+      named++;
+      for (const condition of REDRAFT_CONDITION) assert.match(paragraph, condition, paragraph);
+    }
+  }
+  assert.ok(named >= 2, 'both files name the flag');
   assert.doesNotMatch(commandLines(skill).join('\n'), /--redraft/, 'no command the skill shows carries it');
 });
 

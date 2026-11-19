@@ -19,8 +19,8 @@ import { applyRetention, SEAL_IDLE_MS, sealClosedSessions } from '../../assets/s
 import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { EXIT_CODES, LEARN_USAGE, learnHelp } from './cli.mjs';
 import {
-  draftFor, drafted, FIX_GATE, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, repo, signatureOf, tempDir, trialRepo,
-  useId, writeLocalGates,
+  draftFor, drafted, FIX_GATE, HARNESS, learningFile, log, logClean, logFiring, loggedRepo, logReadMistakes, read, READ_GATE, repo, signatureOf, tempDir,
+  trialRepo, useId, writeLocalGates,
 } from './learn-fixtures.mjs';
 import { DATA_MARKERS, EVIDENCE_NOTE, LEARN_SUBCOMMANDS, TERMINAL_ONLY } from './learn-cli.mjs';
 import { FAILURE_EVENT, SUCCESS_EVENT } from './recurrence.mjs';
@@ -130,7 +130,7 @@ test('candidates lists a recurrence the replay rejected a learning for apart, wi
   const read = signatureOf(root, 'Read');
   const view = json(root, 'candidates');
   assert.deepEqual(signaturesIn(view.groups), [read]);
-  assert.deepEqual(view.rejectedGroups.flatMap(g => g.recurrences.map(r => [r.signature, r.rejected])), [[bash, ['L1']]]);
+  assert.deepEqual(view.rejectedGroups.flatMap(g => g.recurrences.map(r => [r.signature, r.rejected])), [[bash, [{ id: 'L1', kind: null }]]]);
 
   const text = ok(runLearn(root, 'candidates'));
   const draftable = text.indexOf('RECURRENCES NO LEARNING STANDS FOR (each may be drafted)');
@@ -138,7 +138,47 @@ test('candidates lists a recurrence the replay rejected a learning for apart, wi
   assert.ok(draftable !== -1 && apart > draftable, text);
   assert.equal(text.slice(draftable, apart).includes(bash), false, 'not under the heading that says it may be drafted');
   assert.ok(text.slice(apart).includes(`${bash}  Bash: in 2 sessions`), text);
-  assert.ok(text.slice(apart).includes(`    ${bash}: rejected L1`), text);
+  assert.ok(text.slice(apart).includes(`    ${bash}: rejected L1 (the same signature)`), text);
+});
+
+/** `docs/harness/FAILURES.md` in `root` with one `F<n>` heading per entry
+ * of `kinds`, each `[title, signatures]`. */
+function writeTaxonomy(root, kinds) {
+  mkdirSync(join(root, 'docs', 'harness'), { recursive: true });
+  const body = kinds.map(([title, signatures], i) => `## F${i + 3} — ${title}\n- signatures: ${signatures.join(', ')}\n`).join('\n');
+  writeFileSync(join(root, 'docs', 'harness', 'FAILURES.md'), `# Failures\n\n${body}`);
+}
+
+test('a recurrence whose failure kind labels a rejected learning\'s signature is listed apart, by that kind', () => {
+  const root = rejectedRepo();
+  const bash = signatureOf(root, 'Bash');
+  const read = signatureOf(root, 'Read');
+  writeTaxonomy(root, [['Tests run in watch mode', [bash, read]]]);
+  const view = json(root, 'candidates');
+  assert.deepEqual(signaturesIn(view.groups), []);
+  assert.deepEqual(view.rejectedGroups.flatMap(g => g.recurrences.map(r => [r.signature, r.rejected])).sort(),
+    [[bash, [{ id: 'L1', kind: null }]], [read, [{ id: 'L1', kind: { id: 'F3', title: 'Tests run in watch mode' } }]]].sort());
+  const text = ok(runLearn(root, 'candidates'));
+  assert.ok(text.includes(`    ${read}: rejected L1 (the same failure kind, F3 "Tests run in watch mode")`), text);
+
+  const sibling = runLearn(root, 'draft', '--from', draftFile(JSON.stringify(draftFor(root, { gate: READ_GATE }))));
+  assert.equal(sibling.status, 2);
+  assert.match(sibling.stderr, /the replay rejected L1 \(failure kind F3\) for this recurrence; a new draft for it is the owner's decision/);
+});
+
+test('a rejection under one failure kind leaves a recurrence of another kind, or of an unreadable taxonomy, draftable', () => {
+  const root = rejectedRepo();
+  const bash = signatureOf(root, 'Bash');
+  const read = signatureOf(root, 'Read');
+  writeTaxonomy(root, [['Tests run in watch mode', [bash]], ['A file read that does not exist', [read]]]);
+  assert.deepEqual(signaturesIn(json(root, 'candidates').groups), [read], 'another kind');
+
+  const unreadable = rejectedRepo();
+  mkdirSync(join(unreadable, 'docs', 'harness', 'FAILURES.md'), { recursive: true });
+  const view = json(unreadable, 'candidates');
+  assert.deepEqual(signaturesIn(view.groups), [signatureOf(unreadable, 'Read')], 'the exact-signature rule alone');
+  assert.deepEqual(view.rejectedGroups.flatMap(g => g.recurrences.map(r => r.rejected)), [[{ id: 'L1', kind: null }]]);
+  ok(runLearn(unreadable, 'draft', '--from', draftFile(JSON.stringify(draftFor(unreadable, { gate: READ_GATE })))));
 });
 
 test('a retired learning puts its recurrence back among the draftable; a live candidate keeps it out of both lists', () => {
@@ -158,14 +198,15 @@ test('draft of a recurrence the replay rejected is one line and exit 2 naming th
   const refused = runLearn(root, 'draft', '--from', path);
   assert.equal(refused.status, 2);
   assert.equal(refused.stderr.trim().split('\n').length, 1, refused.stderr);
-  assert.match(refused.stderr, /the replay rejected L1 for this signature; a new draft for it is made only as a redraft \(--redraft\)/);
+  assert.match(refused.stderr, /the replay rejected L1 for this recurrence; a new draft for it is the owner's decision, as `learn --help` documents/);
+  assert.doesNotMatch(refused.stderr, /--redraft/, 'the refusal does not advertise the flag');
   assert.equal(refused.stdout, '');
   assert.deepEqual(snapshot(repoDataDir(root)), before, 'a refused draft writes nothing');
 
   const text = ok(runLearn(root, 'draft', '--from', path, '--redraft'));
   assert.match(text, /draft: stored as L2, a candidate/);
-  assert.match(ok(runLearn(root, 'show', 'L2')), /drafted, as the ledger records: a redraft; the replay had rejected L1 for this signature/);
-  assert.equal(json(root, 'show', 'L2').drafted, 'a redraft; the replay had rejected L1 for this signature');
+  assert.match(ok(runLearn(root, 'show', 'L2')), /drafted, as the ledger records: a redraft; the replay had rejected L1 for this recurrence/);
+  assert.equal(json(root, 'show', 'L2').drafted, 'a redraft; the replay had rejected L1 for this recurrence');
   assert.equal(json(root, 'show', 'L1').drafted, null);
   assert.doesNotMatch(ok(runLearn(root, 'show', 'L1')), /drafted, as the ledger records/);
 });

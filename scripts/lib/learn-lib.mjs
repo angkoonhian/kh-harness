@@ -231,11 +231,16 @@ const evidenceOf = recurrence => ({
   external: recurrence.external,
 });
 
+/** The failure kinds `docs/harness/FAILURES.md` names, none when it is
+ * absent or cannot be read. */
+export const failureKinds = root => parseFailures(readIfPresent(root, FAILURES_PATH));
+
+/** The id of the failure kind in `kinds` that lists `signature`, or null. */
+const failureIdIn = (kinds, signature) => kinds.find(k => k.signatures.includes(signature))?.id ?? null;
+
 /** The id of the failure kind in the repository's taxonomy that lists
  * `signature`, or null. */
-function failureIdFor(root, signature) {
-  return parseFailures(readIfPresent(root, FAILURES_PATH)).find(k => k.signatures.includes(signature))?.id ?? null;
-}
+const failureIdFor = (root, signature) => failureIdIn(failureKinds(root), signature);
 
 function isLearning(value, id) {
   if (!isPlainObject(value) || value.id !== id || !STATUSES.has(value.status)) return false;
@@ -672,14 +677,39 @@ export function standingFor(state, signature) {
 }
 
 /**
- * The ids of the learnings whose ledger entries name `signature` and whose
- * last recorded status is `rejected`, in id order: a draft for the
- * signature after any of them is a redraft.
+ * The learnings whose last recorded status is `rejected` and that bar a
+ * plain draft for `signature`, in id order: `{ id, kind: null }` for one
+ * whose ledger entries name the signature itself, and `{ id, kind: { id,
+ * title } }` for one that names another signature which a failure kind in
+ * `kinds` labels together with this one. With no kinds, as when the
+ * taxonomy cannot be read, only the signature itself counts. A draft after
+ * any of them is a redraft.
  */
-export function rejectedFor(state, signature) {
-  const ids = new Set(state.view.entries.filter(e => e?.evidence?.signature === signature).map(e => e.learningId).filter(isId));
-  return [...ids].filter(id => recordedState(state.view.entries, id)?.status === 'rejected').sort(idOrder);
+export function rejectedFor(state, signature, kinds) {
+  const signatures = new Map();
+  for (const e of state.view.entries) {
+    if (!isId(e?.learningId) || !isString(e.evidence?.signature)) continue;
+    if (!signatures.has(e.learningId)) signatures.set(e.learningId, new Set());
+    signatures.get(e.learningId).add(e.evidence.signature);
+  }
+  const siblingKinds = kinds.filter(k => k.signatures.includes(signature));
+  const out = [];
+  for (const id of [...signatures.keys()].sort(idOrder)) {
+    if (recordedState(state.view.entries, id)?.status !== 'rejected') continue;
+    const cited = signatures.get(id);
+    if (cited.has(signature)) out.push({ id, kind: null });
+    else {
+      const kind = siblingKinds.find(k => k.signatures.some(s => cited.has(s)));
+      if (kind !== undefined) out.push({ id, kind: { id: kind.id, title: kind.title } });
+    }
+  }
+  return out;
 }
+
+/** The rejected learnings `rejectedFor` returns, as kit text: each id, and
+ * the failure kind that ties it to the recurrence when it is not the same
+ * signature. */
+const rejectedText = rejected => rejected.map(r => (r.kind === null ? r.id : `${r.id} (failure kind ${r.kind.id})`)).join(', ');
 
 function readCounter(root) {
   let text;
@@ -795,9 +825,10 @@ export function writeTransition(root, write, state, { updated, entries, identity
  * draft. At most one learning that is neither rejected nor retired stands
  * for a signature, by its file or, once the file is gone, by the ledger; a
  * learning file that does not read back may be one, so it refuses every
- * draft until it is mended or removed. A signature the replay has rejected
- * a learning for is drafted again only with `redraft`, and its `proposed`
- * entry then names the learnings rejected. Returns `{ learning,
+ * draft until it is mended or removed. A recurrence the replay has rejected
+ * a learning for, by its signature or by another signature its failure kind
+ * labels, is drafted again only with `redraft`, and its `proposed` entry
+ * then names the learnings rejected. Returns `{ learning,
  * repairedGates }`, or `{ error }`.
  */
 export function draftLearning(root, draft, { redraft = false } = {}) {
@@ -822,7 +853,8 @@ function draftUnguarded(root, draft, redraft) {
   const recurrence = currentRecurrence(root, r => r.signature === signature);
   if (recurrence === undefined) return refuse(root, 'signature: not the signature of a current recurrence');
   if (drafted.gate.tool !== recurrence.tool) return refuse(root, "gate: tool must be the recurrence's tool");
-  const failureId = failureIdFor(root, signature);
+  const kinds = failureKinds(root);
+  const failureId = failureIdIn(kinds, signature);
 
   return repairedStep(root, write => {
     const state = readState(root);
@@ -830,9 +862,9 @@ function draftUnguarded(root, draft, redraft) {
     if (!state.view.intact) return { error: 'the ledger cannot be read or its chain is broken, so no learning can be told settled and no id never used can be assigned' };
     const standing = standingFor(state, signature);
     if (standing !== null) return { error: `signature: learning ${standing} already covers this signature` };
-    const rejected = rejectedFor(state, signature);
+    const rejected = rejectedFor(state, signature, kinds);
     if (rejected.length > 0 && !redraft) {
-      return { error: `signature: the replay rejected ${rejected.join(', ')} for this signature; a new draft for it is made only as a redraft (--redraft)` };
+      return { error: `signature: the replay rejected ${rejectedText(rejected)} for this recurrence; a new draft for it is the owner's decision, as \`learn --help\` documents` };
     }
     const next = nextId(root, state);
     if (next.error) return next;
@@ -852,7 +884,7 @@ function draftUnguarded(root, draft, redraft) {
       replay: null,
     };
     write(() => writeJson(join(repoDataDir(root), ID_COUNTER_FILE), { highest: next.number }));
-    const detail = rejected.length > 0 ? `a redraft; the replay had rejected ${rejected.join(', ')} for this signature` : undefined;
+    const detail = rejected.length > 0 ? `a redraft; the replay had rejected ${rejectedText(rejected)} for this recurrence` : undefined;
     write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'proposed', detail })));
     write(() => writeJson(learningPath(root, learning.id), learning));
     return { learning };

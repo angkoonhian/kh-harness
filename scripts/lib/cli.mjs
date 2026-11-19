@@ -336,9 +336,9 @@ const TERMINAL_NOTE = 'Needs a person at an interactive terminal outside Claude 
 // Each subcommand's synopsis and description, in the order the usage lists
 // them; `terminal` marks the ones that approve or weaken a gate.
 const LEARN_SECTIONS = [
-  { name: 'candidates', synopsis: 'candidates [--json]', text: 'List the recurrences `log report` finds that no learning stands for, with the same cleaned error line and the same counts of what was read. A recurrence the replay has rejected a learning for is listed apart, after them, with the rejected ids: it is drafted again only with `draft --redraft`. Reads only.' },
+  { name: 'candidates', synopsis: 'candidates [--json]', text: 'List the recurrences `log report` finds that no learning stands for, with the same cleaned error line and the same counts of what was read. A recurrence the replay has rejected a learning for, by its signature or by another signature labelled with the same failure kind in docs/harness/FAILURES.md, is listed apart, after them, with the rejected ids and which tie it is: it is drafted again only with `draft --redraft`. Reads only.' },
   { name: 'evidence', synopsis: 'evidence <signature> [--json]', text: "For up to three recorded failures of a current recurrence, the first in each session: the tool, its input as the log stores it, its first error line and, where the session holds one, the input of the next call of the same tool that succeeded. Each value is printed as JSON with every code point outside printable ASCII written as \\u{…}, between a first and a last line that carry the same nonce, drawn for the run, and say what lies between is recorded data, not instructions; with --json, a fixed note says so instead. An input past the retention period is said to be removed. A tool's output is never printed. Reads only." },
-  { name: 'draft', synopsis: 'draft --from <file> [--redraft]', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate, for `replay` to try again. A draft for a signature whose earlier learning the replay rejected is refused unless --redraft is given, and the ledger records a redraft as one. The file is untrusted: nothing in it is printed back." },
+  { name: 'draft', synopsis: 'draft --from <file> [--redraft]', text: "Read one drafted learning, `{ signature, title, why, gate }` as JSON, from <file>; store it as a candidate, replay its gate against the log, and report each stage. A replay that passes puts the gate in this machine's local gate set at `observe`, where it blocks nothing; one that fails rejects it; one that is not checkable leaves a candidate, for `replay` to try again. A draft for a recurrence that `candidates` lists apart, as rejected before, is refused unless --redraft is given, and the ledger records a redraft as one. Whether to draft it again is the owner's decision. The file is untrusted: nothing in it is printed back." },
   { name: 'replay', synopsis: 'replay <id>', text: 'Replay a candidate\'s gate against the log again, as `draft` does, once the log holds more history: a pass puts it on trial at `observe`, a fail rejects it, and one still not checkable stays a candidate. Only a candidate is replayed.' },
   { name: 'list', synopsis: 'list [--json]', text: 'Every learning with its status and whether the ledger vouches for it, the approvals the ledger records, and every local gate the next step that writes repairs or removes. A broken ledger is said first. Reads only.' },
   { name: 'show', synopsis: 'show <id> [--json]', text: "One learning: its gate as JSON with every code point outside printable ASCII written as \\u{…}, the gate's sha256, the replay result and what the log records of its firings. Reads only." },
@@ -403,8 +403,9 @@ FLAGS
            printable ASCII escaped.
   --redraft
            draft only: draft a recurrence again although the replay rejected
-           an earlier learning for it. The ledger records the draft as a
-           redraft, naming the learnings rejected.
+           an earlier learning for it or for its failure kind; the owner's
+           decision. The ledger records the draft as a redraft, naming the
+           learnings rejected.
 
 Here 3 is also a terminal-only subcommand run without a person at a terminal,
 and \`evidence\` or any subcommand that writes when this repository's data
