@@ -15,6 +15,7 @@ import { canonicalJson, readEvents, repoDataDir, setEnabled } from '../../assets
 import { CONTENT_FIELDS, indexLineCount, KEPT_FIELDS, SEAL_IDLE_MS, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { stripAnsi } from '../../assets/scripts/harness-redact.mjs';
 import { LOGGED_EVENTS, toLogEvent } from '../../assets/scripts/session-log.mjs';
+import { addedLatency } from './latency-fixtures.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const HOOK = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'session-log.mjs');
@@ -712,37 +713,21 @@ test('with autodraft on and the sealing module missing, a session start prints n
 // quiet machine: the hook's median was about 85 ms for a tool result and 88
 // ms for a prompt, against about 58 ms for a bare `node -e 0`, so it adds
 // about 30 ms. Node start-up alone varied from 55 to 115 ms with machine
-// load, so the budget bounds what the hook adds over a bare start, measured
-// in interleaved runs that share the same load.
+// load, so the budget bounds what the hook adds over a bare start;
+// latency-fixtures.mjs says how that is measured on a busy machine.
 const ADDED_LATENCY_BUDGET_MS = 100;
+const LATENCY_PAIRS = 40;
 
-const timed = run => {
-  const start = process.hrtime.bigint();
-  run();
-  return Number(process.hrtime.bigint() - start) / 1e6;
-};
-
-const medianOf = times => {
-  const sorted = [...times].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-};
-
-test('median wall time over 20 runs is under the budget recorded in the test', () => {
+test('the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
   const root = enabledProject();
   const payload = toolPayload('PostToolUse', 'latency-1', { tool_response: { stdout: 'x'.repeat(4096) }, duration_ms: 10 });
   const stdin = JSON.stringify(payload);
-  const hookTimes = [];
-  const bareTimes = [];
-  for (let i = 0; i < 20; i++) {
-    hookTimes.push(timed(() => assertSilentSuccess(runHook(root, stdin))));
-    bareTimes.push(timed(() => assertSilentSuccess(spawnSync(process.execPath, ['-e', '0'], {
-      input: stdin, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root },
-    }))));
-  }
-  const hook = medianOf(hookTimes);
-  const bare = medianOf(bareTimes);
-  assert.ok(hook - bare <= ADDED_LATENCY_BUDGET_MS,
-    `hook median ${hook.toFixed(1)} ms, bare node median ${bare.toFixed(1)} ms, budget for the difference ${ADDED_LATENCY_BUDGET_MS} ms`);
-  assert.equal(events(root, 'latency-1').length, 20);
+  const { added, summary } = addedLatency({
+    runHookOnce: () => assertSilentSuccess(runHook(root, stdin)),
+    stdin,
+    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    pairs: LATENCY_PAIRS,
+  });
+  assert.ok(added <= ADDED_LATENCY_BUDGET_MS, `${summary}; budget for the difference ${ADDED_LATENCY_BUDGET_MS} ms`);
+  assert.equal(events(root, 'latency-1').length, LATENCY_PAIRS);
 });

@@ -47,6 +47,7 @@ import { dirname, join, resolve } from 'node:path';
 import { GATE_LIMITS, gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH as LOG_GATES_PATH, LOCAL_GATES_FILE as LOG_LOCAL_GATES_FILE, readEvents, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { GATES_PATH, LOCAL_GATES_FILE } from '../../assets/scripts/tool-gate.mjs';
+import { addedLatency } from './latency-fixtures.mjs';
 import { APPLY, DETECT, UNINSTALL, git, run, settings, hooksBesideLog } from './lifecycle-fixtures.mjs';
 import { HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH, TOOL_GATE_PATH, toolGateDenyRules } from './propose.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
@@ -441,42 +442,25 @@ test('a payload for another event gets no notice even when a sibling is missing'
 // quiet machine, with `GATE_LIMITS.gatesMax` gates of which none matches and
 // an input field of `GATE_LIMITS.inputMax` characters: the hook's median was
 // 93 to 118 ms against 55 to 73 ms for a bare `node -e 0`, so it adds about
-// 38 to 45 ms. The budget bounds what the hook adds over a bare start,
-// measured in interleaved runs that share the same load.
+// 38 to 45 ms. The budget bounds what the hook adds over a bare start;
+// latency-fixtures.mjs says how that is measured on a busy machine.
 const ADDED_LATENCY_BUDGET_MS = 100;
+const LATENCY_PAIRS = 40;
 
-const timed = fn => {
-  const start = process.hrtime.bigint();
-  fn();
-  return Number(process.hrtime.bigint() - start) / 1e6;
-};
-
-const medianOf = times => {
-  const sorted = [...times].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-};
-
-test('median wall time over 20 runs is under the budget recorded in the test', () => {
+test('the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
   const root = project();
   const kinds = ['literal', 'token', 'glob'];
   const gates = Array.from({ length: GATE_LIMITS.gatesMax }, (_, i) =>
     gate(`L${i + 1}`, { action: 'block', match: { kind: kinds[i % 3], value: kinds[i % 3] === 'glob' ? `a*q${i}` : `aq${i}` } }));
   writeCommitted(root, gateFile(gates));
   const stdin = JSON.stringify(call('latency-1', 'a'.repeat(GATE_LIMITS.inputMax)));
-  const hookTimes = [];
-  const bareTimes = [];
-  for (let i = 0; i < 20; i++) {
-    hookTimes.push(timed(() => assert.equal(runHook(root, stdin), null)));
-    bareTimes.push(timed(() => {
-      const r = spawnSync(process.execPath, ['-e', '0'], { input: stdin, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root } });
-      assert.equal(r.status, 0);
-    }));
-  }
-  const hook = medianOf(hookTimes);
-  const bare = medianOf(bareTimes);
-  assert.ok(hook - bare <= ADDED_LATENCY_BUDGET_MS,
-    `hook median ${hook.toFixed(1)} ms, bare node median ${bare.toFixed(1)} ms, budget for the difference ${ADDED_LATENCY_BUDGET_MS} ms`);
+  const { added, summary } = addedLatency({
+    runHookOnce: () => assert.equal(runHook(root, stdin), null),
+    stdin,
+    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    pairs: LATENCY_PAIRS,
+  });
+  assert.ok(added <= ADDED_LATENCY_BUDGET_MS, `${summary}; budget for the difference ${ADDED_LATENCY_BUDGET_MS} ms`);
 });
 
 const USER_DENY = 'Edit(secrets/**)';
