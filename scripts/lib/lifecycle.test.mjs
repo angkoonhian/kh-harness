@@ -454,18 +454,24 @@ test('FINDING 5: a settings-hook is never registered when its shared dependency 
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'record partial install');
 
-  // Confirms this is a genuine FILESYSTEM gate, not a permanent one-way
-  // block: once the dependency is back on disk (by whatever means — this
-  // check only ever asks `existsSync`, never the stale manifest), the
-  // very next run completes the activation the previous one correctly
-  // withheld. Both file proposals are skipped on this run too (they are
-  // already in the manifest from the earlier runs, so propose.mjs's own
-  // dedupe never re-proposes them) — only the settings-hook proposal
-  // remains, and this time its dependency check passes.
+  // A file at the module's path that is not what the kit writes there does
+  // not complete the activation: the hook would load something other than
+  // the module it was written against.
   writeFileSync(join(d, '.claude/scripts/harness-redact.mjs'), 'export const CREDENTIAL_SHAPES = [];\n');
   run(APPLY, d, '--yes');
+  assert.deepEqual(hooksBesideLog(settings(d), 'Stop'), [], 'a stand-in for the module does not activate the hook');
+  const held = JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P2.stopgate');
+  assert.equal(held.proposal, null);
+  assert.match(held.evidence.join('\n'), /harness-redact\.mjs \(edited since kh-harness wrote it\)/);
+
+  // The gate reads the filesystem, so it is not a one-way trap: once the
+  // module the kit wrote is back on disk, the next run completes the
+  // activation. Both files are already recorded and are not proposed again;
+  // only the settings-hook proposal remains.
+  git(d, 'checkout', 'HEAD~2', '--', '.claude/scripts/harness-redact.mjs');
+  run(APPLY, d, '--yes');
   assert.equal(hooksBesideLog(settings(d), 'Stop').length, 1,
-    'once the dependency genuinely exists on disk again, activation proceeds — this is a real-state gate, not a one-way trap');
+    'once the module kh-harness wrote is on disk again, activation proceeds');
 });
 
 test('C2: a secret anywhere in settings.json reaches no part of a dry run\'s output', () => {

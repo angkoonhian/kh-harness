@@ -18,7 +18,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, kitSkew, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
@@ -61,6 +61,19 @@ function proposalVia(def) {
 }
 
 const MAX_INSTRUCTION_LINES = 150;
+
+/**
+ * `hook`, a hook check's verdict, unless the hook is not registered and
+ * `apply` will not install it because its script is held (`heldScripts`):
+ * the check then stays absent, proposes nothing, and says which files hold
+ * the script and what the owner can do about them.
+ */
+function unlessHeld(hook, scriptPath, heldScript) {
+  if (hook.state === 'declared') return hook;
+  const causes = heldScript(scriptPath);
+  if (causes === null) return hook;
+  return { state: 'absent', decidable: false, evidence: [...(hook.evidence ?? []), heldHookEvidence(scriptPath, causes)], question: heldQuestion(causes) };
+}
 
 /**
  * What `P0.security` says when it found nothing. Whole-branch review, F1:
@@ -685,7 +698,7 @@ const CHECKS = [
     //
     // What there is to inject is `injectable`: the owner's rules and the
     // learned rules no gate holds, as the hook selects them.
-    check: ({ harness, manifest, root }) => {
+    check: ({ harness, manifest, root, heldScript }) => {
       const reg = harness.rulesRegistry ?? null;
       if (!reg || (reg.path === null && reg.injectable === 0)) return { state: 'absent', decidable: false, evidence: [`no ${RULES_PATH} yet — nothing to inject`] };
       if (reg.injectable === 0) {
@@ -695,9 +708,9 @@ const CHECKS = [
           question: `The re-injection hook has nothing to inject until ${RULES_PATH} holds at least one rule — add rules, then re-run detect.`,
         };
       }
-      return registeredHook(harness, 'UserPromptSubmit', RULES_BRIEF_PATH,
+      return unlessHeld(registeredHook(harness, 'UserPromptSubmit', RULES_BRIEF_PATH,
         "register a UserPromptSubmit hook that re-injects the registry's rules into every prompt, bounded at 1500 bytes",
-        { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS });
+        { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }), RULES_BRIEF_PATH, heldScript);
     },
   },
   {
@@ -724,7 +737,7 @@ const CHECKS = [
     // Decided from the hook registry alone. Whether the log is enabled on
     // this machine is not read, and nothing executes, so it is never
     // `verified`.
-    check: ({ harness, manifest, root }) => {
+    check: ({ harness, manifest, root, heldScript }) => {
       const byEvent = sessionLogRegistrations(harness, { manifest, root });
       const missing = byEvent.filter(r => r.state !== 'declared');
       const total = LOGGED_EVENTS.length;
@@ -735,6 +748,8 @@ const CHECKS = [
         return { state: 'declared', evidence: [`${SESSION_LOG_PATH} is registered on all ${total} logged events: ${LOGGED_EVENTS.join(', ')}`, ...qualified] };
       }
       const occupants = missing.flatMap(r => r.evidence);
+      const held = unlessHeld({ state: 'absent', evidence: occupants }, SESSION_LOG_PATH, heldScript);
+      if (held.decidable === false) return held;
       if (missing.length === total) {
         return {
           state: 'absent', evidence: occupants,
@@ -758,11 +773,11 @@ const CHECKS = [
     // `verified`. The hook without every deny rule it is installed with is
     // not the capability: those rules keep the model from editing what the
     // hook enforces, or running what approves it.
-    check: ({ harness, manifest, root }) => {
+    check: ({ harness, manifest, root, heldScript }) => {
       const hook = registeredHook(harness, 'PreToolUse', TOOL_GATE_PATH,
         'install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine\'s kh-harness data directory, and deny running the learn subcommands that approve or weaken a gate',
         { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS });
-      if (hook.state !== 'declared') return hook;
+      if (hook.state !== 'declared') return unlessHeld(hook, TOOL_GATE_PATH, heldScript);
       const missing = missingToolGateDenyRules(harness);
       if (missing.length === 0) return hook;
       const all = toolGateDenyRules().length;
@@ -866,11 +881,11 @@ const CHECKS = [
     // P2.protected below, where the subject itself can be genuinely
     // absent), so the honest answer when no package declares `lint` is to
     // ASK, not propose.
-    check: ({ harness, stack, manifest, root }) => {
+    check: ({ harness, stack, manifest, root, heldScript }) => {
       const hook = registeredHook(harness, 'PostToolUse', LINT_TOUCHED_PATH,
         'install scripts/lint-touched.mjs and register a PostToolUse hook', { manifest, root, matcher: SENSOR_MATCHER, kitScripts: GENERATOR_SCRIPT_PATHS });
       if (hook.state === 'declared') return hook;
-      if (hasLintScript(stack)) return hook;
+      if (hasLintScript(stack)) return unlessHeld(hook, LINT_TOUCHED_PATH, heldScript);
       // Coordinator finding (Minor): occupant evidence (what registeredHook
       // found registered on this event that isn't ours) used to be dropped
       // here — the one place a confused user needs it most, since the
@@ -891,11 +906,11 @@ const CHECKS = [
     // Same shape as P2.sensor immediately above, for the Stop gate:
     // `rootVerifyScript` (stopgate-evidence.mjs) is the SAME root-only
     // typecheck/test derivation propose.mjs's stopgateProposal uses.
-    check: ({ harness, stack, manifest, root }) => {
+    check: ({ harness, stack, manifest, root, heldScript }) => {
       const hook = registeredHook(harness, 'Stop', VERIFY_TOUCHED_PATH,
         'install scripts/verify-touched.mjs and register a Stop hook', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS });
       if (hook.state === 'declared') return hook;
-      if (rootVerifyScript(stack)) return hook;
+      if (rootVerifyScript(stack)) return unlessHeld(hook, VERIFY_TOUCHED_PATH, heldScript);
       // Same Minor as P2.sensor immediately above: occupant evidence must
       // not be dropped just because this also needs to ask a question.
       return {
@@ -910,9 +925,9 @@ const CHECKS = [
     lookedFor: ['a PostToolUseFailure hook in .claude/settings.json'],
     // No repository evidence decides this: any session can loop on a failing
     // call, so the step applies under every profile and is always decidable.
-    check: ({ harness, manifest, root }) => registeredHook(harness, 'PostToolUseFailure', LOOP_WATCH_PATH,
+    check: ({ harness, manifest, root, heldScript }) => unlessHeld(registeredHook(harness, 'PostToolUseFailure', LOOP_WATCH_PATH,
       'install scripts/loop-watch.mjs and register a PostToolUseFailure hook that warns when one call fails the same way three times in a row',
-      { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }),
+      { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }), LOOP_WATCH_PATH, heldScript),
   },
   {
     id: 'P2.protected', step: 11, phase: 2,
@@ -1025,8 +1040,8 @@ const CHECKS = [
   {
     id: 'P4.sessionbrief', step: 16, phase: 4,
     lookedFor: ['a SessionStart hook in .claude/settings.json'],
-    check: ({ harness, manifest, root }) => registeredHook(harness, 'SessionStart', BRIEF_PATH,
-      'install scripts/session-brief.mjs and register a SessionStart hook', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }),
+    check: ({ harness, manifest, root, heldScript }) => unlessHeld(registeredHook(harness, 'SessionStart', BRIEF_PATH,
+      'install scripts/session-brief.mjs and register a SessionStart hook', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }), BRIEF_PATH, heldScript),
   },
   // Last, so the generators it runs are given every other check, as
   // `buildProposals` gives them.
@@ -1039,11 +1054,12 @@ const CHECKS = [
         throw new TypeError('buildGaps: P0.kitskew needs `kitVersion` and `root` once the manifest records a file — without them every recorded file would be judged against a kit that was never named.');
       }
       const skew = kitSkew({ kitVersion, harness, root, stack, checks, files, manifest });
+      const atKit = version => (version === null ? '' : ` at kit ${version}`);
       const evidence = [
         skew.versions,
         ...skew.updates.map(p => `out of date: ${p.path}`),
-        ...skew.heldBack.map(h => `held back: ${h.path} (out of date, but ${h.imports ? `it imports ${h.cause}, which` : `${h.cause} imports it and`} is not being updated with it)`),
-        ...skew.kept.map(k => `kept: ${k.path} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
+        ...skew.heldBack.map(h => `held back${atKit(h.version)}: ${h.path} (out of date, but kh-harness keeps ${h.causes.map(c => c.path).join(', ')} as ${h.causes.length === 1 ? 'it is' : 'they are'}, and its hook scripts are updated together or not at all)`),
+        ...skew.kept.map(k => `kept${atKit(k.version)}: ${k.path} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
         ...skew.unproduced.map(path => `left alone: ${path} (this kit no longer generates it for this repository)`),
         ...(skew.current.length ? [`${skew.current.length} kit-owned file${skew.current.length === 1 ? '' : 's'} match what this kit generates`] : []),
       ];
@@ -1078,6 +1094,15 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
   const applicable = new Set(profile.appliesToSteps());
   // Each check is given the checks evaluated before it.
   const checks = [];
+  // Which installed scripts are held, read once and only when a hook check
+  // asks. Without `root` or `kitVersion` it cannot be read, and no check
+  // says a script is held.
+  let held;
+  const heldScript = path => {
+    if (root === undefined || kitVersion === undefined) return null;
+    held ??= heldScripts(root, manifest, kitVersion);
+    return held.get(path) ?? null;
+  };
   const gapFor = def => {
     if (!applicable.has(def.step)) {
       // The three-way split for P1.bootstrap (and, in principle, any future
@@ -1117,7 +1142,7 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
         decidable: true, question: null, proposal: null, via: null, advice: [] };
     }
-    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion, checks });
+    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion, checks, heldScript });
     // The second axis, enforced in the same place and for the same reason.
     // `absent` means two incompatible things: "I enumerated the complete space
     // and it is not there" (decidable — the bootstrap script, the deny rules,

@@ -221,6 +221,50 @@ export function freshFixtureNoClaudeDir() {
 }
 
 
+const KIT_ROOT = resolve(import.meta.dirname, '..', '..');
+
+/**
+ * The kit as `commit` holds it, checked out of this repository's own history
+ * into a fresh directory: `{ apply, detect, uninstall }`, the paths of its
+ * CLIs, or null when the commit is not in this checkout (a shallow clone).
+ * Read through a temporary index, so neither this repository's index nor its
+ * working tree is touched.
+ */
+export function kitAt(commit) {
+  const dir = mkdtempSync(join(tmpdir(), 'hk-kit-'));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = { ...process.env, GIT_INDEX_FILE: join(dir, 'index') };
+  const kit = join(dir, 'kit');
+  try {
+    execFileSync('git', ['-C', KIT_ROOT, 'read-tree', commit], { env, stdio: 'ignore' });
+    execFileSync('git', ['-C', KIT_ROOT, 'checkout-index', '-a', `--prefix=${kit.split('\\').join('/')}/`], { env, stdio: 'ignore' });
+  } catch {
+    return null;
+  }
+  return { apply: join(kit, 'scripts', 'apply.mjs'), detect: join(kit, 'scripts', 'detect.mjs'), uninstall: join(kit, 'scripts', 'uninstall.mjs') };
+}
+
+/**
+ * Runs every hook `d`'s settings register that runs a script under
+ * `.claude/scripts/`, each with a payload naming its event and no tool
+ * input, and returns `[{ event, script, status, stderr }]`.
+ */
+export function runEveryRegisteredHook(d) {
+  const out = [];
+  for (const [event, matchers] of Object.entries(settings(d).hooks ?? {})) {
+    for (const hook of matchers.flatMap(m => m.hooks ?? [])) {
+      const named = /\.claude\/scripts\/([\w.-]+\.mjs)/.exec(hook.args?.[0] ?? hook.command);
+      if (named === null) continue;
+      const r = spawnSync(process.execPath, [join(d, '.claude', 'scripts', named[1])], {
+        cwd: d, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: d },
+        input: JSON.stringify({ hook_event_name: event, session_id: 'upgrade-test', cwd: d }),
+      });
+      out.push({ event, script: named[1], status: r.status, stderr: r.stderr });
+    }
+  }
+  return out;
+}
+
 export function linesAfter(out, heading) {
   const idx = out.indexOf(heading);
   if (idx === -1) return [];
