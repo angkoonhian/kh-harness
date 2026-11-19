@@ -611,22 +611,42 @@ function updateReason(installed, current) {
 }
 
 /**
- * The recorded kit files that must not be updated, each mapped to the
- * recorded hook script that holds it back: a script on disk that the kit
- * will not overwrite (edited, or not carrying the stamp) keeps importing
- * the copy of its dependencies it was written against, so updating one of
- * them alone can leave it dying at import. A deleted script imports
- * nothing and holds nothing back.
+ * The recorded kit files that must not be updated, each mapped to the file
+ * that caused it. Hook scripts and the files they import are updated all
+ * together or not at all, because a script written by one kit can die at
+ * import next to a module written by another. A file at one of these paths
+ * that is on disk and will not be written — edited, not carrying the
+ * stamp, or not recorded at all — stays as it is, so every out-of-date
+ * file it imports or is imported by is held back, and so on through each
+ * file held back. A deleted file imports nothing and holds nothing back.
  */
 function heldBackFiles(root, manifest, kitVersion) {
   const recorded = new Map(manifest.files.map(f => [f.path, f]));
-  const held = new Map();
+  const generated = new Map();
+  const neighbours = new Map();
+  const link = (a, b) => neighbours.set(a, [...(neighbours.get(a) ?? []), b]);
   for (const script of GENERATOR_SCRIPT_PATHS) {
-    const entry = recorded.get(script);
-    if (!entry || !existsSync(join(root, script))) continue;
     const [own, ...dependencies] = hookFiles(script, kitVersion);
-    if (!['edited', 'unstamped'].includes(recordedFileStatus(root, manifest, entry, own.contents))) continue;
-    for (const d of dependencies) if (recorded.has(d.path) && !held.has(d.path)) held.set(d.path, script);
+    for (const p of [own, ...dependencies]) generated.set(p.path, p.contents);
+    for (const d of dependencies) {
+      link(script, d.path);
+      link(d.path, script);
+    }
+  }
+  const status = new Map([...generated].map(([path, contents]) => {
+    if (!existsSync(join(root, path))) return [path, 'absent'];
+    const entry = recorded.get(path);
+    return [path, entry ? recordedFileStatus(root, manifest, entry, contents) : 'unrecorded'];
+  }));
+  const queue = [...status].filter(([, s]) => s === 'edited' || s === 'unstamped' || s === 'unrecorded').map(([path]) => path);
+  const held = new Map();
+  while (queue.length) {
+    const cause = queue.shift();
+    for (const path of neighbours.get(cause) ?? []) {
+      if (held.has(path) || status.get(path) !== 'update') continue;
+      held.set(path, cause);
+      queue.push(path);
+    }
   }
   return held;
 }
@@ -634,8 +654,9 @@ function heldBackFiles(root, manifest, kitVersion) {
 /**
  * Every file the manifest records, against what this kit generates for it
  * today. `updates` are proposals for the files `recordedFileStatus` calls
- * `update`; `heldBack` the files it calls `update` that a dependent holds
- * back (`heldBackFiles`), with that dependent; `kept` names the files that
+ * `update`; `heldBack` the files it calls `update` that `heldBackFiles`
+ * holds back, each with its `cause` and whether it `imports` that cause or
+ * is imported by it; `kept` names the files that
  * are not the kit's to write, with the status that says why; `unproduced`
  * the recorded paths no generator produces for this repository any more,
  * which are left alone.
@@ -654,7 +675,7 @@ export function kitSkew({ kitVersion, harness, root, stack, checks, files, manif
     const status = recordedFileStatus(root, manifest, entry, p.contents);
     if (status === 'current') skew.current.push(entry.path);
     else if (status !== 'update') skew.kept.push({ path: entry.path, why: status });
-    else if (held.has(entry.path)) skew.heldBack.push({ path: entry.path, dependent: held.get(entry.path) });
+    else if (held.has(entry.path)) skew.heldBack.push({ path: entry.path, cause: held.get(entry.path), imports: GENERATOR_SCRIPT_PATHS.includes(entry.path) });
     else skew.updates.push({ ...p, reason });
   }
   return skew;
@@ -767,8 +788,8 @@ function recordedFileStatus(root, manifest, entry, contents) {
  * file that is still what we wrote (line endings aside), still carries our
  * stamp, and whose generated content has changed is re-proposed as an
  * UPDATE — exactly once per run, and whatever its owning check's state,
- * because `P0.kitskew`'s generator proposes every such file, unless a
- * dependent the kit will not overwrite holds it back (`heldBackFiles`). A
+ * because `P0.kitskew`'s generator proposes every such file, unless a file
+ * it imports or is imported by stays as it is (`heldBackFiles`). A
  * recorded file the user edited or deleted is still never re-proposed:
  * their edit or deletion is a decision, not a gap to re-fill ("a file
  * already in the manifest is not re-proposed" in propose.test.mjs pins the
@@ -788,8 +809,8 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
     for (const p of gen({ kitVersion, harness, root, stack, checks, files, manifest, check: c })) {
       if (p.kind === 'file' && alreadyWritten.has(p.path)) {
         // A recorded path is re-proposed, as an update, only when `root` is
-        // known, `recordedFileStatus` says `update` and no dependent holds
-        // it back. Once per run: the
+        // known, `recordedFileStatus` says `update` and `heldBackFiles` does
+        // not hold it back. Once per run: the
         // first generator to want a stale file gets the update; later ones
         // in the same run find it in `recorded` no longer and in
         // `alreadyWritten` still, so they skip. The `reason` says why,

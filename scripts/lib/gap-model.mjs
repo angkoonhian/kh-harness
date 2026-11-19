@@ -1023,7 +1023,7 @@ const CHECKS = [
       const evidence = [
         skew.versions,
         ...skew.updates.map(p => `out of date: ${p.path}`),
-        ...skew.heldBack.map(h => `held back: ${h.path} (out of date, but ${h.dependent} imports it and is not being updated with it)`),
+        ...skew.heldBack.map(h => `held back: ${h.path} (out of date, but ${h.imports ? `it imports ${h.cause}, which` : `${h.cause} imports it and`} is not being updated with it)`),
         ...skew.kept.map(k => `kept: ${k.path} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
         ...skew.unproduced.map(path => `left alone: ${path} (this kit no longer generates it for this repository)`),
         ...(skew.current.length ? [`${skew.current.length} kit-owned file${skew.current.length === 1 ? '' : 's'} match what this kit generates`] : []),

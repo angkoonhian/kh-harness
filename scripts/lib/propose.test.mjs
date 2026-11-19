@@ -1609,11 +1609,39 @@ test('a user-edited hook script holds back the shared asset it imports, and the 
   assert.equal(paths.includes(BRIEF_PATH), false);
 });
 
+const WITH_SENSOR = { ...TS_FILES, 'package.json': JSON.stringify({ name: 'app', scripts: { lint: 'eslint .' } }) };
+
 test('with no edited dependent the shared asset updates as before', () => {
-  const d = installedAt('0.1.9');
-  const redact = buildProposals(detectedAt(d, '0.2.0')).find(p => p.path === REDACT_PATH);
+  const d = installedAt('0.1.9', WITH_SENSOR);
+  const ps = buildProposals(detectedAt(d, '0.2.0'));
+  const redact = ps.find(p => p.path === REDACT_PATH);
   assert.equal(redact?.checkId, 'P0.kitskew');
   assert.match(redact.reason, /installed kit 0\.1\.9, current kit 0\.2\.0/);
+  for (const script of [BRIEF_PATH, LINT_TOUCHED_PATH]) {
+    assert.equal(ps.find(p => p.path === script)?.checkId, 'P0.kitskew', `${script} is updated with the shared asset`);
+  }
+});
+
+test('an edited session brief holds back the shared asset and every other hook script that imports it', () => {
+  const d = installedAt('0.1.9', WITH_SENSOR);
+  writeFileSync(join(d, BRIEF_PATH), readF(join(d, BRIEF_PATH), 'utf8') + '// my own tweak\n');
+
+  const ctx = detectedAt(d, '0.2.0');
+  const paths = buildProposals(ctx).map(p => p.path);
+  assert.equal(paths.includes(REDACT_PATH), false, JSON.stringify(paths));
+  assert.equal(paths.includes(LINT_TOUCHED_PATH), false, `a sibling importer must not move without the module it imports: ${JSON.stringify(paths)}`);
+  const evidence = kitskew(ctx.checks).evidence;
+  assert.ok(evidence.includes(`held back: ${REDACT_PATH} (out of date, but ${BRIEF_PATH} imports it and is not being updated with it)`), JSON.stringify(evidence));
+  assert.ok(evidence.includes(`held back: ${LINT_TOUCHED_PATH} (out of date, but it imports ${REDACT_PATH}, which is not being updated with it)`), JSON.stringify(evidence));
+});
+
+test('a hook script on disk with no manifest entry holds back the shared asset', () => {
+  const d = installedAt('0.1.9');
+  writeFileSync(join(d, LINT_TOUCHED_PATH), '// the user\'s own lint hook\nimport \'./harness-redact.mjs\';\n');
+
+  const ctx = detectedAt(d, '0.2.0');
+  assert.equal(buildProposals(ctx).find(p => p.path === REDACT_PATH), undefined);
+  assert.ok(kitskew(ctx.checks).evidence.includes(`held back: ${REDACT_PATH} (out of date, but ${LINT_TOUCHED_PATH} imports it and is not being updated with it)`));
 });
 
 test('a recorded kit file without the stamp is reported as kept and never updated', () => {
