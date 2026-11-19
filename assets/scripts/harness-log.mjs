@@ -303,19 +303,60 @@ const flagsCredential = (words, last) => hidesSentinel(`${words} ${SENTINEL}`) |
 
 const isScalar = v => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
 
-/** An array's copy. A scalar after a credential flag is `SCRUB_MARK`, and the
- * words before it plus that element, each masked on its own, stay the
- * context for the next element, so `Authorization: Bearer <token>` hides
- * the token too. */
-function scrubArray(values, onString) {
+/**
+ * The strings of `run`, consecutive elements of one array, masked as one
+ * text with a newline between elements: a private key held one line per
+ * element is recognised only by the lines around each. `maskText` keeps
+ * every line break it is given, so each element gets back its own lines.
+ * When the line count does not survive (an escape sequence opened in one
+ * element and closed in a later one takes the breaks between with it), no
+ * element can be told from the next and each becomes `SCRUB_MARK`.
+ */
+function maskRun(run) {
+  const masked = maskText(run.join('\n')).split('\n');
+  const out = [];
+  let at = 0;
+  for (const text of run) {
+    const lines = text.split('\n').length;
+    out.push(masked.slice(at, at + lines).join('\n'));
+    at += lines;
+  }
+  return at === masked.length ? out : run.map(() => SCRUB_MARK);
+}
+
+/** The masked text of every string in `values`, at its index, each run of
+ * consecutive strings masked by `maskRun`. */
+function maskedStrings(values) {
+  const texts = new Array(values.length);
+  for (let i = 0; i < values.length;) {
+    if (typeof values[i] !== 'string') {
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < values.length && typeof values[end] === 'string') end++;
+    maskRun(values.slice(i, end)).forEach((text, n) => { texts[i + n] = text; });
+    i = end;
+  }
+  return texts;
+}
+
+/** An array's copy. Under a credential-named key (`hidden`) every scalar is
+ * `SCRUB_MARK`. Otherwise a scalar after a credential flag is `SCRUB_MARK`,
+ * and the words before it plus that element, as masked, stay the context
+ * for the next element, so `Authorization: Bearer <token>` hides the token
+ * too. */
+function scrubArray(values, onString, hidden) {
+  const texts = hidden ? [] : maskedStrings(values);
   let words = null;
   let last = null;
-  return values.map(v => {
+  return values.map((v, i) => {
     if (!isScalar(v)) {
       words = last = null;
-      return scrubWith(v, onString);
+      return scrubWith(v, onString, hidden);
     }
-    const text = maskText(String(v));
+    if (hidden) return onString(SCRUB_MARK);
+    const text = typeof v === 'string' ? texts[i] : maskText(String(v));
     if (words !== null && flagsCredential(words, last)) {
       words = `${words} ${text}`;
       last = text;
@@ -328,28 +369,29 @@ function scrubArray(values, onString) {
 
 /**
  * A copy of a JSON value with every object key masked and every string leaf
- * masked and then passed to `onString`. A scalar under a credential-named
- * key, or after a credential flag in an array, becomes `SCRUB_MARK` whole. Built
- * with `Object.fromEntries`, so a `__proto__` key stays an ordinary property.
+ * masked and then passed to `onString`. Every scalar at any depth beneath a
+ * credential-named key (`hidden`, for the value of one), and a scalar after
+ * a credential flag in an array, becomes `SCRUB_MARK` whole. Built with
+ * `Object.fromEntries`, so a `__proto__` key stays an ordinary property.
  */
-function scrubWith(value, onString) {
-  if (typeof value === 'string') return onString(maskText(value));
-  if (Array.isArray(value)) return scrubArray(value, onString);
+function scrubWith(value, onString, hidden = false) {
+  if (isScalar(value)) {
+    if (hidden) return onString(SCRUB_MARK);
+    return typeof value === 'string' ? onString(maskText(value)) : value;
+  }
+  if (Array.isArray(value)) return scrubArray(value, onString, hidden);
   if (value !== null && typeof value === 'object') {
     const used = new Set();
     return Object.fromEntries(Object.entries(value).map(([k, v]) => {
       const key = maskText(k);
-      const unique = uniqueKey(key, used);
-      if (!isScalar(v)) return [unique, scrubWith(v, onString)];
-      if (namesCredential(key)) return [unique, onString(SCRUB_MARK)];
-      return [unique, typeof v === 'string' ? onString(maskText(v)) : v];
+      return [uniqueKey(key, used), scrubWith(v, onString, hidden || namesCredential(key))];
     }));
   }
   return value;
 }
 
 /** A deep copy of the JSON value `value` with `maskText` applied to every
- * object key and every string leaf, and every scalar under a
+ * object key and every string leaf, and every scalar beneath a
  * credential-named key or after a credential flag replaced by `SCRUB_MARK`. */
 export function scrubValue(value) {
   return scrubWith(value, s => s);
