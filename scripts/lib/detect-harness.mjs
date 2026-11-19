@@ -3,7 +3,7 @@ import { readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { readIfPresent, existsAny } from './scan.mjs';
 import { readJsonFile } from './read-json.mjs';
-import { learnCommandDenyRules } from './propose.mjs';
+import { commandDenyRules } from './propose.mjs';
 // THIS IMPORT DIRECTION IS DELIBERATE. DO NOT "FIX" IT BY COPYING THE
 // FUNCTION BACK INTO scripts/lib/.
 //
@@ -139,11 +139,12 @@ function denyRulesInEffect(root) {
 // shown" convention `hookEvents`' unresolvable commands already use.
 const DENY_RULE_SAFE_PREFIXES = ['Edit(', 'Read(', 'Write(', 'Glob(', 'Grep(', 'NotebookEdit('];
 
-// The command rules the kit itself proposes against its `learn` subcommands,
-// kept verbatim so `P5.toolgate` can tell which are present. Only these
-// exact strings, which the kit wrote and which hold nothing of the user's:
-// any other command rule may carry an argument of theirs.
-const KIT_COMMAND_RULES = new Set(learnCommandDenyRules());
+// The command rules the kit itself proposes, against its `learn`
+// subcommands and `log purge`, kept verbatim so `P5.toolgate` can tell
+// which are present. Only these exact strings, which the kit wrote and which
+// hold nothing of the user's: any other command rule may carry an argument
+// of theirs.
+const KIT_COMMAND_RULES = new Set(commandDenyRules());
 
 function redactDenyRule(rule) {
   if (typeof rule !== 'string') return null;

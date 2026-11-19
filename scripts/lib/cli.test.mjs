@@ -268,3 +268,7 @@ test('--help needs no entry among a command\'s known flags: it is answered befor
     for (const flag of ['--help', '-h']) assert.equal(cli(script, flag).stderr, '', 'and is not warned about as unknown');
   }
 });
+
+test('the execution disclosure says log purge is denied with the learn subcommands, and why', () => {
+  assert.match(disclosed, /deny rules for running the `learn` subcommands that approve or weaken a gate, and `log purge`, which removes them with this machine's ledger/);
+});
