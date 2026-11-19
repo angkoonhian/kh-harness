@@ -48,31 +48,65 @@
 //     writeJSONMarker).
 //
 // Reads the Stop payload from stdin and takes CLAUDE_PROJECT_DIR as the
-// project root, falling back to process.cwd(). Writes to stdout only the
+// project root, falling back to process.cwd(). Writes to stdout only a
 // `systemMessage` notice of an exit-0 turn (Claude Code shows nothing from
 // stderr then), never writes inside the repository, and every spawn is
 // bounded. The redaction applied to the command's own output, and the
 // marker/signature machinery above, are shared with lint-touched.mjs via
-// harness-redact.mjs
-// — see that file's own comments for why a shared chokepoint exists at all.
+// harness-redact.mjs.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import {
-  boundReport,
-  dropCommandFragments,
-  MAX_REPORTS_SINCE_CLEAN,
-  markerPath,
-  maskText,
-  pathTokenExemptions,
-  projectRoot,
-  readJSONMarker,
-  runBounded,
-  safeSessionId,
-  signatureOf,
-  writeJSONMarker,
-} from './harness-redact.mjs';
+
+// The shared module beside this hook can be older than the hook: `apply`
+// leaves a hand-edited copy in place, and a static import of a name that copy
+// lacks fails at link time with a stack trace on every run. Its shape is
+// probed instead, and beside a stale or missing copy the hook does no work:
+// it tells the person the fix in one `systemMessage` and exits 0, once per
+// session when the copy still has the marker helpers and on every run when
+// it does not. The shared module cannot hold this text: it is the file that
+// may be missing.
+const NEEDED = [
+  'boundReport', 'dropCommandFragments', 'markerPath', 'maskText', 'MAX_REPORTS_SINCE_CLEAN',
+  'pathTokenExemptions', 'projectRoot', 'readJSONMarker', 'runBounded', 'safeSessionId', 'signatureOf',
+  'writeJSONMarker',
+];
+const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+let asset = {};
+let assetProblem = null;
+try {
+  asset = await import('./harness-redact.mjs');
+  if (NEEDED.some(name => !(name in asset))) assetProblem = 'is older than this hook and lacks what it needs';
+} catch {
+  assetProblem = 'is missing or cannot be loaded';
+}
+const {
+  boundReport, dropCommandFragments, markerPath, maskText, MAX_REPORTS_SINCE_CLEAN, pathTokenExemptions,
+  projectRoot, readJSONMarker, runBounded, safeSessionId, signatureOf, writeJSONMarker,
+} = asset;
+
+/** The exit code after telling the person, at most once in the session
+ * `rawSessionId` names, that this hook did nothing because of the shared
+ * module. A marker that cannot be made means the sentence is given anyway. */
+function assetNotice(rawSessionId) {
+  const sentence = `kh-harness verify-touched: .claude/scripts/harness-redact.mjs ${assetProblem}, so nothing is verified when Claude stops — ${REMEDY}`;
+  if (MARKING.every(name => name in asset)) {
+    const sessionId = safeSessionId(rawSessionId);
+    const tag = createHash('sha256').update(sentence, 'utf8').digest('hex').slice(0, 16);
+    const path = sessionId === null ? null : markerPath(projectRoot(), sessionId, `verify-touched-notice-${tag}`);
+    if (path !== null) {
+      try {
+        writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+      } catch (error) {
+        if (error?.code === 'EEXIST') return 0;
+      }
+    }
+  }
+  process.stdout.write(JSON.stringify({ systemMessage: sentence }) + '\n');
+  return 0;
+}
 
 // Overridable so a test can exercise the timeout path in milliseconds, not
 // minutes; defaults to the real 120s bound otherwise. A stop gate that
@@ -226,6 +260,7 @@ async function main() {
   // The documented platform mechanism — see this file's header comment.
   // Our own cap below is defence in depth, not a replacement for this.
   if (payload.stop_hook_active === true) return 0;
+  if (assetProblem !== null) return assetNotice(payload.session_id);
 
   const sessionId = safeSessionId(payload.session_id);
   if (sessionId === null) return 0; // cannot safely track state for this session — see safeSessionId's own comment

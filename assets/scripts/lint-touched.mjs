@@ -6,9 +6,10 @@
 //
 // A lint run that did not confirm the file clean — the linter is missing,
 // crashed, timed out, or failed without reporting on the file — is not a
-// clean file. It exits 0 with one JSON object on stdout, the only thing this
-// script ever writes there, telling both the user and Claude, once per
-// session (see notConfirmedClean).
+// clean file. It exits 0 with one JSON object on stdout, telling both the
+// user and Claude, once per session (see notConfirmedClean). The only other
+// thing this script writes to stdout is the notice that the shared module
+// beside it cannot be used (see assetNotice).
 //
 // This script itself never writes to the repository — but the project's
 // OWN lint script might (an auto-fixing `scripts.lint` such as
@@ -21,23 +22,58 @@
 // throws, and every spawn is bounded and wrapped: a malformed payload, an
 // uncovered file, an out-of-root file or a project with no lint script all
 // end the same way — silently, exit 0, since there was nothing to check.
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, isAbsolute, basename, delimiter, relative, sep } from 'node:path';
-import {
-  boundReport,
-  dropCommandFragments,
-  maskText,
-  MAX_REPORTS_SINCE_CLEAN,
-  markerPath,
-  pathTokenExemptions,
-  readJSONMarker,
-  projectRoot,
-  runBounded,
-  safeSessionId,
-  signatureOf,
-  stripUnsafe,
-  writeJSONMarker,
-} from './harness-redact.mjs';
+
+// The shared module beside this hook can be older than the hook: `apply`
+// leaves a hand-edited copy in place, and a static import of a name that copy
+// lacks fails at link time with a stack trace on every run. Its shape is
+// probed instead, and beside a stale or missing copy the hook does no work:
+// it tells the person the fix in one `systemMessage` and exits 0, once per
+// session when the copy still has the marker helpers and on every run when
+// it does not. The shared module cannot hold this text: it is the file that
+// may be missing.
+const NEEDED = [
+  'boundReport', 'dropCommandFragments', 'markerPath', 'maskText', 'MAX_REPORTS_SINCE_CLEAN',
+  'pathTokenExemptions', 'projectRoot', 'readJSONMarker', 'runBounded', 'safeSessionId', 'signatureOf',
+  'stripUnsafe', 'writeJSONMarker',
+];
+const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
+const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
+let asset = {};
+let assetProblem = null;
+try {
+  asset = await import('./harness-redact.mjs');
+  if (NEEDED.some(name => !(name in asset))) assetProblem = 'is older than this hook and lacks what it needs';
+} catch {
+  assetProblem = 'is missing or cannot be loaded';
+}
+const {
+  boundReport, dropCommandFragments, markerPath, maskText, MAX_REPORTS_SINCE_CLEAN, pathTokenExemptions,
+  projectRoot, readJSONMarker, runBounded, safeSessionId, signatureOf, stripUnsafe, writeJSONMarker,
+} = asset;
+
+/** The exit code after telling the person, at most once in the session
+ * `rawSessionId` names, that this hook did nothing because of the shared
+ * module. A marker that cannot be made means the sentence is given anyway. */
+function assetNotice(rawSessionId) {
+  const sentence = `kh-harness lint-touched: .claude/scripts/harness-redact.mjs ${assetProblem}, so edited files are not linted — ${REMEDY}`;
+  if (MARKING.every(name => name in asset)) {
+    const sessionId = safeSessionId(rawSessionId);
+    const tag = createHash('sha256').update(sentence, 'utf8').digest('hex').slice(0, 16);
+    const path = sessionId === null ? null : markerPath(projectRoot(), sessionId, `lint-touched-notice-${tag}`);
+    if (path !== null) {
+      try {
+        writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+      } catch (error) {
+        if (error?.code === 'EEXIST') return 0;
+      }
+    }
+  }
+  process.stdout.write(JSON.stringify({ systemMessage: sentence }) + '\n');
+  return 0;
+}
 
 // Overridable so a test can exercise the timeout path in milliseconds, not
 // minutes; defaults to the real 30s bound otherwise.
@@ -504,6 +540,7 @@ async function main() {
   const isJs = JS_EXTENSIONS.has(ext);
   const isPy = PY_EXTENSIONS.has(ext);
   if (!isJs && !isPy) return 0;
+  if (assetProblem !== null) return assetNotice(payload.session_id);
 
   // Shared with session-brief.mjs, which used a bare process.cwd() —
   // whole-branch review, F4: three hooks, two conventions, one of them wrong.
