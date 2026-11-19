@@ -214,7 +214,7 @@ ${EXIT_CODES}`;
 export const LOG_USAGE = `kh-harness log — the session log for one repository on this machine
 
 USAGE
-  node scripts/log.mjs <path-to-repo> <enable|disable|status|maintain|purge> [--yes] [--json]
+  node scripts/log.mjs <path-to-repo> <enable|disable|status|report|maintain|purge> [--yes] [--json]
 
 The log lives outside the repository, under the user's Claude directory
 (\`~/.claude/kh-harness/<key>\`, or \`$KH_DATA_DIR/<key>\`), keyed by the
@@ -234,7 +234,15 @@ SUBCOMMANDS
              sealed-session index, the learning ledger's chain, what could
              not be read, retention and transcript coverage, and what hooks
              cannot see. Reads only; writes nothing.
-  maintain   Seal closed sessions, expire content past the retention period
+  report     List the failures that recur in two or more sessions under one
+             harness and model, with their counts, sessions and the failure
+             kind in docs/harness/FAILURES.md that labels each; and how each
+             gate fired, per action, how often a block was followed by a
+             successful call of the same tool, and how often its learning was
+             marked wrong in the ledger. States how many sessions it read and
+             what it could not read, and never that outcomes improved. Reads
+             only; writes nothing.
+  maintain  Seal closed sessions, expire content past the retention period
              and remove unreferenced blobs: what the hook does at session
              start within 150 ms, here run to the end for a log that has
              outgrown that. Needs the log enabled.
@@ -242,11 +250,15 @@ SUBCOMMANDS
              repository's log directory, and nothing else, which also
              disables the log.
 
-No subcommand prints a prompt, a tool's input or output, or an error line.
+No subcommand prints a prompt or a tool's input or output. Only \`report\`
+prints an error line: a recurrence's first, normalised, on one line, with
+what a reader cannot see removed and \`<\` and \`>\` escaped, cut to 200
+characters.
 
 FLAGS
   --yes    purge only: actually remove. Without it, nothing is removed.
-  --json   status only: print the status object on stdout and nothing else.
+  --json   status and report only: print the object on stdout and nothing
+           else.
 
 Here 3 is also \`maintain\` on a log that is not enabled, and any write to or
 removal of a log directory that is a link or is not inside the data root.

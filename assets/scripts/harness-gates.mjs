@@ -25,7 +25,8 @@ export const GATE_LIMITS = Object.freeze({ valueMax: 200, messageMax: 300, gates
 
 const GATE_KEYS = new Set(['id', 'tool', 'field', 'match', 'action', 'message', 'cites']);
 const MATCH_KINDS = new Set(['literal', 'token', 'glob']);
-const ACTIONS = new Set(['observe', 'warn', 'block']);
+export const GATE_ACTIONS = Object.freeze(['observe', 'warn', 'block']);
+const ACTIONS = new Set(GATE_ACTIONS);
 const CITES_MAX = 10;
 const CITE_LENGTH_MAX = 200;
 
@@ -36,7 +37,8 @@ const SIGNIFICANT_MIN = 3;
 // Segments that reach an object's prototype machinery rather than its data.
 const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 
-const ID = /^L[1-9][0-9]{0,8}$/;
+/** A gate's id, which is also its learning's id in the ledger. */
+export const GATE_ID = /^L[1-9][0-9]{0,8}$/;
 const FIELD = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
 const LINE_BREAK = /[\n\p{Zl}\p{Zp}]/u;
 const ANGLE_BRACKET = /[<>]/;
@@ -63,7 +65,7 @@ export function validateGate(gate) {
     return reject('a gate may have only the keys id, tool, field, match, action, message and cites');
   }
 
-  if (typeof gate.id !== 'string' || !ID.test(gate.id)) return reject('id must be L followed by 1 to 9 digits, without a leading zero');
+  if (typeof gate.id !== 'string' || !GATE_ID.test(gate.id)) return reject('id must be L followed by 1 to 9 digits, without a leading zero');
   if (typeof gate.tool !== 'string' || gate.tool.length === 0 || gate.tool.length > GATE_LIMITS.valueMax) {
     return reject(`tool must be a non-empty string of at most ${GATE_LIMITS.valueMax} characters`);
   }
@@ -239,7 +241,7 @@ function suspensionProblem(entry) {
   if (keys.length !== 2 || !Object.hasOwn(entry, 'id') || entry.suspended !== true) {
     return 'a suspension must be exactly { id, suspended: true }';
   }
-  if (typeof entry.id !== 'string' || !ID.test(entry.id)) return 'id must be L followed by 1 to 9 digits, without a leading zero';
+  if (typeof entry.id !== 'string' || !GATE_ID.test(entry.id)) return 'id must be L followed by 1 to 9 digits, without a leading zero';
   return null;
 }
 

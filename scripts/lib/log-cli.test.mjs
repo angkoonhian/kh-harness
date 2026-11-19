@@ -348,7 +348,7 @@ test('no subcommand prints event content', () => {
   sealAll(root);
   writeFileSync(sealedFile(root, 's2'), gzipSync(Buffer.from(`${JSON.stringify({ type: 'UserPromptSubmit', prompt: CANARY })}\n`)));
   writeSession(root, 's3');
-  for (const args of [['status'], ['status', '--json'], ['maintain'], ['enable'], ['disable'], ['purge']]) {
+  for (const args of [['status'], ['status', '--json'], ['report'], ['report', '--json'], ['maintain'], ['enable'], ['disable'], ['purge']]) {
     const r = runLog(root, ...args);
     assert.equal(`${r.stdout}${r.stderr}`.includes(CANARY), false, args.join(' '));
   }
@@ -356,7 +356,7 @@ test('no subcommand prints event content', () => {
 
 test('an unknown subcommand exits 2', () => {
   const root = project();
-  for (const sub of ['report', 'stats']) {
+  for (const sub of ['stats', 'learn']) {
     const r = runLog(root, sub);
     assert.equal(r.status, 2, sub);
     assert.match(r.stderr, /unknown subcommand/);
@@ -381,5 +381,5 @@ test('log --help prints its usage on stdout, names every flag and subcommand, an
     assert.equal(r.stderr, '');
   }
   assert.ok(LOG_USAGE.includes(EXIT_CODES));
-  for (const word of ['enable', 'disable', 'status', 'maintain', 'purge', '--yes', '--json']) assert.ok(LOG_USAGE.includes(word), word);
+  for (const word of ['enable', 'disable', 'status', 'report', 'maintain', 'purge', '--yes', '--json']) assert.ok(LOG_USAGE.includes(word), word);
 });
