@@ -24,13 +24,12 @@ if (wantsHelp(argv)) {
   process.exit(0);
 }
 
-// Parsed by the one shared parser all three entry points use — see cli.mjs
-// for why three independent copies of this was itself a finding (F10).
+// Parsed by the one parser every entry point uses (cli.mjs).
 const { flags, target, positionals, unknown } = parseArgv(argv, KNOWN_FLAGS);
 const root = resolve(target ?? process.cwd());
 
-// A typo like `--verfiy` used to be a silent no-op. Say so — on stderr, never
-// on stdout, which --json callers parse.
+// A typo like `--verfiy` is named, on stderr and never on stdout, which
+// --json callers parse.
 warnUnknown(unknown);
 refuseExtraArguments(positionals.slice(1), 'usage: detect <repo-path> [--verify] [--json]   (--help for the full contract)');
 

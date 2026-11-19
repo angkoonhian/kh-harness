@@ -18,14 +18,12 @@ function canon(entry) {
 }
 
 /**
- * `matcher` is optional and omitted by default — SessionStart (the only
- * event this shipped against until now) never needed one, since omitting
- * it means "match everything" and that is exactly what a session-brief
- * hook wants. PostToolUse is different: without a matcher it fires for
- * every tool, not just an edit, so the per-edit sensor passes one
- * ('Write|Edit') explicitly. Passing it changes `matcherEntry` and
- * therefore its hash — by design, since a matcher-bearing entry and a
- * matcher-less one for the same command are different objects on disk.
+ * `matcher` is optional. Omitting it means "match everything", which is
+ * what a session-brief hook wants; the per-edit sensor passes one
+ * ('Write|Edit'), since without it a PostToolUse hook fires for every tool.
+ * Passing it changes `matcherEntry` and therefore its hash: a
+ * matcher-bearing entry and a matcher-less one for the same command are
+ * different objects on disk.
  *
  * Exported so `apply-lib.mjs`'s settings-hook preview can build the exact
  * same object `addHookEntry` is about to push, rather than a second,
@@ -85,9 +83,9 @@ const PLAIN_LIST = /^[\w-]+(?:\|[\w-]+)*$/;
  * script counts — narrowing a SessionStart brief to `startup|resume` is the
  * user's choice, not a missing hook), theirs is every tool, the two sets are
  * equal, or theirs is a superset. A regular expression is never assumed to
- * cover a list. Tier 2 review, Important 1: `registeredHook` credited by
- * script path alone, so our per-edit sensor registered under `Bash` — a
- * hook that never fires on an edit — read as `declared`.
+ * cover a list. Crediting by script path alone would read our per-edit
+ * sensor registered under `Bash`, a hook that never fires on an edit, as
+ * in place.
  */
 export function matcherCovers(theirs, ours) {
   const o = normalizeMatcher(ours);
@@ -109,7 +107,7 @@ export function matcherCovers(theirs, ours) {
  */
 export function normalizeHookPath(token) {
   // Quotes go wherever they sit: `"${CLAUDE_PROJECT_DIR}"/x` closes the
-  // quote before the path, a real shell idiom (Tier 3 review, Minor 8).
+  // quote before the path, a real shell idiom.
   return String(token)
     .replace(/["']/g, '')
     .replace(/^\$\{CLAUDE_PROJECT_DIR\}[\\/]|^\$CLAUDE_PROJECT_DIR[\\/]/, '')
@@ -119,7 +117,7 @@ export function normalizeHookPath(token) {
 
 /**
  * The candidate script tokens of a hook entry, normalised. Claude Code's two
- * forms (audit Tier 3, finding 11): exec form — `command` is the executable
+ * forms: exec form — `command` is the executable
  * and `args[0]` the script, spawned with no shell — yields that one token;
  * shell form — `command` is a shell string — yields every whitespace token,
  * for a caller that can tell which one is a path (detect-harness.mjs checks
@@ -156,11 +154,10 @@ function sameHook(a, b) {
 /**
  * True when `entry` (or one that runs the same script — see sameHook) is
  * already registered on `event` under a matcher that covers `matcher` (see
- * matcherCovers). Audit Tier 2, finding 7: the matcher used to be ignored,
- * so a user's own `node x.mjs` under `Bash` suppressed our `Write|Edit`
- * registration of the same script — a different hook, since the matcher is
- * what decides when it fires. (The entry hash `addHookEntry` records has
- * always included the matcher; only this check did not.)
+ * matcherCovers). The matcher is part of the question: a user's own
+ * `node x.mjs` under `Bash` is a different hook from our `Write|Edit`
+ * registration of the same script, since the matcher decides when it fires,
+ * and must not suppress it.
  */
 export function hasEquivalentHook(settings, event, entry, matcher) {
   const matchers = settings?.hooks?.[event];

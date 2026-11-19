@@ -41,24 +41,21 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   if (!stack.packageManager) {
     out.push('No lockfile found, so the package manager is unknown. Confirm which one this project uses.');
   }
-  // Coordinator ruling (post-review, concern 1): a workspace pattern this
-  // tool REFUSED to interpret must be reported, not absorbed. `glob.mjs`
-  // already fails closed on it — a refused pattern compiles to a
-  // never-matching source — but a pattern that silently matches nothing is
-  // indistinguishable from a workspace with no members, which is exactly the
-  // confident-and-wrong shape this report exists to avoid. The pattern's own
-  // text is never echoed: it is repository-controlled and holds a control
-  // character by definition, so the index is what is named.
+  // A workspace pattern this tool refused to interpret is reported, not
+  // absorbed. `glob.mjs` fails closed on it, compiling it to a source that
+  // never matches, and a pattern that silently matches nothing cannot be
+  // told from a workspace with no members. The pattern's own text is never
+  // echoed: it is repository-controlled and holds a control character by
+  // definition, so the index is what is named.
   const rejected = stack.rejectedWorkspacePatterns ?? [];
   if (rejected.length) {
     const s = rejected.length === 1 ? '' : 's';
     const is = rejected.length === 1 ? 'is' : 'are';
     out.push(`${rejected.length} workspace pattern${s} (at index ${rejected.join(', ')} of this repository's own \`workspaces\` list) ${is} not a usable glob — ${rejected.length === 1 ? 'it contains' : 'they contain'} a NUL character, so ${rejected.length === 1 ? 'it was' : 'they were'} refused rather than interpreted, and any package ${rejected.length === 1 ? 'it' : 'they'} would have matched is NOT in this report. The value is not printed here because it is repository-controlled and holds a control character. What should ${rejected.length === 1 ? 'that entry' : 'those entries'} be?`);
   }
-  // Asked only while no rules registry exists (audit Tier 4, finding 20: it
-  // used to be asked on every run, forever). Once docs/harness/RULES.md is
+  // Asked only while no rules registry exists. Once docs/harness/RULES.md is
   // there, that is where the answer lives — each rule names what holds it —
-  // and P3.rules' advice already lists the rule-shaped lines still outside it.
+  // and P3.rules' advice lists the rule-shaped lines still outside it.
   const registryExists = checks.some(c => c.id === 'P3.rules' && c.state !== 'absent');
   if (!registryExists && checks.some(c => c.id === 'P1.instructions' && c.state === 'declared')) {
     out.push('An instruction file already exists. Which of its rules are decisions that cannot be re-derived from source? Those must survive any regeneration — docs/harness/RULES.md (Phase 3) is where each can name what enforces it.');
@@ -71,8 +68,9 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
 }
 
 /** The one file `detect` writes — named here so `apply`'s dirty-tree gate
- * can excuse it as the kit's own write (audit Tier 4, finding 21: a tracked
- * report, re-generated with a new `generatedAt`, refused the next apply). */
+ * can excuse it as the kit's own write (a tracked report, regenerated with a
+ * new `generatedAt`, would otherwise refuse the next apply), and so
+ * `uninstall` can say it leaves it. */
 export const DETECT_REPORT_PATH = 'docs/harness/detect.json';
 
 export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks, nested = [] }) {
@@ -80,8 +78,8 @@ export function buildReport({ root, kitVersion, git, stack, harness, exposures, 
     schema: 1,
     kitVersion,
     generatedAt: new Date().toISOString(),
-    // The repository's NAME, never its absolute path: detect.json is committed,
-    // and the path carried the machine's user name (audit Tier 4, finding 23).
+    // The repository's name, never its absolute path: detect.json is
+    // committed, and the path carries the machine's user name.
     repo: { name: basename(root), vcs: git.isRepo ? 'git' : null, branch: git.branch ?? null },
     profile: profile.id,
     stack,
@@ -97,26 +95,20 @@ export function buildReport({ root, kitVersion, git, stack, harness, exposures, 
  * The Exposures and "Not examined" sections, as lines, with their trailing
  * blank separator — or `[]` when there is nothing to report.
  *
- * Exported and shared because `apply.mjs` performs the identical Phase-0
- * credential sweep and used to print NONE of it (whole-branch review, F9).
- * The fix had to not be a second renderer: two places formatting the same
- * findings is precisely the duplicated-predicate shape this branch's review
- * found five times over. `detect` and `apply` now print the same bytes for
- * the same exposures because they call the same function.
+ * Shared with `apply.mjs`, which performs the same Phase-0 credential
+ * sweep: the two print the same bytes for the same exposures because they
+ * call this one function.
  *
- * Task 9b, finding 1: the prominent/collapsed split is the SAME one
- * `P0.security`'s own check applies (gap-model.mjs, via the shared
- * detect-exposure.mjs helpers) — the heading count, the listed findings and
- * `P0.security`'s evidence can never disagree about what counts as noise,
- * because all of them read it from one place.
+ * The prominent/collapsed split is the one `P0.security`'s check applies
+ * (gap-model.mjs, through detect-exposure.mjs's helpers), so the heading
+ * count, the listed findings and that check's evidence cannot disagree
+ * about what counts as noise.
  *
- * Whole-branch review, F1: a file the sweep could not READ is on the same
- * list as a credential finding — it is a finding of the same sweep — but it
- * is not a credential, and the Exposures heading's "values are never
- * printed; rotate by hand" is not true of it. Partitioned through the SHARED
- * `partitionProminent`, the same function `P0.security` reads, so the two
- * can never disagree about which section a finding belongs in, or how many
- * are in each.
+ * A file the sweep could not read is on the same list as a credential
+ * finding, but it is not a credential, and the Exposures heading's "values
+ * are never printed; rotate by hand" is not true of it. It is partitioned
+ * out by `partitionProminent`, which `P0.security` reads too, so the two
+ * agree about which section a finding belongs in and how many are in each.
  */
 export function exposureSectionLines(exposures, nested = []) {
   if (!exposures || exposures.length === 0) return [];

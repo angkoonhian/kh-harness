@@ -28,14 +28,13 @@ export function emptyManifest(kitVersion) {
  * entirely legitimate state) from "a manifest file exists but could not
  * be read as our schema" (corrupt — hand-edited, truncated by a crash
  * mid-write, merge-conflict markers left in, ...). The two are NOT the
- * same fact: silently treating a corrupt manifest as "nothing installed"
- * is how `apply` used to orphan every file it had previously written —
- * the manifest is overwritten with a fresh empty one, and the record of
- * what to `uninstall` is gone, permanently, with no notice to the user
- * (coordinator finding, Major). `readManifest`, below, still collapses
- * both to `null` for `detect.mjs` (which correctly fails safe either way
- * — it never writes anything); `apply.mjs` and `uninstall.mjs` use this
- * directly so each can say which of the two it refused on.
+ * same fact: an `apply` that treated a corrupt manifest as "nothing
+ * installed" would overwrite it with a fresh empty one, and the record of
+ * what to `uninstall` would be gone for good. `readManifest`, below,
+ * collapses both to `null` for a caller that writes nothing and tells
+ * them apart itself where it matters (gap-model.mjs); `apply.mjs` and
+ * `uninstall.mjs` use this directly so each can say which of the two it
+ * refused on.
  */
 export function readManifestResult(root) {
   const read = readJsonFile(join(root, MANIFEST_PATH));
@@ -131,15 +130,15 @@ export function normalizeLineEndings(buf) {
  * Three answers, and every write decision follows from them:
  *   ours-unmodified — we wrote it, it is untouched, we may update or remove it
  *   ours-modified   — we wrote it, the user changed or deleted it: report, never write
+ *                     (`uninstall` asks separately whether it is still there)
  *   theirs          — we never wrote it: never touch it
  *
- * Line endings (audit Tier 1, finding 4): the kit writes LF and records LF
- * hashes, but a checkout with `core.autocrlf=true` — the Windows default —
- * rewrites every installed file to CRLF, and hashing raw bytes then called
- * all of them `ours-modified`: apply reported `kept (modified)` for every
- * file, uninstall kept every file, the upgrade path never fired (measured
- * on a real repository). So on a raw mismatch, and only when the bytes hold
- * a CR, the LF-normalised content is hashed too. One way only: the kit
+ * Line endings: the kit writes LF and records LF hashes, but a checkout
+ * with `core.autocrlf=true`, the Windows default, rewrites every installed
+ * file to CRLF, and raw bytes alone would then call all of them
+ * `ours-modified`: every file kept, nothing ever updated. So on a raw
+ * mismatch, and only when the bytes hold a CR, the LF-normalised content is
+ * hashed too. One way only: the kit
  * never writes CRLF, so a CRLF hash in the manifest is never matched by an
  * LF file. The UTF-8 round trip in `normalizeLineEndings` is lossy for
  * non-UTF-8 bytes, which can only turn a would-be match into a non-match —
