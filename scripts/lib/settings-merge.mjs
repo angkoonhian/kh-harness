@@ -1,21 +1,10 @@
+import { canonicalJson } from '../../assets/scripts/harness-redact.mjs';
 import { sha256 } from './manifest.mjs';
 
 /** The project settings file every patch is written to and reverted from. */
 export const SETTINGS_PATH = '.claude/settings.json';
 
 const clone = o => JSON.parse(JSON.stringify(o ?? {}));
-
-/** Canonical form so the hash does not depend on key order. */
-function canon(entry) {
-  return JSON.stringify(entry, function(key, value) {
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      const sorted = {};
-      Object.keys(value).sort().forEach(k => sorted[k] = value[k]);
-      return sorted;
-    }
-    return value;
-  });
-}
 
 /**
  * `matcher` is optional. Omitting it means "match everything", which is
@@ -36,10 +25,11 @@ export function buildMatcherEntry(entry, matcher) {
 }
 
 /** The hash of one element of `hooks.<event>` as it stands in a settings
- * file: what a hook patch records as `entrySha256`, and what reverting the
- * patch looks for. */
+ * file, over its canonical JSON, so it does not depend on key order: what a
+ * hook patch records as `entrySha256`, and what reverting the patch looks
+ * for. */
 export function matcherEntrySha256(matcherEntry) {
-  return sha256(canon(matcherEntry));
+  return sha256(canonicalJson(matcherEntry));
 }
 
 /** The `entrySha256` a hook patch records for `entry` under `matcher`. */

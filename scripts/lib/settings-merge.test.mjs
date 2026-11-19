@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addHookEntry, hasEquivalentHook, hookPathTokens, hookScriptOf, normalizeMatcher, matcherCovers, revertPatch, revertPatches, addDenyRules } from './settings-merge.mjs';
+import { sha256 } from './manifest.mjs';
 import { GENERATOR_SCRIPT_PATHS } from './propose.mjs';
 
 // What revertPatch may remove: every generator hook script, and the deny
@@ -19,6 +20,25 @@ test('adds a hook to an empty settings object without mutating the input', () =>
   assert.equal(settings.hooks.SessionStart.length, 1);
   assert.equal(patch.container, '/hooks/SessionStart');
   assert.match(patch.entrySha256, /^[0-9a-f]{64}$/);
+});
+
+test('a hook patch records the hash of its entry as canonical JSON, whatever order the entry\'s keys were written in', () => {
+  const canonical = '{"hooks":[{"command":"node .claude/scripts/lint-touched.mjs","timeout":5,"type":"command"}],"matcher":"Write|Edit"}';
+  const written = addHookEntry({}, 'PostToolUse', { type: 'command', command: 'node .claude/scripts/lint-touched.mjs', timeout: 5 }, 'Write|Edit');
+  assert.equal(written.patch.entrySha256, sha256(canonical), 'the bytes a manifest already records for this entry');
+  const reordered = { hooks: { PostToolUse: [JSON.parse('{"matcher":"Write|Edit","hooks":[{"timeout":5,"command":"node .claude/scripts/lint-touched.mjs","type":"command"}]}')] } };
+  const reverted = revertPatch(reordered, written.patch, PRODUCIBLE);
+  assert.deepEqual(reverted.kept, []);
+  assert.deepEqual(reverted.settings, {}, 'the entry is found by its content, not its key order');
+});
+
+test('an entry the owner gave a __proto__ key is not taken for the one the kit wrote', () => {
+  const { settings, patch } = addHookEntry({}, 'SessionStart', ENTRY);
+  const edited = JSON.parse(JSON.stringify(settings).replace('{"hooks":[{', '{"__proto__":{"edited":true},"hooks":[{'));
+  assert.ok(Object.hasOwn(edited.hooks.SessionStart[0], '__proto__'), 'fixture: the key is the entry\'s own');
+  const r = revertPatch(edited, patch, PRODUCIBLE);
+  assert.deepEqual(r.kept.map(k => k.reason), ['patch-modified'], 'its hash is not the recorded one, so it is kept');
+  assert.equal(r.settings.hooks.SessionStart.length, 1);
 });
 
 test('preserves unrelated settings and unrelated events', () => {
