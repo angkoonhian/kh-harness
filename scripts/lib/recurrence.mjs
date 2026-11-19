@@ -22,7 +22,7 @@ export const TOOL_FIELD = 'tool';
 const INTERRUPTED = 'interrupted';
 
 const HARNESS_EVENT = 'harness';
-const EXTERNAL_EVENT = 'external_content';
+export const EXTERNAL_EVENT = 'external_content';
 const UNREADABLE_BASE = 'unreadable';
 const MAX_EXAMPLE_REFS = 3;
 

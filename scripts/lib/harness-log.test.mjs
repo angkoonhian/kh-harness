@@ -97,7 +97,7 @@ test('a .git file whose git directory has no commondir keys on that git director
   assert.notEqual(repoKey(a), repoKey(tempDir('hk-log-plain-')));
 });
 
-test('a path differing only in case or separator maps to the same key on win32', { skip: process.platform !== 'win32' }, () => {
+test('a path differing only in case or separator maps to the same key on win32', { skip: process.platform !== 'win32' && 'only win32 treats two spellings of a path as one' }, () => {
   const plain = tempDir('hk-log-case-');
   const variant = p => p.toUpperCase().replace(/\\/g, '/');
   assert.equal(repoKey(variant(plain)), repoKey(plain));
@@ -163,7 +163,7 @@ test('setEnabled refuses a record or a log directory that is a symbolic link, an
   assert.equal(readFileSync(target, 'utf8'), '{"enabled":false}');
 });
 
-test('the log directory is created for its owner alone', { skip: process.platform === 'win32' }, () => {
+test('the log directory is created for its owner alone', { skip: process.platform === 'win32' && 'win32 has no permission bits to read back' }, () => {
   const d = gitRepo();
   setEnabled(d, true);
   assert.equal(statSync(repoDataDir(d)).mode & 0o777, 0o700);

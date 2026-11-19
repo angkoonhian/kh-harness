@@ -35,7 +35,7 @@ import {
 } from './learn-lib.mjs';
 import { appendLedger, isSha256 } from './ledger.mjs';
 import { checkedPolicy, policyAllows, readPolicy, removePolicy, writePolicy } from './policy.mjs';
-import { findRecurrences } from './recurrence.mjs';
+import { EXTERNAL_EVENT, findRecurrences } from './recurrence.mjs';
 import { TERMINAL_CHECK } from './tty.mjs';
 
 // The actions a promotion may grant: those a learning promoted on this
@@ -54,7 +54,6 @@ const COMMITTED_STATUSES = new Set(['landed', 'suspended']);
 
 // The event a session carries once a tool call in it read outside content,
 // as the logging hook writes it.
-const EXTERNAL_EVENT = 'external_content';
 
 const optionsOf = value => (isPlainObject(value) ? value : {});
 

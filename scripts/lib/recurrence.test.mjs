@@ -340,7 +340,7 @@ test('normaliseError strips ANSI, numbers, repository paths and hex', () => {
   assert.equal(normaliseError('deadbeef cafe', ROOT), '… cafe');
 });
 
-test('normaliseError matches a win32 root in either separator and any letter case', { skip: process.platform !== 'win32' }, () => {
+test('normaliseError matches a win32 root in either separator and any letter case', { skip: process.platform !== 'win32' && 'a win32 root is matched this way only on win32' }, () => {
   assert.equal(normaliseError('at C:\\work\\repo\\src\\a.mjs:12:3', ROOT), 'at src/a.mjs:#:#');
   assert.equal(normaliseError('at c:/WORK/Repo/a.mjs', ROOT), 'at a.mjs');
 });

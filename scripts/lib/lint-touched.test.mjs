@@ -538,7 +538,7 @@ test('CONTAINMENT: a ../-escaping relative file_path never runs a foreign lint s
   assert.equal(existsSync(marker), false, 'the foreign lint script must never run via a ../ escape');
 });
 
-test('CONTAINMENT: a drive-letter case difference on an in-root file does not escape the root', { skip: process.platform !== 'win32' }, () => {
+test('CONTAINMENT: a drive-letter case difference on an in-root file does not escape the root', { skip: process.platform !== 'win32' && 'only win32 paths have a drive letter' }, () => {
   // The project root deliberately has NO package.json of its own: without
   // a correct, case-insensitive bound, the walk blows straight past it and
   // adopts the foreign one below instead.

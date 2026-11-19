@@ -227,7 +227,7 @@ test('an index that exists but cannot be read is unreadable, not a broken chain,
   assert.equal(applyRetention(root).notRun, 'the index could not be read', 'retention says it did not run, not that it expired nothing');
 });
 
-test('a failed index append stops the run and says so', { skip: process.getuid?.() === 0 }, () => {
+test('a failed index append stops the run and says so', { skip: process.getuid?.() === 0 && 'a read-only file does not stop root' }, () => {
   const root = tempDir('hk-log-append-fails-');
   writeSession(root, 'first');
   seal(root);

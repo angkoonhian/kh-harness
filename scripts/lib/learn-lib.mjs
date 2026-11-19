@@ -77,7 +77,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { GATE_ID, GATE_LIMITS, gateSha256, validateGate } from '../../assets/scripts/harness-gates.mjs';
+import { GATE_ID, GATE_LIMITS, gateSha256, LINE_BREAK, validateGate } from '../../assets/scripts/harness-gates.mjs';
 import { canonicalJson, GATES_PATH, harnessIdentity, LOCAL_GATES_FILE, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
 import { writeFileAtomic } from './atomic-write.mjs';
@@ -158,7 +158,6 @@ const ID_COUNTER_FILE = 'learning-ids.json';
 const ID_NUMBER_MAX = 999_999_999;
 
 const LEARNING_FILE_SUFFIX = '.json';
-const LINE_BREAK = /[\n\p{Zl}\p{Zp}]/u;
 const DRAFT_KEYS = new Set(['signature', 'title', 'why', 'gate']);
 const REPLAYED_DETAIL = /^(pass|fail|not-checkable): (.*)$/s;
 

@@ -39,7 +39,7 @@ const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 /** A gate's id, which is also its learning's id in the ledger. */
 export const GATE_ID = /^L[1-9][0-9]{0,8}$/;
 const FIELD = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
-const LINE_BREAK = /[\n\p{Zl}\p{Zp}]/u;
+export const LINE_BREAK = /[\n\p{Zl}\p{Zp}]/u;
 const ANGLE_BRACKET = /[<>]/;
 const DRIVE_PREFIX = /^[A-Za-z]:/;
 
