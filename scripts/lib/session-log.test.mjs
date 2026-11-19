@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { canonicalJson, readEvents, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
-import { CONTENT_FIELDS, KEPT_FIELDS, SEAL_IDLE_MS, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
+import { CONTENT_FIELDS, indexLineCount, KEPT_FIELDS, SEAL_IDLE_MS, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { stripAnsi } from '../../assets/scripts/harness-redact.mjs';
 import { LOGGED_EVENTS, toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -530,7 +530,6 @@ function assertNotice(result, n) {
 
 const setAutodraft = (root, autodraft) => writeFileSync(join(repoDataDir(root), 'config.json'), JSON.stringify({ autodraft }));
 const writeLastTick = (root, text) => writeFileSync(join(repoDataDir(root), 'last-tick.json'), text);
-const indexLineCount = root => readFileSync(join(repoDataDir(root), 'index.jsonl'), 'utf8').split('\n').filter(Boolean).length;
 /** `last-tick.json` as `learn tick` writes it now. */
 const tickNow = root => writeLastTick(root, JSON.stringify({ ts: new Date().toISOString(), indexLines: indexLineCount(root) }));
 const sessionStart = (sessionId, source = 'startup') => ({ session_id: sessionId, hook_event_name: 'SessionStart', source });
@@ -650,7 +649,7 @@ test('the notice is written without spawning a child process', () => {
 });
 
 const ASSETS = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts');
-const HOOK_MODULES =['session-log.mjs', 'harness-log.mjs', 'harness-redact.mjs'];
+const HOOK_MODULES = ['session-log.mjs', 'harness-log.mjs', 'harness-redact.mjs'];
 
 /** A copy of the hook and its siblings as they are installed. With
  * `sealLoads` set, the sealing module is copied too and appends a line to

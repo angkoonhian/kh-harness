@@ -23,7 +23,8 @@ export { SCRUB_MARK };
 
 export const GATES_PATH = '.claude/kh-harness/gates.json';
 export const LOCAL_GATES_FILE = 'gates.local.json';
-/** Where `learn tick` records, as `{ ts }`, when it last ran. */
+/** Where `learn tick` records, as `{ ts, indexLines }`, when it last ran
+ * and how many lines the seal index then held. */
 export const LAST_TICK_FILE = 'last-tick.json';
 
 const ENABLED_FILE = 'enabled.json';
