@@ -5,13 +5,14 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { appendEvent, setEnabled } from '../../assets/scripts/harness-log.mjs';
-import { failureSignature, FAILURE_EVENT } from './recurrence.mjs';
-import { FAILURES_PATH, failuresEvidence, parseFailures } from './failures-evidence.mjs';
+import { failureSignature, FAILURE_EVENT, findRecurrences } from './recurrence.mjs';
+import { FAILURES_PATH, failuresEvidence, parseFailures, unlabelledRecurrences } from './failures-evidence.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { detectStack } from './detect-stack.mjs';
@@ -19,6 +20,7 @@ import { selectProfile } from './profiles/index.mjs';
 import { listFiles } from './scan.mjs';
 
 const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
+const HARNESS_LOG = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'harness-log.mjs');
 
 const made = [];
 const tempDir = prefix => {
@@ -30,7 +32,8 @@ after(() => {
   for (const d of made) rmSync(d, { recursive: true, force: true });
 });
 
-process.env.KH_DATA_DIR = tempDir('hk-fail-data-');
+const DATA_DIR = tempDir('hk-fail-data-');
+process.env.KH_DATA_DIR = DATA_DIR;
 
 function write(d, rel, text) {
   mkdirSync(join(d, rel, '..'), { recursive: true });
@@ -63,6 +66,35 @@ const failuresCheck = root => {
   const checks = buildGaps({ stack, harness, exposures: [], profile: selectProfile(stack), git: { branch: 'main', isRepo: true }, files, root });
   return checks.find(c => c.id === 'P5.failures');
 };
+
+/**
+ * A preload that records, in `record`, every path under KH_DATA_DIR that a
+ * synchronous fs call is given. It records rather than throws, because the
+ * log library catches what it reads and a throw would go unseen.
+ */
+function accessProbe() {
+  const dir = tempDir('hk-fail-probe-');
+  const record = join(dir, 'accesses.txt');
+  const preload = join(dir, 'probe.mjs');
+  writeFileSync(preload, [
+    "import fs from 'node:fs';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    `const record = ${JSON.stringify(record)};`,
+    'const norm = p => String(p).replace(/\\\\/g, "/").toLowerCase();',
+    'const data = norm(process.env.KH_DATA_DIR);',
+    'const append = fs.appendFileSync;',
+    "for (const name of ['readdirSync', 'readFileSync', 'statSync', 'lstatSync', 'existsSync', 'openSync', 'opendirSync', 'accessSync']) {",
+    '  const real = fs[name];',
+    '  fs[name] = (p, ...rest) => {',
+    "    if (norm(p).startsWith(data)) append(record, `${name} ${p}\\n`);",
+    '    return real(p, ...rest);',
+    '  };',
+    '}',
+    'syncBuiltinESMExports();',
+    '',
+  ].join('\n'));
+  return { record, importArg: pathToFileURL(preload).href };
+}
 
 test('a heading with two signatures parses', () => {
   const text = [
@@ -105,8 +137,30 @@ test('anything in a signatures list that is not 16 lowercase hex is dropped and 
   assert.deepEqual(parseFailures(readFileSync(join(d, FAILURES_PATH), 'utf8'))[0].signatures, ['0123456789abcdef']);
   const ev = failuresEvidence(d);
   assert.equal(ev.kinds, 1);
+  assert.equal(ev.signatures, 1);
   assert.equal(ev.malformedSignatures, 3);
   assert.match(failuresCheck(d).evidence.join('\n'), /3 malformed signature ids ignored/);
+});
+
+test('a level-2 heading that is not "F<n> — title" is ignored and counted', () => {
+  const d = tempDir('hk-fail-repo-');
+  write(d, FAILURES_PATH, [
+    '## F1 — kept',
+    '- signatures: 0123456789abcdef',
+    '## FI — mistyped id',
+    '- signatures: fedcba9876543210',
+    '## Notes',
+    '',
+  ].join('\n'));
+  const ev = failuresEvidence(d);
+  assert.equal(ev.kinds, 1);
+  assert.equal(ev.signatures, 1, 'a signature under an ignored heading belongs to no failure kind');
+  assert.equal(ev.ignoredHeadings, 2);
+  assert.deepEqual(failuresCheck(d).evidence, [
+    `${FAILURES_PATH}: 1 failure kind named, listing 1 signature id`,
+    '2 level-2 headings ignored (a failure kind\'s heading is "## F<n> — <title>")',
+    '`log report` shows which recurrences no failure kind labels',
+  ]);
 });
 
 test('parseFailures never throws', () => {
@@ -114,6 +168,26 @@ test('parseFailures never throws', () => {
     assert.ok(Array.isArray(parseFailures(input)));
   }
   assert.deepEqual(parseFailures('## F1'), [{ id: 'F1', title: '', signatures: [] }]);
+});
+
+test('unlabelledRecurrences keeps, in order, the recurrences no failure kind lists', () => {
+  const recurrences = [{ signature: 'aaaaaaaaaaaaaaaa', n: 1 }, { signature: 'bbbbbbbbbbbbbbbb', n: 2 }, { signature: 'cccccccccccccccc', n: 3 }];
+  const kinds = [
+    { id: 'F1', title: 'one', signatures: ['bbbbbbbbbbbbbbbb'] },
+    { id: 'F2', title: 'two', signatures: [] },
+  ];
+  assert.deepEqual(unlabelledRecurrences(recurrences, kinds), [recurrences[0], recurrences[2]]);
+  assert.deepEqual(unlabelledRecurrences(recurrences, []), recurrences);
+  assert.deepEqual(unlabelledRecurrences([], kinds), []);
+});
+
+test('unlabelledRecurrences over a real log and a parsed taxonomy', () => {
+  const d = tempDir('hk-fail-repo-');
+  const labelled = logRecurrences(d);
+  const { recurrences } = findRecurrences(d);
+  assert.equal(recurrences.length, 2, 'fixture sanity');
+  const left = unlabelledRecurrences(recurrences, parseFailures(`## F1 — one\n- signatures: ${labelled}\n`));
+  assert.deepEqual(left.map(r => r.errorLine), [UNLABELLED_LINE]);
 });
 
 test('with no taxonomy, P5.failures is absent and decidable, and apply scaffolds it', () => {
@@ -124,49 +198,47 @@ test('with no taxonomy, P5.failures is absent and decidable, and apply scaffolds
   assert.match(c.proposal, /docs\/harness\/FAILURES\.md/);
 });
 
-test('with the log not enabled, no sessions are read and that is not a failure', () => {
+test('a FAILURES.md that cannot be read is declared, with the could-not-be-read line', () => {
   const d = tempDir('hk-fail-repo-');
-  write(d, FAILURES_PATH, '# Failures\n');
-  logRecurrences(d);
+  mkdirSync(join(d, FAILURES_PATH), { recursive: true });
+  const c = failuresCheck(d);
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [`${FAILURES_PATH} exists but could not be read — the failure kinds it names are unknown`]);
+});
+
+test('with failure kinds named, P5.failures is declared, never verified', () => {
+  const d = tempDir('hk-fail-repo-');
+  write(d, FAILURES_PATH, '## F1 — one\n- signatures: 0123456789abcdef, fedcba9876543210\n## F2 — two\n');
   const c = failuresCheck(d);
   assert.equal(c.state, 'declared');
   assert.deepEqual(c.evidence, [
-    `${FAILURES_PATH}: 0 failure kinds named`,
-    'no sessions read — the session log is not enabled on this machine',
+    `${FAILURES_PATH}: 2 failure kinds named, listing 2 signature ids`,
+    '`log report` shows which recurrences no failure kind labels',
   ]);
 });
 
-test('with the log enabled and empty, no sessions are read', () => {
-  const d = tempDir('hk-fail-repo-');
-  write(d, FAILURES_PATH, '# Failures\n');
-  setEnabled(d, true);
-  const c = failuresCheck(d);
-  assert.equal(c.state, 'declared');
-  assert.match(c.evidence.join('\n'), /no sessions read — the session log holds no sessions/);
-});
-
-test('with every recurrence labelled, P5.failures is declared, never verified', () => {
+test('the access probe sees a read of the session log', () => {
   const d = tempDir('hk-fail-repo-');
   setEnabled(d, true);
-  const sig = logRecurrences(d);
-  write(d, FAILURES_PATH, `## F1 — covers both\n- signatures: ${sig}, ${failureSignature(failure(SESSIONS[0], UNLABELLED_LINE), d)}\n`);
-  const c = failuresCheck(d);
-  assert.equal(c.state, 'declared');
-  assert.match(c.evidence.join('\n'), /2 recurrences, 0 not labelled/);
+  const probe = accessProbe();
+  execFileSync(process.execPath, ['--import', probe.importArg, '--input-type=module', '-e',
+    `const { isEnabled } = await import(${JSON.stringify(pathToFileURL(HARNESS_LOG).href)}); isEnabled(${JSON.stringify(d)});`], { encoding: 'utf8' });
+  assert.ok(existsSync(probe.record) && readFileSync(probe.record, 'utf8').length > 0, 'without this, the test below proves nothing');
 });
 
-test('detect reports how many recurrences are unlabelled, by count only', () => {
+test('detect does not read the session log, and no log or taxonomy content reaches its output', () => {
   const d = tempDir('hk-fail-repo-');
   setEnabled(d, true);
   const labelled = logRecurrences(d);
   write(d, FAILURES_PATH, `# Failures\n\n## F1 — The canary kind\n- signatures: ${labelled}\n`);
-  const stdout = execFileSync(process.execPath, [DETECT, d, '--json'], { encoding: 'utf8' });
-  const report = JSON.parse(stdout);
-  const c = report.checks.find(x => x.id === 'P5.failures');
+  const probe = accessProbe();
+  const stdout = execFileSync(process.execPath, ['--import', probe.importArg, DETECT, d, '--json'], { encoding: 'utf8' });
+  assert.equal(existsSync(probe.record) ? readFileSync(probe.record, 'utf8') : '', '', 'detect touched the session log directory');
+  const c = JSON.parse(stdout).checks.find(x => x.id === 'P5.failures');
   assert.equal(c.state, 'declared');
   assert.deepEqual(c.evidence, [
-    `${FAILURES_PATH}: 1 failure kind named`,
-    '3 sessions read: 2 recurrences, 1 not labelled in docs/harness/FAILURES.md',
+    `${FAILURES_PATH}: 1 failure kind named, listing 1 signature id`,
+    '`log report` shows which recurrences no failure kind labels',
   ]);
   const saved = readFileSync(join(d, 'docs/harness/detect.json'), 'utf8');
   for (const out of [stdout, saved]) {
