@@ -611,6 +611,20 @@ export const LEARNED_PATH = 'docs/harness/LEARNED.md';
  * which are held, and `review` means a human reviewer is the mechanism. */
 export const ENFORCERS = Object.freeze(['deny', 'hook', 'lint', 'test', 'critic', 'ci', 'review', 'none']);
 
+/** Every value a learned entry's `approved-action` line may take: the
+ * actions of a gate, as harness-gates.mjs's `GATE_ACTIONS` lists them. */
+export const APPROVED_ACTIONS = Object.freeze(['observe', 'warn', 'block']);
+
+/**
+ * Whether a learned rule cannot be broken, by what its registry entry
+ * records: a hook enforces it and its gate was approved at `block`. A gate
+ * that warns or only observes lets the call run, and an entry that records
+ * no action is not known to block, so the model can still break those rules
+ * and the prompt hook re-tells them. `detect`'s count of injected rules
+ * uses this same test.
+ */
+export const heldByBlockingGate = rule => rule.enforcedBy === 'hook' && rule.approvedAction === 'block';
+
 export function findRules(root) {
   return existsSync(join(root, RULES_PATH)) ? RULES_PATH : null;
 }
@@ -635,6 +649,7 @@ function fieldFor(key) {
   if (k === 'enforcedby') return 'enforcedBy';
   if (k === 'lastverified') return 'lastVerified';
   if (k === 'approvedsha256') return 'approvedSha256';
+  if (k === 'approvedaction') return 'approvedAction';
   if (k === 'why' || k === 'pointer' || k === 'verify' || k === 'priority' || k === 'status' || k === 'origin' || k === 'evidence') return k;
   return null; // unknown keys are ignored, as Claude Code ignores unknown frontmatter
 }
@@ -658,9 +673,12 @@ export function registryLines(text) {
  * rejected is the only way the sentence can be acted on.
  *
  * Each rule: `{ id, rule, why, enforcedBy, pointer, verify, priority, status,
- * lastVerified, origin, evidence, approvedSha256, line }`. The last three
- * keys are the ones the kit writes into a learned entry; each is its
- * trimmed text, or null when absent or empty. `status` is `active` (default) or `superseded` — a
+ * lastVerified, origin, evidence, approvedSha256, approvedAction, line }`.
+ * `origin`, `evidence`, `approvedSha256` and `approvedAction` are the keys
+ * the kit writes into a learned entry; each of the first three is its
+ * trimmed text, or null when absent or empty, and `approvedAction` is the
+ * action the entry's gate was approved at, one of `APPROVED_ACTIONS`, or
+ * null when absent or anything else (reported). `status` is `active` (default) or `superseded` — a
  * superseded rule stays in the file as a record but is excluded from
  * re-injection and from the enforcement counts; `lastVerified` is a
  * YYYY-MM-DD string or null (anything else is reported, never guessed at).
@@ -701,7 +719,7 @@ export function parseRules(text) {
         continue;
       }
       seen.add(id);
-      current = { id, rule: m[2].trim(), why: null, enforcedBy: undefined, pointer: null, verify: null, priority: 'normal', status: 'active', lastVerified: null, origin: null, evidence: null, approvedSha256: null, line: i + 1 };
+      current = { id, rule: m[2].trim(), why: null, enforcedBy: undefined, pointer: null, verify: null, priority: 'normal', status: 'active', lastVerified: null, origin: null, evidence: null, approvedSha256: null, approvedAction: null, line: i + 1 };
       continue;
     }
     if (!current) continue;
@@ -723,6 +741,10 @@ export function parseRules(text) {
     } else if (field === 'lastVerified') {
       if (/^\d{4}-\d{2}-\d{2}$/.test(value)) current.lastVerified = value;
       else problems.push(`${current.id}: last-verified is not a YYYY-MM-DD date — recorded as unknown`);
+    } else if (field === 'approvedAction') {
+      const v = value.toLowerCase();
+      if (APPROVED_ACTIONS.includes(v)) current.approvedAction = v;
+      else problems.push(`${current.id}: approved-action is not ${APPROVED_ACTIONS.slice(0, -1).join(', ')} or ${APPROVED_ACTIONS.at(-1)} — recorded as unknown`);
     } else {
       current[field] = value.length ? value : null;
     }

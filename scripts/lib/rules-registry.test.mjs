@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseRules, findRules, RULES_PATH, ENFORCERS } from '../../assets/scripts/harness-redact.mjs';
+import { heldByBlockingGate, parseRules, findRules, RULES_PATH, ENFORCERS } from '../../assets/scripts/harness-redact.mjs';
 
 const ONE_RULE = [
   '# Rules',
@@ -193,4 +193,24 @@ test('last-verified is kept as a YYYY-MM-DD string, or null when absent or malfo
   assert.equal(bad.rules[0].lastVerified, null);
   assert.equal(bad.problems.length, 1);
   assert.match(bad.problems[0], /last-verified/);
+});
+
+test('approved-action is observe, warn or block, or null when absent or anything else, which is reported without its text', () => {
+  for (const action of ['observe', 'warn', 'block']) {
+    assert.equal(parseRules(`## L1 — r\n- enforced-by: hook\n- approved-action: ${action}\n`).rules[0].approvedAction, action);
+  }
+  assert.equal(parseRules('## L1 — r\n- enforced-by: hook\n- Approved_Action: BLOCK\n').rules[0].approvedAction, 'block');
+  assert.equal(parseRules('## L1 — r\n- enforced-by: hook\n').rules[0].approvedAction, null);
+  const odd = parseRules('## L1 — r\n- enforced-by: hook\n- approved-action: deny everything\n');
+  assert.equal(odd.rules[0].approvedAction, null);
+  assert.deepEqual(odd.problems, ['L1: approved-action is not observe, warn or block — recorded as unknown']);
+});
+
+test('a learned rule is held by a blocking gate only when its entry says a hook enforces it and the approved action is block', () => {
+  const rule = text => parseRules(text).rules[0];
+  assert.equal(heldByBlockingGate(rule('## L1 — r\n- enforced-by: hook\n- approved-action: block\n')), true);
+  assert.equal(heldByBlockingGate(rule('## L1 — r\n- enforced-by: hook\n- approved-action: warn\n')), false);
+  assert.equal(heldByBlockingGate(rule('## L1 — r\n- enforced-by: hook\n- approved-action: observe\n')), false);
+  assert.equal(heldByBlockingGate(rule('## L1 — r\n- enforced-by: hook\n')), false, 'an entry that records no action is not known to block');
+  assert.equal(heldByBlockingGate(rule('## L1 — r\n- enforced-by: test\n- approved-action: block\n')), false);
 });

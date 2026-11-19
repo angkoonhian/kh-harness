@@ -32,7 +32,9 @@
 //   - The owner's `high` priority rules go first, then the owner's
 //     `normal` ones, stable within each, then the learned rules.
 //   - Superseded rules are skipped: they are a record, not a claim. So is
-//     a learned rule enforced by a hook: a gate already holds it.
+//     a learned rule whose entry says its gate blocks (`enforced-by: hook`
+//     with `approved-action: block`): the call it forbids cannot run. A
+//     learned rule whose gate warns or observes is told like any other.
 //   - A rule's text is the user's prose and may carry anything, so it passes
 //     `stripUnsafe` (controls, invisible and reordering characters, the tag
 //     block), then `maskText` at the sweep's floors, then
@@ -60,7 +62,7 @@ import { join } from 'node:path';
 // `apply --yes` is named as well, because `apply` alone keeps a copy that
 // was edited by hand. The shared module cannot hold this text: it is the
 // file that may be missing.
-const NEEDED = ['escapeDelimiters', 'findLearned', 'findRules', 'maskText', 'parseRules', 'projectRoot', 'stripUnsafe'];
+const NEEDED = ['escapeDelimiters', 'findLearned', 'findRules', 'heldByBlockingGate', 'maskText', 'parseRules', 'projectRoot', 'stripUnsafe'];
 const MARKING = ['markerPath', 'projectRoot', 'safeSessionId'];
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports it kept/modified, run `uninstall --yes` and then `apply --yes`.';
 let asset = {};
@@ -130,7 +132,7 @@ if (assetProblem !== null) {
   if (!canMark || firstTelling(await payloadSessionId(), sentence)) process.stdout.write(JSON.stringify({ systemMessage: sentence }) + '\n');
   process.exit(0);
 }
-const { escapeDelimiters, findLearned, findRules, maskText, parseRules, projectRoot, stripUnsafe } = asset;
+const { escapeDelimiters, findLearned, findRules, heldByBlockingGate, maskText, parseRules, projectRoot, stripUnsafe } = asset;
 
 export const RULES_BRIEF_MAX_BYTES = 1500;
 // Overridable only so a test can exercise the truncation path cheaply;
@@ -153,10 +155,10 @@ function activeRules(rel) {
 const ownerRel = findRules(root);
 const learnedRel = findLearned(root);
 const owner = activeRules(ownerRel);
-// A learned rule enforced by a hook is held by a gate; telling the model as
-// well would spend every prompt's budget on a rule it cannot break.
-// scripts/lib/rules-evidence.mjs's `injectable` counts the same selection.
-const learned = activeRules(learnedRel).filter(r => r.enforcedBy !== 'hook');
+// A learned rule whose gate blocks cannot be broken, so telling the model as
+// well would spend every prompt's budget for nothing. One whose gate warns
+// or observes can be, and is told like any other rule.
+const learned = activeRules(learnedRel).filter(r => !heldByBlockingGate(r));
 
 // The owner's rules first, `high` before the rest with document order kept
 // within each group, then the learned rules in document order.

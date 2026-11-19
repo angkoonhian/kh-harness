@@ -264,6 +264,7 @@ const LEARNED = [
   '- enforced-by: hook',
   '- pointer: .claude/kh-harness/gates.json',
   '- origin: learned',
+  '- approved-action: block',
   '## L2 — Keep the fixture builder in lifecycle-fixtures.mjs',
   '- enforced-by: test',
   '- pointer: scripts/lib/lifecycle-fixtures.test.mjs',
@@ -275,12 +276,12 @@ const LEARNED = [
 ].join('\n');
 const BOTH = `${RULES_PATH}, ${LEARNED_PATH}`;
 
-test('a gate-enforced learned rule is not re-injected into prompts', () => {
+test('a learned rule whose gate blocks is not re-injected into prompts', () => {
   const d = repo();
   registry(d, TWO_RULES);
   registry(d, LEARNED, LEARNED_PATH);
   const text = injected(run(d));
-  assert.doesNotMatch(text, /L1/, 'its gate holds it; telling the model too costs every prompt');
+  assert.doesNotMatch(text, /L1/, 'its gate blocks the call; telling the model too costs every prompt');
   assert.doesNotMatch(text, /L3/, 'superseded');
   assert.equal(text, [
     `<project-rules source="${BOTH}">`,
@@ -290,6 +291,36 @@ test('a gate-enforced learned rule is not re-injected into prompts', () => {
     '- L2: Keep the fixture builder in lifecycle-fixtures.mjs [enforced-by: test]',
     '</project-rules>',
   ].join('\n'));
+});
+
+test('a learned rule whose gate warns or observes, or whose entry records no action, is re-told', () => {
+  const d = repo();
+  registry(d, [
+    '## L1 — Blocked', '- enforced-by: hook', '- approved-action: block',
+    '## L2 — Warned', '- enforced-by: hook', '- approved-action: warn',
+    '## L3 — On trial', '- enforced-by: hook', '- approved-action: observe',
+    '## L4 — Landed before the action was recorded', '- enforced-by: hook',
+    '',
+  ].join('\n'), LEARNED_PATH);
+  assert.equal(injected(run(d)), [
+    `<project-rules source="${LEARNED_PATH}">`,
+    `Project rules (${LEARNED_PATH}):`,
+    '- L2: Warned [enforced-by: hook]',
+    '- L3: On trial [enforced-by: hook]',
+    '- L4: Landed before the action was recorded [enforced-by: hook]',
+    '</project-rules>',
+  ].join('\n'));
+});
+
+test('a warned learned rule shares the byte bound with every other rule', () => {
+  const d = repo();
+  registry(d, TWO_RULES);
+  registry(d, Array.from({ length: 8 }, (_, i) => `## L${i + 1} — a learned rule the gate only warns about, number ${i}\n- enforced-by: hook\n- approved-action: warn\n`).join(''), LEARNED_PATH);
+  const text = injected(run(d, { HK_RULES_BRIEF_MAX_BYTES: '420' }));
+  assert.ok(Buffer.byteLength(text, 'utf8') <= 420, `got ${Buffer.byteLength(text, 'utf8')} bytes`);
+  assert.match(text, /^- R1:/m);
+  assert.match(text, /^- L1:/m);
+  assert.match(text, /^… \d+ more rule\(s\) in /m);
 });
 
 test('detect\'s injectable count is the number of rules the hook injects', () => {
@@ -308,9 +339,9 @@ test('learned rules follow every owner\'s rule, high-priority owner\'s rules fir
   assert.deepEqual(order, ['B', 'A', 'L1', 'L2']);
 });
 
-test('only gate-enforced learned rules and no owner\'s registry → no output, exit 0', () => {
+test('only learned rules whose gates block and no owner\'s registry → no output, exit 0', () => {
   const d = repo();
-  registry(d, '## L1 — gated\n- enforced-by: hook\n- pointer: .claude/kh-harness/gates.json\n', LEARNED_PATH);
+  registry(d, '## L1 — gated\n- enforced-by: hook\n- pointer: .claude/kh-harness/gates.json\n- approved-action: block\n', LEARNED_PATH);
   assert.equal(run(d), '');
 });
 
