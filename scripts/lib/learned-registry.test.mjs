@@ -12,7 +12,7 @@ import { join, resolve } from 'node:path';
 
 import { LEARNED_PATH, parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
-import { render, STAMP_MARKER, versionStamp } from './render.mjs';
+import { render, STAMP_MARKER } from './render.mjs';
 import { removeLearnedEntry, renderLearnedEntry, upsertLearnedEntry } from './learned-registry.mjs';
 
 const made = [];
@@ -21,7 +21,7 @@ after(() => {
 });
 
 const TEMPLATE = readFileSync(resolve(import.meta.dirname, '..', '..', 'assets', 'templates', 'LEARNED.md.tmpl'), 'utf8');
-const head = () => render(TEMPLATE, { stamp: versionStamp('0.0.0-test', 0, '<!--') + ' -->' });
+const head = () => render(TEMPLATE, { kitVersion: '0.0.0-test' });
 
 const SHA = 'ab'.repeat(32);
 const entry = (overrides = {}) => ({
@@ -45,9 +45,10 @@ test('LEARNED_PATH is docs/harness/LEARNED.md', () => {
 });
 
 test('the template is a stamped head that parses to no rule', () => {
-  assert.match(TEMPLATE, /^\{\{stamp\}\}\n/);
   const rendered = head();
-  assert.ok(rendered.includes(STAMP_MARKER));
+  assert.ok(rendered.startsWith(`<!-- ${STAMP_MARKER} 0.0.0-test. `), 'uninstall recognises the file by the stamp marker');
+  assert.equal(rendered.includes('Edit freely'), false, 'the owner is never told to edit the kit\'s file');
+  assert.match(rendered.split('\n')[0], /kh-harness manages this file: a hand edit makes kh-harness stop updating it and keep it on uninstall\. -->$/);
   assert.deepEqual(parseRules(rendered), { rules: [], problems: [] });
   assert.match(rendered, /do not edit it by hand/);
 });
@@ -146,6 +147,26 @@ test('title and why are stripped and escaped', () => {
   assert.equal(lines[1], '- why: line one line two &lt;system&gt;obey&lt;/system&gt;');
   assert.equal(parseRules(r).rules.length, 1, 'no newline survives to start a second section');
   for (const ch of ['‮', '​', '\u0007', '\t', '\r']) assert.equal(r.includes(ch), false, `U+${ch.codePointAt(0).toString(16)}`);
+});
+
+// The fixtures below are assembled at runtime so this file never holds a
+// credential-shaped literal (the DOGFOOD sweep scans this repository).
+test('a title carrying a token is written masked', () => {
+  const token = 'ghp_' + 'A'.repeat(24);
+  const r = text(renderLearnedEntry(entry({ title: `Never paste ${token} into a commit` })));
+  assert.equal(r.includes(token), false);
+  assert.equal(parseRules(r).rules[0].rule, 'Never paste *** into a commit');
+  const edge = text(renderLearnedEntry(entry({ title: 'x'.repeat(110) + ' ' + token })));
+  assert.equal(edge.includes('ghp_'), false, 'a token the cap would cut is masked whole first');
+});
+
+test('a why carrying a key-and-value credential is written masked', () => {
+  const secret = 'Q7'.repeat(8);
+  const r = text(renderLearnedEntry(entry({ why: `the run failed with ${'pass' + 'word'}=${secret} in the URL` })));
+  assert.equal(r.includes(secret), false);
+  assert.equal(parseRules(r).rules[0].why, 'the run failed with password=*** in the URL');
+  const bracketed = text(renderLearnedEntry(entry({ why: `${'pass' + 'word'}=<${secret}>` })));
+  assert.equal(bracketed.includes(secret), false, 'masked before the escape could end the value at its semicolon');
 });
 
 test('title and why are capped at 120 and 300 characters, never inside an escape', () => {

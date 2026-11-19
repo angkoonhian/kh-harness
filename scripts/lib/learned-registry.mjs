@@ -10,11 +10,17 @@
 // `{ text }` on success or `{ error }`, a one-line sentence naming the field
 // at fault and never its value: a title and a why are drafted by a model
 // from session logs, so they are untrusted and are cleaned before they are
-// rendered, and anything else malformed is refused.
+// rendered, and anything else malformed is refused. The file is committed,
+// so they are credential-masked here, at the mask's own floors, and not
+// only when the rules brief injects them.
+//
+// Every entry is written `status: active`, the only status the committed
+// file holds: a retired learning is removed from the file, not kept in it
+// with another status.
 //
 // A new file starts from `assets/templates/LEARNED.md.tmpl`, rendered with
-// the kit's stamp.
-import { ENFORCERS, escapeDelimiters, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
+// the kit's version as `kitVersion`.
+import { ENFORCERS, escapeDelimiters, maskText, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
 
 const ID = /^L[1-9][0-9]{0,8}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -30,11 +36,17 @@ const WHY_MAX = 300;
 /**
  * Untrusted prose as one line of at most `max` characters: invisible and
  * control characters removed, line breaks and tabs made spaces, the ends
- * trimmed, then `<` and `>` escaped. The cap counts the escaped text and
- * never cuts inside an escape or a surrogate pair.
+ * trimmed, credential-shaped values masked, then `<` and `>` escaped. The
+ * cap counts the escaped text and never cuts inside an escape or a
+ * surrogate pair.
+ *
+ * The mask runs before the escape and the cap. An escape's `;` ends an
+ * unquoted keyed value, so `password=<x>` escaped first would mask only
+ * `&lt`; and a cap that cut a token first could leave a fragment too short
+ * for any shape to recognise.
  */
 function cleanLine(raw, max) {
-  const plain = stripUnsafe(raw).replace(/[\r\n\t]/g, ' ').trim();
+  const plain = maskText(stripUnsafe(raw).replace(/[\r\n\t]/g, ' ').trim());
   let out = '';
   let length = 0;
   for (const ch of plain) {
