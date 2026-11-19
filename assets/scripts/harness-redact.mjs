@@ -364,7 +364,7 @@ export function maskCredentials(line, options) {
 
 /**
  * Masks multi-line text: every line as `maskCredentials` would, and every
- * line from a PEM private-key header through its footer replaced by `***`
+ * line from a PEM private-key header through its footer replaced by `SCRUB_MARK`
  * after its own leading spaces and tabs. Line endings, `\n` or `\r\n`, are
  * kept, and so is the line count; the indentation is kept because a
  * caller may group lines by it (eslint's stylish blocks). A header with no
