@@ -32,9 +32,13 @@
 // committed for everyone, so the revert goes on and its notes say first, in
 // the dry run and the result alike, that this run did not remove the gate,
 // that it was already gone, that the commit still holds it and does until
-// its removal is committed, and that `git status` shows the files. When the
-// commit cannot be read, the notes say so and why. A revert that removes
-// the gate from the working tree itself needs no such note.
+// its removal is committed, and that `git status` shows the files; for a
+// learning the revert retires, also that restoring the file from the commit
+// puts the gate back in force on this machine, its suspension being gone.
+// With no trace in this checkout as well, one note says both. When the
+// commit cannot be read, or holds a gate file larger than the gate hook
+// loads, the notes say so and why. A revert that removes the gate from the
+// working tree itself needs no such note.
 //
 // A gate in the repository binds other people's agents, so landing and
 // reverting take a person at an interactive terminal, as approval does: a
@@ -510,14 +514,9 @@ function reverting(root, state, manifest, id) {
 
   const transition = revertStage(state, learning, gate !== undefined || rule !== undefined || record !== undefined);
   if (transition.error) return transition;
-  const notes = [];
   const isOurs = g => g.id === id && gateSha256(g) === learning.sha256;
-  if (!committedGates(root).some(isOurs)) {
-    const head = committedText(root, GATES_PATH);
-    if (head.text !== undefined && gatesIn(head.text).some(isOurs)) notes.push(stillCommittedNote(id));
-    if (head.unknown !== undefined) notes.push(`whether the commit this branch is on still holds ${id}'s gate could not be checked (${head.unknown})`);
-    if (transition.alone) notes.push(aloneNote(id, transition));
-  }
+  const head = committedGates(root).some(isOurs) ? null : committedText(root, GATES_PATH, GATE_FILE_MAX_BYTES);
+  const notes = revertNotes(id, transition, head, isOurs);
 
   const proposals = [];
   if (gate !== undefined) {
@@ -564,20 +563,32 @@ function revertFile(root, manifest, rel, step, holdsId, id) {
   return { error: `${file.error}; or, if it is to stay as it is, take ${id} out of it by hand and run the revert again, which then finds nothing of ${id} in it and goes on` };
 }
 
-/** What a revert tells the owner when the working tree's gate file had lost
- * the learning's gate before this run and the commit still holds it. */
-const stillCommittedNote = id => `this run does not remove ${id}'s gate from the working tree: it was already gone from ${GATES_PATH}; `
-  + `the commit this branch is on still holds it, and the gate stays committed for everyone until that removal is committed; git status shows the files concerned`;
-
-/** What a revert with no trace in this checkout tells the owner it does. */
-function aloneNote(id, transition) {
-  const outcome = transition.updated.status === 'retired'
-    ? 'it is retired'
-    : `it is active-local again, its local gate at ${transition.action}`;
-  const elsewhere = transition.updated.status === 'retired'
-    ? 'if another branch holds the landing, the gate is still committed there, and there it binds this machine again, since its suspension goes with this revert'
-    : 'if another branch holds the landing, the gate is still committed there';
-  return `nothing in this checkout holds ${id}, so reverting it writes no file and changes it on this machine only: ${outcome}; ${elsewhere}`;
+/**
+ * What a revert tells the owner besides its diffs, given the gate file at
+ * HEAD (`committedText`'s answer) when the working tree's gate file had
+ * already lost the learning's gate, or `null` when it had not, and so this
+ * run removes the gate itself and needs no note. Each note is true of the
+ * state it is shown in, and one note covers both facts where a revert with
+ * no trace in this checkout meets a commit still holding the gate.
+ */
+function revertNotes(id, transition, head, isOurs) {
+  if (head === null) return [];
+  const retiring = transition.updated.status === 'retired';
+  const outcome = retiring ? 'it is retired' : `it is active-local again, its local gate at ${transition.action}`;
+  const alone = `nothing in this checkout holds ${id}, so reverting it writes no file and changes it on this machine only: ${outcome}`;
+  const backInForce = retiring ? ', and there it binds this machine again, since its suspension goes with this revert' : '';
+  const committedHere = head.text !== undefined && gatesIn(head.text).some(isOurs);
+  if (committedHere) {
+    const stillCommitted = `this run does not remove ${id}'s gate from the working tree: it was already gone from ${GATES_PATH}; `
+      + 'the commit this branch is on still holds it, and the gate stays committed for everyone until that removal is committed; git status shows the files concerned'
+      + (retiring ? `; restoring ${GATES_PATH} from that commit puts the gate back in force on this machine too, since its suspension goes with this revert` : '');
+    return [transition.alone ? `${alone}. ${stillCommitted[0].toUpperCase()}${stillCommitted.slice(1)}` : stillCommitted];
+  }
+  const notes = [];
+  if (head.tooLarge) notes.push(`whether the commit this branch is on still holds ${id}'s gate could not be checked (the committed ${GATES_PATH} is larger than the gate hook loads)`);
+  if (head.unknown !== undefined) notes.push(`whether the commit this branch is on still holds ${id}'s gate could not be checked (${head.unknown})`);
+  if (transition.alone) notes.push(`${alone}; if another branch holds the landing, the gate is still committed there${backInForce}`);
+  return notes;
 }
 
 /** The dry run: each proposal with its diff against the repository, what

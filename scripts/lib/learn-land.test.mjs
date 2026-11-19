@@ -7,13 +7,15 @@
 // process, and what it leaves in the repository against `detect --json`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { gateSha256 } from '../../assets/scripts/harness-gates.mjs';
 import { GATES_PATH, readEvents, repoDataDir } from '../../assets/scripts/harness-log.mjs';
 import { LEARNED_PATH, parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { GATE_FILE_MAX_BYTES } from '../../assets/scripts/tool-gate.mjs';
+import { committedText } from './apply-lib.mjs';
 import { integrityEvidence } from './integrity-evidence.mjs';
 import {
   call, drafted, editLearning, git, HARNESS, kinds, localGates, localGatesPath, log, logFiring, logReadMistakes, MISTAKE, mtimes, READ_GATE,
@@ -826,7 +828,7 @@ test('a suspended learning\'s revert stopped between gates.json and LEARNED.md i
   const finished = revertLearning(root, 'L1', YES);
   assert.equal(finished.ok, true, finished.error);
   assert.deepEqual(finished.written, [LEARNED_PATH]);
-  assert.deepEqual(finished.notes, [STILL_COMMITTED], 'the gate file this revert wrote before it stopped leaves the commit holding the gate');
+  assert.deepEqual(finished.notes, [STILL_COMMITTED_RETIRING], 'the gate file this revert wrote before it stopped leaves the commit holding the gate');
   assertRevertedAndRetired(root);
 });
 
@@ -931,19 +933,25 @@ function removeByHand(root) {
 
 const STILL_COMMITTED = 'this run does not remove L1\'s gate from the working tree: it was already gone from .claude/kh-harness/gates.json; '
   + 'the commit this branch is on still holds it, and the gate stays committed for everyone until that removal is committed; git status shows the files concerned';
+// The same, for a learning the revert leaves retired: its suspension goes.
+const STILL_COMMITTED_RETIRING = `${STILL_COMMITTED}; restoring .claude/kh-harness/gates.json from that commit puts the gate back in force on this machine too, `
+  + 'since its suspension goes with this revert';
 const ALONE = 'nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block; '
   + 'if another branch holds the landing, the gate is still committed there';
+// One note for both facts: no trace in this checkout, and the commit still holding the gate.
+const ALONE_STILL_COMMITTED = 'nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is active-local again, its local gate at block. '
+  + `T${STILL_COMMITTED.slice(1)}`;
 
 test('a gate removed from the working tree with the manifest rewritten to match is reverted with the note that the commit still holds it', () => {
   const { root, gate } = activeRepo();
   assert.equal(landLearning(root, 'L1', YES).ok, true);
   commitAll(root);
   removeByHand(root);
-  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [STILL_COMMITTED, ALONE]);
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [ALONE_STILL_COMMITTED]);
   const reverted = revertLearning(root, 'L1', YES);
   assert.equal(reverted.ok, true, reverted.error);
   assert.deepEqual(reverted.written, []);
-  assert.deepEqual(reverted.notes, [STILL_COMMITTED, ALONE], 'the real run carries the dry run\'s notes');
+  assert.deepEqual(reverted.notes, [ALONE_STILL_COMMITTED], 'the real run carries the dry run\'s notes');
   assert.deepEqual(localGates(root).gates, [gate]);
   assert.equal(statusOf(root), 'active-local');
 });
@@ -984,7 +992,7 @@ test('a path named like a revision in the working tree does not stop the commit 
   mkdirSync(join(root, `HEAD:${GATES_PATH}`, '..'), { recursive: true });
   writeFileSync(join(root, `HEAD:${GATES_PATH}`), '{ "schema": 1, "gates": [] }\n');
   removeByHand(root);
-  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [STILL_COMMITTED, ALONE]);
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [ALONE_STILL_COMMITTED]);
 });
 
 test('outside git a revert with no trace goes on, saying the commit could not be checked', () => {
@@ -995,10 +1003,74 @@ test('outside git a revert with no trace goes on, saying the commit could not be
   rmSync(join(root, '.git'), { recursive: true, force: true });
   cpSync(data, repoDataDir(root), { recursive: true });
   const notes = ['whether the commit this branch is on still holds L1\'s gate could not be checked (it is not a git repository)', ALONE];
-  assert.deepEqual(revertLearning(root, 'L1', {}).notes, notes);
+  // git's messages are read in the C locale whatever the owner's is.
+  const locale = { LC_ALL: process.env.LC_ALL, LANG: process.env.LANG };
+  Object.assign(process.env, { LC_ALL: 'de_DE.UTF-8', LANG: 'de_DE.UTF-8' });
+  try {
+    assert.deepEqual(revertLearning(root, 'L1', {}).notes, notes);
+  } finally {
+    for (const [name, value] of Object.entries(locale)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
   const reverted = revertLearning(root, 'L1', YES);
   assert.equal(reverted.ok, true, reverted.error);
   assert.deepEqual(reverted.notes, notes, 'the real run carries the dry run\'s notes');
+});
+
+test('the commit read is the one at the repository, whatever GIT_DIR says', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  removeByHand(root);
+  const other = activeRepo();
+  const saved = process.env.GIT_DIR;
+  process.env.GIT_DIR = join(other.root, '.git');
+  try {
+    const read = committedText(root, GATES_PATH, GATE_FILE_MAX_BYTES);
+    assert.equal(typeof read.text, 'string', 'GIT_DIR, naming a repository whose commit has no gate file, is cleared for the read');
+  } finally {
+    if (saved === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = saved;
+  }
+});
+
+test('a committed gate file larger than the gate hook loads is noted as such', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  writeFileSync(join(root, GATES_PATH), text(root, GATES_PATH) + ' '.repeat(GATE_FILE_MAX_BYTES + 1));
+  commitAll(root);
+  for (const rel of [GATES_PATH, LEARNED_PATH]) rmSync(join(root, rel));
+  assert.deepEqual(committedText(root, GATES_PATH, GATE_FILE_MAX_BYTES), { tooLarge: true });
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes,
+    [`whether the commit this branch is on still holds L1's gate could not be checked (the committed ${GATES_PATH} is larger than the gate hook loads)`]);
+});
+
+test('a symbolic link committed at the gate file path is not read as the gate file', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  // The link is put in the commit with plumbing, so no file system link is needed.
+  const target = execFileSync('git', ['-C', root, 'hash-object', '-w', '--stdin'], { input: 'elsewhere.json', encoding: 'utf8' }).trim();
+  git(root, 'update-index', '--cacheinfo', `120000,${target},${GATES_PATH}`);
+  git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'link');
+  assert.deepEqual(committedText(root, GATES_PATH, GATE_FILE_MAX_BYTES), { unknown: `the commit holds something other than a regular file at ${GATES_PATH}` });
+  for (const rel of [GATES_PATH, LEARNED_PATH]) rmSync(join(root, rel));
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes,
+    [`whether the commit this branch is on still holds L1's gate could not be checked (the commit holds something other than a regular file at ${GATES_PATH})`]);
+});
+
+test('a suspended learning with no trace while the commit holds its gate gets one note that covers both facts', () => {
+  const { root } = activeRepo();
+  assert.equal(landLearning(root, 'L1', YES).ok, true);
+  commitAll(root);
+  assert.equal(demoteLearning(root, 'L1', { interactive: AT_TERMINAL }).status, 'suspended');
+  removeByHand(root);
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [
+    'nothing in this checkout holds L1, so reverting it writes no file and changes it on this machine only: it is retired. '
+      + `T${STILL_COMMITTED_RETIRING.slice(1)}`,
+  ]);
 });
 
 test('on a branch with no commit yet the note says so', () => {
@@ -1025,11 +1097,11 @@ test('a hand-edited gate file names the hand removal that lets a revert go on, a
   const handFile = JSON.parse(edited);
   writeFileSync(join(root, GATES_PATH), JSON.stringify({ ...handFile, gates: handFile.gates.filter(g => g.id !== 'L1') }, null, 4) + '\n');
   const handText = text(root, GATES_PATH);
-  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [STILL_COMMITTED]);
+  assert.deepEqual(revertLearning(root, 'L1', {}).notes, [STILL_COMMITTED_RETIRING]);
   const reverted = revertLearning(root, 'L1', YES);
   assert.equal(reverted.ok, true, reverted.error);
   assert.deepEqual(reverted.written, [LEARNED_PATH], 'the hand-edited file is never written');
-  assert.deepEqual(reverted.notes, [STILL_COMMITTED], 'the commit still holds the gate until the hand edit is committed');
+  assert.deepEqual(reverted.notes, [STILL_COMMITTED_RETIRING], 'the commit still holds the gate until the hand edit is committed');
   assert.equal(text(root, GATES_PATH), handText);
   assert.equal(statusOf(root), 'retired');
   assert.deepEqual(parseRules(text(root, LEARNED_PATH)).rules, []);
