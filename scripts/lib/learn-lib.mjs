@@ -707,9 +707,10 @@ export function rejectedFor(state, signature, kinds) {
 }
 
 /** The rejected learnings `rejectedFor` returns, as kit text: each id, and
- * the failure kind that ties it to the recurrence when it is not the same
- * signature. */
-const rejectedText = rejected => rejected.map(r => (r.kind === null ? r.id : `${r.id} (failure kind ${r.kind.id})`)).join(', ');
+ * what it was drafted for, this signature or another of the failure kind
+ * that ties it to this one. */
+const rejectedText = rejected => rejected
+  .map(r => `${r.id} (drafted for ${r.kind === null ? 'this signature' : `another signature of failure kind ${r.kind.id}`})`).join(', ');
 
 function readCounter(root) {
   let text;
@@ -864,7 +865,7 @@ function draftUnguarded(root, draft, redraft) {
     if (standing !== null) return { error: `signature: learning ${standing} already covers this signature` };
     const rejected = rejectedFor(state, signature, kinds);
     if (rejected.length > 0 && !redraft) {
-      return { error: `signature: the replay rejected ${rejectedText(rejected)} for this recurrence; a new draft for it is the owner's decision, as \`learn --help\` documents` };
+      return { error: `signature: the replay rejected ${rejectedText(rejected)}; a new draft for this recurrence is the owner's decision, as \`learn --help\` documents` };
     }
     const next = nextId(root, state);
     if (next.error) return next;
@@ -884,7 +885,7 @@ function draftUnguarded(root, draft, redraft) {
       replay: null,
     };
     write(() => writeJson(join(repoDataDir(root), ID_COUNTER_FILE), { highest: next.number }));
-    const detail = rejected.length > 0 ? `a redraft; the replay had rejected ${rejectedText(rejected)} for this recurrence` : undefined;
+    const detail = rejected.length > 0 ? `a redraft; the replay had rejected ${rejectedText(rejected)}` : undefined;
     write(() => appendLedger(root, ledgerEntry(learning, harnessIdentity(root), { kind: 'proposed', detail })));
     write(() => writeJson(learningPath(root, learning.id), learning));
     return { learning };

@@ -170,7 +170,7 @@ test('a second draft for a signature whose learning the replay rejected is refus
   const before = mtimes(repoDataDir(root));
   const ledgerBefore = readLedger(root);
   assert.deepEqual(draftLearning(root, draftFor(root)),
-    { error: "signature: the replay rejected L1 for this recurrence; a new draft for it is the owner's decision, as `learn --help` documents" });
+    { error: "signature: the replay rejected L1 (drafted for this signature); a new draft for this recurrence is the owner's decision, as `learn --help` documents" });
   assert.deepEqual(mtimes(repoDataDir(root)), before);
   assert.deepEqual(readLedger(root), ledgerBefore);
   assert.equal(existsSync(learningFile(root, 'L2')), false);
@@ -181,7 +181,7 @@ test('with redraft the second draft is accepted, and its proposed entry says it 
   const result = draftLearning(root, draftFor(root), { redraft: true });
   assert.equal(result.learning?.id, 'L2', result.error);
   const proposed = readLedger(root).filter(e => e.kind === 'proposed');
-  assert.deepEqual(proposed.map(e => [e.learningId, e.detail]), [['L1', undefined], ['L2', 'a redraft; the replay had rejected L1 for this recurrence']]);
+  assert.deepEqual(proposed.map(e => [e.learningId, e.detail]), [['L1', undefined], ['L2', 'a redraft; the replay had rejected L1 (drafted for this signature)']]);
   assert.equal(runTrial(root, 'L2').status, 'trial');
 });
 
@@ -209,9 +209,9 @@ const readDraft = root => draftFor(root, { gate: READ_GATE });
 test('a draft for a sibling signature of a rejected learning\'s failure kind is refused without redraft', () => {
   const root = siblingRepo([['Tests run in watch mode', ['Bash', 'Read']]]);
   assert.deepEqual(draftLearning(root, readDraft(root)),
-    { error: "signature: the replay rejected L1 (failure kind F3) for this recurrence; a new draft for it is the owner's decision, as `learn --help` documents" });
+    { error: "signature: the replay rejected L1 (drafted for another signature of failure kind F3); a new draft for this recurrence is the owner's decision, as `learn --help` documents" });
   assert.equal(draftLearning(root, readDraft(root), { redraft: true }).learning?.id, 'L2');
-  assert.equal(readLedger(root).filter(e => e.kind === 'proposed').at(-1).detail, 'a redraft; the replay had rejected L1 (failure kind F3) for this recurrence');
+  assert.equal(readLedger(root).filter(e => e.kind === 'proposed').at(-1).detail, 'a redraft; the replay had rejected L1 (drafted for another signature of failure kind F3)');
 });
 
 test('a rejection under another failure kind, or with no readable taxonomy, leaves a recurrence draftable', () => {
@@ -222,7 +222,7 @@ test('a rejection under another failure kind, or with no readable taxonomy, leav
   assert.equal(runTrial(unreadable, drafted(unreadable, { gate: FIX_GATE }).id).status, 'rejected');
   mkdirSync(join(unreadable, FAILURES_PATH), { recursive: true });
   assert.equal(draftLearning(unreadable, readDraft(unreadable)).learning?.id, 'L2', 'the exact-signature rule alone');
-  assert.match(draftLearning(unreadable, draftFor(unreadable)).error, /rejected L1 for this recurrence/);
+  assert.match(draftLearning(unreadable, draftFor(unreadable)).error, /rejected L1 \(drafted for this signature\)/);
 });
 
 test('a retired learning leaves its signature draftable without redraft; a live candidate still covers it', () => {

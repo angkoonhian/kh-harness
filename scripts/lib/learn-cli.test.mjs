@@ -163,7 +163,7 @@ test('a recurrence whose failure kind labels a rejected learning\'s signature is
 
   const sibling = runLearn(root, 'draft', '--from', draftFile(JSON.stringify(draftFor(root, { gate: READ_GATE }))));
   assert.equal(sibling.status, 2);
-  assert.match(sibling.stderr, /the replay rejected L1 \(failure kind F3\) for this recurrence; a new draft for it is the owner's decision/);
+  assert.match(sibling.stderr, /the replay rejected L1 \(drafted for another signature of failure kind F3\); a new draft for this recurrence is the owner's decision/);
 });
 
 test('a rejection under one failure kind leaves a recurrence of another kind, or of an unreadable taxonomy, draftable', () => {
@@ -198,15 +198,15 @@ test('draft of a recurrence the replay rejected is one line and exit 2 naming th
   const refused = runLearn(root, 'draft', '--from', path);
   assert.equal(refused.status, 2);
   assert.equal(refused.stderr.trim().split('\n').length, 1, refused.stderr);
-  assert.match(refused.stderr, /the replay rejected L1 for this recurrence; a new draft for it is the owner's decision, as `learn --help` documents/);
+  assert.match(refused.stderr, /the replay rejected L1 \(drafted for this signature\); a new draft for this recurrence is the owner's decision, as `learn --help` documents/);
   assert.doesNotMatch(refused.stderr, /--redraft/, 'the refusal does not advertise the flag');
   assert.equal(refused.stdout, '');
   assert.deepEqual(snapshot(repoDataDir(root)), before, 'a refused draft writes nothing');
 
   const text = ok(runLearn(root, 'draft', '--from', path, '--redraft'));
   assert.match(text, /draft: stored as L2, a candidate/);
-  assert.match(ok(runLearn(root, 'show', 'L2')), /drafted, as the ledger records: a redraft; the replay had rejected L1 for this recurrence/);
-  assert.equal(json(root, 'show', 'L2').drafted, 'a redraft; the replay had rejected L1 for this recurrence');
+  assert.match(ok(runLearn(root, 'show', 'L2')), /drafted, as the ledger records: a redraft; the replay had rejected L1 \(drafted for this signature\)/);
+  assert.equal(json(root, 'show', 'L2').drafted, 'a redraft; the replay had rejected L1 (drafted for this signature)');
   assert.equal(json(root, 'show', 'L1').drafted, null);
   assert.doesNotMatch(ok(runLearn(root, 'show', 'L1')), /drafted, as the ledger records/);
 });
