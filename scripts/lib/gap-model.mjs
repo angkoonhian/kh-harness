@@ -86,27 +86,24 @@ function unlessHeld(hook, scriptPath, heldScript) {
   return { state: 'absent', decidable: false, evidence: [...(hook.evidence ?? []), heldHookEvidence(scriptPath, causes)], question: heldQuestion(causes) };
 }
 
-/**
- * What `P0.security` says when it found nothing. Whole-branch review, F1:
- * this used to be "no credential patterns matched" — a claim about the
- * REPOSITORY, which is not what was measured. The sweep skips binary
- * extensions, build directories and anything over 512 KB by design (see
- * detect-exposure.mjs's SKIP_EXT/SKIP_DIRS/MAX_BYTES), so the true claim is
- * about the files it read. A file it could NOT read is a different thing
- * entirely: that is an `UNREADABLE_KIND` finding and this sentence is never
- * reached while one exists.
- */
 /** A document name that says it states the application's purpose — what
  * P3.intent accepts from an instruction-file pointer in place of
  * docs/INTENT.md. Whole tokens of the file name (split on -, _, . and
  * space), never substrings: production.md, provisioning.md and
- * revision-history.md are not intent statements (Tier 4 final review,
- * Important 1). */
+ * revision-history.md are not intent statements. */
 const INTENT_WORDS = new Set(['intent', 'purpose', 'vision', 'product', 'prd']);
 function namedForIntent(path) {
   return path.split('/').pop().toLowerCase().split(/[-_. ]+/).some(t => INTENT_WORDS.has(t));
 }
 
+/**
+ * What `P0.security` says when it found nothing: a claim about the files
+ * the sweep read, never about the repository. The sweep skips binary
+ * extensions, build directories and anything over 512 KB by design (see
+ * detect-exposure.mjs's SKIP_EXT/SKIP_DIRS/MAX_BYTES). A file it could NOT
+ * read is an `UNREADABLE_KIND` finding, and this sentence is never reached
+ * while one exists.
+ */
 const CLEAN_SWEEP_NOTE = 'no credential patterns matched in any file this sweep could read (binary, build-output and over-512 KB files are skipped by design; a file that could not be READ is reported, not skipped silently)';
 
 /**
@@ -114,16 +111,13 @@ const CLEAN_SWEEP_NOTE = 'no credential patterns matched in any file this sweep 
  * this kit deliberately reports but never applies (see this file's own
  * comment on the `P2.scripts` check, below, for why).
  *
- * Ruling (coordinator, Task 7): advice must not invent a command. A missing
- * `lint` or `typecheck` command gets a concrete derived command ONLY where a
- * config file in the PACKAGE'S OWN directory proves the tool is already in
- * use. The evidence consulted must come from the package's OWN ecosystem —
- * coordinator finding 1 caught `typecheckAdvice` consulting ONLY
- * `tsconfig.json`, so a Python package was told "no tsconfig.json was
- * found, so the command cannot be derived" — citing the absence of a
- * TypeScript artefact as the reason a Python project has no typecheck
- * command is a confidently WRONG sentence, not merely an unhelpful one.
- * `isJsPackage`, below, gates every check by the package's own
+ * Advice must not invent a command. A missing `lint` or `typecheck`
+ * command gets a concrete derived command ONLY where a config file in the
+ * PACKAGE'S OWN directory proves the tool is already in use. The evidence
+ * consulted must come from the package's OWN ecosystem: citing the absence
+ * of a tsconfig.json as the reason a Python package has no typecheck
+ * command would be a confidently wrong sentence. `isJsPackage`, below,
+ * gates every check by the package's own
  * `manifestPath` (a real detected fact, never a guess) so each ecosystem is
  * only ever asked about its own tools:
  *   JS/TS (manifestPath ends in package.json):
@@ -153,8 +147,8 @@ const CLEAN_SWEEP_NOTE = 'no credential patterns matched in any file this sweep 
  * real evidence would have proven) is the safe failure mode, not over-
  * claiming.
  *
- * Coordinator finding 2: `package.json` has a real `scripts` table, so
- * naming it as where a JS/TS line belongs is correct — but `pyproject.toml`
+ * `package.json` has a real `scripts` table, so naming it as where a JS/TS
+ * line belongs is correct — but `pyproject.toml`
  * has no equivalent standard ( `[tool.poetry.scripts]` is console entry
  * points, `[tool.pdm.scripts]` is PDM-specific, neither is "a lint script").
  * So a JS/TS line still names `pkg.manifestPath` as where to add it; a
@@ -162,16 +156,14 @@ const CLEAN_SWEEP_NOTE = 'no credential patterns matched in any file this sweep 
  * detection proved, the file is a guess, and this project does not ship
  * guesses.
  *
- * Coordinator finding (round 2): `PY_COMMAND_HOME`'s explanation of WHERE
- * to record a Python command used to repeat verbatim on every derived
- * Python line — eight copies of the same paragraph on a four-package repo,
- * which is how a report teaches a reader to skim past it. `lintAdvice`/
- * `typecheckAdvice` now return `{ text, pyDerived }` instead of a bare
- * string, carrying no explanation inline; the `P2.scripts` check below
- * appends `PY_COMMAND_HOME` exactly ONCE, only when at least one line in
- * THIS check's own advice actually derived a Python command (`pyDerived`),
- * never when every Python line was a "cannot be derived" fallback with no
- * command to record anywhere.
+ * `PY_COMMAND_HOME`, the explanation of WHERE to record a Python command,
+ * is said once per report, not on every derived line: a paragraph repeated
+ * per package teaches a reader to skim past it. So `lintAdvice` and
+ * `typecheckAdvice` return `{ text, pyDerived }` with no explanation
+ * inline, and the `P2.scripts` check below appends `PY_COMMAND_HOME` exactly
+ * ONCE, only when at least one line in its own advice derived a Python
+ * command (`pyDerived`), never when every Python line was a "cannot be
+ * derived" fallback with no command to record anywhere.
  */
 const ESLINT_CONFIG_NAMES = [
   '.eslintrc', '.eslintrc.json', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.yaml', '.eslintrc.yml',
@@ -236,15 +228,10 @@ function lintAdvice(pkg, files, root) {
 
 function typecheckAdvice(pkg, files, root) {
   if (isJsPackage(pkg)) {
-    // Coordinator finding (round 3, Major): this used to check ONLY the
-    // package's own directory, so the fallback said "no tsconfig.json was
-    // found" for an ordinary monorepo where a SINGLE root tsconfig.json
-    // covers every package (no per-package tsconfig at all) — false, not
-    // merely incomplete: a root tsconfig.json IS real typecheck evidence
-    // for a nested package in that common layout. Same wording defect
-    // round 2 fixed for requirements.txt, now fixed at the SOURCE instead
-    // of only in the sentence: look in both places, and say both were
-    // checked.
+    // Both the package's own directory and the repository root are
+    // checked, and the sentence says so: in an ordinary monorepo a SINGLE
+    // root tsconfig.json covers every package, and it is real typecheck
+    // evidence for a nested package that has none of its own.
     if (hasAnyAt(files, pkg.dir, ['tsconfig.json']) || files.includes('tsconfig.json')) {
       return { text: `${pkg.name}: add "typecheck": "tsc --noEmit" to ${pkg.manifestPath} — derived from a tsconfig.json found in this package's directory or at the repository root`, pyDerived: false };
     }
@@ -279,39 +266,35 @@ const CHECKS = [
   {
     id: 'P0.security', step: 3, phase: 0,
     lookedFor: ['tokens in remotes, tracked files and .claude settings'],
-    // Task 9b, finding 1: this used to fail on `exposures.length` alone and
-    // list every one of them as evidence — on a real repository, 62 of 66
-    // `credentials-in-doc` hits were a credential-shaped key whose value is
-    // a code reference (`process.env.TOKEN`, `config.get('x')`, ...), not a
-    // literal. Burying the one real `high` finding under 62 false alarms
-    // trains a reader to stop reading this check at all, which is worse
-    // than no check. `splitExposures` (detect-exposure.mjs, shared with
-    // report.mjs's renderSummary so the two can never disagree) separates
-    // the prominent class — everything that is NOT a reference-valued
+    // Only the PROMINENT class may fail this check. A credential-shaped
+    // key whose value is a code reference (`process.env.TOKEN`,
+    // `config.get('x')`, ...) is not a literal, and on a real codebase such
+    // hits far outnumber real findings: listing each would bury the one
+    // `high` finding and train a reader to stop reading this check.
+    // `splitExposures` (detect-exposure.mjs, shared with report.mjs's
+    // renderSummary so the two can never disagree) separates the prominent
+    // class — everything that is NOT a reference-valued
     // `credentials-in-doc` hit — from the rest, which is reported here as a
     // single collapsed count, never suppressed and never dropped: every
     // individual finding, reference or literal, still lands in
-    // exposures/detect.json unchanged. Only the PROMINENT class may fail
-    // this check; a repository with nothing but reference-valued hits is
-    // `verified`, with the collapsed count disclosed rather than hidden.
-    // Audit Tier 1, finding 1: within the prominent class, a literal hit in
-    // a test or fixture path arrives at severity `low` (detect-exposure.mjs's
-    // `pathRole`) and does not fail the check either — it is counted and
-    // cited via `fixtureExposureNote`, never hidden. A token is high
-    // wherever it sits and always fails.
-    // Whole-branch review, F1: `verified` used to be reachable while files
-    // went unexamined, and the sentence it printed — "no credential patterns
-    // matched" — is a claim about the REPOSITORY, not about what was read. A
-    // file the sweep could not read now arrives here as an `UNREADABLE_KIND`
-    // finding (detect-exposure.mjs) and this check cannot be `verified` while
-    // one exists; and the clean sentence below now claims only the scope it
-    // actually covered. The two classes are separated by the SHARED
+    // exposures/detect.json unchanged. A repository with nothing but
+    // reference-valued hits is `verified`, with the collapsed count
+    // disclosed rather than hidden.
+    //
+    // Within the prominent class, a literal hit in a test or fixture path
+    // arrives at severity `low` (detect-exposure.mjs's `pathRole`) and does
+    // not fail the check either — it is counted and cited via
+    // `fixtureExposureNote`, never hidden. A token is high wherever it sits
+    // and always fails.
+    //
+    // A file the sweep could not read arrives here as an `UNREADABLE_KIND`
+    // finding (detect-exposure.mjs), and this check cannot be `verified`
+    // while one exists. The two classes are separated by the SHARED
     // `partitionProminent`, not by a second `kind` test written here.
     //
-    // Whole-branch review, F12: the evidence CITES the rendered sections
-    // instead of reproducing them line for line — see
-    // `prominentExposureNote`'s own comment for which test holds the collapse
-    // guarantee now that this one structurally cannot.
+    // The evidence CITES the rendered sections instead of reproducing them
+    // line for line — see `prominentExposureNote`'s own comment for which
+    // test holds the collapse guarantee.
     check: ({ exposures, harness }) => {
       const { prominent, collapsedCount } = splitExposures(exposures);
       const { credentials, unreadable } = partitionProminent(prominent);
@@ -348,34 +331,29 @@ const CHECKS = [
   },
   {
     id: 'P1.bootstrap', step: 5, phase: 1,
-    // Review Minor: this used to name only the files `declared` evidence
-    // comes from, omitting the lockfile/package-manager evidence the
-    // question above actually asks about — a check reporting it looked in
-    // one place while asking about another. Named both, so a reader does
-    // not read the question as arbitrary.
+    // Names the files `declared` evidence comes from AND the
+    // lockfile/package-manager evidence the question asks about, so a
+    // reader does not read the question as arbitrary.
     lookedFor: ['scripts/bootstrap.sh', 'scripts/setup.sh', 'Makefile', 'justfile', 'a lockfile or declared package manager (to derive the install command)'],
-    // Coordinator finding (Major): this used to decide `absent` + a
-    // proposal from `harness.bootstrap` alone, never checking whether an
-    // install command was actually derivable — while propose.mjs's own
-    // generator (correctly) refused to write anything without real
-    // evidence. A pyproject-only Python repository (no requirements.txt, no
-    // poetry.lock/uv.lock) fell exactly into that gap: this check advertised
-    // "create scripts/bootstrap.sh from template", and apply silently wrote
-    // nothing. `installCommand`, imported from bootstrap-install.mjs, is the
-    // SAME derivation propose.mjs's generator uses — not a second
-    // independent guess at the same question — so the two cannot drift
-    // again. This is the detected-but-undeliverable branch of the three-way
-    // split; see this file's own comment in `buildGaps`, at the `n/a`
-    // branch, for the other two.
+    // A proposal is made only where an install command is derivable:
+    // propose.mjs's generator writes nothing without that evidence, and a
+    // check that advertised "create scripts/bootstrap.sh from template" for
+    // a pyproject-only Python repository (no requirements.txt, no
+    // poetry.lock/uv.lock) would promise what apply then declines.
+    // `installCommand`, imported from bootstrap-install.mjs, is the SAME
+    // derivation the generator uses — not a second independent guess at
+    // the same question — so the two cannot drift. This is the
+    // detected-but-undeliverable branch of the three-way split; see this
+    // file's own comment in `buildGaps`, at the `n/a` branch, for the
+    // other two.
     check: ({ harness, stack, files, root }) => {
-      // Task 8b (coordinator ruling): a Makefile or justfile is a
-      // general-purpose build tool, unlike every OTHER name in
-      // BOOTSTRAP_CANDIDATES (detect-harness.mjs) — `scripts/bootstrap.sh`,
-      // `setup.sh`, etc. are purpose-named, so their mere existence is real
-      // evidence of what they do, but a Makefile with only a `build:`
-      // target is not evidence that dependencies get installed. Confirmed
-      // live: that exact Makefile reported `declared` with evidence
-      // `["Makefile"]`. `setupTargetEvidence` (bootstrap-target-evidence.mjs)
+      // A Makefile or justfile is a general-purpose build tool, unlike
+      // every OTHER name in BOOTSTRAP_CANDIDATES (detect-harness.mjs) —
+      // `scripts/bootstrap.sh`, `setup.sh`, etc. are purpose-named, so
+      // their mere existence is real evidence of what they do, but a
+      // Makefile with only a `build:` target is not evidence that
+      // dependencies get installed.
+      // `setupTargetEvidence` (bootstrap-target-evidence.mjs)
       // reads a TARGET NAME, never a target's body — the same "a name is
       // evidence, a body is a guess" rule this file already applies to
       // declared script names (detect-stack.mjs) and advice (see
@@ -392,8 +370,8 @@ const CHECKS = [
           return { state: 'declared', evidence: [`${harness.bootstrap}: found a setup-shaped target ("${target.target}:")`] };
         }
         // Not found: fall through to the SAME derivation as "no bootstrap
-        // file at all" (below) — the coordinator's ruling is a proposal
-        // here, not a question, exactly like the hooks' own third row: we
+        // file at all" (below) — a proposal here, not a question, exactly
+        // like the hooks' own third row: we
         // still offer to write scripts/bootstrap.sh, and we say what of
         // theirs we saw, so the choice (keep the Makefile's own mechanism,
         // or also accept this one) is theirs, not assumed.
@@ -457,13 +435,10 @@ const CHECKS = [
           state: 'absent',
           decidable: false,
           evidence: [`no canonical architecture path, and the instruction file points at none`],
-          // Coordinator finding: this used to assert these files ARE
-          // documentation ("the repository holds N documentation
-          // file(s)") — but projectDocs only found files with a
-          // documentation-SHAPED name (an extension .md/.rst/.adoc/.txt
-          // conventionally used for docs); it never opened one to confirm
-          // its content. Say what was actually measured, not what was
-          // merely likely — the question still prompts the same answer.
+          // "A documentation-shaped name", not "documentation":
+          // projectDocs finds files by extension (.md/.rst/.adoc/.txt) and
+          // never opens one to confirm its content, so the question says
+          // what was read.
           question: `No docs/ARCHITECTURE.md found, but the repository holds ${docCount} file${docCount === 1 ? '' : 's'} with a documentation-shaped name (${shown}). Is one of these the architecture document?`,
         };
       }
@@ -473,12 +448,11 @@ const CHECKS = [
   },
   {
     id: 'P1.pathrules', step: 7, phase: 1,
-    // Review Minor (same shape as P1.bootstrap/P2.sensor/P2.stopgate above):
-    // name both the directory this check inspects for existing rules AND
-    // the workspace layout the question below actually asks about, not
-    // just the former.
+    // Names both the directory this check inspects for existing rules AND
+    // the workspace layout the question below asks about, as
+    // P1.bootstrap, P2.sensor and P2.stopgate do.
     lookedFor: ['.claude/rules/', 'the workspace layout (stack.isWorkspace, stack.packages)'],
-    // Ruling (coordinator, Task 6): decidable only for a genuine WORKSPACE.
+    // Decidable only for a genuine WORKSPACE.
     // `pathRuleTargets`, imported from pathrules-evidence.mjs, is the SAME
     // derivation propose.mjs's generator uses to build the actual rule
     // files — not a second independent guess at "is there a meaningful path
@@ -488,29 +462,24 @@ const CHECKS = [
     // worth scaffolding a rule file for, so the honest answer is to ASK,
     // not propose one.
     check: ({ harness, stack, files }) => {
-      // Coordinator ruling (Major, reverting an 8b over-correction): a
-      // brief attempt here narrowed `declared` to "every target THIS
-      // workspace's own layout calls for is present", on the theory that a
-      // user's rule file for a DIFFERENT package shouldn't satisfy this
-      // one — the same shape as the P2.sensor/P2.stopgate/P4.sessionbrief
-      // fix. It is not the same shape. For a hook, OUR artefact provides
+      // `declared` is not narrowed to "every target THIS workspace's own
+      // layout calls for is present", as it is for P2.sensor, P2.stopgate
+      // and P4.sessionbrief, because a path rule is not the same shape as
+      // a hook. For a hook, OUR artefact provides
       // BEHAVIOUR the user's own hook may lack, so the two coexist and we
       // propose alongside, disclosing what we found. For a path rule, OUR
       // artefact is an EMPTY SCAFFOLD — its only value is being a place
       // for the user to write conventions. A user who has already written
       // their OWN rule files under `.claude/rules/` has fully satisfied
       // that goal; proposing an empty stub beside real conventions would
-      // be noise, not disclosure. So — restored — ANY file under
-      // `.claude/rules/` credits this check, exactly as before 8b, with
-      // the files found named as evidence. This is not an exception to the
-      // 8b ruling; it is the ruling applied to an artefact whose value is
-      // its CONTENT rather than its presence.
+      // be noise, not disclosure. So ANY file under `.claude/rules/`
+      // credits this check, with the files found named as evidence: the
+      // artefact's value is its CONTENT rather than its presence.
       //
-      // Whole-branch review, F2: `harness.claudeDir.rules` is now read off
-      // DISK (detect-harness.mjs's `claudeRuleFiles`), like every other
-      // field a check decides from, so a workspace that gitignores
-      // `.claude/` is no longer told forever that the capability `apply`
-      // just installed is absent.
+      // `harness.claudeDir.rules` is read off DISK (detect-harness.mjs's
+      // `claudeRuleFiles`), like every other field a check decides from,
+      // so a workspace that gitignores `.claude/` is not told that the
+      // capability `apply` just installed is absent.
       //
       // What is NAMED as evidence is still only what the SCAN list already
       // surfaced. That is `registeredHook`'s own discipline
@@ -533,36 +502,23 @@ const CHECKS = [
       }
       const targets = pathRuleTargets(stack);
       if (targets.length) {
-        // Coordinator finding (round 3): "ship it, but say so" — the
-        // reviewer's verdict was that these four near-identical stubs
-        // still earn their place (right directory, the one key actually
-        // read, the correct glob shape, the compaction caveat a person
-        // reliably gets wrong unaided), but a reader skimming `/context`
-        // would otherwise see N loaded rules files and assume they already
-        // hold real conventions. Say plainly, in the proposal text itself
-        // (which renderSummary prints verbatim after the `→`), that they
-        // do not yet.
+        // The stubs earn their place (right directory, the one key
+        // actually read, the correct glob shape, the compaction caveat a
+        // person reliably gets wrong unaided), but a reader skimming
+        // `/context` would see N loaded rules files and assume they hold
+        // real conventions. So the proposal text itself, which
+        // renderSummary prints verbatim after the `→`, says they are
+        // generated empty.
         return { state: 'absent', proposal: 'scaffold .claude/rules/ with globs derived from the workspace layout — each file is generated EMPTY; conventions are added by hand afterward' };
       }
-      // Coordinator finding (round 3, Minor): this evidence/question used
-      // to say "this is a single-package repository" — true for every
-      // REAL input detect-stack.mjs produces when `pathRuleTargets` returns
-      // empty, but not true of every input that reaches this branch: a
-      // hand-built stack with exactly one package whose own `dir` is a
-      // subdirectory (not '.') also lands here once `isWorkspace` is
-      // false, and that repository plainly DOES have a subdirectory — the
-      // one the lone package lives in. The actual criterion this branch
-      // tests is `stack.isWorkspace`, not "how many packages", so the
-      // sentence now describes THAT, true regardless of where the one
-      // package (if any) happens to sit.
-      // Audit Tier 4, finding 20: this used to ASK, on every run of every
-      // single-package repository, for globs the user might want — a
-      // question no answer could silence, because the check re-derived
-      // the same state next run. A single package has no cross-package
-      // split to scope a rule to: that is a fact about the repository,
-      // not a gap in it, so the honest state is `n/a`. A user who wants
-      // path rules anyway writes them under .claude/rules/, which the
-      // branch above then credits.
+      // The criterion this branch tests is `stack.isWorkspace`, not how many
+      // packages there are or where the one package sits, and the evidence
+      // says that. It is `n/a`, not a question: a repository that is not a
+      // workspace has no cross-package split to scope a rule to, which is
+      // a fact about it and not a gap, and a question no answer could
+      // silence would be asked on every run. A user who wants path rules
+      // anyway writes them under .claude/rules/, which the branch above
+      // then credits.
       return {
         state: 'n/a',
         evidence: ['not a workspace (stack.isWorkspace is false) — no sub-directory split to scaffold a rule file for; any .claude/rules/*.md you write is credited above'],
@@ -607,8 +563,8 @@ const CHECKS = [
         if (intent.lastReviewed) evidence.push(`last reviewed ${intent.lastReviewed}`);
         return { state: 'declared', evidence };
       }
-      // Audit Tier 4, finding 20: like P1.architecture, honour a pointer the
-      // instruction file already makes — but only at a document whose NAME
+      // Like P1.architecture, honour a pointer the instruction file
+      // already makes — but only at a document whose NAME
       // says it states the purpose (intent, purpose, vision, product, PRD);
       // a pointer at an API reference is not an intent statement.
       const pointed = (harness.docPointers ?? []).filter(namedForIntent);
@@ -657,8 +613,7 @@ const CHECKS = [
     // by COUNT and LINE NUMBER, never by sentence — rules-evidence.mjs's
     // own comment on why: this reaches the committed detect.json.
     check: ({ harness }) => {
-      // At most ten line numbers per file (audit Tier 4, finding 27: one
-      // advice line listed 41).
+      // At most ten line numbers per file, so one advice line stays readable.
       const listed = lines => lines.length > 10 ? `${lines.slice(0, 10).join(', ')} … and ${lines.length - 10} more` : lines.join(', ');
       const advice = (harness.ruleShapedLines ?? []).map(({ file, lines }) =>
         `${file} holds ${lines.length} rule-shaped line${lines.length === 1 ? '' : 's'} (line${lines.length === 1 ? '' : 's'} ${listed(lines)}) not in ${RULES_PATH} — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart`);
@@ -841,8 +796,7 @@ const CHECKS = [
   {
     id: 'P2.scripts', step: 8, phase: 2,
     lookedFor: ['a lint and typecheck script in every package', 'an ESLint, ruff or tsconfig.json config to derive a command from'],
-    // Ruling (coordinator, Task 7): adding a missing lint/typecheck script
-    // means writing to a package's own manifest (package.json,
+    // Adding a missing lint/typecheck script means writing to a package's own manifest (package.json,
     // pyproject.toml, ...) — deliberately OUTSIDE apply-lib.mjs's write
     // allowlist (see that module's own comment: a user's manifest is the
     // file most likely to be hand-tuned, and the one this tool must never
@@ -863,8 +817,7 @@ const CHECKS = [
     // not a `question`, because the gap itself is not a missing FACT (it is
     // fully known), only a write this tool will not make. `PY_COMMAND_HOME`
     // is appended at most ONCE, at the end — see this file's header comment
-    // on `lintAdvice`/`typecheckAdvice` for why a per-line explanation was
-    // wrong (coordinator, round 2).
+    // on `lintAdvice`/`typecheckAdvice` for why it is not said per line.
     check: ({ stack, files, root }) => {
       // `p.scripts` is a sorted list of script NAMES — see detect-stack.mjs.
       const lacks = (p, name) => !p.scripts?.includes(name);
@@ -892,21 +845,16 @@ const CHECKS = [
   },
   {
     id: 'P2.sensor', step: 9, phase: 2,
-    // Review Minor: this used to name only the hook registry, while the
-    // question below asks about a declared `lint` SCRIPT — a check
-    // reporting it looked in one place while asking about another makes
-    // the question read as arbitrary. Named both.
+    // Names the hook registry AND the declared `lint` SCRIPT the question
+    // below asks about, so the question does not read as arbitrary.
     lookedFor: ['a PostToolUse hook in .claude/settings.json', 'a lint script declared in any package'],
-    // Task 5b (coordinator-inserted correction): this used to decide
-    // `absent` + a proposal purely from whether a PostToolUse hook was
-    // registered, never checking whether propose.mjs's own generator
-    // (sensorProposal) could actually produce anything — while that
-    // generator (correctly) refuses to fire unless some package declares a
-    // `lint` script. detect-stack.mjs has no Python script-name
-    // convention, so `scripts` is always `[]` for Python: this mismatched
-    // for EVERY real Python repository. `hasLintScript`, imported from
-    // sensor-evidence.mjs, is the SAME derivation the generator uses — not
-    // a second independent guess — so the two cannot drift again. The
+    // A proposal is made only where propose.mjs's generator
+    // (sensorProposal) can produce one, and it refuses to fire unless some
+    // package declares a `lint` script. detect-stack.mjs has no Python
+    // script-name convention, so `scripts` is always `[]` for Python.
+    // `hasLintScript`, imported from sensor-evidence.mjs, is the SAME
+    // derivation the generator uses — not a second independent guess — so
+    // the two cannot drift. The
     // capability still APPLIES whenever there is code to lint (contrast
     // P2.protected below, where the subject itself can be genuinely
     // absent), so the honest answer when no package declares `lint` is to
@@ -916,10 +864,9 @@ const CHECKS = [
         'install scripts/lint-touched.mjs and register a PostToolUse hook', { manifest, root, matcher: SENSOR_MATCHER, kitScripts: GENERATOR_SCRIPT_PATHS });
       if (hook.state === 'declared') return hook;
       if (hasLintScript(stack)) return unlessHeld(hook, LINT_TOUCHED_PATH, heldScript);
-      // Coordinator finding (Minor): occupant evidence (what registeredHook
-      // found registered on this event that isn't ours) used to be dropped
-      // here — the one place a confused user needs it most, since the
-      // question below gives no other hint that something is ALREADY
+      // Occupant evidence (what registeredHook found registered on this
+      // event that isn't ours) is kept here, where a user needs it most:
+      // the question below gives no other hint that something is ALREADY
       // registered on PostToolUse.
       return {
         state: 'absent', decidable: false,
@@ -930,8 +877,8 @@ const CHECKS = [
   },
   {
     id: 'P2.stopgate', step: 10, phase: 2,
-    // Same Minor as P2.sensor immediately above: name the declared-script
-    // evidence the question asks about, alongside the hook registry.
+    // As for P2.sensor above: names the declared-script evidence the
+    // question asks about, alongside the hook registry.
     lookedFor: ['a Stop hook in .claude/settings.json', 'a typecheck or test script declared in the root package'],
     // Same shape as P2.sensor immediately above, for the Stop gate:
     // `rootVerifyScript` (stopgate-evidence.mjs) is the SAME root-only
@@ -941,8 +888,8 @@ const CHECKS = [
         'install scripts/verify-touched.mjs and register a Stop hook', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS });
       if (hook.state === 'declared') return hook;
       if (rootVerifyScript(stack)) return unlessHeld(hook, VERIFY_TOUCHED_PATH, heldScript);
-      // Same Minor as P2.sensor immediately above: occupant evidence must
-      // not be dropped just because this also needs to ask a question.
+      // As for P2.sensor above: occupant evidence is kept beside the
+      // question.
       return {
         state: 'absent', decidable: false,
         evidence: [...(hook.evidence ?? []), 'the root package declares neither a typecheck nor a test script'],
@@ -965,42 +912,34 @@ const CHECKS = [
     // Existence of settings.json is not enough — an empty or rule-less file
     // must not be reported as protecting anything.
     //
-    // Task 5b: this used to propose "create .claude/settings.json with deny
-    // rules" purely from `denyRules` being zero, never checking whether
-    // propose.mjs's own generator (protectedPathProposal, via the shared
-    // `protectedPathCandidates`) had any protected-path EVIDENCE to act on
-    // at all — so a repository with no lockfile, no tracked build output,
-    // no migrations and no generated files was advertised a proposal
-    // `apply` would silently decline. Unlike P2.sensor/P2.stopgate above,
-    // there is no question to ask here: the capability's SUBJECT (something
-    // worth protecting) genuinely does not exist in that case, so `n/a`
-    // with no question is the honest answer — asking the user to name
-    // protected paths that demonstrably are not there would be noise, not a
-    // missing fact.
+    // A proposal is made only where propose.mjs's generator
+    // (protectedPathProposal, via the shared `protectedPathCandidates`) has
+    // protected-path EVIDENCE to act on: a repository with no lockfile, no
+    // tracked build output, no migrations and no generated files must not
+    // be advertised a proposal `apply` would decline. Unlike
+    // P2.sensor/P2.stopgate above, there is no question to ask then: the
+    // capability's SUBJECT (something worth protecting) does not exist, so
+    // `n/a` with no question is the honest answer — asking the user to
+    // name protected paths that demonstrably are not there would be noise,
+    // not a missing fact.
     check: ({ harness, stack, files }) => {
       const candidates = protectedPathCandidates({ stack, files });
       if (candidates.length === 0) {
-        // Review Minor: this used to assert repository-WIDE absence
-        // ("found in this repository"), but `files` is the TRACKED (or
-        // fallback-walk-visible) list from scan.mjs — a gitignored
-        // lockfile sitting on disk is invisible to it. Same error class
-        // as Task 2's deny-rule evidence filter (which could not match
-        // gitignored build output), same fix: say what was actually
-        // checked, not what is actually true everywhere.
+        // "No tracked evidence", not "none in this repository": `files`
+        // is the TRACKED (or fallback-walk-visible) list from scan.mjs, so
+        // a gitignored lockfile sitting on disk is invisible to it.
         return { state: 'n/a', evidence: ['no tracked protected-path evidence (lockfile, build output, migrations, generated files) found — an untracked or gitignored file of the same kind would not be visible here'] };
       }
 
-      // Task 8b: this used to credit `declared` from `denyRules > 0` alone
-      // — ANY existing deny rule, regardless of what it protected. A user
-      // who denies edits to their own secrets directory was told their
-      // lockfile and migrations were protected too. `declared` means every
-      // protected path this repository has evidence for is COVERED by a
-      // deny rule already there. Audit Tier 2, finding 13: coverage used
-      // to be decided by exact string against what `protectedPathProposal`
-      // would write, so a user's `Edit(package-lock.json)` was "unrelated"
-      // and `Edit(*-lock.json)` was proposed on top of it; `denyRuleCoverage`
-      // (protected-evidence.mjs, beside the candidates it judges) decides by
-      // what the globs match in the repository's own files. `denyRuleList`
+      // `declared` means every protected path this repository has evidence
+      // for is COVERED by a deny rule already there, not that some deny
+      // rule exists: a user who denies edits to their own secrets directory
+      // must not be told their lockfile and migrations are protected too.
+      // Coverage is decided by what the globs match in the repository's own
+      // files (`denyRuleCoverage`, in protected-evidence.mjs beside the
+      // candidates it judges), not by exact string against what
+      // `protectedPathProposal` would write, so a user's
+      // `Edit(package-lock.json)` covers the lockfile. `denyRuleList`
       // (detect-harness.mjs) is the safely-filtered rule list: an entry is
       // verbatim when it is a path-taking permission (`Edit`/`Read`/
       // `Write`/`Glob`/`Grep`/`NotebookEdit`), `null` otherwise — a
@@ -1015,23 +954,21 @@ const CHECKS = [
       }
 
       // Do NOT suppress the proposal because something else is already
-      // denied (the coordinator's ruling) — name what of theirs was found
+      // denied — name what of theirs was found
       // instead, so adding rules alongside it is never a surprise.
       // `addDenyRules` (settings-merge.mjs) already adds only the rules
       // that are genuinely new when this is applied, so proposing here is
       // safe even when some of the paths are already covered.
       const redactedCount = denyList.filter(rule => rule === null).length;
       const evidence = [];
-      // Coordinator finding (Minor): silence here let a top-up (most of
-      // the paths already covered, one not) look identical to a fresh
-      // install — a user who has already covered two of three paths this
-      // repository needs gets no signal that the proposal below is small,
-      // not the full set.
+      // Said so a top-up (most of the paths already covered, one not) does
+      // not look identical to a fresh install: a user who has covered two
+      // of three paths is told the proposal below is small.
       if (covered.length) {
         evidence.push(`${covered.length} of ${candidates.length} protected path(s) already covered: ${covered.map(describe).join('; ')}`);
       }
       // "Could not relate", not "do not protect": this tool's matcher is
-      // narrower than Claude Code's on `**/` (Tier 2 review, Minor 4).
+      // narrower than Claude Code's on `**/`.
       // The protected-surface rules are P5.toolgate's, not unrelated ones.
       const surface = new Set(toolGateDenyRules());
       const theirs = unrelated.filter(rule => !surface.has(rule));
@@ -1116,16 +1053,12 @@ const CHECKS = [
   },
 ];
 
-// Review Minor: `files` used to default to `[]`, on the claim that
-// P1.bootstrap was the only check that read it — false even when it was
-// written (P2.protected already consulted it via `protectedPathCandidates`)
-// and worse than it reads: a caller that merely forgot to pass `files`
-// silently flipped P2.protected from whatever it should have reported to
-// `n/a`, a wrong but confident-looking CAPABILITY STATE, not just a missing
-// detail. That is exactly the failure shape propose.mjs's `buildProposals`
-// was already fixed against (see that file's own comment) — `files` has no
-// default there either, and omitting it is a loud `TypeError`, not a quiet
-// wrong answer. `files` is required here for the same reason, consulted by:
+// `files` has no default: with `[]`, a caller that merely forgot to pass
+// it would have P2.protected report `n/a`, a wrong but confident-looking
+// CAPABILITY STATE, not just a missing detail. propose.mjs's
+// `buildProposals` requires it for the same reason (see that file's own
+// comment), and omitting it is a loud `TypeError`, not a quiet wrong
+// answer. It is consulted by:
 //   - P1.bootstrap (via `installCommand`, below) — the install command.
 //   - P2.protected (via `protectedPathCandidates`) — anything worth
 //     protecting.
@@ -1135,7 +1068,7 @@ const CHECKS = [
 // a false positive, so no caller is forced to supply it.
 export function buildGaps({ stack, harness, exposures, profile, git, files, root, manifest = null, kitVersion, checkDefs = CHECKS }) {
   if (files === undefined) {
-    throw new TypeError('buildGaps: `files` is required — P1.bootstrap and P2.protected both decide a capability\'s reported state from it, and a silently-defaulted `[]` used to flip P2.protected to `n/a` for a caller that merely forgot to pass it.');
+    throw new TypeError('buildGaps: `files` is required — P1.bootstrap and P2.protected both decide a capability\'s reported state from it, and a defaulted `[]` would report P2.protected as `n/a` for a caller that merely forgot to pass it.');
   }
   const applicable = new Set(profile.appliesToSteps());
   // Each check is given the checks evaluated before it.
@@ -1158,24 +1091,23 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
       //   a stack IS detected, install derivable       -> absent + proposal
       //   a stack IS detected, install NOT derivable   -> absent + decidable:false + question
       //
-      // A later review caught a FOURTH, unhandled input class this branch
-      // used to collapse into `n/a` regardless: `profile.appliesToSteps()`
-      // excludes step 5 (confidence fell below the profile threshold —
-      // e.g. a config-only repository with a tracked package-lock.json but
-      // no .js/.ts source file, so `languages()` is empty), YET an install
-      // command genuinely IS derivable from the lockfile alone. Reported
-      // "not applicable" there was not a lie (the text is still true of
-      // what the PROFILE covers), but it was a missed proposal for a case
-      // this check's own shared derivation could have proven. So: for
-      // P1.bootstrap specifically, defer to `installCommand` even when the
+      // There is a FOURTH input class: `profile.appliesToSteps()` excludes
+      // step 5 (confidence fell below the profile threshold — e.g. a
+      // config-only repository with a tracked package-lock.json but no
+      // .js/.ts source file, so `languages()` is empty), YET an install
+      // command IS derivable from the lockfile alone. "Not applicable"
+      // would be true of what the PROFILE covers and still a missed
+      // proposal for a case this check's own shared derivation can prove.
+      // So: for P1.bootstrap specifically, defer to `installCommand` even
+      // when the
       // profile says this step does not apply, and only fall through to
       // `n/a` when it genuinely has nothing to propose either. This is
       // scoped to P1.bootstrap alone, not a general override of
       // step-applicability — the python/pyproject-only case (a stack that
       // DOES select a non-generic profile, so this branch is never reached
       // for it at all) is handled separately, inside P1.bootstrap's own
-      // `check` function below; conflating that case with this one, or
-      // either with `n/a`, was the actual mistake across review rounds.
+      // `check` function; that case, this one and `n/a` are three
+      // different answers.
       if (def.id === 'P1.bootstrap') {
         const install = installCommand(stack.packageManager, files, root);
         if (install) {

@@ -16,12 +16,9 @@ const MAX_BYTES = 512 * 1024;
 // wanted later, it needs the git index as an input, not a new name.
 //
 // Always-probed paths (e.g., .gitignored local settings)
-// The two files `token-in-local-settings` actually names. Whole-branch
-// review, F8 (the trailing "related, same module, trivial" note): the test
-// used to be `rel.startsWith('.claude/')`, which reported a token in, say,
-// `.claude/scripts/lint-touched.mjs` under a kind that names a different
-// file. A token anywhere else under `.claude/` is an ordinary
-// `token-in-repo-file`.
+// The two files `token-in-local-settings` names. A token anywhere else
+// under `.claude/`, in `.claude/scripts/lint-touched.mjs` say, is an
+// ordinary `token-in-repo-file`: the kind must name the file it is in.
 const LOCAL_SETTINGS_FILES = new Set(['.claude/settings.json', '.claude/settings.local.json']);
 
 const ALWAYS_PROBE = [
@@ -82,33 +79,33 @@ const PLACEHOLDER = /(your[-_]|<|xxx|example|changeme|placeholder|dummy|redacted
 // the documented AWS example key, `ghp_xxxxxxxxxxxxxxxx`, `<your-token>` —
 // never a three-letter substring: a real base62 body of 150 characters has
 // roughly a 0.5 % chance of containing `xxx`, and skipping it would be a
-// false `verified`, the one direction this check must not fail in (final
-// review, Important 2). A `Bearer` value keeps the fuller PLACEHOLDER rule:
+// false `verified`, the one direction this check must not fail in. A
+// `Bearer` value keeps the fuller PLACEHOLDER rule:
 // its body is free text in the documentation that carries it. A run of one
 // repeated letter is NOT treated as filler: real documentation fills with
 // `x`, `*` or `#`, and over-reporting a repeated letter is the safe direction.
 // The filler may follow `/`, as in Slack's documented webhook URL.
 const TOKEN_PLACEHOLDER = /your[-_]|example|placeholder|changeme|redacted|<|[_/-][x*#]{8,}$/i;
 
-// Task 9b, finding 1: a credential-shaped key (`password:`, `pwd=`, ...)
-// whose VALUE is a code reference — a property access, a function call, or a
+// A credential-shaped key (`password:`, `pwd=`, ...) whose VALUE is a code
+// reference — a property access, a function call, or a
 // subscript, e.g. `process.env.TOKEN`, `config.get('x')`, `os.environ["K"]`,
 // `self.password`, `settings.SECRET_KEY` — is ordinary source code reading a
 // secret from somewhere else, not a secret written in the file. On a real
-// TypeScript codebase this shape was 62 of 66 `credentials-in-doc` hits: noise
-// loud enough to bury the one real finding and four plausible ones beneath it.
+// TypeScript codebase this shape is most `credentials-in-doc` hits: noise
+// loud enough to bury the real findings beneath it.
 //
 // This is syntactic, not a parser: a reference is an identifier, optionally
 // extended by one or more `.prop`, `(...)`, or `[...]` segments, and NOTHING
-// else — the whole value, start to end. Deliberately conservative, per the
-// standing ruling that a guard which misses a real secret is worse than one
-// that over-reports: a bare identifier with NO such extension (`SECRET_KEY`
+// else — the whole value, start to end. Deliberately conservative, since a
+// guard which misses a real secret is worse than one that over-reports: a
+// bare identifier with NO such extension (`SECRET_KEY`
 // alone), a quoted string, a `glpat-`-shaped token (a literal that merely
 // STARTS with identifier characters before hitting a `-` the pattern below
 // does not accept as a continuation), and an empty string all fail to match
-// and are therefore classified `literal` — prominent, exactly as before this
-// fix. Only a genuine compound reference expression is ever classified
-// `reference`. When in doubt, this returns `literal`.
+// and are therefore classified `literal`, which is prominent. Only a
+// genuine compound reference expression is ever classified `reference`.
+// When in doubt, this returns `literal`.
 const REFERENCE_VALUE = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\([^()]*\)|\[[^[\]]*\])+[;,]?$/;
 
 // The other way a file reads a secret from somewhere else: shell, dotenv,
@@ -116,7 +113,7 @@ const REFERENCE_VALUE = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|
 // optionally quoted (including a markdown backtick, so a documented example
 // is not a finding) and optionally followed by one statement delimiter. The
 // most common `.npmrc` line in existence — `_authToken` set to `${NPM_TOKEN}` —
-// is exactly this shape and used to classify `literal`. A value that merely
+// is exactly this shape, and is a reference. A value that merely
 // STARTS with a dollar sign (`$uper$ecret`) is not an interpolation and
 // stays `literal`.
 const ENV_REFERENCE = /^["'`]?(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{\{[^}]*\}\}|\$\{[A-Za-z_][A-Za-z0-9_:.-]*\}|%[A-Za-z_][A-Za-z0-9_]*%)["'`]?[;,]?$/;
@@ -141,18 +138,13 @@ export function classifyCredentialValue(value) {
  * not read, or a directory the fallback walk could not list, so it was never
  * examined at all.
  *
- * Whole-branch review, F1. The defect was not git's path quoting — that was
- * only how the unreadable path got here. The defect was that `scannable`'s
- * `catch { return false }` turned "I could not look at this file" into "there
- * is nothing here", with no record anywhere that a file had been skipped, and
- * `P0.security` then reported `verified / no credential patterns matched` over
- * a plaintext token. A security check that reports success because it never
- * read the file inverts this project's whole doctrine, and the quoting fix
- * alone would leave that inversion in place for every OTHER reason a read can
- * fail (EACCES, a file deleted between the scan and the read, a path outside
- * the tree, a filesystem error). So: an unexpected read failure is a FINDING,
- * carried on the same list every other Phase-0 finding is carried on, and
- * `P0.security` cannot be `verified` while one exists.
+ * "I could not look at this file" must never become "there is nothing
+ * here": a security check that reports success because it never read a
+ * file inverts this project's whole doctrine. That holds for every reason a
+ * read can fail (EACCES, a file deleted between the scan and the read, a
+ * path outside the tree, a filesystem error). So an unexpected read failure
+ * is a FINDING, carried on the same list every other Phase-0 finding is
+ * carried on, and `P0.security` cannot be `verified` while one exists.
  *
  * Deliberately NOT reported: the skips this module makes ON PURPOSE and
  * states in code — `SKIP_DIRS`, `SKIP_EXT` (a PNG is not unexamined, it is
@@ -230,20 +222,17 @@ export function unexaminedExposureNote(count) {
 }
 
 /**
- * Whole-branch review, F12: `P0.security`'s evidence and the Exposures
- * section printed the identical list — 14 lines carrying 7 facts — because
- * the (correct) `splitExposures` fix made the two read the same source. The
- * remedy is for the check to CITE the section rather than reproduce it: the
- * section is where the findings belong, because it is the only one of the two
- * that carries each finding's severity.
+ * `P0.security`'s evidence CITES the Exposures section rather than
+ * reproducing it: both read the same source (`splitExposures`), and the
+ * section is where the findings belong, because it is the only one of the
+ * two that carries each finding's severity.
  *
- * Which test holds the "62 reference hits do not become 62 lines" guarantee
- * after this change: `report.test.mjs`'s "renderSummary shows a literal
+ * The guarantee that many reference-valued hits do not become as many lines
+ * is held by `report.test.mjs`'s "renderSummary shows a literal
  * credentials-in-doc hit prominently and collapses reference-valued hits to
- * one count line", which counts the rendered lines. `gap-model.test.mjs` can
- * no longer hold it, since this check's evidence is now a fixed two lines
- * whatever the input — and a test that cannot fail for the thing it is named
- * after is worse than no test (F13).
+ * one count line", which counts the rendered lines. `gap-model.test.mjs`
+ * cannot hold it: this check's evidence is a fixed two lines whatever the
+ * input.
  */
 export function prominentExposureNote(count) {
   const s = count === 1 ? '' : 's';
@@ -261,10 +250,8 @@ const SKIP_EXT = [
 ];
 const SKIP_DIRS = ['node_modules/', '.git/', 'dist/', 'build/'];
 
-// Audit Tier 1, finding 1 (second half). `P0.security` read `failing` on
-// every real repository this kit was pointed at, over passwords in test
-// fixtures — and "it always says failing" is how a real finding becomes
-// noise. A path ROLE lowers the severity of a literal `credentials-in-doc`
+// A check that reads `failing` on every real repository, over passwords in
+// test fixtures, is how a real finding becomes noise. So a path ROLE lowers the severity of a literal `credentials-in-doc`
 // hit in a test or fixture path to `low`; the finding is still returned,
 // still listed under Exposures and still in detect.json. This is not an
 // ignore list: nothing is hidden, nothing is configurable, and a provider
@@ -273,7 +260,7 @@ const SKIP_DIRS = ['node_modules/', '.git/', 'dist/', 'build/'];
 // filenames, never substrings — `contest/`, `latest.ts` and
 // `testing-utils.ts` are not test paths. `spec/` (RSpec) counts; `specs/`
 // does not — it holds design documents, OpenAPI specs and RFCs far more
-// often than tests (final review, Important 3).
+// often than tests.
 const TEST_DIR_SEGMENTS = new Set(['test', 'tests', '__tests__', 'spec', 'fixtures', '__fixtures__', 'testdata', 'mocks', '__mocks__', 'e2e']);
 const TEST_FILE_PATTERNS = [/\.(?:test|spec)\.[^.]+$/, /^test_.*\.py$/, /_test\.(?:py|go)$/];
 
@@ -303,9 +290,9 @@ function isBinaryExtension(base) {
  * finding). See `UNREADABLE_KIND`'s own comment for why the two are
  * separated rather than all collapsed into one alarm.
  *
- * Audit Tier 3, finding 18: this was a `statSync` in `probe` and then a
- * `readFileSync` in `readTextIfPresent` — two path lookups per file, ~48 %
- * of a detect run on 1,400 files. Every outcome the two had is kept:
+ * One open per file, with the size and type read from the open handle: a
+ * separate stat is a second path lookup per file, a large share of a detect
+ * run on a big repository. The outcomes:
  *   - a skipped directory prefix or a binary extension: silent, no open;
  *   - the open fails: `reason` set (the caller decides whether an absent
  *     always-probed path is expected — it is — or a scan-list path that is
@@ -338,7 +325,7 @@ function openAndRead(root, rel) {
     if (code === 'EISDIR') return { buf: null, reason: null, missing: false };
     // A dangling symlink: the link is listed, its target is not there, and
     // there are no bytes to examine — a deliberate skip, not a permanent
-    // high finding (audit Tier 4, finding 27).
+    // high finding.
     if (code === 'ENOENT' && isDanglingLink(join(root, rel))) return { buf: null, reason: null, missing: false };
     return { buf: null, reason: `could not be opened (${code})`, missing: code === 'ENOENT' };
   }
@@ -432,7 +419,7 @@ function credentialFinding(text, tokens) {
 
 /**
  * Decodes a file's bytes as text, deciding the encoding from the bytes rather
- * than assuming UTF-8. Order matters (see task-5-report.md, fix round 4):
+ * than assuming UTF-8. Order matters:
  *   1. UTF-16LE BOM (FF FE)  -> decode as utf16le
  *   2. UTF-16BE BOM (FE FF)  -> byte-swap then decode as utf16le
  *   3. NUL byte in first 8 KB, no BOM -> treat as binary, skip (return null)
@@ -440,8 +427,8 @@ function credentialFinding(text, tokens) {
  *
  * Known limitation: BOM-less UTF-16 (or other multi-byte-per-char encodings
  * without a BOM) is out of scope. There is no reliable, non-heuristic way to
- * distinguish it from binary content, and heuristics here have a history of
- * causing regressions (see task-5-report.md). Such files are skipped.
+ * distinguish it from binary content, and a heuristic that guesses wrong
+ * reports mojibake as findings. Such files are skipped.
  *
  * Never throws: any failure decoding is treated as "not readable text" —
  * the NUL sniff, BOM-less UTF-16, a decoder throwing are this module's own
@@ -517,11 +504,11 @@ function scanFile(buf, rel, isLocalSettings) {
  * path could not be read, the `UNREADABLE_KIND` record that keeps the skip
  * from being silent. `announceMissing` is the one thing that differs between
  * `detectExposures`' two paths: a path the FILE SCAN named and that is not
- * there is a real anomaly worth reporting (that is F1 exactly — the quoted
- * literal `"src/caf\303\251.ts"` stat-ed as ENOENT), while an `ALWAYS_PROBE`
+ * there is a real anomaly worth reporting (a path git printed quoted, such
+ * as `"src/caf\303\251.ts"`, opens as ENOENT), while an `ALWAYS_PROBE`
  * path is a guess at a name that usually is not there, so its absence is
  * expected and silent — decided from the open's own ENOENT, not a separate
- * `existsSync` (finding 18).
+ * `existsSync`.
  */
 function scanPath(root, rel, out, announceMissing) {
   const { buf, reason, missing } = openAndRead(root, rel);
@@ -531,11 +518,9 @@ function scanPath(root, rel, out, announceMissing) {
   }
   if (!buf) return;
   // `.claude/` holds the gitignored, machine-local settings file the kit
-  // treats as a credential carrier. Whole-branch review, F8 (related note):
-  // this used to label ANY finding under `.claude/` as
-  // `token-in-local-settings`, so a token in `.claude/scripts/*.mjs` was
-  // reported under a kind naming a file it was not in. It is now the two
-  // settings files themselves, which is what the kind actually names.
+  // treats as a credential carrier. Only a finding in one of the two
+  // settings files themselves is `token-in-local-settings`, which is what
+  // the kind names; one elsewhere under `.claude/` is not.
   out.push(...scanFile(buf, rel, LOCAL_SETTINGS_FILES.has(rel)));
 }
 
