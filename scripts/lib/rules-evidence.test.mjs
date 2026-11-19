@@ -12,6 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rulesRegistryEvidence, ruleShapedLines, RULE_SHAPED } from './rules-evidence.mjs';
+import { MAX_DOCUMENT_BYTES, OVER_DOCUMENT_LIMIT } from './scan.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, toolGateDenyRules } from './propose.mjs';
 import { execEntry } from './hook-evidence.mjs';
@@ -160,6 +161,22 @@ test('parser problems are passed through', () => {
   assert.match(ev.problems[0], /magic/);
 });
 
+test('a registry larger than detect reads, or one that is not a file, is a stated problem and not zero rules', () => {
+  const d = repo();
+  write(d, RULES_PATH, `## R1 — r\n- enforced-by: none\n${'x'.repeat(MAX_DOCUMENT_BYTES)}`);
+  mkdirSync(join(d, LEARNED_PATH), { recursive: true });
+  const ev = rulesRegistryEvidence(d, bare);
+  assert.equal(ev.notRead, OVER_DOCUMENT_LIMIT);
+  assert.deepEqual(ev.problems, [`${RULES_PATH} ${OVER_DOCUMENT_LIMIT}, so the rules it holds were not read`]);
+  assert.equal(ev.count, 0);
+  assert.equal(ev.learned.notRead, 'exists but could not be read');
+  assert.deepEqual(ev.learned.problems, [`${LEARNED_PATH} exists but could not be read, so the rules it holds were not read`]);
+
+  const read = repo();
+  write(read, RULES_PATH, '## R1 — r\n- enforced-by: none\n');
+  assert.equal(rulesRegistryEvidence(read, bare).notRead, null);
+});
+
 // --- The learned registry, docs/harness/LEARNED.md ---------------------------
 
 const LEARNED = [
@@ -194,7 +211,7 @@ test('detect counts learned rules separately from the owner\'s', () => {
   assert.deepEqual(ev.problems, [], 'the learned keys are known keys in the owner\'s file');
   assert.deepEqual(ev.learned, {
     path: LEARNED_PATH, count: 2, superseded: 1,
-    byEnforcer: { hook: 1, test: 1 }, unenforced: [], missingPointers: [], problems: [],
+    byEnforcer: { hook: 1, test: 1 }, unenforced: [], missingPointers: [], problems: [], notRead: null,
   });
   assert.equal(ev.injectable, 3, 'two owner\'s rules and the one learned rule no gate blocks');
 });

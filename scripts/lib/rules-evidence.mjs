@@ -27,7 +27,7 @@
 //   user open the exact spot; echoing prose would let detect.json leak it.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readIfPresent } from './scan.mjs';
+import { OVER_DOCUMENT_LIMIT, readDocument, readIfPresent } from './scan.mjs';
 import { findLearned, findRules, heldByBlockingGate, parseRules } from '../../assets/scripts/harness-redact.mjs';
 import { runsKitScript } from './hook-evidence.mjs';
 import { SESSION_LOG_PATH, toolGateDenyRules } from './propose.mjs';
@@ -73,12 +73,17 @@ function pointerResolves(root, harness, pointer) {
 
 /**
  * One registry file's evidence, `{ path, count, superseded, byEnforcer,
- * unenforced, missingPointers, problems }`, and its active rules, or null
- * when `rel` is null.
+ * unenforced, missingPointers, problems, notRead }`, and its active rules,
+ * or null when `rel` is null. A file that exists and was not read, being
+ * larger than `readDocument` reads or not readable as a file, has `notRead`
+ * saying why, as a clause after its path, and one problem saying so: its
+ * counts are 0 because nothing was read, not because it holds no rule.
  */
 function fileEvidence(root, harness, rel) {
   if (!rel) return null;
-  const { rules, problems } = parseRules(readIfPresent(root, rel) ?? '');
+  const document = readDocument(root, rel);
+  const notRead = document.state === 'read' ? null : document.state === 'over-limit' ? OVER_DOCUMENT_LIMIT : 'exists but could not be read';
+  const { rules, problems } = notRead === null ? parseRules(document.text) : { rules: [], problems: [`${rel} ${notRead}, so the rules it holds were not read`] };
   const active = rules.filter(r => r.status !== 'superseded');
   const byEnforcer = {};
   const unenforced = [];
@@ -100,6 +105,7 @@ function fileEvidence(root, harness, rel) {
       unenforced,
       missingPointers,
       problems: [...problems],
+      notRead,
     },
   };
 }
@@ -107,7 +113,7 @@ function fileEvidence(root, harness, rel) {
 /**
  * `null` when neither registry file exists; otherwise the owner's registry,
  * `{ path, count, superseded, byEnforcer, unenforced, missingPointers,
- * problems }`, with two more keys: `learned`, the same shape for the learned
+ * problems, notRead }`, with two more keys: `learned`, the same shape for the learned
  * registry or null without one, and `injectable`, how many rules the rules
  * brief would inject. `path` is null, and every count 0, when only the
  * learned registry exists. A rule's file decides whose it is: an entry in
@@ -124,7 +130,7 @@ export function rulesRegistryEvidence(root, harness) {
   const owner = fileEvidence(root, harness, findRules(root));
   const learned = fileEvidence(root, harness, findLearned(root));
   if (!owner && !learned) return null;
-  const ownerEvidence = owner?.evidence ?? { path: null, count: 0, superseded: 0, byEnforcer: {}, unenforced: [], missingPointers: [], problems: [] };
+  const ownerEvidence = owner?.evidence ?? { path: null, count: 0, superseded: 0, byEnforcer: {}, unenforced: [], missingPointers: [], problems: [], notRead: null };
   return {
     ...ownerEvidence,
     learned: learned?.evidence ?? null,

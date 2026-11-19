@@ -1756,6 +1756,24 @@ test('P3.rules: declared with the 0-rules sentence for an unfilled scaffold', ()
   assert.deepEqual(c.evidence, ['docs/harness/RULES.md (0 rules — scaffold not yet filled in)']);
 });
 
+test('P3.rules and P3.reinject: a registry that was not read is said to be unread, never to hold 0 rules', () => {
+  const problem = 'docs/harness/RULES.md exists but could not be read, so the rules it holds were not read';
+  const unread = { ...emptyRegistry, notRead: 'exists but could not be read', problems: [problem] };
+  const rules = byId(gaps(bareStack, p3Harness({ rulesRegistry: unread })), 'P3.rules');
+  assert.equal(rules.state, 'declared');
+  assert.deepEqual(rules.evidence, [`registry: ${problem}`]);
+  const reinject = byId(gaps(bareStack, p3Harness({ rulesRegistry: unread })), 'P3.reinject');
+  assert.equal(reinject.decidable, false);
+  assert.equal(reinject.question, null);
+  assert.deepEqual(reinject.evidence, ['a rules registry was not read, so what there is to inject is unknown']);
+
+  const learnedProblem = 'docs/harness/LEARNED.md exists but could not be read, so the rules it holds were not read';
+  const learnedUnread = { ...learnedRegistry, count: 0, superseded: 0, byEnforcer: {}, missingPointers: [], notRead: 'exists but could not be read', problems: [learnedProblem] };
+  const both = byId(gaps(bareStack, p3Harness({ rulesRegistry: { ...filledRegistry, learned: learnedUnread } })), 'P3.rules');
+  assert.equal(both.evidence.at(-1), `learned registry: ${learnedProblem}`);
+  assert.equal(both.evidence.some(e => e.includes('0 learned rules')), false);
+});
+
 test('P3.rules: declared evidence counts enforcers, names unenforced ids, missing pointers and problems', () => {
   const reg = { ...filledRegistry, missingPointers: [{ id: 'R1', pointer: '.claude/agents/tenant-scoping.md' }, { id: 'R2', pointer: null }], problems: ['R9: enforced-by "magic" is not one of deny/hook — recorded as none'] };
   const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: reg })), 'P3.rules');

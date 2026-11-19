@@ -619,8 +619,10 @@ const CHECKS = [
         `${file} holds ${lines.length} rule-shaped line${lines.length === 1 ? '' : 's'} (line${lines.length === 1 ? '' : 's'} ${listed(lines)}) not in ${RULES_PATH} — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart`);
       // One registry file's counts, superseded rules, dead pointers and
       // parser problems. The owner's rules and the learned rules are
-      // reported apart, each in this shape.
+      // reported apart, each in this shape. A file that was not read has
+      // no counts to give: only its problem, which says so.
       const summarise = (file, noun, problemPrefix) => {
+        if (file.notRead) return file.problems.map(p => `${problemPrefix}: ${p}`);
         const enforced = file.count - file.unenforced.length;
         const byEnforcer = Object.entries(file.byEnforcer).filter(([k]) => k !== 'none').map(([k, n]) => `${k} ${n}`).join(', ');
         const unenforced = file.unenforced.length ? `${file.unenforced.length} with enforced-by: none (${file.unenforced.join(', ')})` : 'none with enforced-by: none';
@@ -639,7 +641,7 @@ const CHECKS = [
       if (!reg || reg.path === null) {
         return { state: 'absent', advice, evidence: learned, proposal: `scaffold ${RULES_PATH} — generated EMPTY; rules are added by hand, each with the enforcer that holds it` };
       }
-      if (reg.count === 0) {
+      if (reg.count === 0 && !reg.notRead) {
         const evidence = [`${reg.path} (0 rules — scaffold not yet filled in)`];
         if (reg.superseded) evidence.push(`${reg.superseded} superseded rule${reg.superseded === 1 ? '' : 's'} kept as a record`);
         return { state: 'declared', advice, evidence: [...evidence, ...reg.problems.map(p => `registry: ${p}`), ...learned] };
@@ -671,6 +673,9 @@ const CHECKS = [
     check: ({ harness, manifest, root, heldScript }) => {
       const reg = harness.rulesRegistry ?? null;
       if (!reg || (reg.path === null && reg.injectable === 0)) return { state: 'absent', decidable: false, evidence: [`no ${RULES_PATH} yet — nothing to inject`] };
+      if (reg.injectable === 0 && (reg.notRead || reg.learned?.notRead)) {
+        return { state: 'absent', decidable: false, evidence: ['a rules registry was not read, so what there is to inject is unknown'] };
+      }
       if (reg.injectable === 0) {
         return {
           state: 'absent', decidable: false,
