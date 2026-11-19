@@ -33,8 +33,11 @@
 // person (never the model) is told in fixed sentences, each once per session,
 // naming the file and a count; nothing from a gate file is copied into them.
 // A sibling module that is missing or too old to provide what this hook uses
-// means no gate applies, and the person is told so on every call. A missing
-// gate file is normal and silent.
+// means no gate applies, and the person is told so once per session; only
+// when harness-redact.mjs itself is the missing one, which holds the
+// once-per-session marker helpers, is that notice repeated on every call. A
+// missing gate file is normal and silent, and stdin that is not a PreToolUse
+// payload with a tool name gets no notice of any kind.
 //
 // Runs before every tool call, so it reads the two files, parses and matches,
 // and never spawns a child process. Always exits 0: unparseable stdin, a
@@ -55,8 +58,9 @@ const SIBLINGS = [
 
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports one kept or modified, run `uninstall --yes` and then `apply --yes`.';
 
-/** The exports this hook uses, or `{ problem }` naming the first sibling that
- * could not provide them. */
+/** The exports this hook uses, from every sibling that provided them, and
+ * `problem` naming the first sibling that could not; the ones after it are
+ * not imported. */
 async function loadSiblings() {
   const loaded = {};
   for (const [specifier, names] of SIBLINGS) {
@@ -65,16 +69,18 @@ async function loadSiblings() {
     try {
       module = await import(specifier);
     } catch {
-      return { problem: `${shown} is missing or cannot be loaded` };
+      return { loaded, problem: `${shown} is missing or cannot be loaded` };
     }
-    if (names.some(name => !(name in module))) return { problem: `${shown} is older than this hook and lacks what it needs` };
+    if (names.some(name => !(name in module))) return { loaded, problem: `${shown} is older than this hook and lacks what it needs` };
     for (const name of names) loaded[name] = module[name];
   }
   return { loaded };
 }
 
 const siblings = await loadSiblings();
-const lib = siblings.loaded ?? {};
+const lib = siblings.loaded;
+// The once-per-session markers come from harness-redact.mjs.
+const canMark = 'markerPath' in lib;
 
 export const GATES_PATH = lib.GATES_PATH;
 export const LOCAL_GATES_FILE = lib.LOCAL_GATES_FILE;
@@ -207,9 +213,7 @@ function recordFiring(root, sessionId, gate, payload) {
 
 /** The hook's JSON output for a tool call, or null to print nothing. */
 function decide(root, payload) {
-  if (payload === null || typeof payload !== 'object' || payload.hook_event_name !== HOOK_EVENT) return null;
   const { tool_name: toolName, tool_input: toolInput } = payload;
-  if (typeof toolName !== 'string') return null;
   const sessionId = lib.safeSessionId(payload.session_id);
 
   const committed = loadGateFile(() => join(root, GATES_PATH), COMMITTED, { suspensionsAllowed: false });
@@ -247,12 +251,20 @@ async function main() {
   } catch {
     return;
   }
-  if (siblings.problem !== undefined) {
-    process.stdout.write(JSON.stringify({ systemMessage: `kh-harness gate hook: ${siblings.problem}, so no gate applies — ${REMEDY}` }) + '\n');
-    return;
-  }
-  const output = decide(lib.projectRoot(), payload);
+  if (!isToolCall(payload)) return;
+  const output = siblings.problem === undefined ? decide(lib.projectRoot(), payload) : siblingNotice(payload);
   if (output !== null) process.stdout.write(JSON.stringify(output) + '\n');
+}
+
+const isToolCall = payload =>
+  payload !== null && typeof payload === 'object' && payload.hook_event_name === HOOK_EVENT && typeof payload.tool_name === 'string';
+
+/** The notice that no gate applies because a sibling could not be loaded:
+ * once per session when the marker helpers loaded, otherwise every call. */
+function siblingNotice(payload) {
+  const sentence = `kh-harness gate hook: ${siblings.problem}, so no gate applies — ${REMEDY}`;
+  if (canMark && !firstTelling(lib.projectRoot(), lib.safeSessionId(payload.session_id), sentence)) return null;
+  return { systemMessage: sentence };
 }
 
 /** True when this file is the process's entry point rather than an import.

@@ -407,6 +407,36 @@ test('a missing or older sibling module gives the person one line and exits 0', 
     'fixture sanity: the copy works with every sibling present');
 });
 
+const MISSING_GATES = `kh-harness gate hook: .claude/scripts/harness-gates.mjs is missing or cannot be loaded, so no gate applies — ${REMEDY}`;
+
+test('a missing harness-gates.mjs is announced once per session', () => {
+  const root = project();
+  const missing = installedCopy({ 'harness-redact.mjs': true, 'harness-log.mjs': true });
+  assert.deepEqual(runHook(root, call('once-1', 'npm test'), { script: missing }), { systemMessage: MISSING_GATES });
+  assert.equal(runHook(root, call('once-1', 'npm test'), { script: missing }), null, 'not again in the same session');
+  assert.deepEqual(runHook(root, call('once-2', 'npm test'), { script: missing }), { systemMessage: MISSING_GATES }, 'a new session is told');
+
+  const noRedact = installedCopy({ 'harness-log.mjs': true, 'harness-gates.mjs': true });
+  const sentence = `kh-harness gate hook: .claude/scripts/harness-redact.mjs is missing or cannot be loaded, so no gate applies — ${REMEDY}`;
+  for (let i = 0; i < 2; i++) {
+    assert.deepEqual(runHook(root, call('once-3', 'npm test'), { script: noRedact }), { systemMessage: sentence },
+      'without the marker helpers the notice repeats');
+  }
+});
+
+test('a payload for another event gets no notice even when a sibling is missing', () => {
+  const root = project();
+  writeCommitted(root, 'not json');
+  const missing = installedCopy({ 'harness-redact.mjs': true, 'harness-log.mjs': true });
+  const noRedact = installedCopy({});
+  for (const script of [missing, noRedact, HOOK]) {
+    assert.equal(runHook(root, call('other-event-1', 'npm test', { hook_event_name: 'PostToolUse' }), { script }), null);
+    const { tool_name: _toolName, ...noTool } = call('other-event-1', 'npm test');
+    assert.equal(runHook(root, noTool, { script }), null);
+    assert.equal(runHook(root, 'not json', { script }), null);
+  }
+});
+
 // Measured on the development machine (win32, Node 24) on 2026-11-19, on a
 // quiet machine, with `GATE_LIMITS.gatesMax` gates of which none matches and
 // an input field of `GATE_LIMITS.inputMax` characters: the hook's median was
