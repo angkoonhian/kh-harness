@@ -18,7 +18,7 @@ import { realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { appendEvent, canonicalJson, harnessIdentity, isEnabled } from './harness-log.mjs';
-import { markerPath, projectRoot, safeSessionId, stripAnsi } from './harness-redact.mjs';
+import { markerPath, projectRoot, readJSONMarker, safeSessionId, stripAnsi, writeJSONMarker } from './harness-redact.mjs';
 
 const IDENTITY_FIELDS = ['session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd'];
 
@@ -67,7 +67,7 @@ function failureStatus(payload) {
 }
 
 const FIELDS_BY_EVENT = {
-  SessionStart: p => carried(p, { source: 'source' }),
+  SessionStart: p => carried(p, { source: 'source', transcript_path: 'transcriptPath' }),
   UserPromptSubmit: p => carried(p, { prompt: 'prompt' }),
   PreToolUse: toolCall,
   PermissionRequest: toolCall,
@@ -127,6 +127,36 @@ function firstExternalInSession(root, sessionId) {
   }
 }
 
+// Where each event that can carry the session's model carries it.
+const MODEL_FIELD = { SessionStart: 'model', PostModelSwitch: 'to_model' };
+
+// SessionStart and PostModelSwitch always write a `harness` line; a prompt
+// writes one only when the identity or the model has moved since the last.
+const HARNESS_EVENTS = new Set(['SessionStart', 'PostModelSwitch', 'UserPromptSubmit']);
+
+const HARNESS_FIELDS = ['base', 'learned', 'kitVersion', 'model'];
+
+/**
+ * Writes a `harness` line when this event calls for one, and remembers what
+ * it wrote in a per-session marker. The marker is a separate file from the
+ * external-content one, which must stay an exclusive create to be once only.
+ * An unreadable marker reads as no previous line, so the cost of losing it
+ * is one repeated `harness` line.
+ */
+function recordHarness(root, sessionId, payload) {
+  const path = markerPath(root, sessionId, 'session-log-harness');
+  const last = path === null ? null : readJSONMarker(path, null);
+  const field = MODEL_FIELD[payload.hook_event_name];
+  const carriedModel = field === undefined ? undefined : payload[field];
+  const lastModel = typeof last?.model === 'string' ? last.model : undefined;
+  const model = typeof carriedModel === 'string' ? carriedModel : lastModel;
+  const current = { ...harnessIdentity(root), ...(model === undefined ? {} : { model }) };
+  const unchanged = last !== null && HARNESS_FIELDS.every(f => last[f] === current[f]);
+  if (payload.hook_event_name === 'UserPromptSubmit' && unchanged) return;
+  const { written } = appendEvent(root, sessionId, { type: 'harness', ...identityOf(payload), ...current });
+  if (written && path !== null) writeJSONMarker(path, current);
+}
+
 function record(payload) {
   const event = toLogEvent(payload);
   if (event === null) return;
@@ -136,9 +166,7 @@ function record(payload) {
   if (!isEnabled(root)) return;
   const { written } = appendEvent(root, sessionId, event);
   if (!written) return;
-  if (event.type === 'SessionStart') {
-    appendEvent(root, sessionId, { type: 'harness', ...identityOf(payload), ...harnessIdentity(root), ...carried(payload, { model: 'model' }) });
-  }
+  if (HARNESS_EVENTS.has(event.type)) recordHarness(root, sessionId, payload);
   if (EXTERNAL_TOOL_EVENTS.has(event.type) && fetchesOutsideContent(event.tool) && firstExternalInSession(root, sessionId)) {
     appendEvent(root, sessionId, { type: 'external_content', ...identityOf(payload), tool: event.tool });
   }

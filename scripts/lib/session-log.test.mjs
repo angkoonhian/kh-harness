@@ -272,6 +272,63 @@ test('session start writes the event and then a harness line with the model', ()
   assert.equal(Object.hasOwn(events(root, 'start-2')[1], 'model'), false);
 });
 
+test('session start records the transcript path', () => {
+  const root = enabledProject();
+  const transcript = '/home/u/.claude/projects/p/start-t.jsonl';
+  assertSilentSuccess(runHook(root, { session_id: 'start-t', hook_event_name: 'SessionStart', source: 'startup', transcript_path: transcript }));
+  assert.equal(events(root, 'start-t')[0].transcriptPath, transcript);
+  assert.equal(Object.hasOwn(toLogEvent({ session_id: 's', hook_event_name: 'SessionStart' }), 'transcriptPath'), false);
+});
+
+const harnessLines = (root, sessionId) => events(root, sessionId).filter(e => e.type === 'harness');
+
+test('a model switch writes a harness line with the new model', () => {
+  const root = enabledProject();
+  assertSilentSuccess(runHook(root, { session_id: 'switch-1', hook_event_name: 'SessionStart', source: 'startup', model: 'claude-sonnet-5' }));
+  assertSilentSuccess(runHook(root, { session_id: 'switch-1', hook_event_name: 'PostModelSwitch', from_model: 'claude-sonnet-5', to_model: 'claude-opus-5', source: 'command' }));
+  const [first, second] = harnessLines(root, 'switch-1');
+  assert.equal(first.model, 'claude-sonnet-5');
+  assert.equal(second.model, 'claude-opus-5');
+  assert.equal(second.base, first.base);
+  assert.equal(second.learned, first.learned);
+  assert.equal(second.kitVersion, first.kitVersion);
+  assert.deepEqual(events(root, 'switch-1').map(e => e.type), ['SessionStart', 'harness', 'PostModelSwitch', 'harness']);
+});
+
+test('a prompt with nothing changed writes no harness line', () => {
+  const root = enabledProject();
+  assertSilentSuccess(runHook(root, { session_id: 'same-1', hook_event_name: 'SessionStart', source: 'startup', model: 'claude-opus-5' }));
+  assertSilentSuccess(runHook(root, { session_id: 'same-1', hook_event_name: 'UserPromptSubmit', prompt: 'one' }));
+  assertSilentSuccess(runHook(root, { session_id: 'same-1', hook_event_name: 'UserPromptSubmit', prompt: 'two' }));
+  assert.deepEqual(events(root, 'same-1').map(e => e.type), ['SessionStart', 'harness', 'UserPromptSubmit', 'UserPromptSubmit']);
+});
+
+test('a prompt after an installed hook script changes writes a new harness line', () => {
+  const root = enabledProject();
+  const script = join(root, '.claude', 'scripts', 'lint-touched.mjs');
+  mkdirSync(join(root, '.claude', 'scripts'), { recursive: true });
+  writeFileSync(script, '// v1\n');
+  writeFileSync(join(root, '.claude', 'kh-harness.manifest.json'), JSON.stringify({
+    schema: 1, kitVersion: '0.1.0', files: [{ path: '.claude/scripts/lint-touched.mjs' }],
+  }));
+  assertSilentSuccess(runHook(root, { session_id: 'moved-1', hook_event_name: 'SessionStart', source: 'startup', model: 'claude-opus-5' }));
+  writeFileSync(script, '// v2, edited by hand\n');
+  assertSilentSuccess(runHook(root, { session_id: 'moved-1', hook_event_name: 'UserPromptSubmit', prompt: 'go on' }));
+  const [before, later] = harnessLines(root, 'moved-1');
+  assert.notEqual(later.base, before.base);
+  assert.equal(later.model, 'claude-opus-5', 'the last known model carries over');
+  assert.equal(later.kitVersion, '0.1.0');
+  assert.deepEqual(events(root, 'moved-1').map(e => e.type), ['SessionStart', 'harness', 'UserPromptSubmit', 'harness']);
+});
+
+test('a prompt in a session with no harness line yet writes one, without a model', () => {
+  const root = enabledProject();
+  assertSilentSuccess(runHook(root, { session_id: 'late-1', hook_event_name: 'UserPromptSubmit', prompt: 'hi' }));
+  const [line] = harnessLines(root, 'late-1');
+  assert.equal(line.base, 'none');
+  assert.equal(Object.hasOwn(line, 'model'), false);
+});
+
 test('session end writes one marker line and nothing else', () => {
   const root = enabledProject();
   assertSilentSuccess(runHook(root, { session_id: 'end-1', cwd: '/work', hook_event_name: 'SessionEnd', reason: 'other' }));
@@ -332,20 +389,25 @@ test('the hook never spawns a child process', () => {
   const options = { nodeArgs: ['--require', FORBID_SPAWN], env: { KH_SPAWN_TRAP: trap } };
   const payloads = [
     { session_id: 'nospawn-1', hook_event_name: 'SessionStart', source: 'startup', model: 'claude-opus-5' },
+    { session_id: 'nospawn-1', hook_event_name: 'UserPromptSubmit', prompt: 'go' },
     toolPayload('PreToolUse', 'nospawn-1'),
     toolPayload('PostToolUse', 'nospawn-1', { tool_name: 'mcp__srv__get', tool_response: 'x' }),
     toolPayload('PostToolUseFailure', 'nospawn-1', { error: 'Exit code 1' }),
+    { session_id: 'nospawn-1', hook_event_name: 'PostModelSwitch', from_model: 'claude-opus-5', to_model: 'claude-sonnet-5', source: 'auto' },
     { session_id: 'nospawn-1', hook_event_name: 'SessionEnd', reason: 'other' },
   ];
   for (const payload of payloads) assertSilentSuccess(runHook(root, payload, options));
   assert.equal(existsSync(trap), false);
-  assert.deepEqual(events(root, 'nospawn-1').map(e => e.type),
-    ['SessionStart', 'harness', 'PreToolUse', 'PostToolUse', 'external_content', 'PostToolUseFailure', 'SessionEnd']);
+  assert.deepEqual(events(root, 'nospawn-1').map(e => e.type), [
+    'SessionStart', 'harness', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'external_content',
+    'PostToolUseFailure', 'PostModelSwitch', 'harness', 'SessionEnd',
+  ]);
 });
 
 // Measured on the development machine (win32, Node 24) on 2026-11-19:
-// a median of about 85 ms per run, of which a bare `node -e 0` takes about
-// 60. The budget is about three times the median.
+// a median of about 85 ms per run for a tool result and about 88 ms for a
+// prompt (which computes the harness identity), of which a bare `node -e 0`
+// takes about 60. The budget is about three times the median.
 const LATENCY_BUDGET_MS = 250;
 
 test('median wall time over 20 runs is under the budget recorded in the test', () => {
