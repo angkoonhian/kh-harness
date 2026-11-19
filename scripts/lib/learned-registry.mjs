@@ -16,8 +16,10 @@
 //
 // An entry's section is found with the parser's own lines and heading
 // pattern (`registryLines`, `ANY_H2`, `RULE_HEADING`), so an id is replaced
-// or removed only where `parseRules` reads it, and a change that would alter
-// any other entry `parseRules` reads is refused.
+// or removed only where `parseRules` reads it. A change is refused, and the
+// text left as it was, unless afterwards the parser reads every other entry
+// as before and reads the id exactly as the rendered entry alone, once, or,
+// after a remove, not at all.
 //
 // Every entry is written `status: active`, the only status the committed
 // file holds: a retired learning is removed from the file, not kept in it
@@ -65,7 +67,17 @@ function cleanLine(raw, max) {
   return out.trimEnd();
 }
 
-const validTimestamp = ts => ts === null || (typeof ts === 'string' && TIMESTAMP.test(ts) && !Number.isNaN(Date.parse(ts)));
+/** True for null, or a timestamp that names a real instant: it round-trips
+ * through `Date` with its fractional seconds normalised to milliseconds, so
+ * `2026-02-30` or an hour of 24, which `Date` silently rolls over, fail. */
+function validTimestamp(ts) {
+  if (ts === null) return true;
+  if (typeof ts !== 'string' || !TIMESTAMP.test(ts)) return false;
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return false;
+  const [whole, fraction = ''] = ts.slice(0, -1).split('.');
+  return date.toISOString() === `${whole}.${fraction.padEnd(3, '0').slice(0, 3)}Z`;
+}
 const day = ts => ts === null ? null : ts.slice(0, 10);
 
 /** `{ line }`, the evidence key's value in fixed wording built only from the
@@ -144,20 +156,31 @@ function sectionOf(text, id) {
   return start === null ? null : [start, text.length];
 }
 
-/** The rules `parseRules` reads in `text` other than `id`, without their
- * line numbers, for comparing two texts. */
-const othersIn = (text, id) => JSON.stringify(parseRules(text).rules.filter(r => r.id !== id).map(({ line: _line, ...r }) => r));
+/** A parsed rule without its line number, as text, for comparing two
+ * readings of a rule. */
+const reading = ({ line: _line, ...rule }) => JSON.stringify(rule);
 
-/** `{ text: after }`, or an error when `after` would read differently from
- * `before` in any rule but `id`, or, when writing, would not read as rule
- * `id` at all. */
-function guarded(before, after, id, verb) {
-  const writing = verb === 'writing';
-  const ok = othersIn(after, id) === othersIn(before, id)
-    && (!writing || parseRules(after).rules.some(r => r.id === id));
+/** How many headings in `text` the parser reads as id `id`, the first of
+ * them the rule and any other a duplicate. */
+const headingsFor = (text, id) => registryLines(text).filter(l => RULE_HEADING.exec(l)?.[1] === id).length;
+
+/**
+ * `{ text: after }` when `after` reads, to the parser, exactly as `before`
+ * does in every rule but `id`, and as `expected` in rule `id`: the rendered
+ * entry read alone, under the one heading with that id, or no rule and no
+ * heading with that id when `expected` is null. Otherwise an error, and
+ * nothing changes.
+ */
+function guarded(before, after, id, expected) {
+  const others = text => parseRules(text).rules.filter(r => r.id !== id).map(reading).join('\n');
+  const own = parseRules(after).rules.find(r => r.id === id);
+  const ok = others(after) === others(before)
+    && headingsFor(after, id) === (expected === null ? 0 : 1)
+    && (expected === null ? own === undefined : own !== undefined && reading(own) === expected);
+  const verb = expected === null ? 'removed' : 'rendered';
   return ok
     ? { text: after }
-    : { error: `learned entry: ${verb} ${id} would change another entry or not be read back — nothing was ${writing ? 'rendered' : 'removed'}` };
+    : { error: `learned entry: the change to ${id} would alter another entry, leave a second ${id}, or not read back as written — nothing was ${verb}` };
 }
 
 /**
@@ -172,15 +195,16 @@ export function upsertLearnedEntry(text, entry) {
   if (rendered.error) return rendered;
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const section = rendered.text.replace(/\n/g, eol);
+  const expected = reading(parseRules(rendered.text).rules[0]);
   const at = sectionOf(text, entry.id);
   if (at === null) {
     const base = text === '' || text.endsWith('\n') ? text : text + eol;
-    return guarded(text, base + (base === '' ? '' : eol) + section, entry.id, 'writing');
+    return guarded(text, base + (base === '' ? '' : eol) + section, entry.id, expected);
   }
   const [start, end] = at;
   const old = text.slice(start, end);
   const trailing = old.slice(old.replace(/[\r\n \t]+$/, '').length);
-  return guarded(text, text.slice(0, start) + section.trimEnd() + (trailing === '' ? eol : trailing) + text.slice(end), entry.id, 'writing');
+  return guarded(text, text.slice(0, start) + section.trimEnd() + (trailing === '' ? eol : trailing) + text.slice(end), entry.id, expected);
 }
 
 /**
@@ -193,6 +217,6 @@ export function removeLearnedEntry(text, id) {
   if (typeof id !== 'string' || !ID.test(id)) return { error: 'learned entry: id is missing or malformed — nothing was removed' };
   const at = sectionOf(text, id);
   if (at === null) return { text, removed: false };
-  const result = guarded(text, text.slice(0, at[0]) + text.slice(at[1]), id, 'removing');
+  const result = guarded(text, text.slice(0, at[0]) + text.slice(at[1]), id, null);
   return result.error ? result : { ...result, removed: true };
 }

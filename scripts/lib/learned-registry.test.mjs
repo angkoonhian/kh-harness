@@ -290,10 +290,52 @@ test('a change that would alter another entry the parser reads is refused', () =
   // front of L2's heading, and the parser would no longer read L2.
   const t = head() + '\n## L1 — first\n- enforced-by: none\n<!-- note\n-->## L2 — second\n- enforced-by: none\n';
   assert.deepEqual(parseRules(t).rules.map(r => r.id), ['L1', 'L2']);
-  assert.match(removeLearnedEntry(t, 'L1').error, /would change another entry/);
-  assert.match(upsertLearnedEntry(t, entry()).error, /would change another entry/);
+  assert.match(removeLearnedEntry(t, 'L1').error, /would alter another entry/);
+  assert.match(upsertLearnedEntry(t, entry()).error, /would alter another entry/);
   const r = removeLearnedEntry(t, 'L2');
   assert.equal(r.removed, true, 'removing L2 leaves L1 as the parser read it');
+});
+
+// A hand-edited file with two sections under one id: the parser reads the
+// first and reports the second as a duplicate.
+const duplicated = () => {
+  const t = text(upsertLearnedEntry(head(), entry({ title: 'First' })));
+  return t + '\n' + text(renderLearnedEntry(entry({ title: 'Second copy' })));
+};
+
+test('upserting into a file that holds a duplicate of that id is refused', () => {
+  const t = duplicated();
+  assert.equal(parseRules(t).rules.filter(r => r.id === 'L1').length, 1, 'fixture sanity: the parser keeps the first');
+  const r = upsertLearnedEntry(t, entry({ title: 'Revised' }));
+  assert.equal(r.text, undefined);
+  assert.match(r.error, /leave a second L1/);
+});
+
+test('removing an id that would leave another section with the same id is refused', () => {
+  const r = removeLearnedEntry(duplicated(), 'L1');
+  assert.equal(r.text, undefined);
+  assert.equal(r.removed, undefined);
+  assert.match(r.error, /nothing was removed/);
+});
+
+test('an upsert is accepted only when the parser reads the id exactly as the rendered entry alone', () => {
+  const t = text(upsertLearnedEntry(head(), entry()));
+  const own = parseRules(t).rules.find(r => r.id === 'L1');
+  const alone = parseRules(text(renderLearnedEntry(entry()))).rules[0];
+  const { line: _a, ...a } = own;
+  const { line: _b, ...b } = alone;
+  assert.deepEqual(a, b);
+});
+
+test('a timestamp is accepted only when it names the instant it spells', () => {
+  for (const ts of ['2026-02-30T00:00:00Z', '2026-11-01T24:00:00Z', '2026-11-01T23:60:00Z', '2026-11-01T23:59:60Z']) {
+    const r = renderLearnedEntry(entry({ evidenceSummary: { ...entry().evidenceSummary, firstTs: ts, lastTs: null } }));
+    assert.match(r.error ?? '', /firstTs/, ts);
+  }
+  for (const ts of ['2026-11-01T09:00:00Z', '2026-11-01T09:00:00.1Z', '2026-11-01T09:00:00.123Z', '2026-11-01T09:00:00.123456789Z', '2024-02-29T00:00:00Z']) {
+    const r = renderLearnedEntry(entry({ evidenceSummary: { ...entry().evidenceSummary, firstTs: ts, lastTs: null } }));
+    assert.equal(r.error, undefined, ts);
+  }
 });
 
 // --- The module touches no file ---------------------------------------------
