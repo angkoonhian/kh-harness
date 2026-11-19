@@ -357,17 +357,29 @@ test('replaceFile clears a temporary file an interrupted run left, and only its 
   writeFileSync(target, 'old\n');
   writeFileSync(`${target}.tmp-424242`, '{ "half":');
   writeFileSync(join(d, 'settings.json.bak'), 'the owner\'s own copy\n');
+  // Its own temporary files end in a process id, and nothing else does.
+  for (const name of ['settings.json.tmp-backup', 'settings.json.tmp-', 'settings.json.tmp-12a']) writeFileSync(join(d, name), 'the owner\'s own file\n');
   replaceFile(target, 'new\n');
-  assert.deepEqual(readdirSync(d).sort(), ['settings.json', 'settings.json.bak']);
+  assert.deepEqual(readdirSync(d).sort(), ['settings.json', 'settings.json.bak', 'settings.json.tmp-', 'settings.json.tmp-12a', 'settings.json.tmp-backup']);
 });
 
-test('replaceFile keeps the file\'s permission bits', { skip: process.platform === 'win32' && 'Windows reports no permission bits to keep' }, () => {
+test('replaceFile keeps the file\'s permission bits, whatever the umask', { skip: process.platform === 'win32' && 'Windows reports no permission bits to keep' }, () => {
   const d = repo();
   const target = join(d, 'settings.json');
   writeFileSync(target, 'old\n');
   chmodSync(target, 0o600);
   replaceFile(target, 'new\n');
   assert.equal(statSync(target).mode & 0o777, 0o600);
+
+  // A group-writable file under a umask that clears that bit on creation.
+  chmodSync(target, 0o664);
+  const umask = process.umask(0o022);
+  try {
+    replaceFile(target, 'newer\n');
+  } finally {
+    process.umask(umask);
+  }
+  assert.equal(statSync(target).mode & 0o777, 0o664);
 });
 
 test('replaceFile writes through a link at the path, leaving the link in place', (t) => {

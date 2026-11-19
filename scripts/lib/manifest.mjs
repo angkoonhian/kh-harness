@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename, resolve, relative } from 'node:path';
 import { readJsonFile } from './read-json.mjs';
 import { GATE_ID } from '../../assets/scripts/harness-gates.mjs';
@@ -87,8 +87,9 @@ export function readManifest(root) {
  *
  * On any failure the temporary file is removed, the target is as it was and
  * the error is thrown. A temporary file left by a hard kill carries this
- * function's own suffix, and nothing else would ever remove it, so those are
- * cleared before the next write.
+ * function's own suffix, `.tmp-` and a process id, and nothing else would
+ * ever remove it, so those are cleared before the next write; a sibling
+ * named any other way is the owner's and is left.
  */
 export function replaceFile(path, text) {
   let target = path;
@@ -104,11 +105,13 @@ export function replaceFile(path, text) {
   mkdirSync(dir, { recursive: true });
   const stalePrefix = `${basename(target)}.tmp-`;
   for (const name of readdirSync(dir)) {
-    if (name.startsWith(stalePrefix)) rmSync(join(dir, name), { force: true });
+    if (name.startsWith(stalePrefix) && /^\d+$/.test(name.slice(stalePrefix.length))) rmSync(join(dir, name), { force: true });
   }
   const tmp = `${target}.tmp-${process.pid}`;
   try {
     writeFileSync(tmp, text, { encoding: 'utf8', mode });
+    // The mode given at creation is cut by the umask; this one is not.
+    if (mode !== undefined) chmodSync(tmp, mode);
     renameSync(tmp, target);
   } catch (err) {
     try { rmSync(tmp, { force: true }); } catch { /* the error below is the one to report */ }
