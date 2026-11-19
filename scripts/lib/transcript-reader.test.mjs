@@ -63,7 +63,6 @@ test('a transcript of known line types yields its interrupts', () => {
   ]);
   assert.deepEqual(readTranscript(path), {
     status: 'ok',
-    claudeCodeVersion: '2.1.327',
     interrupts: [{ ts: '2026-11-19T10:00:02.000Z' }, { ts: '2026-11-19T10:05:00.000Z' }],
     unknownLineTypes: [],
   });
@@ -102,9 +101,9 @@ test('a user line whose content is neither a string nor a list makes the session
   assert.match(r.reason, /missing/);
 });
 
-test('a transcript whose lines carry no version reports the version as null', () => {
+test('a transcript with no interrupt is checked and reports none, whether or not its lines carry a version', () => {
   const path = transcript([{ type: 'ai-title', aiTitle: 'placeholder', sessionId: 's-1' }]);
-  assert.deepEqual(readTranscript(path), { status: 'ok', claudeCodeVersion: null, interrupts: [], unknownLineTypes: [] });
+  assert.deepEqual(readTranscript(path), { status: 'ok', interrupts: [], unknownLineTypes: [] });
 });
 
 test('one unknown line type makes the whole session not-checked and names the type', () => {
@@ -120,7 +119,6 @@ test('one unknown line type makes the whole session not-checked and names the ty
   assert.deepEqual(r.unknownLineTypes, ['future-line-kind', 'other-future-kind']);
   assert.deepEqual(r.interrupts, [], 'an interrupt seen before the unknown type is not reported either');
   assert.match(r.reason, /future-line-kind/);
-  assert.equal(r.claudeCodeVersion, '2.1.327');
 });
 
 test('a line that is not JSON, or has no string type, makes the session not-checked', () => {
@@ -145,7 +143,7 @@ test('an unreadable file is not-checked', () => {
   const missing = readTranscript(join(tempDir(), 'absent.jsonl'));
   assert.equal(missing.status, 'not-checked');
   assert.match(missing.reason, /ENOENT/);
-  assert.deepEqual({ ...missing, reason: undefined }, { status: 'not-checked', reason: undefined, claudeCodeVersion: null, interrupts: [], unknownLineTypes: [] });
+  assert.deepEqual({ ...missing, reason: undefined }, { status: 'not-checked', reason: undefined, interrupts: [], unknownLineTypes: [] });
 
   const directory = readTranscript(tempDir());
   assert.equal(directory.status, 'not-checked');
@@ -167,7 +165,7 @@ test('a line longer than the bound makes the session not-checked, without the li
   const long = { ...assistant('2026-11-19T10:00:00.000Z'), message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(5000) }] } };
   const path = transcript([interrupt('2026-11-19T10:00:00.000Z'), long, interrupt('2026-11-19T10:01:00.000Z')]);
   const r = readTranscript(path, { maxLineBytes: 4096 });
-  assert.deepEqual(r, { status: 'not-checked', reason: 'line 2 is longer than 4096 bytes', claudeCodeVersion: '2.1.327', interrupts: [], unknownLineTypes: [] });
+  assert.deepEqual(r, { status: 'not-checked', reason: 'line 2 is longer than 4096 bytes', interrupts: [], unknownLineTypes: [] });
   assert.equal(readTranscript(path, { maxLineBytes: 8192 }).status, 'ok');
 
   // A file with no newline at all is one line, refused once it passes the bound.

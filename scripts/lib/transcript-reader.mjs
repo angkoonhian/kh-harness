@@ -115,9 +115,7 @@ function forEachLine(path, maxLineBytes, onLine) {
 
 /**
  * What the transcript at `path` shows that hooks cannot: the user interrupts
- * with their timestamps. `claudeCodeVersion` is the version on the last line
- * that carries one, since a resumed session can span an upgrade, or null.
- * The session is `not-checked`, with no interrupts, when the file cannot be
+ * with their timestamps. The session is `not-checked`, with no interrupts, when the file cannot be
  * read, when a line is longer than `maxLineBytes`, when a line does not
  * parse as an object with a string `type`, when a `user` line's content is
  * neither a string nor a list, when an interrupt has no timestamp, or when
@@ -125,7 +123,6 @@ function forEachLine(path, maxLineBytes, onLine) {
  * types in order of first appearance. Never throws.
  */
 export function readTranscript(path, { maxLineBytes = MAX_TRANSCRIPT_LINE_BYTES } = {}) {
-  let claudeCodeVersion = null;
   let problem = null;
   const interrupts = [];
   const unknown = new Set();
@@ -144,7 +141,6 @@ export function readTranscript(path, { maxLineBytes = MAX_TRANSCRIPT_LINE_BYTES 
         problem = `line ${number} has no string type`;
         return false;
       }
-      if (typeof line.version === 'string') claudeCodeVersion = line.version;
       if (!KNOWN.has(line.type)) {
         unknown.add(line.type);
         return true;
@@ -166,14 +162,14 @@ export function readTranscript(path, { maxLineBytes = MAX_TRANSCRIPT_LINE_BYTES 
     });
   } catch (error) {
     if (error?.code !== LINE_OVER_LIMIT) {
-      return { status: 'not-checked', reason: `cannot read the transcript (${error?.code ?? error?.message})`, claudeCodeVersion: null, interrupts: [], unknownLineTypes: [] };
+      return { status: 'not-checked', reason: `cannot read the transcript (${error?.code ?? error?.message})`, interrupts: [], unknownLineTypes: [] };
     }
     problem = `line ${error.line} is longer than ${maxLineBytes} bytes`;
   }
   const unknownLineTypes = [...unknown];
   if (problem === null && unknownLineTypes.length > 0) problem = `unknown line type: ${unknownLineTypes.join(', ')}`;
-  if (problem !== null) return { status: 'not-checked', reason: problem, claudeCodeVersion, interrupts: [], unknownLineTypes };
-  return { status: 'ok', claudeCodeVersion, interrupts, unknownLineTypes };
+  if (problem !== null) return { status: 'not-checked', reason: problem, interrupts: [], unknownLineTypes };
+  return { status: 'ok', interrupts, unknownLineTypes };
 }
 
 /** How many of the transcripts at `paths` were checked and how many were

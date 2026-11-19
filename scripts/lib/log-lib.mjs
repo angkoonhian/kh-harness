@@ -377,7 +377,8 @@ function indexLines(s) {
 }
 
 const indent = lines => lines.map(l => `  ${l}`);
-const NOT_READ = 'not read, because the sessions directory could not be listed';
+/** What a count says when the sessions directory could not be listed. */
+export const NOT_READ = 'not read, because the sessions directory could not be listed';
 const countOf = n => (n === null ? NOT_READ : String(n));
 
 function transcriptLines(t) {

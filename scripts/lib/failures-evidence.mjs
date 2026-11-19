@@ -6,8 +6,7 @@
 //
 // `detect` never reads the session log: the log is unbounded in size, and
 // `detect` and `apply` run this on every invocation. Which recurrences no
-// failure kind labels is `log report`'s to say, through
-// `unlabelledRecurrences`.
+// failure kind labels is `log report`'s to say, from `parseFailures`.
 //
 // Counts only. This output is serialised into docs/harness/detect.json,
 // which is committed, and a failure kind's title or a signature is
@@ -62,13 +61,6 @@ function readTaxonomy(text) {
  * order; a heading with no signatures line has an empty list. */
 export function parseFailures(text) {
   return readTaxonomy(text).kinds;
-}
-
-/** The recurrences, in their given order, whose `signature` no failure kind
- * in `failureKinds` lists. */
-export function unlabelledRecurrences(recurrences, failureKinds) {
-  const labelled = new Set(failureKinds.flatMap(k => k.signatures));
-  return recurrences.filter(r => !labelled.has(r.signature));
 }
 
 /**
