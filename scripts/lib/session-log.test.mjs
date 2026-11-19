@@ -404,23 +404,40 @@ test('the hook never spawns a child process', () => {
   ]);
 });
 
-// Measured on the development machine (win32, Node 24) on 2026-11-19:
-// a median of about 85 ms per run for a tool result and about 88 ms for a
-// prompt (which computes the harness identity), of which a bare `node -e 0`
-// takes about 60. The budget is about three times the median.
-const LATENCY_BUDGET_MS = 250;
+// Measured on the development machine (win32, Node 24) on 2026-11-19, on a
+// quiet machine: the hook's median was about 85 ms for a tool result and 88
+// ms for a prompt, against about 58 ms for a bare `node -e 0`, so it adds
+// about 30 ms. Node start-up alone varied from 55 to 115 ms with machine
+// load, so the budget bounds what the hook adds over a bare start, measured
+// in interleaved runs that share the same load.
+const ADDED_LATENCY_BUDGET_MS = 100;
+
+const timed = run => {
+  const start = process.hrtime.bigint();
+  run();
+  return Number(process.hrtime.bigint() - start) / 1e6;
+};
+
+const medianOf = times => {
+  const sorted = [...times].sort((a, b) => a - b);
+  return (sorted[9] + sorted[10]) / 2;
+};
 
 test('median wall time over 20 runs is under the budget recorded in the test', () => {
   const root = enabledProject();
   const payload = toolPayload('PostToolUse', 'latency-1', { tool_response: { stdout: 'x'.repeat(4096) }, duration_ms: 10 });
-  const times = [];
+  const stdin = JSON.stringify(payload);
+  const hookTimes = [];
+  const bareTimes = [];
   for (let i = 0; i < 20; i++) {
-    const start = process.hrtime.bigint();
-    assertSilentSuccess(runHook(root, payload));
-    times.push(Number(process.hrtime.bigint() - start) / 1e6);
+    hookTimes.push(timed(() => assertSilentSuccess(runHook(root, stdin))));
+    bareTimes.push(timed(() => assertSilentSuccess(spawnSync(process.execPath, ['-e', '0'], {
+      input: stdin, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    }))));
   }
-  times.sort((a, b) => a - b);
-  const median = (times[9] + times[10]) / 2;
-  assert.ok(median < LATENCY_BUDGET_MS, `median ${median.toFixed(1)} ms, budget ${LATENCY_BUDGET_MS} ms`);
+  const hook = medianOf(hookTimes);
+  const bare = medianOf(bareTimes);
+  assert.ok(hook - bare <= ADDED_LATENCY_BUDGET_MS,
+    `hook median ${hook.toFixed(1)} ms, bare node median ${bare.toFixed(1)} ms, budget for the difference ${ADDED_LATENCY_BUDGET_MS} ms`);
   assert.equal(events(root, 'latency-1').length, 20);
 });
