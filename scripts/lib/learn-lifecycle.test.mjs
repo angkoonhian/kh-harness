@@ -1,16 +1,27 @@
 // scripts/lib/learn-lifecycle.test.mjs — the session log and the learning
-// loop end to end, in one fixture repository built step by step: install,
-// sessions, a recurrence, a draft on trial, promotion, landing, a wrong
-// mark, revert, uninstall and purge.
+// loop end to end, in two stories, each in fixture repositories built step
+// by step.
 //
-// Every step an owner or a hook takes goes through the real entry point as
-// a child process, the hooks run from the copies `apply` installed in the
-// fixture, at the paths its settings register. The steps that pass the
-// terminal check are first shown refused as a child process, which has no
-// terminal, and are then taken through the library with the result
-// `requireInteractive` gives at one; each such call says so. What is
-// asserted is the commands' own output, `git status` and the data
-// directory.
+// The first: install, sessions, a recurrence, a draft on trial, promotion,
+// landing, a wrong mark, revert, uninstall and purge. Every step an owner or
+// a hook takes goes through the real entry point as a child process, the
+// hooks run from the copies `apply` installed in the fixture, at the paths
+// its settings register.
+//
+// The second takes the paths the first does not: a replay stopped between
+// its ledger entry and the learning file and finished by the same command,
+// promotion under a policy by `tick`, a demotion, a landing reverted back to
+// this machine with its local gate restored, a retirement, and a second
+// clone whose own learning has the id a pulled landing took, retired and
+// drafted again as a redraft. Its commands and its gate hook are the real
+// ones too; its sessions are written with the logging hook's own
+// `toLogEvent`, the first story having shown the hooks recording them.
+//
+// In both, the steps that pass the terminal check are first shown refused
+// as a child process, which has no terminal, and are then taken through the
+// library with the result `requireInteractive` gives at one; each such call
+// says so. What is asserted is the commands' own output, `git status` and
+// the data directory.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -18,11 +29,12 @@ import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmS
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
-import { LOCAL_GATES_FILE, readEvents, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
+import { appendEvent, LOCAL_GATES_FILE, readEvents, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
 import { SEAL_IDLE_MS } from '../../assets/scripts/harness-seal.mjs';
+import { toLogEvent } from '../../assets/scripts/session-log.mjs';
 import { parseFiringRef } from './learn-cli.mjs';
 import { landLearning, revertLearning } from './learn-land.mjs';
-import { approveLearning, markWrong } from './learn-promote.mjs';
+import { approveLearning, demoteLearning, markWrong, retireLearning, setPolicy } from './learn-promote.mjs';
 import {
   APPLY, DETECT, fixture, git, LEARN, linesAfter, LOG, manifestOf, runRegisteredHook, runResult, sandboxDataDir, UNINSTALL,
 } from './lifecycle-fixtures.mjs';
@@ -645,5 +657,268 @@ test('the learning loop end to end, through the real commands and the installed 
     assert.equal(ok(log('purge', '--yes')), `Removed ${dataDir}. The log for this repository on this machine is gone, and disabled.\n`);
     assert.equal(existsSync(dataDir), false);
     assert.ok(existsSync(DATA_ROOT), 'only this repository\'s directory goes');
+  });
+});
+
+// --- The second story ----------------------------------------------------------
+
+const LINT_MISTAKE = 'npm run lint -- --watch';
+const LINT_FIX = 'npm run lint';
+const LINT_ERROR = 'Error: the linter cannot watch without an interactive terminal';
+const LINT_MESSAGE = 'Run the linter once: its watch mode waits for a terminal an agent session does not have.';
+
+test('the learning loop beyond its first path: a stopped step, a policy, a demotion, a landing reverted, a second clone and a redraft', async t => {
+  const a = fixture();
+  const cloneParent = mkdtempSync(join(tmpdir(), 'hk-learn-life-clone-'));
+  const b = join(cloneParent, 'checkout');
+  const draftDir = mkdtempSync(join(tmpdir(), 'hk-learn-life-draft-'));
+  for (const dir of [a, cloneParent, draftDir]) t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const learn = (d, ...args) => runResult(LEARN, d, ...args);
+  const localGatesOf = d => JSON.parse(readFileSync(join(repoDataDir(d), LOCAL_GATES_FILE), 'utf8')).gates;
+  const learningPath = (d, id) => join(repoDataDir(d), 'learnings', `${id}.json`);
+
+  // Sessions, written as the logging hook writes them: a harness line, then
+  // each call's event from the hook's own `toLogEvent`.
+  let uses = 0;
+  function record(d, sessionId, ...calls) {
+    const events = calls.map(([command, error]) => toLogEvent({
+      hook_event_name: error === undefined ? 'PostToolUse' : 'PostToolUseFailure', session_id: sessionId, tool_use_id: `toolu_two_${++uses}`,
+      tool_name: 'Bash', tool_input: { command }, ...(error === undefined ? { tool_response: 'done' } : { error }),
+    }));
+    for (const event of [{ type: 'harness', base: 'base-two', learned: 'learned-two', model: MODEL }, ...events]) {
+      assert.deepEqual(appendEvent(d, sessionId, event), { written: true });
+    }
+  }
+  const recordMistakes = (d, prefix, mistake, error, fix) => {
+    for (const n of [1, 2]) record(d, `${prefix}-${n}`, [mistake, error], [fix]);
+  };
+  const recordCleanHistory = d => {
+    for (const n of [1, 2]) record(d, `clean-${n}`, ...CLEAN_COMMANDS.map(command => [command]));
+  };
+
+  /** What the installed gate hook decides for a Bash call of `command`. */
+  async function gateOn(d, sessionId, command) {
+    const r = await runRegisteredHook(d, 'PreToolUse', 'tool-gate.mjs', {
+      session_id: sessionId, cwd: d, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, tool_use_id: `toolu_two_${++uses}`,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout === '' ? null : JSON.parse(r.stdout);
+  }
+  const denies = decision => decision?.hookSpecificOutput?.permissionDecision === 'deny';
+
+  const draftFile = (name, signature, value, message) => {
+    const path = join(draftDir, name);
+    writeFileSync(path, JSON.stringify({
+      signature, title: `Never run ${value}`, why: 'Watch mode waits for a terminal that an agent session does not have.',
+      gate: { tool: 'Bash', field: 'command', match: { kind: 'literal', value }, message },
+    }));
+    return path;
+  };
+
+  let failedStep = null;
+  const step = (name, fn) => t.test(name, async st => {
+    if (failedStep !== null) {
+      st.skip(`step ${failedStep} failed`);
+      return;
+    }
+    try {
+      await fn();
+    } catch (error) {
+      failedStep = name.slice(0, name.indexOf('.'));
+      throw error;
+    }
+  });
+
+  let watchSignature, lintSignature, sha256;
+
+  await step('1. install on the first machine; two failures recur; the owner names both and commits', () => {
+    ok(runResult(APPLY, a, '--yes'));
+    owner(a, 'add', '-A');
+    owner(a, 'commit', '-q', '-m', 'install kh-harness');
+    ok(runResult(LOG, a, 'enable'));
+    recordMistakes(a, 'watch', MISTAKE, WATCH_ERROR, FIX);
+    recordMistakes(a, 'lint', LINT_MISTAKE, LINT_ERROR, LINT_FIX);
+    const recurrences = JSON.parse(ok(runResult(LOG, a, 'report', '--json'))).groups.flatMap(g => g.recurrences);
+    watchSignature = recurrences.find(r => r.errorLine === WATCH_ERROR)?.signature;
+    lintSignature = recurrences.find(r => r.errorLine === LINT_ERROR)?.signature;
+    assert.ok(watchSignature && lintSignature && recurrences.length === 2, JSON.stringify(recurrences));
+    appendFileSync(join(a, 'docs/harness/FAILURES.md'),
+      `\n## F1 — The tests are started in watch mode\n- signatures: ${watchSignature}\n\n## F2 — The linter is started in watch mode\n- signatures: ${lintSignature}\n`);
+    owner(a, 'commit', '-q', '-a', '-m', 'name failures F1 and F2');
+    assert.equal(status(a), '');
+  });
+
+  await step('2. a second machine clones the repository, meets the lint failure itself, and drafts its own L1 for it', () => {
+    git(cloneParent, 'clone', '-q', a, b);
+    assert.notEqual(repoDataDir(b), repoDataDir(a), 'each checkout has its own data directory');
+    recordMistakes(b, 'lint', LINT_MISTAKE, LINT_ERROR, LINT_FIX);
+    recordCleanHistory(b);
+    const drafted = ok(learn(b, 'draft', '--from', draftFile('lint.json', lintSignature, LINT_MISTAKE, LINT_MESSAGE)));
+    assert.match(drafted, /^draft: stored as L1, a candidate; /);
+    assert.match(drafted, /^status: trial; /m);
+    assert.match(ok(learn(b, 'list')), /^ {2}L1 {2}trial {2}observe /m);
+    assert.equal(status(b), '');
+  });
+
+  await step('3. on the first machine a draft with too little clean history stays a candidate', () => {
+    const drafted = ok(learn(a, 'draft', '--from', draftFile('watch.json', watchSignature, MISTAKE, GATE_MESSAGE)));
+    sha256 = /^draft: stored as L1, a candidate; gate sha256 ([0-9a-f]{64})$/m.exec(drafted)?.[1];
+    assert.ok(sha256, drafted);
+    assert.match(drafted, /^replay: not-checkable: /m);
+    assert.match(drafted, /^status: candidate; it stays one: run `replay L1` once the log holds more history$/m);
+  });
+
+  await step('4. a replay stopped after its ledger entry leaves a state the same command finishes', () => {
+    recordCleanHistory(a);
+    // The replay runs whole; then the learning file and the local gate file
+    // are put back as they were, which is what a replay stopped between its
+    // ledger entries and its other writes leaves, the ledger being first.
+    const before = readFileSync(learningPath(a, 'L1'));
+    assert.match(ok(learn(a, 'replay', 'L1')), /^status: trial; /m);
+    writeFileSync(learningPath(a, 'L1'), before);
+    rmSync(join(repoDataDir(a), LOCAL_GATES_FILE));
+
+    const stuck = ok(learn(a, 'list'));
+    assert.match(stuck, /^ {2}L1 {2}candidate {2}observe .* {2}\(the ledger does not vouch for this\)$/m, stuck);
+    assert.match(stuck, /^ {2}of them, learning files a stopped step left behind the ledger, which the next step that writes rolls forward: L1$/m, stuck);
+
+    const again = learn(a, 'replay', 'L1');
+    assert.equal(again.status, 3, again.stderr);
+    assert.equal(again.stdout, '');
+    assert.equal(again.stderr, 'kh-harness: replay: L1 is trial; only a candidate is replayed; '
+      + 'a step had stopped after the ledger recorded it, and the learning file was first brought into line with the ledger: L1; '
+      + 'the local gate set was first brought into line with the ledger: L1\n');
+    const mended = ok(learn(a, 'list'));
+    assert.match(mended, new RegExp(`^ {2}L1 {2}trial {2}observe {2}sha256 ${sha256}$`, 'm'), mended);
+    assert.match(mended, /^ {6}replay: pass$/m, mended);
+    assert.match(mended, /^ {2}learnings and ledger entries that disagree: none$/m, mended);
+    assert.deepEqual(localGatesOf(a).map(g => [g.id, g.action]), [['L1', 'observe']]);
+  });
+
+  await step('5. under a policy the owner set, tick promotes the trial once it has fired in two sessions', async () => {
+    refusedForTerminal(learn(a, 'policy', 'set', '--min-firings', '2', '--min-sessions', '2', '--max-action', 'warn'));
+    // A library call: setting a policy passes the terminal check, which no
+    // child process does.
+    const set = setPolicy(a, { minTrialFirings: 2, minTrialSessions: 2, maxAction: 'warn' }, { interactive: AT_TERMINAL });
+    assert.equal(set.ok, true, set.error);
+    assert.match(ok(learn(a, 'policy', 'show')), /^ {2}tick promotes each fresh trial with at least 2 firings in 2 sessions, .* up to warn, on this machine only$/m);
+
+    assert.equal(await gateOn(a, 'trial-1', MISTAKE), null, 'on trial the gate observes and says nothing');
+    assert.match(ok(learn(a, 'tick')), /^ {2}promoted: none$/m, 'one firing in one session is short of the policy');
+    assert.equal(await gateOn(a, 'trial-2', MISTAKE), null);
+    const ticked = ok(learn(a, 'tick'));
+    assert.match(ticked, /^ {2}promoted: L1$/m, ticked);
+    assert.match(ticked, /^ {2}trials the policy passed over: none$/m, ticked);
+    assert.match(ticked, /^NOT DONE\n {2}nothing$/m, ticked);
+
+    const list = ok(learn(a, 'list'));
+    assert.match(list, new RegExp(`^ {2}L1 {2}active-local {2}warn {2}sha256 ${sha256}$`, 'm'), list);
+    assert.match(list, new RegExp(`^ {4}L1 sha256 ${sha256} at warn, approved by policy:${set.sha256} at \\S+Z$`, 'm'), list);
+    const warned = await gateOn(a, 'warned-1', MISTAKE);
+    assert.equal(denies(warned), false, 'a warning allows the call');
+    assert.equal(warned.hookSpecificOutput.additionalContext, `kh-harness gate L1: ${GATE_MESSAGE}`);
+  });
+
+  await step('6. the owner demotes it; tick does not promote it again; the owner approves it at block', async () => {
+    refusedForTerminal(learn(a, 'demote', 'L1'));
+    // Library calls: a demotion and an approval pass the terminal check,
+    // which no child process does.
+    const demoted = demoteLearning(a, 'L1', { interactive: AT_TERMINAL });
+    assert.deepEqual([demoted.ok, demoted.status], [true, 'trial']);
+    assert.equal(await gateOn(a, 'demoted-1', MISTAKE), null, 'back at observe');
+    const ticked = ok(learn(a, 'tick'));
+    assert.match(ticked, /^ {2}promoted: none$/m, 'a demotion the owner asked for is not undone by the next tick');
+    assert.match(ok(learn(a, 'list')), /^ {2}L1 {2}trial {2}observe /m);
+    const approved = approveLearning(a, 'L1', { sha256, action: 'block', interactive: AT_TERMINAL });
+    assert.equal(approved.ok, true, approved.error);
+    assert.ok(denies(await gateOn(a, 'blocked-1', MISTAKE)));
+  });
+
+  await step('7. landed and committed, the gate is in the repository at block, approved for its content and its action', () => {
+    // A library call: landing passes the terminal check, which no child
+    // process does.
+    const landed = landLearning(a, 'L1', { yes: true, interactive: AT_TERMINAL });
+    assert.equal(landed.ok, true, landed.error);
+    assert.match(readFileSync(join(a, 'docs/harness/LEARNED.md'), 'utf8'), new RegExp(`^- approved-sha256: ${sha256}\\n- approved-action: block$`, 'm'));
+    assert.deepEqual(localGatesOf(a), [], 'the committed gate is in force, so the local one goes');
+    owner(a, 'add', '-A');
+    owner(a, 'commit', '-q', '-m', 'land L1');
+    assert.equal(status(a), '');
+  });
+
+  await step('8. the second machine pulls the landing: its own L1 now shares its id with another gate, and list and tick say so and what to do', async () => {
+    git(b, 'pull', '-q', '--ff-only');
+    const committed = JSON.parse(readFileSync(join(b, '.claude/kh-harness/gates.json'), 'utf8')).gates;
+    assert.deepEqual(committed.map(g => [g.id, g.match.value, g.action]), [['L1', MISTAKE, 'block']]);
+    const collision = / {2}learnings whose id the committed gate file holds for another gate, so their own gate is not applied: L1\n {4}ids are assigned per machine and nothing renumbers a learning: `retire <id>` at a terminal, then draft its recurrence again with --redraft\n/;
+    assert.match(ok(learn(b, 'list')), collision);
+    assert.match(ok(learn(b, 'tick')), collision);
+    assert.match(ok(learn(b, 'show', 'L1')), /the committed gate file holds another gate under this id, so this learning's gate is not applied/);
+    assert.ok(denies(await gateOn(b, 'pulled-1', MISTAKE)), 'the pulled gate binds this machine');
+    assert.equal(denies(await gateOn(b, 'pulled-2', LINT_MISTAKE)), false);
+  });
+
+  await step('9. there the owner retires the local L1 and has it drafted again, which takes --redraft and the next free id', () => {
+    refusedForTerminal(learn(b, 'retire', 'L1'));
+    // A library call: a retirement passes the terminal check, which no child
+    // process does.
+    const retired = retireLearning(b, 'L1', { interactive: AT_TERMINAL });
+    assert.deepEqual([retired.ok, retired.status], [true, 'retired']);
+    const apart = ok(learn(b, 'candidates'));
+    assert.match(apart, new RegExp(`^ {6}${lintSignature}: L1 \\(the same signature, retired by the owner\\)$`, 'm'), apart);
+
+    const path = draftFile('lint-again.json', lintSignature, LINT_MISTAKE, LINT_MESSAGE);
+    const plain = learn(b, 'draft', '--from', path);
+    assert.equal(plain.status, 3, plain.stderr);
+    assert.match(plain.stderr, /an earlier learning for this recurrence did not hold: L1 \(drafted for this signature, retired by the owner\); a new draft for it is the owner's decision/);
+    // The owner asked for it, so the flag is given.
+    const redrafted = ok(learn(b, 'draft', '--from', path, '--redraft'));
+    assert.match(redrafted, /^draft: stored as L2, a candidate; /, 'above the id the pulled landing holds');
+    assert.match(redrafted, /^status: trial; /m);
+    const list = ok(learn(b, 'list'));
+    assert.match(list, /^ {2}L1 {2}retired /m, list);
+    assert.match(list, /^ {2}L2 {2}trial {2}observe /m, list);
+    assert.match(list, /^ {2}learnings whose id the committed gate file holds for another gate, so their own gate is not applied: none$/m, list);
+    assert.match(ok(learn(b, 'show', 'L2')), /^ {2}drafted, as the ledger records: a redraft; earlier: L1 \(drafted for this signature, retired by the owner\)$/m);
+    assert.deepEqual(localGatesOf(b).map(g => [g.id, g.match.value, g.action]), [['L2', LINT_MISTAKE, 'observe']]);
+  });
+
+  await step('10. back on the first machine a revert takes the gate out of the repository and leaves it in force here, from the local gate set', async () => {
+    const plan = ok(learn(a, 'revert', 'L1'));
+    assert.match(plan, /^-- approved-action: block$/m, plan);
+    refusedForTerminal(learn(a, 'revert', 'L1', '--yes'));
+    // A library call: a revert passes the terminal check, which no child
+    // process does.
+    const reverted = revertLearning(a, 'L1', { yes: true, interactive: AT_TERMINAL });
+    assert.equal(reverted.ok, true, reverted.error);
+    assert.deepEqual([reverted.status, reverted.action], ['active-local', 'block']);
+    assert.deepEqual(status(a).split('\n').filter(Boolean).sort(), [
+      ' M .claude/kh-harness.manifest.json',
+      ' M .claude/kh-harness/gates.json',
+      ' M docs/harness/LEARNED.md',
+    ]);
+    assert.deepEqual(JSON.parse(readFileSync(join(a, '.claude/kh-harness/gates.json'), 'utf8')).gates, []);
+    assert.deepEqual(localGatesOf(a).map(g => [g.id, g.action]), [['L1', 'block']], 'the approval stands on this machine');
+    assert.match(ok(learn(a, 'list')), new RegExp(`^ {2}L1 {2}active-local {2}block {2}sha256 ${sha256}$`, 'm'));
+    assert.ok(denies(await gateOn(a, 'reverted-1', MISTAKE)), 'still blocked here, now by the local gate');
+    owner(a, 'add', '-A');
+    owner(a, 'commit', '-q', '-m', 'revert L1');
+  });
+
+  await step('11. retired by the owner, the gate is gone, and its recurrence is drafted again only with --redraft', async () => {
+    refusedForTerminal(learn(a, 'retire', 'L1'));
+    // A library call: a retirement passes the terminal check, which no child
+    // process does.
+    const retired = retireLearning(a, 'L1', { interactive: AT_TERMINAL });
+    assert.deepEqual([retired.ok, retired.status], [true, 'retired']);
+    assert.deepEqual(localGatesOf(a), []);
+    assert.equal(await gateOn(a, 'retired-1', MISTAKE), null);
+    const candidates = ok(learn(a, 'candidates'));
+    const apart = candidates.slice(candidates.indexOf('RECURRENCES DRAFTED BEFORE, WHOSE LEARNING WAS REJECTED OR RETIRED AS WRONG'));
+    assert.match(apart, new RegExp(`^ {6}${watchSignature}: L1 \\(the same signature, retired by the owner\\)$`, 'm'), candidates);
+    const again = learn(a, 'draft', '--from', draftFile('watch-again.json', watchSignature, MISTAKE, GATE_MESSAGE));
+    assert.equal(again.status, 3, again.stderr);
+    assert.equal(status(a), '');
   });
 });
