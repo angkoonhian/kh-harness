@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 // PostToolUse hook: lints the file an Edit/Write tool just touched and, if
 // the linter reports a problem IN THAT FILE, tells Claude immediately by
-// writing to stderr and exiting 2 — plain stdout is invisible to Claude, so
-// this script never writes to it. Exit 2 does not block anything; the edit
+// writing to stderr and exiting 2. Exit 2 does not block anything; the edit
 // already happened, and the point is only to surface the problem fast.
+//
+// A lint run that could not check the file — the linter is missing, crashed,
+// timed out, or failed without naming the file — is not a clean file. It
+// exits 0 with a `systemMessage` for the user on stdout, the only thing this
+// script ever writes there, once per session (see couldNotCheck).
 //
 // This script itself never writes to the repository — but the project's
 // OWN lint script might (an auto-fixing `scripts.lint` such as
@@ -14,8 +18,8 @@
 // Reads the PostToolUse payload from stdin and takes CLAUDE_PROJECT_DIR as
 // the project root, falling back to process.cwd() when it is unset. Never
 // throws, and every spawn is bounded and wrapped: a malformed payload, an
-// uncovered file, an out-of-root file, a missing lint script, or a linter
-// that hangs all end the same way — silently, exit 0.
+// uncovered file, an out-of-root file or a project with no lint script all
+// end the same way — silently, exit 0, since there was nothing to check.
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve, isAbsolute, basename, delimiter, relative, sep } from 'node:path';
 import {
@@ -147,10 +151,12 @@ function isContained(root, absPath) {
   return !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`);
 }
 
-/** Nearest ancestor of `startDir`, bounded at `rootDir` inclusive, that
- * contains `filename`. This is the package that OWNS the edited file —
- * never the repository root by default, so a nested package's own (and
- * possibly lint-less) manifest wins over one further up the tree.
+/** Nearest ancestor of `startDir`, bounded at `rootDir` inclusive, whose
+ * `manifestName` declares a lint script (as `readScript` reads it), with
+ * that script — or null when none does. A nested package's own lint script
+ * wins over one further up the tree; a manifest that declares none is
+ * passed over, since a workspace package that leaves linting to the
+ * repository root is still linted by the root's script.
  *
  * The bound terminates the walk at `rootDir` OR the filesystem root,
  * whichever comes first — both checks are unconditional, so a comparison
@@ -159,11 +165,14 @@ function isContained(root, absPath) {
  * required to share root's exact casing (see isContained's comment); a
  * plain `dir === root` can silently never fire and let the walk continue
  * to the filesystem root, adopting a manifest the project does not own. */
-function findAncestorWith(startDir, rootDir, filename) {
+function findLintOwner(startDir, rootDir, manifestName, readScript) {
   let dir = resolve(startDir);
   const root = resolve(rootDir);
   for (;;) {
-    if (existsSync(join(dir, filename))) return dir;
+    if (existsSync(join(dir, manifestName))) {
+      const lintScript = readScript(dir);
+      if (lintScript) return { ownerDir: dir, lintScript };
+    }
     if (samePath(dir, root)) return null;
     const parent = dirname(dir);
     if (parent === dir) return null; // reached the filesystem root
@@ -327,17 +336,11 @@ function hasChanged(before, after) {
  * something builds a line list and hands it here, so redaction (above)
  * cannot be bypassed by a future call site that forgets it.
  *
- * Unlike verify-touched.mjs, an EMPTY `lines` here genuinely means nothing
- * happened: this hook's own report is already attribution-filtered (see
- * extractAttributedBlocks), so a failure that mentions nothing about the
- * edited file was correctly never attributed to it, and staying silent is
- * the right call, not a missing guard — verify-touched.mjs blocks on every
- * real failure of a WHOLE-repo command, where "nothing survived redaction"
- * can still mean "the command genuinely failed", which is why that file
- * needs an explicit substitute message instead of this early return.
+ * `lines` is never empty: a failure with nothing attributable to the edited
+ * file is not reported to Claude at all, but told to the user as a
+ * could-not-check notice (see couldNotCheck).
  */
 function writeReport(lines) {
-  if (lines.length === 0) return 0;
   process.stderr.write(boundReport(lines) + '\n');
   return 2;
 }
@@ -440,6 +443,28 @@ function forgetFile(root, sessionId, filePath) {
   writeJSONMarker(path, { files: rest });
 }
 
+/**
+ * Tells the user, once per session, that the lint script could not check
+ * `filePath` — never a lint failure, so exit 0, where Claude Code
+ * shows a `systemMessage` from stdout and nothing from stderr. `reason`
+ * carries the exit code, signal or timeout and nothing from the linter's
+ * output: none of that output named the file, so none of it is attributed
+ * to the file. Once per session, not per file: a missing or broken linter
+ * fails the same way for every file, and the message says later files go
+ * unreported. A marker that cannot be read or written means the notice is
+ * shown again, never that it is lost.
+ */
+function couldNotCheck(root, sessionId, filePath, reason) {
+  const path = sessionId === null ? null : markerPath(root, sessionId, 'sensor-unchecked');
+  if (path !== null) {
+    if (readJSONMarker(path, {}).noticed === true) return 0;
+    writeJSONMarker(path, { noticed: true });
+  }
+  const systemMessage = `lint-touched: the lint script could not check ${filePath}: ${reason}. Files it cannot check later this session are not reported again.`;
+  process.stdout.write(JSON.stringify({ systemMessage }) + '\n');
+  return 0;
+}
+
 async function main() {
   let payload;
   try {
@@ -471,12 +496,11 @@ async function main() {
   // A pyproject.toml owner covers `.py` for the purpose of DECIDING whether
   // the file is in scope at all; readPyLintScript looks for the closest
   // real analogue to `scripts.lint` that pyproject.toml actually has.
-  const manifestName = isJs ? 'package.json' : 'pyproject.toml';
-  const ownerDir = findAncestorWith(startDir, root, manifestName);
-  if (!ownerDir) return 0;
-
-  const lintScript = isJs ? readLintScript(ownerDir) : readPyLintScript(ownerDir);
-  if (!lintScript) return 0;
+  const owner = isJs
+    ? findLintOwner(startDir, root, 'package.json', readLintScript)
+    : findLintOwner(startDir, root, 'pyproject.toml', readPyLintScript);
+  if (!owner) return 0;
+  const { ownerDir, lintScript } = owner;
 
   // Resolved relative to ownerDir — which is runBounded's own `cwd` below —
   // not root-relative `filePath`. Appending the root-relative form handed
@@ -525,9 +549,12 @@ async function main() {
   }
   if (!result) return 0;
 
-  // A spawn failure, a timeout (our own kill) or any other signal is never
-  // reported as a lint failure.
-  if (result.error || result.signal || result.timedOut) return 0;
+  // A timeout (our own kill), a spawn failure or any other signal is never
+  // reported as a lint failure: whatever the run printed is incomplete.
+  const sessionId = safeSessionId(payload.session_id);
+  if (result.timedOut) return couldNotCheck(root, sessionId, filePath, `it timed out after ${LINT_TIMEOUT_MS / 1000}s`);
+  if (result.error) return couldNotCheck(root, sessionId, filePath, 'it could not be started');
+  if (result.signal) return couldNotCheck(root, sessionId, filePath, `it was killed by ${result.signal}`);
 
   // The file the edit touched may have been rewritten by scripts.lint
   // itself (an auto-fixing `--fix`/`--write` linter) — checked BEFORE the
@@ -542,7 +569,6 @@ async function main() {
     ]);
   }
 
-  const sessionId = safeSessionId(payload.session_id);
   if (result.status === 0) { // clean — on overflow too: the linter's own exit code decides, with what was captured reported below
     forgetFile(root, sessionId, filePath);
     return 0;
@@ -565,7 +591,10 @@ async function main() {
   // a credential value printed alone, outside any context the mask
   // recognises, matches only a raw token.
   const reported = dropCommandFragments(attributed, [lintScript, fullCommand].flatMap(c => [c, maskText(c)]), exemptions);
-  if (reported.length === 0) return 0; // nothing attributable survived — writeReport's own guard would catch this too, but checking first means a filtered-out report never participates in dedupe bookkeeping at all
+  // Nothing attributable survived: the run failed without saying anything
+  // about this file, so it was not checked — and a filtered-out report never
+  // participates in dedupe bookkeeping.
+  if (reported.length === 0) return couldNotCheck(root, sessionId, filePath, `it exited with code ${result.status}`);
 
   const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
   if (decision.action === 'terse') return writeReport([decision.message]);
