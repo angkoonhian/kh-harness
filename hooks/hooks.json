@@ -1,0 +1,17 @@
+{
+  "description": "Tells each session whether its repository has the kit installed, and at which version. Silent in a repository at this version.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-nudge.mjs"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

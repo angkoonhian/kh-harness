@@ -56,8 +56,21 @@ Their flags, output and exit codes are in the
 ### The plugin and its two skills
 
 `.claude-plugin/plugin.json` makes this repository a Claude Code plugin.
-The plugin ships two skills and declares no hooks, so installing it changes
-nothing in any repository.
+The plugin ships two skills and one hook, so installing it changes nothing
+in any repository. The hook, `scripts/session-nudge.mjs` on `SessionStart`,
+runs in every session and only tells the session one thing: whether the
+repository has no harness, an older or newer one, or a manifest that can't
+be read. It is silent when the harness is at the plugin's version, outside
+a git repository, in kh-harness itself, and after
+`git config kh-harness.nudge off` (one repository) or `KH_HARNESS_NUDGE=off`
+(everywhere). It writes nothing. When it tells Claude to offer
+`/kh-harness:harness-init`, it also tells Claude to install only if you
+agree.
+
+It is a separate script from every hook `apply` installs. Claude Code adds
+a plugin's hooks to a repository's without removing duplicates, so a
+plugin copy of an installed hook would run twice in every harnessed
+repository.
 
 A **skill** is a Markdown file of instructions that Claude Code puts in
 front of the model. A **script** is code. The difference matters here:

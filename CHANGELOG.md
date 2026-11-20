@@ -6,6 +6,20 @@ lists in the manner of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The headings are plain, without links, since no release is tagged yet. The
 project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- A start-of-session notice, the plugin's first hook (`hooks/hooks.json`,
+  `scripts/session-nudge.mjs`). In every session it tells Claude whether
+  the repository has no harness, one from an older or newer kit, or a
+  manifest that can't be read. Where there is no harness or an older one,
+  Claude is told to offer `/kh-harness:harness-init` once and to install
+  only if the user agrees. It is silent when the harness is at the
+  plugin's version, outside a git repository, in kh-harness itself, under
+  `git config kh-harness.nudge off` and under `KH_HARNESS_NUDGE=off`. It
+  writes nothing and always exits 0.
+
 ## 0.2.0 - 2026-11-19
 
 ### Added
