@@ -337,7 +337,7 @@ Code runs each on the event it is registered for.
 | `session-brief.mjs` | `SessionStart` | prints the top of `HANDOFF.md` into the session | no |
 | `rules-brief.mjs` | `UserPromptSubmit` | adds up to 1,500 bytes of your rules to the prompt's context | no |
 | `tool-gate.mjs` | `PreToolUse` | tries every gate in the two gate files against the call | yes, when a gate with action `block` matches |
-| `lint-touched.mjs` | `PostToolUse`, after `Write` or `Edit` | runs the owning package's `lint` script and reports on the edited file | no |
+| `lint-touched.mjs` | `PostToolUse`, after `Write` or `Edit` | runs the owning package's `lint` script and reports on the edited file. For a `.py` file the owner is the nearest `pyproject.toml`: its `lint` entry under `[scripts]` or `[tool.poetry.scripts]`, or else the `scripts.lint` of a `package.json` in that same directory (a uv workspace driven through npm) | no |
 | `loop-watch.mjs` | `PostToolUseFailure` | one fixed sentence at the third identical failure with no different failure between | no |
 | `verify-touched.mjs` | `Stop` | runs the root `typecheck` script, or `test` | yes: a failure different from the last one reported stops the turn from ending, at most 3 times between passing runs |
 | `session-log.mjs` | 16 events | records each event, once you enable the log | no |

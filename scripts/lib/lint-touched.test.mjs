@@ -699,6 +699,48 @@ test('PYTHON: a pyproject.toml with no [tool.poetry.scripts] or [scripts] table 
   assert.equal(r.code, 0);
 });
 
+// --- uv + npm workspace (Vyugate trial): a Python member keeps its lint command
+// in a package.json beside its pyproject.toml, and every .py edit went unlinted.
+test('PYTHON: with no pyproject lint entry, the package.json beside pyproject.toml is used', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'pkg', 'src'), { recursive: true });
+  writeFileSync(join(d, 'pkg', 'src', 'a.py'), 'x = 1\n');
+  writeFileSync(join(d, 'pkg', 'pyproject.toml'), '[project]\nname = "app"\n');
+  writeFileSync(join(d, 'pkg', 'pylint.cjs'), "console.error(process.argv.slice(2).join(' ') + ':1 bad'); process.exit(1);\n");
+  writeFileSync(join(d, 'pkg', 'package.json'), JSON.stringify({ scripts: { lint: 'node pylint.cjs' } }));
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'pkg/src/a.py' } });
+  assert.equal(r.code, 2, 'the package.json lint script beside pyproject.toml must run');
+  assert.match(r.stderr, /src\/a\.py:1 bad/, 'the touched file is appended relative to the package');
+});
+
+test('PYTHON: a pyproject lint entry wins over the package.json beside it', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(join(d, 'src', 'a.py'), 'x = 1\n');
+  writeFileSync(join(d, 'clean.cjs'), 'process.exit(0);\n');
+  writeFileSync(join(d, 'dirty.cjs'), "console.error('src/a.py:1 from package.json'); process.exit(1);\n");
+  writeFileSync(join(d, 'pyproject.toml'), '[project]\nname = "app"\n\n[tool.poetry.scripts]\nlint = "node clean.cjs"\n');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ scripts: { lint: 'node dirty.cjs' } }));
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.py' } });
+  assert.equal(r.code, 0);
+});
+
+test('PYTHON: a package.json ABOVE the pyproject.toml is never used for a .py file', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-sensor-'));
+  mkdirSync(join(d, 'pkg', 'src'), { recursive: true });
+  writeFileSync(join(d, 'pkg', 'src', 'a.py'), 'x = 1\n');
+  writeFileSync(join(d, 'pkg', 'pyproject.toml'), '[project]\nname = "app"\n');
+  writeFileSync(join(d, 'eslint.cjs'), "console.error('pkg/src/a.py:1 js linter'); process.exit(1);\n");
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ scripts: { lint: 'node eslint.cjs' } }));
+  const r = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'pkg/src/a.py' } });
+  assert.equal(r.code, 0, 'a JavaScript package above must not lint a Python file');
+  // Not even when it sits beside a farther pyproject.toml (a uv workspace
+  // root): only the NEAREST pyproject.toml's directory is consulted.
+  writeFileSync(join(d, 'pyproject.toml'), '[project]\nname = "root"\n\n[tool.uv.workspace]\nmembers = ["pkg"]\n');
+  const r2 = run(d, { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'pkg/src/a.py' } });
+  assert.equal(r2.code, 0, 'the package.json beside a farther pyproject.toml is not the member\'s');
+});
+
 // --- Minor 7: output above spawnSync's default 1MB maxBuffer -------------
 test('BUFFER: lint output larger than the configured maxBuffer is still reported, not silently discarded', () => {
   // The original fixture (20,000 lines, ~929KB) stayed UNDER the real 1MB

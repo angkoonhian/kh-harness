@@ -551,9 +551,26 @@ async function main() {
   // A pyproject.toml owner covers `.py` for the purpose of DECIDING whether
   // the file is in scope at all; readPyLintScript looks for the closest
   // real analogue to `scripts.lint` that pyproject.toml actually has.
+  //
+  // A .py file's NEAREST pyproject.toml rarely has a lint entry of its own.
+  // In a workspace that drives every package through npm (a uv workspace
+  // whose Python members each have a package.json whose `scripts.lint` is
+  // `uv run ruff check …`), the command sits in a package.json in the SAME
+  // directory as that pyproject.toml, so that one package.json is read when
+  // the pyproject.toml has no lint entry; a pyproject entry wins. No other
+  // package.json is: one further up belongs to a different, usually
+  // JavaScript, package, whose linter would report nonsense on a .py file.
+  // Found on a real uv + npm workspace, where every Python edit went
+  // unlinted.
+  let nearestPyproject = true;
+  const readPyOwnerScript = dir => {
+    const nearest = nearestPyproject;
+    nearestPyproject = false;
+    return readPyLintScript(dir) ?? (nearest ? readLintScript(dir) : null);
+  };
   const owner = isJs
     ? findLintOwner(startDir, root, 'package.json', readLintScript)
-    : findLintOwner(startDir, root, 'pyproject.toml', readPyLintScript);
+    : findLintOwner(startDir, root, 'pyproject.toml', readPyOwnerScript);
   if (!owner) return 0;
   const { ownerDir, lintScript } = owner;
 
