@@ -213,3 +213,19 @@ test('renderSummary names phase 3 Intent', () => {
   const r = buildReport({ ...base, checks: [{ id: 'P3.rules', step: 27, phase: 3, state: 'absent', lookedFor: [], evidence: [], proposal: 'scaffold it' }] });
   assert.match(renderSummary(r), /Phase 3 — Intent/);
 });
+
+// --- Vyugate trial: the mixed npm + uv shape is named, and asked about -----
+test('UV-WORKSPACE: a uv workspace under a typescript profile is named in the summary and asked about once', async () => {
+  const { buildReport, renderSummary, deriveCouldNotDerive } = await import('./report.mjs');
+  const stack = { languages: ['typescript', 'python'], packageManager: 'npm', isWorkspace: true, packages: [{ dir: '.' }, { dir: 'a' }], ci: [], uvWorkspace: { members: ['pkgs/api', 'pkgs/cv'] } };
+  const qs = deriveCouldNotDerive({ stack, checks: [], profile: { id: 'typescript-workspace' } });
+  const uv = qs.filter(q => q.includes('uv workspace'));
+  assert.equal(uv.length, 1);
+  assert.match(uv[0], /2 Python members \(pkgs\/api, pkgs\/cv\)/);
+  assert.match(uv[0], /derived for npm only, so uv\.lock is not installed/);
+  assert.match(uv[0], /never from a package\.json beside it/);
+  const report = buildReport({ root: '/x/repo', kitVersion: '0', git: { isRepo: false }, stack, harness: {}, exposures: [], profile: { id: 'typescript-workspace' }, checks: [] });
+  assert.match(renderSummary(report), /^mixed stack: also a uv workspace .* with 2 Python members/m);
+  assert.deepEqual(deriveCouldNotDerive({ stack, checks: [], profile: { id: 'python' } }).filter(q => q.includes('uv workspace')), [], 'not mixed under the Python profile');
+  assert.deepEqual(deriveCouldNotDerive({ stack: { ...stack, uvWorkspace: null }, checks: [], profile: { id: 'typescript-workspace' } }).filter(q => q.includes('uv workspace')), []);
+});

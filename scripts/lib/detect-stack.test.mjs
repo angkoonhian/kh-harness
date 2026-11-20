@@ -168,3 +168,36 @@ test('single-star workspace pattern does not find nested packages', () => {
   assert.equal(s.packages.length, 1);
   assert.ok(!s.packages.some(p => p.name === 'nested'));
 });
+
+// --- Vyugate trial: an npm-workspace wrapper around a uv workspace ---------
+function mixedRepo() {
+  const d = repo();
+  write(d, 'package.json', JSON.stringify({ name: 'wrap', workspaces: ['apps/ui', 'pkgs/api', 'pkgs/cv'], scripts: { lint: 'npm run lint --workspaces' } }));
+  write(d, 'package-lock.json', '{}');
+  write(d, 'apps/ui/package.json', JSON.stringify({ name: 'ui', scripts: { lint: 'eslint .' } }));
+  write(d, 'apps/ui/src/a.ts', 'export {};\n');
+  write(d, 'pkgs/api/package.json', JSON.stringify({ name: 'api', scripts: { lint: 'uv run ruff check' } }));
+  write(d, 'pkgs/api/pyproject.toml', '[project]\nname = "api"\n');
+  write(d, 'pkgs/cv/package.json', JSON.stringify({ name: 'cv', scripts: { lint: 'uv run ruff check' } }));
+  write(d, 'pkgs/cv/pyproject.toml', '[project]\nname = "cv"\n');
+  write(d, 'pyproject.toml', '[project]\nname = "wrap"\n\n[tool.uv.workspace]\nmembers = [\n  "pkgs/api",\n  "pkgs/cv/",\n  "pkgs/gone",\n]\n\n[tool.uv.sources]\nx = { workspace = true }\n');
+  write(d, 'uv.lock', 'version = 1\n');
+  return d;
+}
+
+test('UV-WORKSPACE: members listed in [tool.uv.workspace] with their own pyproject.toml are recorded; a stale entry is not', () => {
+  const s = run(mixedRepo());
+  assert.deepEqual(s.uvWorkspace, { members: ['pkgs/api', 'pkgs/cv'] });
+  assert.equal(s.packageManager, 'npm', 'unchanged: the first lockfile still decides');
+});
+
+test('UV-WORKSPACE: no uv.lock, or no members table, records nothing', () => {
+  const noLock = repo();
+  write(noLock, 'pyproject.toml', '[tool.uv.workspace]\nmembers = ["a"]\n');
+  write(noLock, 'a/pyproject.toml', '[project]\n');
+  assert.equal(run(noLock).uvWorkspace, null);
+  const noTable = repo();
+  write(noTable, 'pyproject.toml', '[project]\nname = "x"\n');
+  write(noTable, 'uv.lock', 'version = 1\n');
+  assert.equal(run(noTable).uvWorkspace, null);
+});

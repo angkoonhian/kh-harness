@@ -5,6 +5,13 @@ import { countProposals } from './gap-model.mjs';
 const MARK = { absent: '[ ]', declared: '[~]', verified: '[x]', failing: '[!]', 'n/a': '[-]' };
 const PHASE_NAMES = { 0: 'Reconnaissance', 1: 'Legible', 2: 'Senses', 3: 'Intent', 4: 'Continuity' };
 
+/** The uv workspace members (detect-stack.mjs, `uvWorkspace`) when the
+ * selected profile is not the Python one — the mixed shape — else null. */
+function mixedUvWorkspace(stack, profileId) {
+  const members = stack?.uvWorkspace?.members ?? [];
+  return members.length && String(profileId).startsWith('typescript') ? members : null;
+}
+
 export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} }) {
   const out = [];
   if (nested.length) {
@@ -22,6 +29,19 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   }
   if (!stack.packageManager) {
     out.push('No lockfile found, so the package manager is unknown. Confirm which one this project uses.');
+  }
+  // A uv workspace beside a non-Python profile (Vyugate trial): the profile
+  // is right about the root manifest and silent about the Python members.
+  // Asked, not acted on — what to derive for them is a decision.
+  const uv = mixedUvWorkspace(stack, profile.id);
+  if (uv) {
+    const install = stack.packageManager && stack.packageManager !== 'uv'
+      ? `the bootstrap install step is derived for ${stack.packageManager} only, so uv.lock is not installed by it; and `
+      : '';
+    out.push(`This repository is also a uv workspace with ${uv.length} Python member${uv.length === 1 ? '' : 's'} (${uv.join(', ')}), ` +
+      `but its profile is ${profile.id}, from the root package.json. On the Python side, ${install}the per-edit sensor lints a .py file ` +
+      'from its pyproject.toml (a `lint` entry under [scripts] or [tool.poetry.scripts]), never from a package.json beside it. ' +
+      'Should either cover the Python members?');
   }
   // Coordinator ruling (post-review, concern 1): a workspace pattern this
   // tool REFUSED to interpret must be reported, not absorbed. `glob.mjs`
@@ -154,6 +174,8 @@ export function renderSummary(report) {
   const lines = [];
   lines.push(`kh-harness ${report.kitVersion} — ${report.repo.name}`);
   lines.push(`profile: ${report.profile}   branch: ${report.repo.branch ?? '(none)'}`);
+  const uv = mixedUvWorkspace(report.stack, report.profile);
+  if (uv) lines.push(`mixed stack: also a uv workspace (pyproject.toml [tool.uv.workspace] and uv.lock) with ${uv.length} Python member${uv.length === 1 ? '' : 's'} — see "Could not derive"`);
   lines.push('');
 
   const phases = [...new Set(report.checks.map(c => c.phase))].sort((a, b) => a - b);
