@@ -223,9 +223,9 @@ test('hookRegistrations records each hook\'s resolved script with its normalised
     },
   }));
   const regs = run(d).claudeDir.hookRegistrations;
-  assert.deepEqual(regs.PostToolUse, [{ script: 'bin/fmt.sh', matcher: 'Edit|Write' }, { script: 'bin/lint.sh', matcher: 'Edit' }], 'a plain alternation is sorted, so Write|Edit and Edit|Write are one matcher');
-  assert.deepEqual(regs.Stop, [{ script: null, matcher: null }]);
-  assert.deepEqual(regs.SessionStart, [{ script: 'bin/fmt.sh', matcher: null }], '"*" is every source, the same as an omitted matcher');
+  assert.deepEqual(regs.PostToolUse, [{ script: 'bin/fmt.sh', matcher: 'Edit|Write', form: 'shell' }, { script: 'bin/lint.sh', matcher: 'Edit', form: 'shell' }], 'a plain alternation is sorted, so Write|Edit and Edit|Write are one matcher');
+  assert.deepEqual(regs.Stop, [{ script: null, matcher: null, form: 'shell' }]);
+  assert.deepEqual(regs.SessionStart, [{ script: 'bin/fmt.sh', matcher: null, form: 'shell' }], '"*" is every source, the same as an omitted matcher');
   assert.equal(JSON.stringify(regs).includes('--write'), false, 'the command itself is never recorded');
 });
 
@@ -239,8 +239,8 @@ test('hookRegistrations resolves an exec-form entry\'s script from args, with ${
     },
   }));
   const regs = run(d).claudeDir.hookRegistrations;
-  assert.deepEqual(regs.PostToolUse, [{ script: 'bin/lint.sh', matcher: 'Edit' }]);
-  assert.deepEqual(regs.Stop, [{ script: null, matcher: null }], 'a path the scan cannot see is never named');
+  assert.deepEqual(regs.PostToolUse, [{ script: 'bin/lint.sh', matcher: 'Edit', form: 'exec' }]);
+  assert.deepEqual(regs.Stop, [{ script: null, matcher: null, form: 'exec' }], 'a path the scan cannot see is never named');
 });
 
 test('hookEvents also reads .claude/settings.local.json', () => {

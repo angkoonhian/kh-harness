@@ -65,7 +65,7 @@ repository's, and is not something we have measured — restart if it matters.
 ## The three commands
 
     node scripts/detect.mjs    <path-to-repo> [--verify] [--json]
-    node scripts/apply.mjs     <path-to-repo> [--yes] [--allow-dirty] [--allow-default-branch]
+    node scripts/apply.mjs     <path-to-repo> [--yes] [--upgrade] [--allow-dirty] [--allow-default-branch]
     node scripts/uninstall.mjs <path-to-repo> [--yes]
 
 Each takes `--help` for its full contract. `apply` and `uninstall` **default to
@@ -147,6 +147,35 @@ Writes the files and settings patches `detect` proposed. Nothing else, ever:
 Both gates apply only to `--yes`. When git cannot be consulted at all (not
 installed, or it refuses to read the directory), neither gate can run, and
 `--yes` refuses unless both flags are given.
+
+#### Upgrading what an older kit installed: `--upgrade`
+
+A check whose capability is already there reads `declared`, and `apply`
+proposes nothing for it — so hook scripts an older kit installed are not
+replaced by a newer kit's on an ordinary run. `--upgrade` opts in to that,
+and nothing more:
+
+    node scripts/apply.mjs . --upgrade         # dry run: the diffs of what would be updated
+    node scripts/apply.mjs . --upgrade --yes   # write them
+
+For each `declared` check that has a generator, it keeps only files that
+the manifest records, that are unmodified since kh-harness wrote them (line
+endings aside), that still carry its stamp, and whose content this kit
+generates differently. It writes no new file and no settings patch. A file
+you edited is kept and listed as `kept`. A hook script is `held` — not
+updated, with the reason printed — when a file it imports could not be
+updated with it, because a new script beside an old shared module fails to
+load. A shared module is held when its new version drops an export the
+installed one has.
+
+`--upgrade` never edits `.claude/settings.json`. If a hook it updates is
+registered in the old shell form (`node .claude/scripts/…`), it says so in
+a `note:` line. The updated scripts read the hook payload on stdin and the
+root from `CLAUDE_PROJECT_DIR`, falling back to the working directory, as
+the old ones did, so the old registration keeps running them.
+
+Without the flag, `detect` and `apply` print one line naming the files
+`--upgrade` would update, and only when there are any.
 
 ### `uninstall`
 

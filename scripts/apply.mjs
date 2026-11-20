@@ -13,14 +13,14 @@ import { detectExposures } from './lib/detect-exposure.mjs';
 import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps, countProposals } from './lib/gap-model.mjs';
 import { gitInfo, defaultBranches } from './lib/git-info.mjs';
-import { buildProposals } from './lib/propose.mjs';
-import { deriveCouldNotDerive, exposureSectionLines, DETECT_REPORT_PATH } from './lib/report.mjs';
+import { buildPlan, pendingUpgrades } from './lib/propose.mjs';
+import { deriveCouldNotDerive, exposureSectionLines, upgradeHint, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const KNOWN_FLAGS = new Set(['--yes', '--allow-default-branch', '--allow-dirty', '--help', '-h']);
+const KNOWN_FLAGS = new Set(['--yes', '--upgrade', '--allow-default-branch', '--allow-dirty', '--help', '-h']);
 
 const argv = process.argv.slice(2);
 
@@ -261,7 +261,28 @@ function reportWhatDetectionFound() {
 }
 reportWhatDetectionFound();
 
-const proposals = buildProposals({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });
+const planArgs = { checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files };
+const upgrading = flags.has('--upgrade');
+const { proposals, held, notes } = buildPlan({ ...planArgs, upgrade: upgrading });
+
+// `--upgrade` is opt-in (found by the Vyugate trial: hooks an older kit
+// installed read `declared`, so their newer scripts were never offered).
+// Without it, one line says how many files it would update — only when
+// that number is not zero. With it, every file it holds back is named with
+// the reason, and every shell-form registration of a script it updates is
+// named: nothing about an upgrade is silent.
+const pending = upgrading ? [] : pendingUpgrades(planArgs);
+function reportUpgrade() {
+  if (!upgrading) {
+    if (pending.length) process.stdout.write(`kh-harness: ${upgradeHint(pending)}\n`);
+    return;
+  }
+  if (!proposals.some(p => p.upgrade) && !held.length) {
+    process.stdout.write('kh-harness: --upgrade found nothing to update — looked for files the manifest records that are unmodified since kh-harness wrote them, carry its stamp, and differ from what this kit generates.\n');
+  }
+  for (const h of held) process.stdout.write(`held       ${h.path} (not upgraded: ${h.reason})\n`);
+  for (const n of notes) process.stdout.write(`note: ${n}\n`);
+}
 
 // Files this kit previously wrote whose content on disk no longer matches
 // what the manifest recorded. propose.mjs never re-proposes a file the user
@@ -293,11 +314,12 @@ function reportDrift() {
 }
 
 if (proposals.length === 0) {
-  if (drift.length === 0) {
+  if (drift.length === 0 && !upgrading && pending.length === 0) {
     process.stdout.write('kh-harness: no actions — this repository already satisfies every applicable step.\n');
   } else {
     process.stdout.write(`kh-harness: no actions for ${root}.\n`);
     reportDrift();
+    reportUpgrade();
   }
   process.exit(0);
 }
@@ -313,9 +335,14 @@ if (proposals.length === 0) {
 // run's own, larger number is named "actions" instead of reusing the word
 // detect already owns.
 const gapCount = countProposals(checks);
+// An upgrade closes no gap — its check is already `declared` — so it is
+// counted apart, never folded into a number `detect` would not recognise.
+const upgradeCount = proposals.filter(p => p.upgrade).length;
+const gapActions = proposals.length - upgradeCount;
+const upgradeClause = upgradeCount ? `, and ${upgradeCount} file${upgradeCount === 1 ? '' : 's'} to upgrade (--upgrade)` : '';
 process.stdout.write(
-  `kh-harness: ${proposals.length} action${proposals.length === 1 ? '' : 's'} to close ` +
-  `${gapCount} capability gap${gapCount === 1 ? '' : 's'} (as detect reports them) for ${root}\n\n`,
+  `kh-harness: ${gapActions} action${gapActions === 1 ? '' : 's'} to close ` +
+  `${gapCount} capability gap${gapCount === 1 ? '' : 's'} (as detect reports them)${upgradeClause} for ${root}\n\n`,
 );
 // renderDiff is read-only, but it is not infallible by construction — it is
 // a backstop, not the primary defence (readSettingsResult's shape checks
@@ -346,6 +373,7 @@ try {
 
 if (!flags.has('--yes')) {
   reportDrift();
+  reportUpgrade();
   // What `--yes` would refuse, said now rather than after the diffs have
   // been read and acted on — see gateRefusals.
   for (const r of refusals) process.stdout.write(`note: --yes would be refused — ${r}\n`);
@@ -432,6 +460,7 @@ if (result.patched.length > 0 && !settingsWasCanonical) {
 for (const s of result.skipped) process.stdout.write(`skipped    ${s.path} (${s.why})\n`);
 for (const f of result.failed) process.stderr.write(`failed     ${f.path}: ${f.error}\n`);
 reportDrift();
+reportUpgrade();
 
 if (manifestError) {
   process.stderr.write(`kh-harness: could not record what was written in ${join(root, MANIFEST_PATH)}: ${manifestError}\n`);

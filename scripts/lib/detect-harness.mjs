@@ -237,7 +237,11 @@ function hookRegistrations(root, files) {
         for (const entry of Array.isArray(matcher?.hooks) ? matcher.hooks : []) {
           const command = typeof entry?.command === 'string' ? entry.command.trim() : '';
           if (!command) continue;
-          (out[event] ??= []).push({ script: commandScript(entry, files), matcher: m });
+          // `form`: exec (`command` + `args`, no shell) or shell (one
+          // command string). `apply --upgrade` names a shell-form
+          // registration of a script it updates — it never rewrites it.
+          const form = Array.isArray(entry?.args) && entry.args.length > 0 ? 'exec' : 'shell';
+          (out[event] ??= []).push({ script: commandScript(entry, files), matcher: m, form });
         }
       }
     }

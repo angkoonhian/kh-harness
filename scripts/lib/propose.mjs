@@ -653,7 +653,84 @@ function onDiskCarriesStamp(root, relPath) {
   }
 }
 
-export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files, generators = {} }) {
+/** The UPGRADE-SKEW test, in one place, for both callers below: a recorded
+ * path may be rewritten when, and only when, `root` is known, the file on
+ * disk is still what we wrote (line endings aside), it carries our stamp,
+ * and the generated content differs. See the comment inside buildPlan's
+ * first loop for why each clause is there. */
+function upgradable(root, manifest, entry, p) {
+  return Boolean(root && entry
+    && classify(root, manifest, p.path) === 'ours-unmodified'
+    && onDiskCarriesStamp(root, p.path)
+    && sha256(p.contents) !== entry.sha256);
+}
+
+/** The file on disk is already exactly `contents`, line endings aside. */
+function onDiskEquals(root, relPath, contents) {
+  if (!root || contents == null) return false;
+  try {
+    return readFileSync(join(root, relPath), 'utf8').replace(/\r\n/g, '\n') === contents;
+  } catch {
+    return false;
+  }
+}
+
+/** The names a module exports, by declaration or by `export { … }` list.
+ * Read off the text, never imported: this kit never runs a file it is
+ * deciding whether to overwrite. */
+function exportNames(src) {
+  const names = new Set();
+  for (const m of src.matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)) names.add(m[1]);
+  for (const m of src.matchAll(/^export\s*\{([^}]*)\}/gm)) {
+    for (const part of m[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).pop()?.trim();
+      if (name) names.add(name);
+    }
+  }
+  return names;
+}
+
+function readOrNull(root, relPath) {
+  try { return readFileSync(join(root, relPath), 'utf8'); } catch { return null; }
+}
+
+/** Why a dependency will not be at this kit's version after the run — the
+ * words the `held` line prints. */
+function whyNotCurrent(root, manifest, relPath) {
+  const cls = classify(root, manifest, relPath);
+  if (cls === 'ours-modified') return readOrNull(root, relPath) === null ? 'deleted since kh-harness wrote it' : 'modified since kh-harness wrote it';
+  if (cls === 'theirs') return readOrNull(root, relPath) === null ? 'missing' : 'not a file kh-harness recorded writing';
+  if (!onDiskCarriesStamp(root, relPath)) return 'missing the kh-harness stamp';
+  return 'held back itself (see its own line)';
+}
+
+/**
+ * `apply --upgrade` (found by the Vyugate trial): the UPGRADE-SKEW branch
+ * below only ever ran for an `absent` check, so in a repository where an
+ * older kit installed the hooks — P2.sensor, P2.stopgate, P4.sessionbrief
+ * all `declared` — the newer scripts were never offered. With `upgrade`,
+ * each `declared` check that has a generator is run too, and of what it
+ * yields ONLY file proposals passing exactly `upgradable` are kept: no new
+ * file, no settings patch, nothing for a file the user edited or one without
+ * our stamp. Opt-in, because it rewrites files that are working today.
+ *
+ * Two holds keep an upgrade from breaking a hook that works now:
+ *   - a hook script is not updated unless every file it imports (its
+ *     settings-hook proposal's `requiresFiles`, after the script itself)
+ *     will be at this kit's version after the run — the new lint-touched.mjs
+ *     imports `runBounded` from harness-redact.mjs, which a 0.1.0 copy lacks;
+ *   - a shared module is not updated if the new version drops an export the
+ *     installed one has, which a kept hook may import.
+ * Each hold is returned in `held` with its reason, never dropped silently.
+ *
+ * `notes`: for each hook script this would update, a registration in shell
+ * form (`node .claude/scripts/x.mjs`) is named. The updated scripts read the
+ * hook payload from stdin and the root from CLAUDE_PROJECT_DIR (falling
+ * back to the working directory), exactly as the old ones did, so the old
+ * registration runs them; but `--upgrade` never edits settings.json, so the
+ * shell form's cwd-relative path stays as it is, and the user is told.
+ */
+export function buildPlan({ checks, manifest, kitVersion, harness, root, stack, files, generators = {}, upgrade = false }) {
   const registry = { ...GENERATORS, ...generators };
   const recorded = new Map((manifest?.files ?? []).map(f => [f.path, f]));
   const alreadyWritten = new Set(recorded.keys());
@@ -691,11 +768,7 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
         // function's docstring holds for updates as it does for new files.
         // The `reason` says all of this, because it is printed at the gate.
         const entry = recorded.get(p.path);
-        const upgradable = root && entry
-          && classify(root, manifest, p.path) === 'ours-unmodified'
-          && onDiskCarriesStamp(root, p.path)
-          && sha256(p.contents) !== entry.sha256;
-        if (!upgradable) continue;
+        if (!upgradable(root, manifest, entry, p)) continue;
         recorded.delete(p.path);
         out.push({ ...p, checkId: c.id, reason: `update ${p.path} — unmodified since kh-harness wrote it, and the generated content has changed (${p.reason})` });
         continue;
@@ -704,7 +777,93 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
       if (p.kind === 'file') alreadyWritten.add(p.path);
     }
   }
-  return out;
+  if (!upgrade || !root) return { proposals: out, held: [], notes: [] };
+
+  // Pass 2 — `--upgrade` only. Files this run already writes (new, or
+  // updated above) are settled; the rest of a declared check's output is
+  // filtered down to `upgradable` files.
+  const settled = new Set(out.filter(p => p.kind === 'file').map(p => p.path));
+  const candidates = new Map();
+  const generated = new Map();
+  const deps = new Map();
+  const scriptEvent = new Map();
+  for (const c of checks) {
+    if (c.state !== 'declared' || c.decidable === false) continue;
+    const gen = registry[c.id];
+    if (!gen) continue;
+    for (const p of gen({ kitVersion, harness, root, stack, checks, files, check: c })) {
+      if (p.kind === 'settings-hook' && p.requiresFiles?.length) {
+        const [script, ...rest] = p.requiresFiles;
+        deps.set(script, [...new Set([...(deps.get(script) ?? []), ...rest])]);
+        scriptEvent.set(script, p.event);
+      }
+      if (p.kind !== 'file') continue;
+      if (!generated.has(p.path)) generated.set(p.path, p.contents);
+      if (settled.has(p.path) || candidates.has(p.path)) continue;
+      if (!upgradable(root, manifest, recorded.get(p.path), p)) continue;
+      candidates.set(p.path, {
+        ...p, checkId: c.id, upgrade: true,
+        reason: `upgrade ${p.path} — unmodified since kh-harness wrote it, and this kit generates different content (${c.id} is declared; --upgrade)`,
+      });
+    }
+  }
+
+  const held = [];
+  const imported = new Set([...deps.values()].flat());
+  for (const path of [...candidates.keys()].filter(p => imported.has(p))) {
+    const installed = readOrNull(root, path) ?? '';
+    const next = exportNames(candidates.get(path).contents);
+    const dropped = [...exportNames(installed)].filter(n => !next.has(n));
+    if (dropped.length) {
+      candidates.delete(path);
+      held.push({ path, reason: `the updated version no longer exports ${dropped.join(', ')}, which an installed hook may import` });
+    }
+  }
+  // Settled by pass 1: an update of a recorded file, or a new file where
+  // nothing stands — a new-file proposal over a file of the user's is
+  // skipped by apply, so that one is not current.
+  const everRecorded = new Set((manifest?.files ?? []).map(f => f.path));
+  const current = path => candidates.has(path)
+    || onDiskEquals(root, path, generated.get(path))
+    || (settled.has(path) && (everRecorded.has(path) || readOrNull(root, path) === null));
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [script, ds] of deps) {
+      if (!candidates.has(script)) continue;
+      const stale = ds.filter(d => !current(d));
+      if (!stale.length) continue;
+      candidates.delete(script);
+      held.push({ path: script, reason: `it imports ${stale.map(d => `${d} (${whyNotCurrent(root, manifest, d)})`).join(', ')}, which would not be updated with it — the new script would fail to load against the installed one` });
+      changed = true;
+    }
+  }
+
+  const notes = [];
+  const registrations = harness?.claudeDir?.hookRegistrations ?? {};
+  for (const path of candidates.keys()) {
+    const event = scriptEvent.get(path);
+    if (!event) continue;
+    if ((registrations[event] ?? []).some(r => r.script === path && r.form === 'shell')) {
+      notes.push(`${path} is registered on ${event} in shell form (\`node ${path}\`), which resolves the script against the working directory. The updated script needs nothing that registration lacks — it reads the hook payload on stdin and the root from CLAUDE_PROJECT_DIR, as before — so it keeps running. --upgrade never edits settings.json; the exec form this kit now writes (rooted at \${CLAUDE_PROJECT_DIR}) is not applied to it.`);
+    }
+  }
+
+  // Imported modules first, so a batch stopped by a write failure never
+  // leaves a new script beside an old module it cannot load from.
+  const ordered = [...candidates.values()].sort((a, b) => Number(!imported.has(a.path)) - Number(!imported.has(b.path)));
+  return { proposals: [...out, ...ordered], held, notes };
+}
+
+export function buildProposals(args) {
+  return buildPlan(args).proposals;
+}
+
+/** What `apply --upgrade` would add to an ordinary run: the paths of files
+ * an older kit wrote, still unmodified and stamped, whose content this kit
+ * generates differently. `detect` and a plain `apply` print one line from
+ * this, and only when it is non-empty. */
+export function pendingUpgrades(args) {
+  return buildPlan({ ...args, upgrade: true }).proposals.filter(p => p.upgrade).map(p => p.path);
 }
 
 // Exported for propose.test.mjs's generic coherence test: "every check that

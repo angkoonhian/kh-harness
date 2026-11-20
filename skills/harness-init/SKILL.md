@@ -41,6 +41,14 @@ you are running.
 > anything else. Every phase reference reads it, and a phase run without it
 > is a guess.
 
+## The upgrade rule
+
+> If detection says that files kh-harness wrote are older than this kit,
+> offer `apply --upgrade` as its own gate: show the dry run, then run it
+> with `--yes` only if the user agrees. It updates only unmodified, stamped
+> files the manifest records, and never writes a new file or edits
+> settings. Report every `held` and `note:` line it prints.
+
 ## Before you start
 
 - Read [references/detect.md](references/detect.md) for how to run

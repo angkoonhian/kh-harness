@@ -12,6 +12,7 @@ import { buildReport, renderSummary, DETECT_REPORT_PATH } from './lib/report.mjs
 import { verifyCommands } from './lib/verify.mjs';
 import { gitInfo } from './lib/git-info.mjs';
 import { readManifest } from './lib/manifest.mjs';
+import { pendingUpgrades } from './lib/propose.mjs';
 import { parseArgv, warnUnknown, wantsHelp, DETECT_USAGE } from './lib/cli.mjs';
 
 const KIT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -59,7 +60,10 @@ const profile = selectProfile(stack);
 const manifest = readManifest(root);
 const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest });
 
-const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested });
+// Read-only: what `apply --upgrade` would update, so the report can say so
+// in one line. Nothing here writes; the plan is the one apply acts on.
+const upgradable = pendingUpgrades({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });
+const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested, upgradable });
 
 if (flags.has('--verify')) {
   report.verification = verifyCommands({ root, stack, profile });

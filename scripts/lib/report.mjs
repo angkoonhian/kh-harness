@@ -56,7 +56,19 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
  * report, re-generated with a new `generatedAt`, refused the next apply). */
 export const DETECT_REPORT_PATH = 'docs/harness/detect.json';
 
-export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks, nested = [] }) {
+/**
+ * The one line `detect` and a plain `apply` print when `apply --upgrade`
+ * would update something — said with what was looked for, and only when
+ * the list is non-empty (callers check). `paths` comes from propose.mjs's
+ * `pendingUpgrades`, the same plan `--upgrade` acts on.
+ */
+export function upgradeHint(paths) {
+  const n = paths.length;
+  return `${n} file${n === 1 ? '' : 's'} kh-harness wrote ${n === 1 ? 'is' : 'are'} older than this kit — unmodified since, stamped, ` +
+    `and this kit generates different content (${paths.join(', ')}). \`apply --upgrade\` would update ${n === 1 ? 'it' : 'them'}.`;
+}
+
+export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks, nested = [], upgradable = [] }) {
   return {
     schema: 1,
     kitVersion,
@@ -70,6 +82,8 @@ export function buildReport({ root, kitVersion, git, stack, harness, exposures, 
     exposures,
     checks,
     nested,
+    // Paths `apply --upgrade` would update (propose.mjs, `pendingUpgrades`).
+    upgradable,
     couldNotDerive: deriveCouldNotDerive({ stack, checks, nested, profile }),
   };
 }
@@ -153,6 +167,7 @@ export function renderSummary(report) {
 
   const n = countProposals(report.checks);
   lines.push(n === 0 ? 'No proposals — this repository already satisfies every applicable step.' : `${n} proposal${n === 1 ? '' : 's'}. Nothing has been written except docs/harness/detect.json.`);
+  if (report.upgradable?.length) lines.push(upgradeHint(report.upgradable));
 
   // Distinct from proposals, deliberately: a proposal is "the tool will do
   // this"; advice is "you should do this, but kh-harness will not" (e.g.

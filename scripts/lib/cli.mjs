@@ -134,7 +134,7 @@ ${EXIT_CODES}`;
 export const APPLY_USAGE = `kh-harness apply — write the files and settings \`detect\` proposed
 
 USAGE
-  node scripts/apply.mjs <path-to-repo> [--yes] [--allow-dirty] [--allow-default-branch]
+  node scripts/apply.mjs <path-to-repo> [--yes] [--upgrade] [--allow-dirty] [--allow-default-branch]
 
 THE DEFAULT IS A DRY RUN. Without --yes this prints every proposal and a diff
 of exactly what it would write, and writes nothing. There is no --force; git
@@ -148,7 +148,17 @@ to merge by hand.
 
 FLAGS
   --yes                    Actually write. Without it, nothing is written.
-  --allow-dirty            Proceed with uncommitted changes to tracked files.
+  --upgrade                Also update files an OLDER kit wrote for a check
+                           that is already declared: only a file the
+                           manifest records, still unmodified since it was
+                           written (line endings aside), carrying the kit's
+                           stamp, whose content this kit generates
+                           differently. No new file, no settings patch. A
+                           hook script is held back, and named, when a file
+                           it imports cannot be updated with it. Without
+                           this flag, apply and detect say in one line how
+                           many files it would update.
+  --allow-dirty           Proceed with uncommitted changes to tracked files.
                            The gate exists so you can \`git diff\` exactly what
                            this tool did. This tool's OWN prior writes are
                            already excused from it, per the manifest, so you
