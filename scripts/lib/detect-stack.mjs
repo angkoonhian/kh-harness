@@ -89,6 +89,41 @@ function workspacePatterns(root, rootPkg) {
   return null;
 }
 
+/**
+ * A uv workspace beside whatever else the root is (found by the Vyugate
+ * trial: an npm-workspace wrapper whose members are mostly Python packages,
+ * with `pyproject.toml` + `uv.lock` at the root, read as plain
+ * `typescript-workspace`). Evidence only: `uv.lock` is present, and the root
+ * `pyproject.toml`'s `[tool.uv.workspace]` table lists `members`; a member
+ * is counted only when its own `pyproject.toml` is in the file list, so a
+ * glob or a stale entry is never claimed. Returns `{ members }` or null.
+ * Profile selection does not read this: the report names the mixed shape
+ * and asks; nothing is derived or executed from it.
+ */
+function uvWorkspace(root, files) {
+  if (!files.includes('uv.lock') || !files.includes('pyproject.toml')) return null;
+  const text = readIfPresent(root, 'pyproject.toml');
+  if (!text) return null;
+  let inTable = false;
+  let body = null;
+  for (const line of text.split(/\r?\n/)) {
+    const header = line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/);
+    if (header && body === null) { inTable = header[1].trim() === 'tool.uv.workspace'; continue; }
+    if (!inTable) continue;
+    if (body === null) {
+      const start = line.match(/^\s*members\s*=\s*\[(.*)$/);
+      if (start) body = start[1];
+    } else {
+      body += '\n' + line;
+    }
+    if (body !== null && body.includes(']')) break;
+  }
+  if (body === null) return null;
+  const listed = [...body.split(']')[0].matchAll(/["']([^"']+)["']/g)].map(m => m[1].replace(/\/+$/, ''));
+  const members = listed.filter(m => files.includes(`${m}/pyproject.toml`)).sort();
+  return members.length ? { members } : null;
+}
+
 export function detectStack(root, files) {
   const rootPkg = parseJson(readIfPresent(root, 'package.json'));
   const patterns = workspacePatterns(root, rootPkg);
@@ -139,5 +174,8 @@ export function detectStack(root, files) {
     // the values, which are repository-controlled and contain a control
     // character by definition. Empty on every ordinary repository.
     rejectedWorkspacePatterns,
+    // `{ members }` when a uv workspace sits beside the rest; see
+    // `uvWorkspace`. Read by report.mjs only.
+    uvWorkspace: uvWorkspace(root, files),
   };
 }

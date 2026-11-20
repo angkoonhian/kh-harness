@@ -257,3 +257,24 @@ test('a proposal apply cannot write says so on its own line', () => {
   assert.match(s, /→ run the recon prompt \(the skill drafts this; apply does not write it\)$/m);
   assert.match(s, /→ add a git remote \(a human does this; apply does not write it\)$/m);
 });
+
+// --- Vyugate trial: the mixed npm + uv shape is named, and asked about -----
+test('UV-WORKSPACE: a uv workspace under a typescript profile is named in the summary, and only the install step is asked about', async () => {
+  const { buildReport, renderSummary, deriveCouldNotDerive } = await import('./report.mjs');
+  const stack = { languages: ['typescript', 'python'], packageManager: 'npm', isWorkspace: true, packages: [{ dir: '.' }, { dir: 'a' }], ci: [], uvWorkspace: { members: ['pkgs/api', 'pkgs/cv'] } };
+  const qs = deriveCouldNotDerive({ stack, checks: [], profile: { id: 'typescript-workspace' } });
+  const uv = qs.filter(q => q.includes('uv workspace'));
+  assert.equal(uv.length, 1);
+  assert.match(uv[0], /2 Python members \(pkgs\/api, pkgs\/cv\)/);
+  assert.match(uv[0], /derived for npm only, so uv\.lock is not installed/);
+  assert.equal(uv[0].includes('sensor'), false, 'the sensor lints Python members without a decision, so it is not asked about');
+  const uvPm = { ...stack, packageManager: 'uv' };
+  assert.deepEqual(deriveCouldNotDerive({ stack: uvPm, checks: [], profile: { id: 'typescript-workspace' } }).filter(q => q.includes('uv workspace')), [], 'nothing to ask when uv already installs');
+  const report = buildReport({ root: '/x/repo', kitVersion: '0', git: { isRepo: false }, stack, harness: {}, exposures: [], profile: { id: 'typescript-workspace' }, checks: [] });
+  const summary = renderSummary(report);
+  assert.match(summary, /^mixed stack: also a uv workspace .* with 2 Python members — see "Could not derive"$/m);
+  const uvSummary = renderSummary(buildReport({ root: '/x/repo', kitVersion: '0', git: { isRepo: false }, stack: uvPm, harness: {}, exposures: [], profile: { id: 'typescript-workspace' }, checks: [] }));
+  assert.match(uvSummary, /^mixed stack: also a uv workspace .* with 2 Python members$/m, 'named, with no pointer to a question that is not asked');
+  assert.deepEqual(deriveCouldNotDerive({ stack, checks: [], profile: { id: 'python' } }).filter(q => q.includes('uv workspace')), [], 'not mixed under the Python profile');
+  assert.deepEqual(deriveCouldNotDerive({ stack: { ...stack, uvWorkspace: null }, checks: [], profile: { id: 'typescript-workspace' } }).filter(q => q.includes('uv workspace')), []);
+});
