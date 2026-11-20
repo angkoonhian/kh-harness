@@ -376,6 +376,61 @@ test('.git-as-file (worktree layout) is a known blind spot — not reported', ()
   assert.equal(detected.some(n => n.path === 'worktree'), false);
 });
 
+// --- Vyugate trial: linked worktrees of the repository itself ------------
+//
+// Vyugate keeps `git worktree add` checkouts of itself under
+// .claude/worktrees/<name>; each was reported as a nested repository "to be
+// assessed separately". They are checkouts of the SAME repository. Real
+// `git worktree add` here, not a hand-written .git file.
+
+function committedRepo() {
+  const d = fixture();
+  execFileSync('git', ['-C', d, 'add', '-A'], { stdio: 'ignore' });
+  execFileSync('git', ['-C', d, 'commit', '-q', '-m', 'init'], { stdio: 'ignore' });
+  return d;
+}
+
+test('WORKTREE: a linked worktree of this repository under an ignored folder is a worktree, not a nested repository, and is not scanned', () => {
+  const d = committedRepo();
+  writeFileSync(join(d, '.git', 'info', 'exclude'), '**/.claude/worktrees/\n');
+  execFileSync('git', ['-C', d, 'worktree', 'add', '-q', '-b', 'side', join(d, '.claude', 'worktrees', 'side')], { stdio: 'ignore' });
+  const { files, nested, worktrees } = listFiles(d);
+  assert.deepEqual(worktrees, [{ path: '.claude/worktrees/side', kind: 'worktree' }]);
+  assert.deepEqual(nested, [], 'not a nested repository');
+  assert.equal(files.some(f => f.startsWith('.claude/worktrees/')), false, 'not scanned');
+});
+
+test('WORKTREE: a linked worktree in an untracked folder is recognised too', () => {
+  const d = committedRepo();
+  execFileSync('git', ['-C', d, 'worktree', 'add', '-q', '-b', 'side', join(d, 'wt')], { stdio: 'ignore' });
+  const { files, nested, worktrees } = listFiles(d);
+  assert.deepEqual(nested.filter(n => n.path === 'wt'), []);
+  assert.deepEqual(worktrees, [{ path: 'wt', kind: 'worktree' }]);
+  assert.equal(files.some(f => f.startsWith('wt/')), false);
+});
+
+test('WORKTREE fails closed: a worktree of ANOTHER repository stays a nested repository', () => {
+  const d = committedRepo();
+  const other = committedRepo();
+  writeFileSync(join(d, '.git', 'info', 'exclude'), 'vendor/\n');
+  execFileSync('git', ['-C', other, 'worktree', 'add', '-q', '-b', 'side', join(d, 'vendor', 'other')], { stdio: 'ignore' });
+  const { nested, worktrees } = listFiles(d);
+  assert.deepEqual(worktrees, []);
+  assert.ok(nested.some(n => n.path === 'vendor/other' && n.kind === 'nested-repo'), JSON.stringify(nested));
+});
+
+test('WORKTREE fails closed: a .git file that claims our worktrees folder without git\'s back-pointer stays a nested repository', () => {
+  const d = committedRepo();
+  writeFileSync(join(d, '.git', 'info', 'exclude'), 'vendor/\n');
+  // A real worktree elsewhere gives the admin folder; this one only CLAIMS it.
+  execFileSync('git', ['-C', d, 'worktree', 'add', '-q', '-b', 'side', join(d, 'vendor', 'real')], { stdio: 'ignore' });
+  mkdirSync(join(d, 'vendor', 'forged'));
+  writeFileSync(join(d, 'vendor', 'forged', '.git'), `gitdir: ${join(d, '.git', 'worktrees', 'real').split('\\').join('/')}\n`);
+  const { nested, worktrees } = listFiles(d);
+  assert.deepEqual(worktrees.map(w => w.path), ['vendor/real']);
+  assert.ok(nested.some(n => n.path === 'vendor/forged' && n.kind === 'nested-repo'), JSON.stringify(nested));
+});
+
 // `npm install git+https://…` leaves a real .git inside an installed package.
 // A top-level node_modules/ does not end with '/node_modules/', so it used to
 // reach the depth-1 scan and produce a false entry in a disclosure block that

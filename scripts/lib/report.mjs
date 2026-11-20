@@ -73,7 +73,14 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
  * `uninstall` can say it leaves it. */
 export const DETECT_REPORT_PATH = 'docs/harness/detect.json';
 
-export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks, nested = [] }) {
+/** One quiet line for linked worktrees of this repository, shared by
+ * detect and apply so the two say it the same way. */
+export function worktreeLine(worktrees) {
+  const n = worktrees.length;
+  return `Linked worktrees of this repository (${n}) — checkouts of the same repository, not scanned: ${worktrees.map(w => w.path).join(', ')}`;
+}
+
+export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks, nested = [], worktrees = [] }) {
   return {
     schema: 1,
     kitVersion,
@@ -87,6 +94,9 @@ export function buildReport({ root, kitVersion, git, stack, harness, exposures, 
     exposures,
     checks,
     nested,
+    // Linked worktrees of THIS repository (scan.mjs, isOwnWorktree): not
+    // scanned, and not a question: they are checkouts of the same repository.
+    worktrees,
     couldNotDerive: deriveCouldNotDerive({ stack, checks, nested, profile }),
   };
 }
@@ -157,6 +167,11 @@ export function renderSummary(report) {
   if (report.nested && report.nested.length) {
     lines.push(`Nested repositories detected (${report.nested.length}) — not scanned:`);
     for (const n of report.nested) lines.push(`  • ${n.path} (${n.kind})`);
+    lines.push('');
+  }
+
+  if (report.worktrees?.length) {
+    lines.push(worktreeLine(report.worktrees));
     lines.push('');
   }
 

@@ -41,7 +41,7 @@ if (!existsSync(root)) {
 // listFiles also reports nested repositories (submodules, nested/bare repos)
 // it deliberately did not descend into. That disclosure must reach the
 // report — a report that omits it makes a partial scan look complete.
-const { files, nested, unreadableDirs } = listFiles(root);
+const { files, nested, worktrees, unreadableDirs } = listFiles(root);
 const git = gitInfo(root);
 // A git that could not answer is not a non-repository; say so, on stderr so
 // `--json` stdout stays parseable. The report records `vcs: null` either way.
@@ -58,7 +58,7 @@ const profile = selectProfile(stack);
 const manifest = readManifest(root);
 const checks = buildGaps({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion: KIT_VERSION });
 
-const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested });
+const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested, worktrees });
 
 if (flags.has('--verify')) {
   report.verification = verifyCommands({ root, stack, profile });

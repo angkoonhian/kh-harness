@@ -1,5 +1,5 @@
-import { existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { OVER_LIMIT, readBounded } from '../../assets/scripts/harness-log.mjs';
 import { git } from './git-info.mjs';
 
@@ -52,8 +52,11 @@ function isExcludedPath(entry) {
 }
 
 // Known blind spot: a repository whose .git is a file (separate-git-dir, worktree layout)
-// is not detected — git does not enumerate it in ls-files output. Submodules are detected
-// via mode 160000; worktrees are views of the same repository, not separate projects.
+// is not always detected — git does not enumerate it in ls-files output when the gitfile
+// does not resolve. Submodules are detected via mode 160000. A directory whose .git file
+// IS found is reported as `worktree` when `isOwnWorktree` proves it is a linked worktree
+// of this repository (returned apart from `nested`, and not scanned), and as
+// `nested-repo` otherwise, a worktree of some OTHER repository included.
 // Note that the blind spot is not confined to worktrees: a project created with
 // `git init --separate-git-dir` and then nested as a subfolder is a genuinely
 // independent repository, and it sits on this same silent path.
@@ -85,8 +88,57 @@ function isExcludedPath(entry) {
 // looks for what the scan cannot see: a path whose name holds a non-ASCII
 // byte. git quotes such a name unless asked not to, and `gitPaths` above,
 // the only way this file asks git for a path, asks.
+/**
+ * True only when `rel` is a LINKED WORKTREE OF THIS REPOSITORY: a checkout
+ * of the same repository, not a second one (found by the Vyugate trial,
+ * which keeps `git worktree add` checkouts of itself under
+ * `.claude/worktrees/<name>`; each was reported as a nested repository to be
+ * "assessed separately"). Fails closed: anything not proven is false, and
+ * the caller keeps calling it a nested repository. Proven when all hold:
+ *   - `<rel>/.git` is a regular FILE, not a directory;
+ *   - it reads `gitdir: <path>`, and `<path>` sits directly in THIS
+ *     repository's `<common dir>/worktrees/` (`git rev-parse
+ *     --git-common-dir`, so a run from inside another worktree works);
+ *   - that admin directory's own `gitdir` file points back at `<rel>/.git`.
+ * The back-pointer is what git itself writes for a worktree; a `.git` file
+ * merely claiming a path in our worktrees folder does not have it.
+ * Compared by real path, so case, short names and junctions agree.
+ */
+function isOwnWorktree(root, rel, commonDir) {
+  if (!commonDir) return false;
+  try {
+    const dotGit = join(root, rel, '.git');
+    if (!lstatSync(dotGit).isFile()) return false;
+    const pointer = readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+?)\s*$/m);
+    if (!pointer) return false;
+    const admin = realpathSync.native(resolve(join(root, rel), pointer[1]));
+    if (realpathSync.native(dirname(admin)) !== realpathSync.native(join(commonDir, 'worktrees'))) return false;
+    const back = readFileSync(join(admin, 'gitdir'), 'utf8').trim();
+    return realpathSync.native(resolve(admin, back)) === realpathSync.native(dotGit);
+  } catch {
+    return false;
+  }
+}
+
+/** This repository's common git directory, absolute, or null. */
+function gitCommonDir(root) {
+  try {
+    const out = git(root, ['rev-parse', '--git-common-dir']).trim();
+    return out ? resolve(root, out) : null;
+  } catch {
+    return null;
+  }
+}
+
 function detectNestedRepositories(root) {
   const nested = [];
+  let commonDir;
+  // A directory holding a `.git`: a linked worktree of this repository, or
+  // a nested repository. git is asked once, and only when there is one.
+  const repoKind = path => {
+    if (commonDir === undefined) commonDir = gitCommonDir(root);
+    return isOwnWorktree(root, path, commonDir) ? 'worktree' : 'nested-repo';
+  };
   // `ls-files -co --exclude-standard`, the list `listFiles` wants, is
   // exactly the paths of `-s` (fetched here for the gitlink scan) plus
   // `-o --exclude-standard` (fetched here for nested repositories). Both
@@ -122,7 +174,7 @@ function detectNestedRepositories(root) {
         const path = entry.slice(0, -1);
         // Confirm with .git child check (file or directory)
         if (existsSync(join(root, path, '.git'))) {
-          nested.push({ path, kind: 'nested-repo' });
+          nested.push({ path, kind: repoKind(path) });
         }
       }
     }
@@ -144,7 +196,7 @@ function detectNestedRepositories(root) {
           if (existsSync(join(fullPath, '.git'))) {
             // Avoid duplicates
             if (!nested.some(n => n.path === path)) {
-              nested.push({ path, kind: 'nested-repo' });
+              nested.push({ path, kind: repoKind(path) });
             }
           } else {
             // Check immediate children only (depth 1, no recursion)
@@ -156,7 +208,7 @@ function detectNestedRepositories(root) {
                 if (existsSync(join(subPath, '.git'))) {
                   const resultPath = `${path}/${entry}`;
                   if (!nested.some(n => n.path === resultPath)) {
-                    nested.push({ path: resultPath, kind: 'nested-repo' });
+                    nested.push({ path: resultPath, kind: repoKind(resultPath) });
                   }
                 }
               }
@@ -188,13 +240,21 @@ function detectNestedRepositories(root) {
   } catch {
     // If any git operation fails entirely, return empty — and no file lists,
     // so listFiles falls back to the walk.
-    return { nested: [], tracked: null, untracked: null };
+    return { nested: [], worktrees: [], tracked: null, untracked: null };
   }
 
   // Sort for stable output and deduplicate
   const uniqueNested = Array.from(new Map(nested.map(n => [n.path, n])).values());
   uniqueNested.sort((a, b) => a.path.localeCompare(b.path));
-  return { nested: uniqueNested, tracked, untracked };
+  // Linked worktrees of this repository are returned apart: they are not
+  // scanned either (a checkout of another branch of the same repository),
+  // but they are not a second repository to assess, so nothing that reads
+  // `nested` may ask about them.
+  return {
+    nested: uniqueNested.filter(n => n.kind !== 'worktree'),
+    worktrees: uniqueNested.filter(n => n.kind === 'worktree'),
+    tracked, untracked,
+  };
 }
 
 /**
@@ -208,7 +268,7 @@ function detectNestedRepositories(root) {
  * through to the walk.
  */
 export function listFiles(root) {
-  const { nested, tracked, untracked } = detectNestedRepositories(root);
+  const { nested, worktrees, tracked, untracked } = detectNestedRepositories(root);
   if (tracked !== null && untracked !== null) {
     // The union git's `ls-files -co --exclude-standard` would print — see
     // detectNestedRepositories. `-s` and `-o` are disjoint by definition,
@@ -216,12 +276,13 @@ export function listFiles(root) {
     let files = [...tracked, ...untracked]
       .filter(f => !f.startsWith('node_modules/') && !f.includes('/node_modules/') && !f.endsWith('/'));
 
-    // Filter out files beneath nested repositories
-    if (nested.length > 0) {
-      files = files.filter(f => !nested.some(n => f.startsWith(`${n.path}/`)));
+    // Filter out files beneath nested repositories and linked worktrees
+    const skipped = [...nested, ...worktrees];
+    if (skipped.length > 0) {
+      files = files.filter(f => !skipped.some(n => f.startsWith(`${n.path}/`)));
     }
 
-    return { files, source: 'git', nested, unreadableDirs: [] };
+    return { files, source: 'git', nested, worktrees, unreadableDirs: [] };
   }
 
   // Fallback: a directory walk that prunes at the directory. A recursive
@@ -229,7 +290,7 @@ export function listFiles(root) {
   // dropping them, seconds where skipping the directory takes milliseconds,
   // and would descend into a Windows junction. Regular files only, never
   // through a symlink or a junction, POSIX-relative paths.
-  return { ...walkFiles(root), source: 'walk', nested };
+  return { ...walkFiles(root), source: 'walk', nested, worktrees };
 }
 
 /**
