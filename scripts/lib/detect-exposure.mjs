@@ -68,7 +68,13 @@ const PEM_PATTERN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/g;
 // `secret:` were probed against this repository and matched 48 and 8 lines
 // of ordinary prose, which would bury the check in noise. `auth[_-]?token`
 // also covers `.npmrc`'s `_authToken`.
-const DB_CRED = /(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*(\S{8,})/gi;
+//
+// The separator and the value must be on the KEY's line ([ \t], never \s):
+// with \s, `if password:` at a line end took the first word of the NEXT line
+// as its value, and an empty `LABEL_STUDIO_PASSWORD=` in .env.example took
+// the next key (found by the Vyugate trial). A key with nothing after it on
+// its own line holds no value, so it is not a finding.
+const DB_CRED = /(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|auth[_-]?token)["']?[ \t]*([:=])[ \t]*(\S{8,})/gi;
 
 // Tested on the VALUE only — of a credential line, or of a token match with
 // its `Bearer ` scheme removed. It used to be tested on key+value for
@@ -128,10 +134,159 @@ const ENV_REFERENCE = /^["'`]?(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{\{[^}]*\}\}|\$\{[A
  * failure — see detectExposures below, which runs it over every DB_CRED
  * match and records the result on the finding, and splitExposures /
  * isProminentExposure, which downstream callers use to decide presentation.
+ *
+ * `context` (Vyugate trial) lets the caller pass the rest of the value's
+ * line (`rest`), the separator (`:` or `=`) and whether the file is source
+ * code (`code`); see `classifyRest`. With it, a third answer is possible:
+ * `'none'` — the key holds no value at all (a type annotation), so there is
+ * no finding. Without it, the answer is the value token's alone, as before.
  */
-export function classifyCredentialValue(value) {
+export function classifyCredentialValue(value, context = {}) {
   if (typeof value !== 'string' || value.length === 0) return 'literal';
-  return REFERENCE_VALUE.test(value) || ENV_REFERENCE.test(value) ? 'reference' : 'literal';
+  if (REFERENCE_VALUE.test(value) || ENV_REFERENCE.test(value)) return 'reference';
+  const { rest, separator, code } = context;
+  if (typeof rest !== 'string') return 'literal';
+  return classifyRest(rest.trim(), separator, Boolean(code));
+}
+
+// Source files, by extension. In these a string literal is QUOTED, so an
+// unquoted identifier after `=` or `:` is a name — a variable, a parameter,
+// a type — never the secret itself. Outside them (.env, YAML, .ini,
+// Markdown prose) an unquoted word may be the value, so that rule never
+// applies there.
+const CODE_EXTENSIONS = new Set([
+  '.py', '.pyi', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs',
+  '.go', '.java', '.kt', '.kts', '.scala', '.rb', '.rs', '.cs', '.php', '.swift', '.vue', '.svelte',
+]);
+function isCodeFile(rel) {
+  const base = basename(rel).toLowerCase();
+  const dot = base.lastIndexOf('.');
+  return dot > 0 && CODE_EXTENSIONS.has(base.slice(dot));
+}
+
+const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*/;
+const CLOSERS = { '(': ')', '[': ']', '{': '}', '<': '>' };
+
+/**
+ * Reads one bracket group starting at `s[i]` (an opener), quote-aware and
+ * nested. Returns the index after its closer, or -1 if the line ends inside
+ * it (a call or a type continued on the next line). `angles` admits `<…>`,
+ * for type arguments only.
+ */
+function skipGroup(s, i, angles) {
+  const stack = [];
+  for (; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const q = ch;
+      for (i++; i < s.length && s[i] !== q; i++) if (s[i] === '\\') i++;
+      if (i >= s.length) return -1;
+      continue;
+    }
+    if (ch in CLOSERS && (ch !== '<' || angles)) stack.push(CLOSERS[ch]);
+    else if (ch === stack[stack.length - 1]) {
+      stack.pop();
+      if (stack.length === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** An identifier chain — `a`, `a.b`, `a.b(…)`, `a[…].c(…)` — from `s[0]`.
+ * Returns `{ end, segments }` (`end` -1 when a group runs off the line), or
+ * null when `s` does not start with an identifier. */
+function readChain(s, { angles = false, calls = true } = {}) {
+  const head = s.match(IDENT);
+  if (!head) return null;
+  let i = head[0].length;
+  let segments = 0;
+  for (;;) {
+    if (s[i] === '.') {
+      const next = s.slice(i + 1).match(IDENT);
+      if (!next) break;
+      i += 1 + next[0].length;
+    } else if ((calls && s[i] === '(') || s[i] === '[' || (angles && s[i] === '<')) {
+      const end = skipGroup(s, i, angles);
+      if (end === -1) return { end: -1, segments: segments + 1 };
+      i = end;
+    } else {
+      break;
+    }
+    segments++;
+  }
+  return { end: i, segments };
+}
+
+/** What may follow a value on its line and still leave it the whole value:
+ * closers and delimiters of the surrounding expression, and a comment. */
+const TAIL = /^[\s;,)\]}]*(?:(?:#|\/\/).*)?$/;
+
+/** A type expression — `str`, `str | None`, `Optional[str]`,
+ * `Annotated[str, Field(max_length=1000)]`, `string | null`, `Array<T>`,
+ * `string[]` — then a tail. Returns the index after it, or -1. */
+function readType(s) {
+  let i = 0;
+  for (;;) {
+    const chain = readChain(s.slice(i), { angles: true, calls: false });
+    if (!chain || chain.end === -1) return -1;
+    i += chain.end;
+    while (s.startsWith('[]', i)) i += 2;
+    const bar = s.slice(i).match(/^\s*\|\s*/);
+    if (!bar) return i;
+    i += bar[0].length;
+  }
+}
+
+/**
+ * The value after the key, read to the end of its line (Vyugate trial: each
+ * shape below was a real line of ordinary code reported as a credential).
+ * Returns 'reference' (code reading a value from elsewhere), 'none' (no
+ * value at all — a type annotation), or 'literal'. When in doubt, literal.
+ *   - a call, `getpass.getpass("Password: ")`, `_saved_password(state, row)`
+ *     — any string inside is an argument, not the value; a call continued
+ *     on the next line counts;
+ *   - in a source file only: a bare identifier, `= password;` — a name;
+ *   - in a source file, after `:` only: a type annotation with no default,
+ *     `<key>: Annotated[str, …]`, `has_<key>: boolean;`. One WITH a
+ *     default, `password: str = "hunter2"`, is judged by the default.
+ */
+function classifyRest(rest, separator, code) {
+  if (code && separator === ':') {
+    const end = readType(rest);
+    if (end !== -1) {
+      const after = rest.slice(end);
+      if (TAIL.test(after)) return 'none';
+      const dflt = after.match(/^\s*=\s*(\S.*)$/);
+      if (dflt) {
+        const value = dflt[1].trim();
+        if (PLACEHOLDER.test(value.split(/\s/)[0])) return 'none';
+        return classifyCredentialValue(value.split(/\s/)[0], { rest: value, separator: '=', code });
+      }
+    }
+  }
+  const chain = readChain(rest, { calls: true });
+  if (!chain) return 'literal';
+  if (chain.segments > 0) {
+    if (chain.end === -1) return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\s*\(/.test(rest) ? 'reference' : 'literal';
+    if (TAIL.test(rest.slice(chain.end))) return 'reference';
+  }
+  if (code && chain.end !== -1 && isNameList(rest)) return 'reference';
+  return 'literal';
+}
+
+/** Source files only: a name, or a comma-separated list of names and
+ * references — `= password;`, the tuple `user, pw = cam_user, cam_pw` —
+ * then a tail. Every element must be one; one quoted string fails it. */
+function isNameList(rest) {
+  let i = 0;
+  for (;;) {
+    const chain = readChain(rest.slice(i), { calls: true });
+    if (!chain || chain.end === -1) return false;
+    i += chain.end;
+    const comma = rest.slice(i).match(/^\s*,\s*(?=[A-Za-z_$])/);
+    if (!comma) return TAIL.test(rest.slice(i));
+    i += comma[0].length;
+  }
 }
 
 /**
@@ -396,12 +551,30 @@ function tokenFinding(text) {
  * line), else `reference` if any survives at all. One finding per file,
  * as before — the line number is what tells the user which one.
  */
-function credentialFinding(text) {
+// Files whose prose carries code snippets, so a call or an attribute chain
+// after the key is code there too. Everything else that is not a source
+// file — .env, YAML, .ini, .properties, JSON — is judged on the value token
+// alone, as before: `<KEY>=Secr3t(2024)` there is a value, not a call.
+const DOC_EXTENSIONS = new Set(['.md', '.mdx', '.markdown', '.rst', '.adoc', '.txt']);
+function isDocFile(rel) {
+  const base = basename(rel).toLowerCase();
+  const dot = base.lastIndexOf('.');
+  return dot > 0 && DOC_EXTENSIONS.has(base.slice(dot));
+}
+
+function credentialFinding(text, rel = '') {
+  const code = isCodeFile(rel);
+  const readsRest = code || isDocFile(rel);
   let reference = null;
   for (const m of text.matchAll(DB_CRED)) {
-    const value = m[1];
+    const [, separator, value] = m;
     if (isPlaceholder(value)) continue;
-    if (classifyCredentialValue(value) === 'literal') return { valueKind: 'literal', line: lineOf(text, m.index) };
+    const start = m.index + m[0].length - value.length;
+    const eol = text.indexOf('\n', start);
+    const rest = text.slice(start, eol === -1 ? text.length : eol).replace(/\r$/, '');
+    const kind = classifyCredentialValue(value, readsRest ? { rest, separator, code } : {});
+    if (kind === 'none') continue;
+    if (kind === 'literal') return { valueKind: 'literal', line: lineOf(text, m.index) };
     reference ??= { valueKind: 'reference', line: lineOf(text, m.index) };
   }
   return reference;
@@ -470,7 +643,7 @@ function scanFile(buf, rel, isLocalSettings) {
     findings.push({ kind, location: rel, severity: 'high', line: token.line });
   }
 
-  const credential = credentialFinding(text);
+  const credential = credentialFinding(text, rel);
   if (credential) {
     const finding = {
       kind: 'credentials-in-doc', location: rel, severity: 'medium',
