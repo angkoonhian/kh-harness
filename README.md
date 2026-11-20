@@ -104,9 +104,26 @@ Only `./` works; `claude plugin marketplace add .` is rejected with
 `scripts/lib/plugin-install.test.mjs`; not re-run for this release). `claude plugin list` then lists
 `kh-harness@kh-harness-local`, with `Read from:` naming your checkout: a
 folder marketplace reads from the working tree, so it is not a copy. The
-plugin ships two skills, `harness-init` and `harness-learn`, and declares no
-hooks. In the repository you want harnessed, `/harness-init` walks you
-through the steps below. You can also run the scripts yourself.
+plugin ships two skills, `harness-init` and `harness-learn`, and one hook,
+the start-of-session notice below. In the repository you want harnessed,
+`/harness-init` walks you through the steps below. You can also run the
+scripts yourself.
+
+Once the plugin is enabled, you don't have to remember which repositories
+have the harness. At the start of every session, the plugin's one hook,
+`scripts/session-nudge.mjs`, checks the repository the session opened in:
+
+| The repository | What the session is told |
+|---|---|
+| has no harness | that it has none, and that Claude may offer `/kh-harness:harness-init` once, installing only if you agree |
+| has a harness from an older kit | both versions, and that Claude may offer the upgrade, again only if you agree |
+| has a harness from a newer kit | that the plugin needs updating |
+| has a manifest that can't be read | that, and to run `detect` |
+| has a harness at this version, isn't a git repository, or is kh-harness itself | nothing |
+
+The hook writes nothing and always exits 0. To silence it in one
+repository, run `git config kh-harness.nudge off` there. To silence it
+everywhere, set `KH_HARNESS_NUDGE=off`.
 
 > [!WARNING]
 > **Before you run `apply --yes` anywhere: it can install hooks that execute
@@ -116,7 +133,8 @@ through the steps below. You can also run the scripts yourself.
 > each turn. A `git pull` that changes those scripts changes what runs by
 > itself. On a large codebase the stop gate can add 10–30 s per turn. The
 > plugin installs none of this; `apply` writes the hooks into your
-> repository when you ask it to.
+> repository when you ask it to. The plugin's own hook, the start-of-session
+> notice, runs no repository script.
 
 **2. Inventory the repository.** From the repository, on a branch:
 
@@ -341,6 +359,10 @@ Code runs each on the event it is registered for.
 | `loop-watch.mjs` | `PostToolUseFailure` | one fixed sentence at the third identical failure with no different failure between | no |
 | `verify-touched.mjs` | `Stop` | runs the root `typecheck` script, or `test` | yes: a failure different from the last one reported stops the turn from ending, at most 3 times between passing runs |
 | `session-log.mjs` | 16 events | records each event, once you enable the log | no |
+
+The plugin adds one hook of its own, `session-nudge.mjs` on `SessionStart`,
+which is silent in a repository whose harness is at the plugin's version
+(see [Quick start](#quick-start)).
 
 What each reads and writes, and one session walked through in time order,
 are under

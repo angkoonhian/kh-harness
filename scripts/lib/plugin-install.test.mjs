@@ -50,7 +50,7 @@ test('README warns up front that apply can install code-executing hooks', () => 
     'the warning must say that hooks execute code, not merely that hooks exist');
 });
 
-test('the plugin ships the skill and declares no hooks', () => {
+test('the plugin ships the skill and declares no hooks in its manifest', () => {
   // The line and byte budgets live in skill-links.test.mjs, which every
   // change to the skill is already held to. They are deliberately not
   // repeated here: two places asserting one budget drift apart, and the copy
@@ -58,11 +58,14 @@ test('the plugin ships the skill and declares no hooks', () => {
   const m = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
 
   // Not an omission. Plugin hooks merge with no deduplication, and the only
-  // documented off switch (disableAllHooks) is global — so a plugin-declared
-  // hook beside an apply-installed one double-fires with no per-plugin way to
-  // stop it. apply owns hook installation; the plugin ships the skill alone.
+  // documented off switch (disableAllHooks) is global — so a plugin copy of
+  // an apply-installed hook would double-fire with no per-plugin way to stop
+  // it. apply owns the repository's hooks. The plugin's one hook, in
+  // hooks/hooks.json and found by convention, is the session-start notice,
+  // which is silent where apply has installed and has its own off switches
+  // (session-nudge.test.mjs).
   assert.equal(m.hooks, undefined,
-    'declaring hooks here would double-fire against the ones apply installs');
+    'hooks/hooks.json is loaded by convention; declaring it here too would load it twice');
 
   // The manifest declares no `skills` key: a declared component path must
   // exist or `validate --strict` exits 1 (measured). Convention scans

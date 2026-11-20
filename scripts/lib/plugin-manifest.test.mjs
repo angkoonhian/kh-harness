@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
@@ -15,11 +15,16 @@ test('the manifest declares a kebab-case name and a version', () => {
   assert.ok(m.author && m.author.name, 'validate warns without author, and CI runs --strict');
 });
 
-test('the plugin declares NO hooks — hooks are installed into the target repo by apply', () => {
+test('the plugin\'s hooks are found by convention, and none of them is a hook apply installs', () => {
+  // Plugin hooks merge with a repository's with no deduplication, so a
+  // plugin copy of an apply-installed hook would run twice in every
+  // installed repository. The plugin's one hook (session-nudge.test.mjs
+  // pins its shape) is its own script, silent where apply has installed.
   const m = read('.claude-plugin/plugin.json');
-  assert.equal(m.hooks, undefined, 'see the architecture decision: plugin hooks would double-fire');
-  assert.equal(existsSync(resolve(ROOT, 'hooks')), false, 'a hooks/ directory would be found by convention');
-  assert.equal(existsSync(resolve(ROOT, 'hooks/hooks.json')), false);
+  assert.equal(m.hooks, undefined, 'hooks/hooks.json is loaded by convention; declaring it too would load it twice');
+  const installed = readdirSync(resolve(ROOT, 'assets', 'scripts'));
+  const text = readFileSync(resolve(ROOT, 'hooks', 'hooks.json'), 'utf8');
+  for (const name of installed) assert.ok(!text.includes(name), `the plugin must not run ${name}, which apply installs`);
 });
 
 test('LOAD-BEARING: claude plugin validate --strict exits 0 on the shipped plugin', (t) => {
