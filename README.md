@@ -201,7 +201,7 @@ without being asked each time:
 
 | Hook | When | What it runs |
 |---|---|---|
-| `PostToolUse` | after each `Write`/`Edit` | the **owning package's `lint` script**, on the one file just edited, bounded at 30s |
+| `PostToolUse` | after each `Write`/`Edit` | the **owning package's `lint` script**, on the one file just edited, bounded at 30s. For a `.py` file the owner is the nearest `pyproject.toml`: its `lint` entry under `[scripts]` or `[tool.poetry.scripts]`, or else the `scripts.lint` of a `package.json` in that same directory (a uv workspace driven through npm) |
 | `Stop` | at the end of each turn | the **root package's `typecheck` script**, or `test` if there is no `typecheck`, over the **whole repository**, bounded at 120s |
 | `SessionStart` | at session start | nothing — it reads `HANDOFF.md` (or `docs/HANDOFF.md`) and prints the top of it |
 | `UserPromptSubmit` | on every prompt | nothing — it reads `docs/harness/RULES.md` and adds up to 1500 bytes of its rules to the prompt's context, high priority first (installed only once the registry holds a rule) |
