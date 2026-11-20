@@ -223,7 +223,8 @@ test('UV-WORKSPACE: a uv workspace under a typescript profile is named in the su
   assert.equal(uv.length, 1);
   assert.match(uv[0], /2 Python members \(pkgs\/api, pkgs\/cv\)/);
   assert.match(uv[0], /derived for npm only, so uv\.lock is not installed/);
-  assert.match(uv[0], /never from a package\.json beside it/);
+  assert.equal(uv[0].includes('sensor'), false, 'the sensor now lints Python members without a decision, so it is not asked about');
+  assert.deepEqual(deriveCouldNotDerive({ stack: { ...stack, packageManager: 'uv' }, checks: [], profile: { id: 'typescript-workspace' } }).filter(q => q.includes('uv workspace')), [], 'nothing to ask when uv already installs');
   const report = buildReport({ root: '/x/repo', kitVersion: '0', git: { isRepo: false }, stack, harness: {}, exposures: [], profile: { id: 'typescript-workspace' }, checks: [] });
   assert.match(renderSummary(report), /^mixed stack: also a uv workspace .* with 2 Python members/m);
   assert.deepEqual(deriveCouldNotDerive({ stack, checks: [], profile: { id: 'python' } }).filter(q => q.includes('uv workspace')), [], 'not mixed under the Python profile');

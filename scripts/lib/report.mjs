@@ -34,14 +34,13 @@ export function deriveCouldNotDerive({ stack, checks, nested = [], profile = {} 
   // is right about the root manifest and silent about the Python members.
   // Asked, not acted on — what to derive for them is a decision.
   const uv = mixedUvWorkspace(stack, profile.id);
-  if (uv) {
-    const install = stack.packageManager && stack.packageManager !== 'uv'
-      ? `the bootstrap install step is derived for ${stack.packageManager} only, so uv.lock is not installed by it; and `
-      : '';
+  // Only the install step is left to ask about: the per-edit sensor falls back
+  // to a package.json beside a member's pyproject.toml, so Python edits in such
+  // a workspace are linted with no decision needed.
+  if (uv && stack.packageManager && stack.packageManager !== 'uv') {
     out.push(`This repository is also a uv workspace with ${uv.length} Python member${uv.length === 1 ? '' : 's'} (${uv.join(', ')}), ` +
-      `but its profile is ${profile.id}, from the root package.json. On the Python side, ${install}the per-edit sensor lints a .py file ` +
-      'from its pyproject.toml (a `lint` entry under [scripts] or [tool.poetry.scripts]), never from a package.json beside it. ' +
-      'Should either cover the Python members?');
+      `but its profile is ${profile.id}, from the root package.json, and the bootstrap install step is derived for ${stack.packageManager} only, ` +
+      'so uv.lock is not installed by it. Should the bootstrap install the Python members too?');
   }
   // Coordinator ruling (post-review, concern 1): a workspace pattern this
   // tool REFUSED to interpret must be reported, not absorbed. `glob.mjs`

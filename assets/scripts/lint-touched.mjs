@@ -449,7 +449,17 @@ async function main() {
   const ownerDir = findAncestorWith(startDir, root, manifestName);
   if (!ownerDir) return 0;
 
-  const lintScript = isJs ? readLintScript(ownerDir) : readPyLintScript(ownerDir);
+  // A .py file's pyproject.toml rarely has a lint entry of its own. In a
+  // workspace that drives every package through npm (each Python member has a
+  // package.json whose `scripts.lint` is `uv run ruff check …`), the lint
+  // command sits in a package.json in the SAME directory as the pyproject.toml.
+  // Only that directory is consulted: a package.json further up belongs to a
+  // different (usually JavaScript) package, and running its linter on a .py
+  // file would report nonsense. Found on a real uv + npm workspace, where every
+  // Python edit went unlinted.
+  const lintScript = isJs
+    ? readLintScript(ownerDir)
+    : (readPyLintScript(ownerDir) ?? readLintScript(ownerDir));
   if (!lintScript) return 0;
 
   // Resolved relative to ownerDir — which is runBounded's own `cwd` below —
