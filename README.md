@@ -267,6 +267,14 @@ The exact rules are under
 
 ## How it works
 
+There are three kinds of part: the five commands, run by you or by a model
+following a skill; the two skills, which are instructions a model reads;
+and the hook scripts `apply` installs, which Claude Code runs on its own
+events. The two flows below are the short version.
+[How kh-harness works](docs/guide/how-it-works.md) explains the machinery:
+what runs when, where every file lives, how `detect` decides, and what the
+checks do and do not show.
+
 ### Setting up the harness
 
 ```mermaid
@@ -318,6 +326,25 @@ flowchart LR
    machine; the command runs only at an interactive terminal outside Claude
    Code. Or `tick` promotes it under a policy whose hash the ledger records.
 8. You land it in the repository, where it binds everyone once committed.
+
+### What runs during a session
+
+`apply` installs up to seven hook scripts in `.claude/scripts/`. Claude
+Code runs each on the event it is registered for.
+
+| Hook script | Event | What it does | Can it block? |
+|---|---|---|---|
+| `session-brief.mjs` | `SessionStart` | prints the top of `HANDOFF.md` into the session | no |
+| `rules-brief.mjs` | `UserPromptSubmit` | adds up to 1,500 bytes of your rules to the prompt's context | no |
+| `tool-gate.mjs` | `PreToolUse` | tries every gate in the two gate files against the call | yes, when a gate with action `block` matches |
+| `lint-touched.mjs` | `PostToolUse`, after `Write` or `Edit` | runs the owning package's `lint` script and reports on the edited file | no |
+| `loop-watch.mjs` | `PostToolUseFailure` | one fixed sentence at the third identical failure with no different failure between | no |
+| `verify-touched.mjs` | `Stop` | runs the root `typecheck` script, or `test` | yes: a failure different from the last one reported stops the turn from ending, at most 3 times between passing runs |
+| `session-log.mjs` | 16 events | records each event, once you enable the log | no |
+
+What each reads and writes, and one session walked through in time order,
+are under
+[what runs when](docs/guide/how-it-works.md#what-runs-when).
 
 ## Commands
 
@@ -739,6 +766,7 @@ report counts: recurrences, replays, firings and what followed them.
 
 | Page | What it covers |
 |---|---|
+| [How kh-harness works](docs/guide/how-it-works.md) | The parts, what runs when, where every file lives, how each decision is made |
 | [Command reference](docs/guide/commands.md) | Every command, subcommand and flag, with real output |
 | [The session log](docs/guide/session-log.md) | What is stored and where, the scrub, retention, sealing, cost |
 | [The learning loop](docs/guide/learning-loop.md) | States of a learning, replay, policy, landing, reverting, recovery |

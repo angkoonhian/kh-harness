@@ -11,6 +11,7 @@ hand edit) acts as soon as it is there; see
 [Limits](../../README.md#limits).
 
 [Back to the README](../../README.md) ·
+[How it works](how-it-works.md) ·
 [Command reference](commands.md#learn) ·
 [Session log](session-log.md) ·
 [Troubleshooting](troubleshooting.md)

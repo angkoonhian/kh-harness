@@ -6,6 +6,7 @@ page says what it stores, where, what it never stores, what the credential
 scrub misses, how long content is kept, and what it costs.
 
 [Back to the README](../../README.md) ·
+[How it works](how-it-works.md) ·
 [Command reference](commands.md#log) ·
 [Learning loop](learning-loop.md) ·
 [Troubleshooting](troubleshooting.md)

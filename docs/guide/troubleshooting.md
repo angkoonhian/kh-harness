@@ -7,6 +7,7 @@ it), which the quotes below leave out; `uninstall` prints its messages with
 no prefix. `<…>` stands for a value the message fills in.
 
 [Back to the README](../../README.md) ·
+[How it works](how-it-works.md) ·
 [Command reference](commands.md) ·
 [Session log](session-log.md) ·
 [Learning loop](learning-loop.md)

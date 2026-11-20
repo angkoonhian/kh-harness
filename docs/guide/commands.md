@@ -16,6 +16,7 @@ output is real; paths are shortened to `<repo>` and `<data>`, and long
 listings are cut where marked `…`.
 
 [Back to the README](../../README.md) ·
+[How it works](how-it-works.md) ·
 [Session log](session-log.md) ·
 [Learning loop](learning-loop.md) ·
 [Troubleshooting](troubleshooting.md)
