@@ -14,7 +14,7 @@ import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps, countProposals } from './lib/gap-model.mjs';
 import { gitInfo, defaultBranches } from './lib/git-info.mjs';
 import { buildPlan, pendingUpgrades } from './lib/propose.mjs';
-import { deriveCouldNotDerive, exposureSectionLines, upgradeHint, DETECT_REPORT_PATH } from './lib/report.mjs';
+import { deriveCouldNotDerive, exposureSectionLines, upgradeHint, worktreeLine, DETECT_REPORT_PATH } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, renderDiff, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson } from './lib/apply-lib.mjs';
 import { parseArgv, warnUnknown, wantsHelp, APPLY_USAGE } from './lib/cli.mjs';
@@ -203,7 +203,7 @@ if (flags.has('--yes') && refusals.length) {
 // report that omits it makes a partial scan look complete" — which is at
 // least as true of a run that is about to WRITE into the incompletely
 // scanned repository.
-const { files, nested } = listFiles(root);
+const { files, nested, worktrees } = listFiles(root);
 const stack = detectStack(root, files);
 const harness = detectHarness(root, files);
 harness.reconPresent = files.includes('docs/harness/recon.md');
@@ -246,6 +246,10 @@ function reportWhatDetectionFound() {
   if (nested.length) {
     const was = nested.length === 1 ? 'y was' : 'ies were';
     out.push(`kh-harness: ${nested.length} nested repositor${was} detected and NOT scanned (${nested.map(n => n.path).join(', ')}). Everything below covers this repository only; each nested repository must be assessed separately.`);
+    out.push('');
+  }
+  if (worktrees.length) {
+    out.push(`kh-harness: ${worktreeLine(worktrees)}`);
     out.push('');
   }
   // Printed inline (audit Tier 4, finding 20): this used to point at

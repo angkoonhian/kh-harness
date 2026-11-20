@@ -874,3 +874,22 @@ test('CONCERN 1: a workspaces entry containing a NUL matches no package, and is 
   assert.equal(summary.includes(NUL), false, 'the control character must never reach the output');
   assert.equal(JSON.stringify(r).includes(NUL), false, 'nor detect.json');
 });
+
+// --- Vyugate trial: linked worktrees are not nested repositories ----------
+test('WORKTREE: detect prints one quiet line for a linked worktree of this repository, and asks no nested-repository question', () => {
+  const d = bare();
+  const g = (...a) => execFileSync('git', ['-C', d, ...a], { stdio: 'ignore' });
+  g('init', '-q');
+  g('add', '-A');
+  g('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+  writeFileSync(join(d, '.git', 'info', 'exclude'), '**/.claude/worktrees/\n');
+  g('worktree', 'add', '-q', '-b', 'side', join(d, '.claude', 'worktrees', 'side'));
+  const summary = cli(d);
+  const lines = summary.split('\n').filter(l => l.includes('.claude/worktrees/side'));
+  assert.equal(lines.length, 1, summary);
+  assert.match(lines[0], /^Linked worktrees of this repository \(1\) — checkouts of the same repository, not scanned: \.claude\/worktrees\/side$/);
+  assert.doesNotMatch(summary, /nested repositor/i);
+  const report = JSON.parse(readFileSync(join(d, 'docs/harness/detect.json'), 'utf8'));
+  assert.deepEqual(report.nested, []);
+  assert.deepEqual(report.worktrees, [{ path: '.claude/worktrees/side', kind: 'worktree' }]);
+});

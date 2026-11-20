@@ -43,7 +43,7 @@ if (!existsSync(root)) {
 // listFiles also reports nested repositories (submodules, nested/bare repos)
 // it deliberately did not descend into. That disclosure must reach the
 // report — a report that omits it makes a partial scan look complete.
-const { files, nested } = listFiles(root);
+const { files, nested, worktrees } = listFiles(root);
 const git = gitInfo(root);
 // A git that could not answer is not a non-repository; say so, on stderr so
 // `--json` stdout stays parseable. The report records `vcs: null` either way.
@@ -63,7 +63,7 @@ const checks = buildGaps({ stack, harness, exposures, profile, git, files, root,
 // Read-only: what `apply --upgrade` would update, so the report can say so
 // in one line. Nothing here writes; the plan is the one apply acts on.
 const upgradable = pendingUpgrades({ checks, manifest, kitVersion: KIT_VERSION, harness, root, stack, files });
-const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested, upgradable });
+const report = buildReport({ root, kitVersion: KIT_VERSION, git, stack, harness, exposures, profile, checks, nested, worktrees, upgradable });
 
 if (flags.has('--verify')) {
   report.verification = verifyCommands({ root, stack, profile });

@@ -62,13 +62,20 @@ export const DETECT_REPORT_PATH = 'docs/harness/detect.json';
  * the list is non-empty (callers check). `paths` comes from propose.mjs's
  * `pendingUpgrades`, the same plan `--upgrade` acts on.
  */
+/** One quiet line for linked worktrees of this repository — shared by
+ * detect and apply, so the two say it the same way. */
+export function worktreeLine(worktrees) {
+  const n = worktrees.length;
+  return `Linked worktrees of this repository (${n}) — checkouts of the same repository, not scanned: ${worktrees.map(w => w.path).join(', ')}`;
+}
+
 export function upgradeHint(paths) {
   const n = paths.length;
   return `${n} file${n === 1 ? '' : 's'} kh-harness wrote ${n === 1 ? 'is' : 'are'} older than this kit — unmodified since, stamped, ` +
     `and this kit generates different content (${paths.join(', ')}). \`apply --upgrade\` would update ${n === 1 ? 'it' : 'them'}.`;
 }
 
-export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks, nested = [], upgradable = [] }) {
+export function buildReport({ root, kitVersion, git, stack, harness, exposures, profile, checks, nested = [], worktrees = [], upgradable = [] }) {
   return {
     schema: 1,
     kitVersion,
@@ -82,6 +89,9 @@ export function buildReport({ root, kitVersion, git, stack, harness, exposures, 
     exposures,
     checks,
     nested,
+    // Linked worktrees of THIS repository (scan.mjs, isOwnWorktree): not
+    // scanned, and not a question — they are checkouts of the same repository.
+    worktrees,
     // Paths `apply --upgrade` would update (propose.mjs, `pendingUpgrades`).
     upgradable,
     couldNotDerive: deriveCouldNotDerive({ stack, checks, nested, profile }),
@@ -160,6 +170,11 @@ export function renderSummary(report) {
   if (report.nested && report.nested.length) {
     lines.push(`Nested repositories detected (${report.nested.length}) — not scanned:`);
     for (const n of report.nested) lines.push(`  • ${n.path} (${n.kind})`);
+    lines.push('');
+  }
+
+  if (report.worktrees?.length) {
+    lines.push(worktreeLine(report.worktrees));
     lines.push('');
   }
 
