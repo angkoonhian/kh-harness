@@ -373,6 +373,112 @@ test('classifyCredentialValue: trailing statement punctuation on a real referenc
   assert.equal(classifyCredentialValue('process.env.TOKEN,'), 'reference');
 });
 
+// --- Vyugate trial: ordinary code reported as credential literals ---------
+//
+// Each shape below is a real line from a real repository that made
+// P0.security `failing`. Keys are assembled at runtime so this file passes
+// its own sweep. Every one must be a non-finding or `reference`; the
+// controls after them must stay `literal`.
+const PW = ['pass', 'word'].join('');
+const AUTH = ['Author', 'ization'].join('');
+const PASS_VAR = ['MTX_', 'PASS'].join('');
+const credentialRows = (rel, text) => {
+  const d = repo();
+  write(d, rel, text);
+  return run(d).filter(e => e.location === rel && e.kind === 'credentials-in-doc');
+};
+const notLiteral = (rel, text) => {
+  const rows = credentialRows(rel, text);
+  assert.ok(rows.every(e => e.valueKind === 'reference'), `${rel}: ${JSON.stringify(rows)}`);
+};
+
+test('VYUGATE-SWEEP: a call is a reference; the string inside is a prompt argument, not the value', () => {
+  notLiteral('src/cli.py', `${PW} = getpass.getpass("Enter it: ")\n`);
+  notLiteral('src/state.py', `${PW} = _saved_${PW}(state, row)\n`);
+  assert.equal(credentialRows('src/cli.py', `${PW} = getpass.getpass("Enter it: ")\n`)[0]?.valueKind, 'reference', 'still counted, as a reference');
+});
+
+test('VYUGATE-SWEEP: a call continued on the next line is a reference', () => {
+  notLiteral('src/cli.py', `${PW} = prompt_for_secret(\n    "Enter it: ",\n)\n`);
+});
+
+test('VYUGATE-SWEEP: a condition holds no value; the next line is never read as one', () => {
+  assert.deepEqual(credentialRows('src/auth.py', `if ${PW}:\n    authenticate_user(name)\n`), []);
+  assert.deepEqual(credentialRows('src/streams.py', `    if ${PW}:\n        userinfo += ":" + quote(${PW}, safe="")\n`), []);
+});
+
+test('VYUGATE-SWEEP: a Python type annotation is not a value', () => {
+  assert.deepEqual(credentialRows('src/routes/auth.py', `    ${PW}: Annotated[str, Field(max_length=1000)]\n`), []);
+});
+
+test('VYUGATE-SWEEP: a TypeScript type annotation is not a value', () => {
+  assert.deepEqual(credentialRows('src/api/types.ts', `  username: string | null; has_${PW}: boolean;\n`), []);
+  assert.deepEqual(credentialRows('src/api/types.ts', `  ${PW}: string | null;\n`), []);
+});
+
+test('VYUGATE-SWEEP: assignment from an identifier, or a tuple of them, is a reference in a source file', () => {
+  notLiteral('src/CameraForm.tsx', `if (${PW}) body.${PW} = ${PW};\n`);
+  notLiteral('src/cameras.py', `user, ${PW} = cam_user, cam_${PW}\n`);
+});
+
+test('VYUGATE-SWEEP: an empty value in .env.example is not a credential', () => {
+  assert.deepEqual(credentialRows('.env.example', `LABEL_STUDIO_${PW.toUpperCase()}=\nLABEL_STUDIO_URL=http://localhost:8080\n`), []);
+});
+
+test('VYUGATE-SWEEP: an interpolated header of a reference is a reference', () => {
+  notLiteral('src/probe.py', `        lines.append(f"${AUTH}: {auth}")\n`);
+  notLiteral('src/client.py', `        return {"${AUTH}": f"Bearer {self._access}"}\n`);
+  notLiteral('src/client.ts', `  headers: { ${AUTH}: \`Bearer \${session.token}\` },\n`);
+  notLiteral('docs/plan.md', `        return {"${AUTH}": f"Bearer {self._access}"}\n`);
+  assert.equal(credentialRows('src/client.py', `        return {"${AUTH}": f"Bearer {self._access}"}\n`).length, 1, 'still counted, as a reference');
+});
+
+test('VYUGATE-SWEEP: a key that names a variable inside a parameter expansion is not an assignment', () => {
+  const line = `      CHECK: \${VYUGATE_${PASS_VAR}:-\${OLD_${PASS_VAR}:?set VYUGATE_${PASS_VAR} in .env}}\n`;
+  notLiteral('infra/docker-compose.yml', line);
+  notLiteral('docs/plan.md', `- \`${line.trim()}\`.\n`);
+});
+
+test('VYUGATE-SWEEP controls: real literals stay literal', () => {
+  assert.equal(credentialRows('src/settings.py', `${PW} = "hunter2"\n`)[0]?.valueKind, 'literal', 'the quotes count toward the eight characters, as before');
+  assert.equal(credentialRows('src/settings.py', `${PW} = "hunter2hunter2"\n`)[0]?.valueKind, 'literal');
+  assert.equal(credentialRows('src/settings.ts', `const ${PW} = 'hunter2hunter2';\n`)[0]?.valueKind, 'literal');
+  assert.equal(credentialRows('src/settings.py', `${PW}: str = "hunter2hunter2"\n`).length, 0, 'unchanged: the value token is the 3-character type, below the 8-character minimum');
+  assert.equal(credentialRows('.env', `${PW.toUpperCase()}=s3cr3t-value\n`)[0]?.valueKind, 'literal');
+  // A bare word is a name only in source code. In config it is the value.
+  assert.equal(credentialRows('config.env', `${PW.toUpperCase()}=hunter2hunter2\n`)[0]?.valueKind, 'literal');
+  assert.equal(credentialRows('config/db.yml', `${PW}: hunter2hunter2\n`)[0]?.valueKind, 'literal');
+  // A call-looking value in config is not a call.
+  assert.equal(credentialRows('.env', `${PW.toUpperCase()}=Secr3t(2024)xyz\n`)[0]?.valueKind, 'literal');
+  // A call followed by more than a closer is not the whole value.
+  assert.equal(credentialRows('src/settings.ts', `const x = { ${PW}: get_value( ) + "hunter2hunter2" };\n`)[0]?.valueKind, 'literal');
+  // An interpolated string with literal text beside the interpolation, and
+  // a plain (not f-) string with braces, are literals.
+  assert.equal(credentialRows('src/client.py', `h = {"${AUTH}": f"Bearer hunter2{suffix}"}\n`)[0]?.valueKind, 'literal');
+  assert.equal(credentialRows('src/client.py', `h = {"${AUTH}": "Bearer {self._access}"}\n`)[0]?.valueKind, 'literal');
+  // A plain-text default in a parameter expansion is the value.
+  assert.equal(credentialRows('infra/docker-compose.yml', `      CHECK: \${DB_${PASS_VAR}:-hunter2hunter2}\n`)[0]?.valueKind, 'literal');
+  // The value on the key's own line is still read.
+  assert.equal(credentialRows('.env.example', `LABEL_STUDIO_${PW.toUpperCase()}=hunter2hunter2\nLABEL_STUDIO_URL=x\n`)[0]?.valueKind, 'literal');
+});
+
+test('VYUGATE-SWEEP controls: URL userinfo on a remote and provider tokens are unaffected', () => {
+  const d = repo();
+  write(d, 'src/cli.py', `${PW} = getpass.getpass(${JSON.stringify(SECRET)})\n`);
+  const found = run(d, { remotes: [{ name: 'origin', hasCredential: true }] });
+  assert.ok(found.some(e => e.kind === 'token-in-remote-url' && e.severity === 'high'));
+  assert.ok(found.some(e => e.kind === 'token-in-repo-file' && e.location === 'src/cli.py' && e.severity === 'high'), 'a token inside a call is still a token');
+});
+
+test('VYUGATE-SWEEP: the hook mask still stars every value the sweep now passes over', () => {
+  const lines = [
+    `${PW} = getpass.getpass("Enter it: ")`,
+    `        return {"${AUTH}": f"Bearer {self._access}"}`,
+    `user, ${PW} = cam_user, cam_${PW}`,
+  ];
+  for (const line of lines) assert.notEqual(maskCredentials(line), line, line);
+});
+
 test('detectExposures tags credentials-in-doc findings with valueKind, never dropping either class', () => {
   const d = repo();
   write(d, 'src/config/db.ts', credLine('process.env.DB_PASSWORD,'));

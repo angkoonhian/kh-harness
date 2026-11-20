@@ -128,9 +128,254 @@ const ENV_REFERENCE = /^["'`]?(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{\{[^}]*\}\}|\$\{[A
  * value and records the result on the finding, and splitExposures /
  * isProminentExposure, which downstream callers use to decide presentation.
  */
-export function classifyCredentialValue(value) {
+export function classifyCredentialValue(value, context = {}) {
   if (typeof value !== 'string' || value.length === 0) return 'literal';
-  return REFERENCE_VALUE.test(value) || ENV_REFERENCE.test(value) ? 'reference' : 'literal';
+  if (REFERENCE_VALUE.test(value) || ENV_REFERENCE.test(value)) return 'reference';
+  const { rest, separator, code } = context;
+  if (typeof rest !== 'string') return 'literal';
+  return classifyRest(rest.trim(), separator, Boolean(code));
+}
+
+// --- Ordinary code is not a credential literal (Vyugate trial) ------------
+//
+// The keyed shapes are shared with the hook mask, which must star any value,
+// so they stay broad; the sweep judges a match further, here. `context`
+// gives the rest of the value's line (`rest`), the separator (`:` or `=`)
+// and whether the file is source code (`code`). With it a third answer is
+// possible: `'none'`, the key holds no value at all (a type annotation), so
+// there is no finding. Without it the value token alone decides, as before.
+
+// Source files, by extension. In these a string literal is QUOTED, so an
+// unquoted identifier after `=` or `:` is a name (a variable, a parameter, a
+// type), never the secret itself. Outside them (.env, YAML, .ini, Markdown
+// prose) an unquoted word may be the value, so that rule never applies there.
+const CODE_EXTENSIONS = new Set([
+  '.py', '.pyi', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs',
+  '.go', '.java', '.kt', '.kts', '.scala', '.rb', '.rs', '.cs', '.php', '.swift', '.vue', '.svelte',
+]);
+// Files whose prose carries code snippets, so a call, an attribute chain or
+// an interpolated string after the key is code there too. Everything else
+// that is not a source file (.env, YAML, .ini, .properties, JSON) is judged
+// on the value token alone: `<KEY>=Secr3t(2024)` there is a value, not a call.
+const DOC_EXTENSIONS = new Set(['.md', '.mdx', '.markdown', '.rst', '.adoc', '.txt']);
+function extensionIn(rel, set) {
+  const base = basename(rel).toLowerCase();
+  const dot = base.lastIndexOf('.');
+  return dot > 0 && set.has(base.slice(dot));
+}
+
+const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*/;
+const CLOSERS = { '(': ')', '[': ']', '{': '}', '<': '>' };
+
+/** Reads one bracket group starting at `s[i]` (an opener), quote-aware and
+ * nested. Returns the index after its closer, or -1 if the line ends inside
+ * it (a call or a type continued on the next line). `angles` admits `<…>`,
+ * for type arguments only. */
+function skipGroup(s, i, angles) {
+  const stack = [];
+  for (; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const q = ch;
+      for (i++; i < s.length && s[i] !== q; i++) if (s[i] === '\\') i++;
+      if (i >= s.length) return -1;
+      continue;
+    }
+    if (ch in CLOSERS && (ch !== '<' || angles)) stack.push(CLOSERS[ch]);
+    else if (ch === stack[stack.length - 1]) {
+      stack.pop();
+      if (stack.length === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** An identifier chain (`a`, `a.b`, `a.b(…)`, `a[…].c(…)`) from `s[0]`.
+ * Returns `{ end, segments }` (`end` -1 when a group runs off the line), or
+ * null when `s` does not start with an identifier. */
+function readChain(s, { angles = false, calls = true } = {}) {
+  const head = s.match(IDENT);
+  if (!head) return null;
+  let i = head[0].length;
+  let segments = 0;
+  for (;;) {
+    if (s[i] === '.') {
+      const next = s.slice(i + 1).match(IDENT);
+      if (!next) break;
+      i += 1 + next[0].length;
+    } else if ((calls && s[i] === '(') || s[i] === '[' || (angles && s[i] === '<')) {
+      const end = skipGroup(s, i, angles);
+      if (end === -1) return { end: -1, segments: segments + 1 };
+      i = end;
+    } else {
+      break;
+    }
+    segments++;
+  }
+  return { end: i, segments };
+}
+
+/** What may follow a value on its line and still leave it the whole value:
+ * closers and delimiters of the surrounding expression, and a comment. */
+const TAIL = /^[\s;,)\]}]*(?:(?:#|\/\/).*)?$/;
+
+/** A type expression (`str`, `str | None`, `Optional[str]`,
+ * `Annotated[str, Field(max_length=1000)]`, `string | null`, `Array<T>`,
+ * `string[]`). Returns the index after it, or -1. */
+function readType(s) {
+  let i = 0;
+  for (;;) {
+    const chain = readChain(s.slice(i), { angles: true, calls: false });
+    if (!chain || chain.end === -1) return -1;
+    i += chain.end;
+    while (s.startsWith('[]', i)) i += 2;
+    const bar = s.slice(i).match(/^\s*\|\s*/);
+    if (!bar) return i;
+    i += bar[0].length;
+  }
+}
+
+/** True when `inner`, an interpolation's expression, is a whole reference
+ * chain: `auth`, `self._access`, `cfg.get("k")`. */
+function isChainExpression(inner) {
+  const s = inner.trim();
+  const chain = readChain(s, { calls: true });
+  return Boolean(chain) && chain.end === s.length;
+}
+
+// An interpolated string whose whole content is an optional scheme word and
+// interpolations of references: `f"Bearer {self._access}"`,
+// `` `Bearer ${token}` ``. The string holds no secret; it formats one read
+// from elsewhere. A Python f-string interpolates `{…}`, a template literal
+// `${…}`; any other text in the string, or any other kind of string, is not
+// this shape.
+const INTERPOLATED_STRING = /^(?:([fF][rR]?|[rR][fF])(["'])((?:(?!\2).)*)\2|`([^`]*)`)/;
+const SCHEME_PREFIX = /^(?:(?:bearer|basic|token|digest)\s+)?/i;
+function interpolatedLength(rest) {
+  const m = rest.match(INTERPOLATED_STRING);
+  if (!m) return -1;
+  const fString = m[1] !== undefined;
+  let body = (fString ? m[3] : m[4]).replace(SCHEME_PREFIX, '');
+  const one = fString ? /^\{([^{}]+)\}/ : /^\$\{([^{}]+)\}/;
+  let count = 0;
+  for (let hit = body.match(one); hit; hit = body.match(one)) {
+    if (!isChainExpression(hit[1].replace(/![rsa]$|:[^{}]*$/, ''))) return -1;
+    body = body.slice(hit[0].length);
+    count++;
+  }
+  return count > 0 && body.length === 0 ? m[0].length : -1;
+}
+
+/**
+ * The value after the key, read to the end of its line (Vyugate trial: each
+ * shape below was a real line of ordinary code reported as a credential).
+ * Returns 'reference' (code reading a value from elsewhere), 'none' (no
+ * value at all: a type annotation), or 'literal'. When in doubt, literal.
+ *   - a call, `getpass.getpass("Password: ")`, `_saved_password(state, row)`:
+ *     any string inside is an argument, not the value; a call continued on
+ *     the next line counts;
+ *   - an interpolated string of references, `f"Bearer {self._access}"`;
+ *   - in a source file only: a bare identifier or a list of them,
+ *     `= password;`, `user, pw = cam_user, cam_pw`: names;
+ *   - in a source file, after `:` only: a type annotation with no default,
+ *     `<key>: Annotated[str, …]`, `has_<key>: boolean;`. One WITH a default
+ *     is judged by the default.
+ */
+function classifyRest(rest, separator, code) {
+  if (code && separator === ':') {
+    const end = readType(rest);
+    if (end !== -1) {
+      const after = rest.slice(end);
+      if (TAIL.test(after)) return 'none';
+      const dflt = after.match(/^\s*=\s*(\S.*)$/);
+      if (dflt) {
+        const value = dflt[1].trim();
+        if (PLACEHOLDER.test(value.split(/\s/)[0])) return 'none';
+        return classifyCredentialValue(value.split(/\s/)[0], { rest: value, separator: '=', code });
+      }
+    }
+  }
+  const interpolated = interpolatedLength(rest);
+  if (interpolated !== -1 && TAIL.test(rest.slice(interpolated))) return 'reference';
+  const chain = readChain(rest, { calls: true });
+  if (!chain) return 'literal';
+  if (chain.segments > 0) {
+    if (chain.end === -1) return /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\s*\(/.test(rest) ? 'reference' : 'literal';
+    if (TAIL.test(rest.slice(chain.end))) return 'reference';
+  }
+  if (code && chain.end !== -1 && isNameList(rest)) return 'reference';
+  return 'literal';
+}
+
+/** Source files only: a name, or a comma-separated list of names and
+ * references, then a tail. Every element must be one; one quoted string
+ * fails it. */
+function isNameList(rest) {
+  let i = 0;
+  for (;;) {
+    const chain = readChain(rest.slice(i), { calls: true });
+    if (!chain || chain.end === -1) return false;
+    i += chain.end;
+    const comma = rest.slice(i).match(/^\s*,\s*(?=[A-Za-z_$])/);
+    if (!comma) return TAIL.test(rest.slice(i));
+    i += comma[0].length;
+  }
+}
+
+/**
+ * The opening quote and prefix of the string literal that is still open at
+ * `index` on its line, or null. Counted as `closesLiteral` counts: an
+ * unescaped quote toggles, and an apostrophe between two letters is a word's.
+ */
+function openStringAt(text, index) {
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1;
+  let open = null;
+  for (let i = lineStart; i < index; i++) {
+    const ch = text[i];
+    if ((ch !== '"' && ch !== "'" && ch !== '`') || text[i - 1] === '\\') continue;
+    if (open) {
+      if (ch === open.quote) open = null;
+      continue;
+    }
+    if (ch === "'" && i > lineStart && /\p{L}/u.test(text[i - 1]) && /\p{L}/u.test(text[i + 1] ?? '')) continue;
+    const prefix = text.slice(lineStart, i).match(/[A-Za-z]{0,2}$/)[0];
+    open = { quote: ch, prefix };
+  }
+  return open;
+}
+
+/**
+ * A key inside a string that interpolates its value: a Python f-string
+ * holding the header name, a colon and `{auth}`, or a template literal
+ * holding it and `${auth}`. The value is the interpolation of a reference,
+ * then the string's close.
+ */
+function interpolatesInOpenString(text, keyStart, rest) {
+  const open = openStringAt(text, keyStart);
+  if (!open) return false;
+  const fString = open.quote !== '`' && /^(?:[fF][rR]?|[rR][fF])$/.test(open.prefix);
+  if (!fString && open.quote !== '`') return false;
+  const m = rest.match(fString ? /^\{([^{}]+)\}/ : /^\$\{([^{}]+)\}/);
+  if (!m || !isChainExpression(m[1].replace(/![rsa]$|:[^{}]*$/, ''))) return false;
+  return rest[m[0].length] === open.quote;
+}
+
+/**
+ * A key that is a variable NAME in a shell or Compose parameter expansion,
+ * `${NAME:-default}`, `${NAME:?message}`: the `:` after it is an operator,
+ * not an assignment. Returns 'none' for a message (`:?`, `?`) or an
+ * alternate whose value is itself an expansion, 'reference' when the
+ * default is another expansion, and null when the key is not in one (or
+ * when the default is plain text, which is then judged as the value).
+ */
+function expansionVerdict(text, keyStart, keyEnd) {
+  const before = text.slice(Math.max(0, keyStart - 256), keyStart);
+  if (!/\$\{[A-Za-z0-9_]*$/.test(before)) return null;
+  const op = text.slice(keyEnd).match(/^:?([-?=+])/);
+  if (!op) return null;
+  if (op[1] === '?') return 'none';
+  const after = text.slice(keyEnd + op[0].length);
+  return /^\$/.test(after) ? 'reference' : null;
 }
 
 /**
@@ -396,16 +641,34 @@ function tokenFinding(text, tokens) {
  * such line), else `reference` if any survives at all. One finding per file;
  * the line number is what tells the user which one.
  */
-function credentialFinding(text, tokens) {
+function credentialFinding(text, tokens, rel = '') {
+  const code = extensionIn(rel, CODE_EXTENSIONS);
+  const readsRest = code || extensionIn(rel, DOC_EXTENSIONS);
   let literal = null;
   let reference = null;
   for (const shape of KEYED_SHAPES) {
     for (const m of text.matchAll(shape.pattern)) {
       const { value } = m.groups;
       const start = m.index + m[0].length - value.length;
+      // The value must sit on the key's line. The shared pattern lets the
+      // separator's whitespace run on (the mask stars what follows either
+      // way), but for the sweep `if password:` at a line end, or an empty
+      // `LABEL_STUDIO_PASSWORD=` in .env.example, holds no value: the next
+      // line's first word is not it (Vyugate trial).
+      if (text.slice(m.index, start).includes('\n')) continue;
       if (value.length < MIN_KEYED_VALUE || isPlaceholder(value) || closesLiteral(text, start)) continue;
       if (tokens.some(t => t.start < start + value.length && start < t.end)) continue;
-      if (classifyCredentialValue(value) === 'literal') {
+      const prefix = m[0].slice(0, m[0].length - value.length);
+      const sepAt = prefix.search(/[:=]/);
+      const separator = sepAt === -1 ? '' : prefix[sepAt];
+      const keyEnd = m.index + (sepAt === -1 ? prefix.length : prefix.slice(0, sepAt).replace(/["']?\s*$/, '').length);
+      const eol = text.indexOf('\n', start);
+      const rest = text.slice(start, eol === -1 ? text.length : eol).replace(/\r$/, '');
+      let kind = expansionVerdict(text, m.index, keyEnd);
+      if (kind === null && readsRest && interpolatesInOpenString(text, m.index, rest)) kind = 'reference';
+      kind ??= classifyCredentialValue(value, readsRest ? { rest, separator, code } : {});
+      if (kind === 'none') continue;
+      if (kind === 'literal') {
         if (literal === null || m.index < literal) literal = m.index;
       } else if (reference === null || m.index < reference) {
         reference = m.index;
@@ -481,7 +744,7 @@ function scanFile(buf, rel, isLocalSettings) {
     findings.push({ kind, location: rel, severity: token.severity, line: token.line });
   }
 
-  const credential = credentialFinding(text, tokens);
+  const credential = credentialFinding(text, tokens, rel);
   if (credential) {
     const finding = {
       kind: 'credentials-in-doc', location: rel, severity: 'medium',
