@@ -15,7 +15,7 @@ const SCRIPT = join(ROOT, 'scripts', 'session-nudge.mjs');
 // where the two agree; the tests that pin the variable set them apart.
 const run = (dir, env = {}) => execFileSync(process.execPath, [SCRIPT], {
   cwd: dir, encoding: 'utf8', input: '{}',
-  env: { ...process.env, CLAUDE_PROJECT_DIR: dir, KH_HARNESS_NUDGE: '', ...env },
+  env: { ...process.env, CLAUDE_PROJECT_DIR: dir, CLAUDE_PLUGIN_ROOT: '', KH_HARNESS_NUDGE: '', ...env },
 });
 
 const tempDir = () => mkdtempSync(join(tmpdir(), 'hk-nudge-'));
@@ -98,7 +98,7 @@ test('the project is the one CLAUDE_PROJECT_DIR names, not the working directory
   install(installed, KIT_VERSION);
   const out = execFileSync(process.execPath, [SCRIPT], {
     cwd: repo(), encoding: 'utf8', input: '{}',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: installed, KH_HARNESS_NUDGE: '' },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: installed, CLAUDE_PLUGIN_ROOT: '', KH_HARNESS_NUDGE: '' },
   });
   assert.equal(out, '');
 });

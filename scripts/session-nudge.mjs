@@ -15,14 +15,23 @@
 //     in the kit's own repository; and wherever the owner switched it off.
 //     So a session never hears two kit hooks say the same thing.
 //
-//   - It writes nothing and installs nothing. Installing is `apply`'s, and
-//     `apply` writes files and hooks that execute, so the notice asks Claude
-//     to offer and leaves the yes to the user.
+//   - It writes nothing in the repository and installs nothing there.
+//     Installing is `apply`'s, and `apply` writes files and hooks that
+//     execute, so the notice asks Claude to offer and leaves the yes to the
+//     user.
+//
+//   - It also keeps the plugin itself current: it starts
+//     `self-update.mjs` in the background on the plugin's own checkout,
+//     which only ever fast-forwards (scripts/lib/self-update.mjs), and
+//     reports the previous attempt's outcome once. KH_HARNESS_AUTO_UPDATE=off
+//     turns that part off.
 //
 //   - It always exits 0. A SessionStart hook has nothing to block, and a
 //     failure here must never stand between the user and their session.
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { readJsonFile } from './lib/read-json.mjs';
+import { updateNotice } from './lib/self-update.mjs';
 import { KIT_VERSION, MANIFEST_PATH, readManifestResult } from './lib/manifest.mjs';
 import { git } from './lib/git-info.mjs';
 
@@ -101,13 +110,38 @@ function notice(projectDir, top) {
     `Run it only if the user agrees. To stop this notice in this repository: ${OFF}; everywhere: set ${ALL_OFF}.`;
 }
 
+/** Starts `self-update.mjs` on the plugin's checkout and does not wait for
+ * it: a fetch can take seconds, and the session should not. Its outcome is
+ * reported by the next session's hook. */
+function startUpdate(pluginRoot) {
+  spawn(process.execPath, [join(import.meta.dirname, 'self-update.mjs'), pluginRoot], {
+    detached: true, stdio: 'ignore', windowsHide: true,
+  }).unref();
+}
+
+const isOff = name => process.env[name]?.toLowerCase() === 'off';
+
 function main() {
-  if (process.env.KH_HARNESS_NUDGE?.toLowerCase() === 'off') return;
-  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const top = workTreeTop(projectDir);
-  if (!top || isKitRepository(top)) return;
-  const text = notice(projectDir, top);
-  if (text && !switchedOff(top)) process.stdout.write(text + '\n');
+  const lines = [];
+  // Claude Code sets CLAUDE_PLUGIN_ROOT for a plugin's hooks. Without it
+  // this is not the plugin's hook, and no checkout is the plugin's to update.
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const autoUpdate = Boolean(pluginRoot) && !isOff('KH_HARNESS_AUTO_UPDATE');
+  if (autoUpdate && !isOff('KH_HARNESS_NUDGE')) {
+    const told = updateNotice(pluginRoot);
+    if (told) lines.push(told);
+  }
+  if (autoUpdate) startUpdate(pluginRoot);
+
+  if (!isOff('KH_HARNESS_NUDGE')) {
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const top = workTreeTop(projectDir);
+    if (top && !isKitRepository(top)) {
+      const text = notice(projectDir, top);
+      if (text && !switchedOff(top)) lines.push(text);
+    }
+  }
+  if (lines.length) process.stdout.write(lines.join('\n') + '\n');
 }
 
 try {

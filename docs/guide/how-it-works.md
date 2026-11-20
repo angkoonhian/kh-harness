@@ -67,6 +67,14 @@ a git repository, in kh-harness itself, and after
 `/kh-harness:harness-init`, it also tells Claude to install only if you
 agree.
 
+The same hook keeps the plugin itself current. It starts
+`scripts/self-update.mjs` in the background, which fetches the plugin
+checkout's upstream at most once an hour and fast-forwards to it. It
+leaves the checkout as it is when the checkout has tracked changes,
+commits of its own, a detached HEAD or no upstream. The next session
+is told the outcome once. `KH_HARNESS_AUTO_UPDATE=off` turns it off.
+The logic is in `scripts/lib/self-update.mjs`.
+
 It is a separate script from every hook `apply` installs. Claude Code adds
 a plugin's hooks to a repository's without removing duplicates, so a
 plugin copy of an installed hook would run twice in every harnessed
