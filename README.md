@@ -121,9 +121,31 @@ have the harness. At the start of every session, the plugin's one hook,
 | has a manifest that can't be read | that, and to run `detect` |
 | has a harness at this version, isn't a git repository, or is kh-harness itself | nothing |
 
-The hook writes nothing and always exits 0. To silence it in one
-repository, run `git config kh-harness.nudge off` there. To silence it
-everywhere, set `KH_HARNESS_NUDGE=off`.
+The hook writes nothing in the repository and always exits 0. To silence
+it in one repository, run `git config kh-harness.nudge off` there. To
+silence it everywhere, set `KH_HARNESS_NUDGE=off`.
+
+**The plugin keeps itself up to date.** The same hook starts
+`scripts/self-update.mjs` in the background on the plugin's own checkout,
+the folder `claude plugin list` shows as `Read from:`. It fetches the
+branch's upstream at most once an hour, however many sessions start, and
+moves to it only when that is a plain fast-forward. It leaves the checkout
+exactly as it is when the checkout:
+
+- has uncommitted changes to tracked files,
+- has commits of its own that the upstream lacks,
+- is on a detached HEAD or a branch with no upstream, or
+- isn't a git checkout at all, such as a cached copy of the plugin.
+
+It never merges, rebases, resets or stashes, and git is never allowed to
+wait for a password. The next session is told once that the plugin updated,
+or once why it couldn't, and runs the new version. The record is kept in
+the checkout's `.git` folder as `kh-harness-self-update.json`. To turn
+this off, set `KH_HARNESS_AUTO_UPDATE=off`.
+
+A repository's own harness is not upgraded by itself: `apply` writes hooks
+that run commands, so the session is told the versions and offers the
+upgrade, and it happens only if you agree.
 
 > [!WARNING]
 > **Before you run `apply --yes` anywhere: it can install hooks that execute

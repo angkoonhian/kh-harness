@@ -18,7 +18,14 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only if the user agrees. It is silent when the harness is at the
   plugin's version, outside a git repository, in kh-harness itself, under
   `git config kh-harness.nudge off` and under `KH_HARNESS_NUDGE=off`. It
-  writes nothing and always exits 0.
+  writes nothing in the repository and always exits 0.
+- The plugin updates itself. The same hook starts `scripts/self-update.mjs`
+  in the background, which fetches the plugin checkout's upstream at most
+  once an hour and fast-forwards to it. A checkout with tracked changes,
+  commits of its own, a detached HEAD or no upstream is left untouched.
+  The outcome is recorded in the checkout's git directory, and the next
+  session is told it once. Git is never allowed to prompt.
+  `KH_HARNESS_AUTO_UPDATE=off` turns it off.
 
 ## 0.2.0 - 2026-11-19
 
