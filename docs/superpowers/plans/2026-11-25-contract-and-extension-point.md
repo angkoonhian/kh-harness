@@ -791,10 +791,11 @@ test('data over the bound is refused, and data at the bound is recorded', () => 
 });
 test('a credential in data is masked, and a value under a credential-named key is hidden whole', () => {
   const token = 'gh' + 'p_' + 'A'.repeat(36);
-  recordExternalEvent(root, 's2', { ...EVENT, data: { note: `pushed with ${token}`, password: ['hunter', '2'].join('') } });
+  // credKey and credValue are a credential-shaped key and value assembled at runtime, as the kit's fixture rule requires (see detect-exposure.test.mjs's credLine).
+  recordExternalEvent(root, 's2', { ...EVENT, data: { note: `pushed with ${token}`, [credKey]: credValue } });
   const [e] = readEvents(root, 's2').events;
   assert.ok(!JSON.stringify(e).includes(token));
-  assert.equal(e.data.password, SCRUB_MARK);
+  assert.equal(e.data[credKey], SCRUB_MARK);
 });
 test('data cannot set the envelope or the event type', () => {
   // data: { type: 'PreToolUse', schema: 9 } stays nested under data; the line's type is 'plugin_event'
