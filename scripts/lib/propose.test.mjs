@@ -16,6 +16,7 @@ import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { applyProposals } from './apply-lib.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import { ENTRY_SCRIPTS, execEntry } from './hook-evidence.mjs';
+import { hookEntrySha256, normalizeMatcher } from './settings-merge.mjs';
 import { machineryStamp, versionStamp } from './render.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
@@ -1902,7 +1903,7 @@ test('a script the kit has never written is held by an edited sibling, with ever
 
   rmSync(join(d, BRIEF_PATH));
   assert.deepEqual([...heldScripts(d, readManifest(d), '0.2.0').keys()], []);
-  assert.deepEqual(forced().map(p => p.path ?? p.event), [LINT_TOUCHED_PATH, REDACT_PATH, 'PostToolUse'], 'with nothing held, the same check is proposed in full');
+  assert.deepEqual(forced().map(p => p.path ?? p.event), [DISPATCH_POST_PATH, ...everyLoadedSibling(DISPATCH_POST_PATH), 'PostToolUse'], 'with nothing held, the same check is proposed in full');
 });
 
 test('a file at an installed path that already holds what this kit writes there holds nothing, recorded or not', () => {
@@ -2172,9 +2173,129 @@ test('mergePlan: merged, single, separate and mergeable', () => {
   assert.equal(mergePlan('PreToolUse', ctx(withRegistrations({ PreToolUse: [{ script: DISPATCH_PRE_PATH, matcher: null }] }))).state, 'merged');
   assert.equal(mergePlan('PostToolUse', { ...ctx(bareHarness), stack: noLintStack }).state, 'single');
   assert.deepEqual(mergePlan('PreToolUse', ctx(withRegistrations({ PreToolUse: [{ script: TOOL_GATE_PATH, matcher: null }] }))),
-    { entry: DISPATCH_PRE_PATH, state: 'separate', missing: [], remove: [], why: 'its hooks are registered separately' });
+    { entry: DISPATCH_PRE_PATH, state: 'separate', missing: [], remove: [], why: 'a registration of .claude/scripts/tool-gate.mjs is not as kh-harness recorded it' });
   assert.deepEqual(mergePlan('PostToolUseFailure', ctx(bareHarness)),
     { entry: DISPATCH_FAILURE_PATH, state: 'mergeable', missing: [SESSION_LOG_PATH, LOOP_WATCH_PATH], remove: [], why: null });
+});
+
+// --- An install with two kit hooks on a tool-call event (P0.hookmerge) -----
+
+/** A registration of the kit's `script` on `event` under `matcher`, as
+ * detect reads the element the kit writes for it, and the manifest's record
+ * of that element. */
+function recorded(script, matcher, event = 'PreToolUse') {
+  const entrySha256 = hookEntrySha256(execEntry(script), matcher);
+  const registration = Object.defineProperty({ script, matcher: normalizeMatcher(matcher) }, 'entrySha256', { value: entrySha256 });
+  return { registration, patch: { event, container: `/hooks/${event}`, entrySha256, step: 31, checkId: 'P5.sessionlog', appliedAt: '2026-11-01T00:00:00.000Z' } };
+}
+/** A registration of `script` on PreToolUse whose element the kit did not
+ * write: the kit's entry with a `timeout` the owner added. */
+function changed(script) {
+  const entrySha256 = hookEntrySha256({ ...execEntry(script), timeout: 5 });
+  return Object.defineProperty({ script, matcher: null }, 'entrySha256', { value: entrySha256 });
+}
+const manifestRecording = patches => ({ ...emptyManifest('0.2.0'), settingsPatches: patches });
+/** The context `detect` and `apply` work from: a repository holding nothing
+ * but `harness` says, recorded in `manifest`. */
+function hookCtx(byEvent, patches) {
+  return { harness: withRegistrations(byEvent), manifest: manifestRecording(patches), root: root(), stack: lintStack };
+}
+const gapsFor = ctx => buildGaps({ ...ctx, exposures: [], profile: selectProfile(ctx.stack), git: { branch: 'main', isRepo: true }, files: [], kitVersion: '0.2.0' });
+const argsFor = ctx => ({ ...ctx, checks: gapsFor(ctx), kitVersion: '0.2.0', files: [] });
+const byId = (cs, id) => cs.find(c => c.id === id);
+const replacements = ctx => buildProposals(argsFor(ctx)).filter(p => p.kind === 'settings-hook-replace');
+
+test('an event whose two hooks are both as recorded is replaceable, and P0.hookmerge proposes it', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH);
+  const ctx = hookCtx({ PreToolUse: [l.registration, g.registration] }, [l.patch, g.patch]);
+  assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'mergeable', missing: [], remove: [l.patch.entrySha256, g.patch.entrySha256], why: null });
+  const c = byId(gapsFor(ctx), 'P0.hookmerge');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.via, 'apply');
+  assert.deepEqual(c.evidence, ['PreToolUse: 2 kh-harness hooks are registered separately, one process each']);
+  assert.equal(c.proposal, 'replace the separate kh-harness registrations on PreToolUse with one entry script each, so each of those events starts one process');
+  const [replace, ...others] = replacements(ctx);
+  assert.deepEqual(others, []);
+  assert.deepEqual([replace.event, replace.checkId, replace.remove, replace.entry], ['PreToolUse', 'P0.hookmerge', [l.patch.entrySha256, g.patch.entrySha256], execEntry(DISPATCH_PRE_PATH)]);
+  assert.equal(replace.reason, `PreToolUse holds 2 separate kh-harness registrations; ${DISPATCH_PRE_PATH} runs the same hooks in one process`);
+  assert.deepEqual(replace.requiresFiles.map(f => f.path), [DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]);
+});
+
+test('a registration that is not the recorded one, or a recorded one that is gone, leaves the event separate, and the check says which', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH);
+  for (const [ctx, why] of [
+    [hookCtx({ PreToolUse: [l.registration, changed(TOOL_GATE_PATH)] }, [l.patch, g.patch]), `a registration of ${TOOL_GATE_PATH} is not as kh-harness recorded it`],
+    [hookCtx({ PreToolUse: [g.registration] }, [l.patch, g.patch]), 'a registration kh-harness recorded on PreToolUse is no longer there'],
+  ]) {
+    assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'separate', missing: [], remove: [], why });
+    const c = byId(gapsFor(ctx), 'P0.hookmerge');
+    assert.equal(c.state, 'declared', why);
+    assert.deepEqual(c.evidence, [`PreToolUse: left on separate registrations — ${why}`]);
+    assert.deepEqual(replacements(ctx), [], why);
+  }
+});
+
+test('a stale record of the entry script itself does not make an event separate', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH), entry = recorded(DISPATCH_PRE_PATH);
+  const ctx = hookCtx({ PreToolUse: [l.registration, g.registration] }, [l.patch, g.patch, entry.patch]);
+  assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'mergeable', missing: [], remove: [l.patch.entrySha256, g.patch.entrySha256], why: null });
+});
+
+test('when one hook of an event is missing and the other is as recorded, the missing hook\'s check replaces the recorded one with the entry script', () => {
+  const lint = recorded(LINT_TOUCHED_PATH, SENSOR_MATCHER, 'PostToolUse');
+  const onPost = hookCtx({ PostToolUse: [lint.registration] }, [lint.patch]);
+  assert.deepEqual(mergePlan('PostToolUse', onPost), { entry: DISPATCH_POST_PATH, state: 'mergeable', missing: [SESSION_LOG_PATH], remove: [lint.patch.entrySha256], why: null });
+  assert.deepEqual(replacements(onPost).map(p => [p.event, p.checkId, p.remove, p.entry]), [['PostToolUse', 'P5.sessionlog', [lint.patch.entrySha256], execEntry(DISPATCH_POST_PATH)]]);
+  assert.equal(byId(gapsFor(onPost), 'P0.hookmerge').evidence.some(e => e.startsWith('PostToolUse')), false);
+
+  const log = recorded(SESSION_LOG_PATH);
+  const onPre = hookCtx({ PreToolUse: [log.registration] }, [log.patch]);
+  assert.deepEqual(replacements(onPre).map(p => [p.event, p.checkId, p.remove, p.entry]), [['PreToolUse', 'P5.toolgate', [log.patch.entrySha256], execEntry(DISPATCH_PRE_PATH)]]);
+  assert.equal(byId(gapsFor(onPre), 'P0.hookmerge').evidence.some(e => e.startsWith('PreToolUse')), false);
+  const settingsOnPre = buildProposals(argsFor(onPre)).filter(p => p.kind !== 'file' && p.event === 'PreToolUse');
+  assert.deepEqual(settingsOnPre.map(p => p.kind), ['settings-hook-replace'], 'the event is proposed once');
+});
+
+test('an install killed after its settings write, whose records of the removed registrations remain, reads as merged', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH), entry = recorded(DISPATCH_PRE_PATH);
+  const ctx = hookCtx({ PreToolUse: [entry.registration] }, [l.patch, g.patch, entry.patch]);
+  assert.equal(mergePlan('PreToolUse', ctx).state, 'merged');
+  const c = byId(gapsFor(ctx), 'P0.hookmerge');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [`PreToolUse: one process — ${DISPATCH_PRE_PATH} runs its hooks`]);
+  assert.deepEqual(replacements(ctx), []);
+});
+
+test('an event holding the entry script and its hooks separately as well is doubled, and P0.hookmerge takes the separate ones out', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH), entry = recorded(DISPATCH_PRE_PATH);
+  const ctx = hookCtx({ PreToolUse: [l.registration, g.registration, entry.registration] }, [l.patch, g.patch, entry.patch]);
+  const remove = [l.patch.entrySha256, g.patch.entrySha256, entry.patch.entrySha256];
+  assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'doubled', missing: [], remove, why: null });
+  const c = byId(gapsFor(ctx), 'P0.hookmerge');
+  assert.equal(c.state, 'absent');
+  assert.deepEqual(c.evidence, [`PreToolUse: ${DISPATCH_PRE_PATH} runs its hooks, and some of them are also registered by themselves, so those run twice`]);
+  assert.equal(c.proposal, 'take out the separate kh-harness registrations on PreToolUse beside the entry script already registered there, so each hook runs once');
+  assert.deepEqual(replacements(ctx).map(p => [p.event, p.checkId, p.remove, p.entry, p.reason]), [['PreToolUse', 'P0.hookmerge', remove, execEntry(DISPATCH_PRE_PATH),
+    `PreToolUse runs kh-harness hooks through ${DISPATCH_PRE_PATH} and by themselves as well; the separate registrations are taken out, so each runs once`]]);
+
+  const owners = hookCtx({ PreToolUse: [l.registration, changed(TOOL_GATE_PATH), entry.registration] }, [l.patch, g.patch, entry.patch]);
+  const why = `a registration of ${TOOL_GATE_PATH} is not as kh-harness recorded it`;
+  assert.deepEqual(mergePlan('PreToolUse', owners), { entry: DISPATCH_PRE_PATH, state: 'doubled', missing: [], remove: [], why });
+  const left = byId(gapsFor(owners), 'P0.hookmerge');
+  assert.equal(left.state, 'declared');
+  assert.deepEqual(left.evidence, [`PreToolUse: ${DISPATCH_PRE_PATH} runs its hooks, and some of them are also registered by themselves, so those run twice; left as it is — ${why}`]);
+  assert.deepEqual(replacements(owners), []);
+});
+
+test('a replacement that requires a held script is not proposed, as a registration is not', () => {
+  const d = root();
+  mkdirSync(join(d, '.claude/scripts'), { recursive: true });
+  writeFileSync(join(d, TOOL_GATE_PATH), '// mine\n');
+  const replace = { kind: 'settings-hook-replace', event: 'PreToolUse', step: 30, entry: execEntry(DISPATCH_PRE_PATH), remove: ['a'], requiresFiles: [{ path: DISPATCH_PRE_PATH, sha256: 'b' }], reason: 'r' };
+  const ps = buildProposals(args([check({ id: 'X.probe' })], { root: d, generators: { 'X.probe': () => [replace] } }));
+  assert.deepEqual(ps, []);
+  const unheld = buildProposals(args([check({ id: 'X.probe' })], { generators: { 'X.probe': () => [replace] } }));
+  assert.deepEqual(unheld.map(p => p.kind), ['settings-hook-replace'], 'fixture sanity: proposed when nothing is held');
 });
 
 test('the logging hook is registered by itself on a tool-call event whose other hook\'s generator will not run', () => {

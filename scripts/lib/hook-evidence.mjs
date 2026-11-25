@@ -42,7 +42,7 @@ const shellEntry = scriptPath => ({ type: 'command', command: `node ${scriptPath
 /** The `entrySha256` of every entry this kit has ever recorded for a hook
  * running `scriptPath` under `matcher`: each patch's hash names the one
  * script it registered. */
-function recordedHashes(scriptPath, matcher) {
+export function kitEntryHashes(scriptPath, matcher) {
   return new Set([execEntry, shellEntry].map(form => hookEntrySha256(form(scriptPath), matcher)));
 }
 
@@ -52,7 +52,7 @@ function recordedHashes(scriptPath, matcher) {
  * `matcher`. */
 export function runsKitScript(registration, scriptPath, matcher) {
   if (registration.script !== null) return registration.script === scriptPath;
-  return recordedHashes(scriptPath, matcher).has(registration.entrySha256);
+  return kitEntryHashes(scriptPath, matcher).has(registration.entrySha256);
 }
 
 /** The entry script that runs `scriptPath` on `event`, or null when no
@@ -149,7 +149,7 @@ export function registeredHook(harness, event, ourPath, proposal, { manifest, ro
     const recorded = new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && hashes.has(p.entrySha256)).map(p => p.entrySha256));
     return registrations.some(r => r.script === null && recorded.has(r.entrySha256)) && existsSync(join(root, script));
   };
-  if (confirmed(ourPath, recordedHashes(ourPath, matcher))) return { state: 'declared', evidence: [`${event} hook: ${ourPath} ${unseen}`] };
+  if (confirmed(ourPath, kitEntryHashes(ourPath, matcher))) return { state: 'declared', evidence: [`${event} hook: ${ourPath} ${unseen}`] };
   if (entry !== null && confirmed(entry, new Set([hookEntrySha256(execEntry(entry))]))) {
     return { state: 'declared', evidence: [`${event} hook: ${ourPath}, run by ${entry} ${unseen}`] };
   }

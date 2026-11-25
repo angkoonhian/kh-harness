@@ -94,13 +94,15 @@ const SEPARATE_HALVES = Object.freeze({
  * the entry scripts: on each event of `ENTRY_SCRIPTS` whose entry script is
  * registered, that element of `.claude/settings.json` becomes one element
  * per hook it runs, and the manifest's record of it one record per hook,
- * each under the check that registers the hook by itself. Every file is
- * left as installed.
+ * each under the check that registers the hook by itself. The logging
+ * hook's element comes first, as that `apply` wrote it. Every file is left
+ * as installed.
  */
 export function separateRegistrations(d) {
   const s = settings(d);
   const m = manifestOf(d);
-  for (const [event, { path, halves }] of Object.entries(ENTRY_SCRIPTS)) {
+  for (const [event, { path, halves: running }] of Object.entries(ENTRY_SCRIPTS)) {
+    const halves = [SESSION_LOG_PATH, ...running.filter(half => half !== SESSION_LOG_PATH)];
     const arg = `\${CLAUDE_PROJECT_DIR}/${path}`;
     const at = (s.hooks?.[event] ?? []).findIndex(e => e.hooks?.some(h => h.command === 'node' && h.args?.[0] === arg));
     if (at === -1) continue;
@@ -166,6 +168,14 @@ export function fixture() {
   git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+  return d;
+}
+
+/** `fixture()` with a `lint` script in its package, committed. */
+export function fixtureWithLint() {
+  const d = fixture();
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest', lint: 'eslint .' } }));
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'lint');
   return d;
 }
 

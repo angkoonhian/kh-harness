@@ -1091,6 +1091,19 @@ test('a replacement is skipped whole when a registration it names is not there a
   skippedWhole(lacking.d, lacking.manifest, why => why.startsWith('missing-dependency: '));
 });
 
+test('a replacement that names the entry script registered beside the separate registrations takes them all out and registers it once', () => {
+  const { d, manifest } = separatelyRegistered();
+  const entry = { hooks: [execEntry(DISPATCH_PRE_PATH)] };
+  writeFileSync(join(d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [log, entry, theirs, gate] } }, null, 2) + '\n');
+  const recordedEntry = { ...manifest, settingsPatches: [...manifest.settingsPatches, kitRecord(DISPATCH_PRE_PATH, 30, 'P5.toolgate')] };
+  const doubled = { ...replace, remove: [matcherEntrySha256(log), matcherEntrySha256(gate), matcherEntrySha256(entry)] };
+  assert.match(renderDiff(d, doubled, recordedEntry), /^\+ {2}"hooks": \[$/m);
+  const r = applyProposals({ root: d, proposals: [doubled], manifest: recordedEntry, kitVersion: '0.2.0' });
+  assert.deepEqual(readSettings(d).hooks.PreToolUse, [theirs, entry]);
+  assert.deepEqual(r.patched, [{ event: 'PreToolUse', step: 30, checkId: 'P0.hookmerge', replaced: 2 }], 'the entry script taken out and put back is not counted as a separate registration');
+  assert.deepEqual(r.manifest.settingsPatches.map(p => p.entrySha256), [matcherEntrySha256(entry)]);
+});
+
 test('the preview of a replacement shows the elements removed and the one added, and nothing else of the file', () => {
   const { d, manifest } = separatelyRegistered();
   assert.equal(renderDiff(d, replace, manifest), [

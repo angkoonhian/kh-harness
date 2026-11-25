@@ -878,10 +878,18 @@ function stageSettingsHook({ root, proposal, batch, skipped }) {
   batch.patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId });
 }
 
+/** True when `entry` is registered on `event` in `elements`, a list of
+ * `hooks.<event>` elements. */
+const registersEntry = (elements, event, entry) => hasEquivalentHook({ hooks: { [event]: elements } }, event, entry);
+
 /** Stages a settings-hook-replace proposal against the records `manifest`
- * held when the run began: skipped as a settings-hook proposal is,
- * and for the reason `replacementOf` gives; otherwise wholly, never in
- * part. */
+ * held when the run began: skipped as a settings-hook proposal is, as
+ * `unchanged` when the entry is registered among the elements it would
+ * keep (all of them, when it cannot take its own out), and for the reason
+ * `replacementOf` gives; otherwise wholly, never in part. A replacement may
+ * name an element that runs the entry itself, which it takes out with the
+ * others before registering the entry once; that element is not counted
+ * among the separate registrations removed. */
 function stageSettingsReplace({ root, proposal, batch, manifest, skipped }) {
   const unmet = unmetDependencies(root, proposal);
   if (unmet !== null) {
@@ -892,11 +900,13 @@ function stageSettingsReplace({ root, proposal, batch, manifest, skipped }) {
     skipped.push({ path: SETTINGS_PATH, why: 'unparseable', checkId: proposal.checkId });
     return;
   }
-  if (hasEquivalentHook(batch.settings, proposal.event, proposal.entry)) {
+  const { replaced, why } = replacementOf(batch.settings, manifest, proposal);
+  // `replaceHookEntries` appends the entry after the elements it keeps.
+  const kept = why ? batch.settings.hooks?.[proposal.event] : replaced.settings.hooks[proposal.event].slice(0, -1);
+  if (registersEntry(kept, proposal.event, proposal.entry)) {
     skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
     return;
   }
-  const { replaced, why } = replacementOf(batch.settings, manifest, proposal);
   if (why) {
     skipped.push({ path: SETTINGS_PATH, why, checkId: proposal.checkId });
     return;
@@ -913,7 +923,8 @@ function stageSettingsReplace({ root, proposal, batch, manifest, skipped }) {
     appliedAt: new Date().toISOString(),
   });
   for (const entrySha256 of proposal.remove) batch.dropped.add(patchKey({ container: patch.container, entrySha256 }));
-  batch.patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId, replaced: proposal.remove.length });
+  const separate = replaced.removed.filter(element => !registersEntry([element], proposal.event, proposal.entry));
+  batch.patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId, replaced: separate.length });
 }
 
 function stageSettingsDeny({ proposal, batch, skipped }) {

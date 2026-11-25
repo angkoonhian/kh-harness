@@ -15,7 +15,7 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 // the other five.
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
-import { ENTRY_SCRIPTS, directRegistrations, execEntry, registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, directRegistrations, execEntry, kitEntryHashes, registeredHook } from './hook-evidence.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 
@@ -228,25 +228,33 @@ export function sessionLogRegistrations(harness, { manifest, root } = {}) {
  * `matcher`, so the tool events fire for every tool. No evidence gate: the
  * hook records nothing until the log is enabled for the repository on this
  * machine, which no file in the repository can say. An install that
- * predates an event is given only the events it lacks. A missing event
- * whose entry script can be registered is left to the other hook's
- * generator when that generator runs in this proposal (its check is among
- * `checks`, absent and decidable), since it registers the entry script
- * there; on every other missing event the logging hook is registered by
- * itself, so no event goes without it.
+ * predates an event is given only the events it lacks. On a missing event
+ * whose entry script can be registered (`mergePlan`'s `mergeable`), this
+ * generator registers the entry script in place of the other hook's
+ * registration when only the logging hook is missing there; when the other
+ * hook is missing too, the event is left to that hook's generator if it
+ * runs in this proposal (its check is among `checks`, absent and
+ * decidable). On every other missing event the logging hook is registered
+ * by itself, so no event goes without it.
  */
 function sessionLogProposal({ kitVersion, harness, manifest, root, stack, checks }) {
   const files = hookFiles(SESSION_LOG_PATH, kitVersion);
   const proposing = id => checks.some(c => c.id === id && c.state === 'absent' && c.decidable !== false);
-  const leftToEntry = event => Object.hasOwn(ENTRY_CHECKS, event) && proposing(ENTRY_CHECKS[event])
-    && mergePlan(event, { harness, manifest, root, stack }).state === 'mergeable';
-  const missing = sessionLogRegistrations(harness, { manifest, root }).filter(r => r.state !== 'declared' && !leftToEntry(r.event));
-  return [...files, ...missing.map(r => ({
-    kind: 'settings-hook', event: r.event, step: SESSION_LOG_STEP,
-    entry: execEntry(SESSION_LOG_PATH),
-    requiresFiles: requiredFiles(files),
-    reason: hookRegistrationReason(r.event, r),
-  }))];
+  const missing = sessionLogRegistrations(harness, { manifest, root }).filter(r => r.state !== 'declared');
+  return [...files, ...missing.flatMap(r => {
+    const reason = hookRegistrationReason(r.event, r);
+    const plan = Object.hasOwn(ENTRY_SCRIPTS, r.event) ? mergePlan(r.event, { harness, manifest, root, stack }) : null;
+    if (plan?.state === 'mergeable' && plan.missing.includes(SESSION_LOG_PATH)) {
+      if (plan.missing.length === 1) return entryProposals(r.event, plan, { kitVersion, reason });
+      if (proposing(ENTRY_CHECKS[r.event])) return [];
+    }
+    return [{
+      kind: 'settings-hook', event: r.event, step: SESSION_LOG_STEP,
+      entry: execEntry(SESSION_LOG_PATH),
+      requiresFiles: requiredFiles(files),
+      reason,
+    }];
+  })];
 }
 
 export const TOOL_GATE_STEP = 30;
@@ -647,36 +655,96 @@ const halfMatcher = scriptPath => (scriptPath === LINT_TOUCHED_PATH ? SENSOR_MAT
  * How the kit's hooks on `event`, an event of `ENTRY_SCRIPTS`, stand against
  * its entry script. The hooks wanted there are the event's own, leaving out
  * the lint hook unless it is already registered or a package declares a
- * `lint` script, as its generator decides:
- * - `merged`: the entry script is registered on the event;
+ * `lint` script, as its generator decides. The hashes recorded here are
+ * those of the manifest's patches on the event that the kit writes for one
+ * of the event's hooks (`kitEntryHashes`), once each, in the manifest's
+ * order:
+ * - `merged`: the entry script is registered on the event, and none of its
+ *   hooks is registered by itself;
+ * - `doubled`: the entry script is registered, and so is one of its hooks
+ *   by itself, which then runs twice. `remove` is the recorded hashes of
+ *   those registrations and of the entry script's, all of which the
+ *   replacement takes out before registering the entry script once; when
+ *   one of them is not as recorded, `remove` is empty and `why` says which;
  * - `single`: fewer than two hooks are wanted, so there is nothing to merge;
- * - `separate`: a wanted hook is registered by itself, and the others are
- *   registered beside it the same way (`why` says so);
- * - `mergeable`: none is registered, and the entry script is registered in
- *   their place (`missing`).
+ * - `separate`: a wanted hook is registered by itself other than as
+ *   recorded here, or a registration recorded here is no longer on the
+ *   event (`why` says which), so the owner changed the event and it is
+ *   left as it is;
+ * - `mergeable`: the entry script can take the place of every registration
+ *   recorded here (`remove`), and runs the wanted hooks not yet registered
+ *   (`missing`).
+ * Which element comes first on the event is never read.
  */
 export function mergePlan(event, { harness, manifest, root, stack }) {
   const { path: entry, halves } = ENTRY_SCRIPTS[event];
+  const plan = (state, { missing = [], remove = [], why = null } = {}) => ({ entry, state, missing, remove, why });
+  const direct = script => directRegistrations(harness, event, script, halfMatcher(script));
+  const recordedFor = scripts => {
+    const kit = new Set(scripts.flatMap(script => [...kitEntryHashes(script, halfMatcher(script))]));
+    return [...new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && kit.has(p.entrySha256)).map(p => p.entrySha256))];
+  };
+  const notAsRecorded = (scripts, recorded) => {
+    const changed = scripts.find(script => direct(script).some(r => !recorded.includes(r.entrySha256)));
+    return changed === undefined ? null : `a registration of ${changed} is not as kh-harness recorded it`;
+  };
+  if (direct(entry).length) {
+    const doubled = halves.filter(half => direct(half).length);
+    if (doubled.length === 0) return plan('merged');
+    const scripts = [...doubled, entry];
+    const recorded = recordedFor(scripts);
+    const why = notAsRecorded(scripts, recorded);
+    if (why !== null) return plan('doubled', { why });
+    const present = new Set(scripts.flatMap(direct).map(r => r.entrySha256));
+    return plan('doubled', { remove: recorded.filter(hash => present.has(hash)) });
+  }
   const credited = half => registeredHook(harness, event, half, null, { manifest, root, matcher: halfMatcher(half), kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
   const wanted = halves.filter(half => half !== LINT_TOUCHED_PATH || hasLintScript(stack) || credited(half));
-  const plan = (state, missing, why) => ({ entry, state, missing, remove: [], why });
-  if (directRegistrations(harness, event, entry, undefined).length) return plan('merged', [], null);
-  if (wanted.length < 2) return plan('single', [], null);
-  if (wanted.some(half => directRegistrations(harness, event, half, halfMatcher(half)).length)) return plan('separate', [], 'its hooks are registered separately');
-  return plan('mergeable', wanted, null);
+  if (wanted.length < 2) return plan('single');
+  const recorded = recordedFor(halves);
+  const why = notAsRecorded(wanted, recorded);
+  if (why !== null) return plan('separate', { why });
+  const registered = new Set((harness.claudeDir.hookRegistrations?.[event] ?? []).map(r => r.entrySha256));
+  if (recorded.some(hash => !registered.has(hash))) return plan('separate', { why: `a registration kh-harness recorded on ${event} is no longer there` });
+  return plan('mergeable', { missing: wanted.filter(half => direct(half).length === 0), remove: recorded });
 }
 
 /** The proposals that register `plan.entry` on `event`: the entry script
  * with every installed script it loads, and its registration, with no
- * `matcher`, requiring all of them. */
+ * `matcher`, requiring all of them, which takes the place of the
+ * registrations `plan.remove` names when it names any. */
 export function entryProposals(event, plan, { kitVersion, reason }) {
   const files = hookFiles(plan.entry, kitVersion);
-  return [...files, {
-    kind: 'settings-hook', event, step: HOOK_SCRIPTS[plan.entry].step,
+  const registration = {
+    event, step: HOOK_SCRIPTS[plan.entry].step,
     entry: execEntry(plan.entry),
     requiresFiles: requiredFiles(files),
     reason,
-  }];
+  };
+  return [...files, plan.remove.length > 0 ? { kind: 'settings-hook-replace', ...registration, remove: plan.remove } : { kind: 'settings-hook', ...registration }];
+}
+
+/**
+ * The migration of an install made before the entry scripts: on each event
+ * whose hooks are all registered separately and as recorded (`mergeable`
+ * with nothing `missing`), the entry script replaces them; on each event
+ * where one of them is registered beside the entry script as recorded
+ * (`doubled`), the replacement takes it out. An event with a hook missing
+ * is left to that hook's generator, which registers the entry script
+ * there. Nothing without a manifest, which records nothing to replace.
+ */
+function hookMergeProposal({ kitVersion, harness, manifest, root, stack }) {
+  if (!manifest) return [];
+  return Object.keys(ENTRY_SCRIPTS).flatMap(event => {
+    const plan = mergePlan(event, { harness, manifest, root, stack });
+    if (plan.state === 'mergeable' && plan.missing.length === 0) {
+      return entryProposals(event, plan, { kitVersion, reason: `${event} holds ${plan.remove.length} separate kh-harness registrations; ${plan.entry} runs the same hooks in one process` });
+    }
+    if (plan.state === 'doubled' && plan.why === null) {
+      return entryProposals(event, plan, { kitVersion, reason: `${event} runs kh-harness hooks through ${plan.entry} and by themselves as well; the separate registrations are taken out, so each runs once` });
+    }
+    return [];
+  });
 }
 
 /**
@@ -1008,6 +1076,7 @@ const GENERATORS = {
   'P5.failures': failuresScaffoldProposal,
   'P5.sessionlog': sessionLogProposal,
   'P5.toolgate': toolGateProposal,
+  'P0.hookmerge': hookMergeProposal,
   // Each update goes through `buildProposals`' recorded-path branch like any
   // other proposal for a recorded file.
   [KITSKEW_ID]: ctx => kitSkew(ctx).updates,
@@ -1075,7 +1144,7 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
     if (!gen) continue;
     for (const p of gen({ kitVersion, harness, root, stack, checks, files, manifest, check: c })) {
       if (p.kind === 'file' && held.has(p.path)) continue;
-      if (p.kind === 'settings-hook' && (p.requiresFiles ?? []).some(f => held.has(f.path))) continue;
+      if ((p.kind === 'settings-hook' || p.kind === 'settings-hook-replace') && (p.requiresFiles ?? []).some(f => held.has(f.path))) continue;
       if (p.kind === 'file' && alreadyWritten.has(p.path)) {
         // Once per run: the first generator to want a stale file gets the
         // update; later ones find it in `recorded` no longer and in

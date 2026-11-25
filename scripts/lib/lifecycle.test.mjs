@@ -18,7 +18,7 @@ import { sha256, emptyManifest } from './manifest.mjs';
 // hand-maintained id list, so a capability added later is covered with no
 // test edit (same discipline as propose.test.mjs's coherence test).
 import { GENERATORS, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, SESSION_LOG_PATH } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, LOG, git, run, runResult, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog, loggingScript, runEveryRegisteredHook, separateRegistrations } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, LOG, git, run, runResult, settings, manifestOf, fixture, fixtureWithLint, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog, loggingScript, runEveryRegisteredHook, separateRegistrations } from './lifecycle-fixtures.mjs';
 import { ENTRY_SCRIPTS } from './hook-evidence.mjs';
 import { versionStamp } from './render.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
@@ -973,14 +973,6 @@ test('a dry run that registers no hook does not print the disclosure', () => {
   assert.equal(out.includes(EXECUTION_DISCLOSURE), false);
 });
 
-/** `fixture()` with a `lint` script in its package, committed. */
-function fixtureWithLint() {
-  const d = fixture();
-  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest', lint: 'eslint .' } }));
-  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'lint');
-  return d;
-}
-
 test('a fresh install starts one kh-harness process per tool-call event, and uninstall leaves none behind', () => {
   const d = fixtureWithLint();
   const before = readFileSync(join(d, '.claude/settings.json'), 'utf8');
@@ -1003,7 +995,7 @@ test('separateRegistrations puts a fresh install into the separate layout, which
   run(APPLY, d, '--yes', '--allow-dirty');
   separateRegistrations(d);
   const kit = event => (settings(d).hooks[event] ?? []).map(m => `${m.hooks[0].args?.[0]?.split('/').pop()} ${m.matcher}`);
-  assert.deepEqual(kit('PreToolUse'), ['tool-gate.mjs undefined', 'session-log.mjs undefined']);
+  assert.deepEqual(kit('PreToolUse'), ['session-log.mjs undefined', 'tool-gate.mjs undefined']);
   assert.deepEqual(kit('PostToolUse'), ['session-log.mjs undefined', 'lint-touched.mjs Write|Edit']);
   assert.deepEqual(kit('PostToolUseFailure'), ['session-log.mjs undefined', 'loop-watch.mjs undefined']);
   const checks = JSON.parse(run(DETECT, d, '--json')).checks;

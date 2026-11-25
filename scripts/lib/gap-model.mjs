@@ -3,7 +3,7 @@ import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates, denyRuleCoverage } from './protected-evidence.mjs';
-import { registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, registeredHook } from './hook-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote, fixtureExposureNote } from './detect-exposure.mjs';
@@ -18,7 +18,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { displayPath, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
@@ -1023,6 +1023,48 @@ const CHECKS = [
     lookedFor: ['a SessionStart hook in .claude/settings.json'],
     check: ({ harness, manifest, root, heldScript }) => unlessHeld(registeredHook(harness, 'SessionStart', BRIEF_PATH,
       'install scripts/session-brief.mjs and register a SessionStart hook', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }), BRIEF_PATH, heldScript),
+  },
+  {
+    id: 'P0.hookmerge', step: 2, phase: 0,
+    lookedFor: [`the kh-harness hooks registered on PreToolUse, PostToolUse and PostToolUseFailure in .claude/settings.json, against the registrations ${MANIFEST_PATH} records`],
+    // Decided from the hook registry and the manifest's records, one line
+    // per event (`mergePlan`); nothing executes, so it is never `verified`.
+    // An event whose plan is `single`, or `mergeable` with a hook missing,
+    // has no line: that hook's own check speaks for it, and its generator
+    // registers the entry script.
+    check: ({ harness, manifest, root, stack, heldScript }) => {
+      const evidence = [];
+      // The events `apply` can fix, in event order: `merge` to move to the
+      // entry script, `undouble` to take the separate registrations out.
+      const fixable = [];
+      for (const event of Object.keys(ENTRY_SCRIPTS)) {
+        const plan = mergePlan(event, { harness, manifest, root, stack });
+        if (plan.state === 'merged') evidence.push(`${event}: one process — ${plan.entry} runs its hooks`);
+        else if (plan.state === 'separate') evidence.push(`${event}: left on separate registrations — ${plan.why}`);
+        else if (plan.state === 'mergeable' && plan.missing.length === 0) {
+          evidence.push(`${event}: ${plan.remove.length} kh-harness hooks are registered separately, one process each`);
+          fixable.push({ event, entry: plan.entry, fix: 'merge' });
+        } else if (plan.state === 'doubled') {
+          const line = `${event}: ${plan.entry} runs its hooks, and some of them are also registered by themselves, so those run twice`;
+          if (plan.why !== null) {
+            evidence.push(`${line}; left as it is — ${plan.why}`);
+          } else {
+            evidence.push(line);
+            fixable.push({ event, entry: plan.entry, fix: 'undouble' });
+          }
+        }
+      }
+      if (fixable.length) {
+        const events = fix => fixable.filter(e => e.fix === fix).map(e => e.event).join(', ');
+        const proposal = [
+          ...(events('merge') ? [`replace the separate kh-harness registrations on ${events('merge')} with one entry script each, so each of those events starts one process`] : []),
+          ...(events('undouble') ? [`take out the separate kh-harness registrations on ${events('undouble')} beside the entry script already registered there, so each hook runs once`] : []),
+        ].join('; and ');
+        return unlessHeld({ state: 'absent', evidence, proposal }, fixable[0].entry, heldScript);
+      }
+      if (evidence.length) return { state: 'declared', evidence };
+      return { state: 'n/a', evidence: ['no tool-call event holds two kh-harness hooks'] };
+    },
   },
   // Last, so the generators it runs are given every other check, as
   // `buildProposals` gives them.

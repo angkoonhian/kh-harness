@@ -2016,3 +2016,39 @@ test('P5.toolgate says it looked at the deny rules as well as the hook', () => {
   const c = byId(gaps(bareStack, bareHarness), 'P5.toolgate');
   assert.deepEqual(c.lookedFor, ['a PreToolUse hook in .claude/settings.json', 'the deny rules the gate hook is installed with, in the settings in effect']);
 });
+
+// --- P0.hookmerge ------------------------------------------------------------
+
+test('P0.hookmerge is n/a on a repository with no kit hook, declared once merged, and proposes nothing while a script is held', () => {
+  const none = byId(gaps(lintStack, withRegistrations({})), 'P0.hookmerge');
+  assert.deepEqual([none.state, none.evidence, none.proposal], ['n/a', ['no tool-call event holds two kh-harness hooks'], null]);
+  assert.deepEqual(none.lookedFor, ['the kh-harness hooks registered on PreToolUse, PostToolUse and PostToolUseFailure in .claude/settings.json, against the registrations .claude/kh-harness.manifest.json records']);
+  assert.deepEqual([none.step, none.phase], [2, 0]);
+
+  const one = byId(gaps(lintStack, merged), 'P0.hookmerge');
+  assert.equal(one.state, 'declared');
+  assert.deepEqual(one.evidence, Object.entries(ENTRY_SCRIPTS).map(([event, { path }]) => `${event}: one process — ${path} runs its hooks`));
+
+  // Both hooks on PreToolUse as recorded, beside a copy of the gate hook the
+  // kit did not write, which holds every script it loads.
+  const hashOf = script => hookEntrySha256(execEntry(script));
+  const registration = script => Object.defineProperty({ script, matcher: null }, 'entrySha256', { value: hashOf(script) });
+  const settingsPatches = [SESSION_LOG_PATH, TOOL_GATE_PATH].map(script => ({ event: 'PreToolUse', container: '/hooks/PreToolUse', entrySha256: hashOf(script) }));
+  const d = repoWith({ [TOOL_GATE_PATH]: '// mine\n' });
+  const held = byId(buildGaps({
+    stack: lintStack, harness: withRegistrations({ PreToolUse: [registration(SESSION_LOG_PATH), registration(TOOL_GATE_PATH)] }), exposures: [], profile: selectProfile(lintStack),
+    git: { branch: 'main', isRepo: true }, files: [], root: d, manifest: { schema: 1, files: [], settingsPatches }, kitVersion: '0.2.0',
+  }), 'P0.hookmerge');
+  assert.equal(held.state, 'absent');
+  assert.equal(held.decidable, false);
+  assert.equal(held.proposal, null);
+  assert.equal(held.evidence[0], 'PreToolUse: 2 kh-harness hooks are registered separately, one process each');
+  assert.match(held.evidence[1], new RegExp(`^${DISPATCH_PRE_PATH.replace(/[.]/g, '\\.')} is not written or registered while kh-harness keeps ${TOOL_GATE_PATH.replace(/[.]/g, '\\.')} \\(not recorded`));
+});
+
+test('P0.hookmerge sits directly before P0.kitskew in the checks and in the generators', () => {
+  const ids = gaps(bareStack, bareHarness).map(c => c.id);
+  assert.deepEqual(ids.slice(-2), ['P0.hookmerge', 'P0.kitskew']);
+  assert.deepEqual(Object.keys(GENERATORS).slice(-2), ['P0.hookmerge', 'P0.kitskew']);
+  assert.deepEqual(GENERATORS['P0.hookmerge']({ kitVersion: '0.2.0', harness: merged, manifest: null, stack: lintStack, checks: [], files: [] }), []);
+});
