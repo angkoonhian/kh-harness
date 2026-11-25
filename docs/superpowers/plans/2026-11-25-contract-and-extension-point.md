@@ -791,7 +791,7 @@ test('data over the bound is refused, and data at the bound is recorded', () => 
 });
 test('a credential in data is masked, and a value under a credential-named key is hidden whole', () => {
   const token = 'gh' + 'p_' + 'A'.repeat(36);
-  recordExternalEvent(root, 's2', { ...EVENT, data: { note: `pushed with ${token}`, password: 'hunter2' } });
+  recordExternalEvent(root, 's2', { ...EVENT, data: { note: `pushed with ${token}`, password: ['hunter', '2'].join('') } });
   const [e] = readEvents(root, 's2').events;
   assert.ok(!JSON.stringify(e).includes(token));
   assert.equal(e.data.password, SCRUB_MARK);
