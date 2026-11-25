@@ -39,6 +39,7 @@ const HARNESS_GATES_PATH = '.claude/scripts/harness-gates.mjs';
 const HARNESS_LOG_PATH = '.claude/scripts/harness-log.mjs';
 const HARNESS_SEAL_PATH = '.claude/scripts/harness-seal.mjs';
 const HARNESS_DISPATCH_PATH = '.claude/scripts/harness-dispatch.mjs';
+const HARNESS_EXTENSIONS_PATH = '.claude/scripts/harness-extensions.mjs';
 const DISPATCH_PRE_PATH = ENTRY_SCRIPTS.PreToolUse.path;
 const DISPATCH_POST_PATH = ENTRY_SCRIPTS.PostToolUse.path;
 const DISPATCH_FAILURE_PATH = ENTRY_SCRIPTS.PostToolUseFailure.path;
@@ -791,6 +792,7 @@ const HOOK_MODULES = Object.freeze({
   [HARNESS_LOG_PATH]: { asset: 'scripts/harness-log.mjs', step: TOOL_GATE_STEP, reason: 'the session log library the logging hook writes with and the gate hook records firings with' },
   [HARNESS_SEAL_PATH]: { asset: 'scripts/harness-seal.mjs', step: SESSION_LOG_STEP, reason: 'the module the logging hook loads at session start to seal closed sessions and expire old content' },
   [REDACT_PATH]: { asset: 'scripts/harness-redact.mjs', step: 9, reason: 'the redaction and shared-path module every hook script loads' },
+  [HARNESS_EXTENSIONS_PATH]: { asset: 'scripts/harness-extensions.mjs', step: TOOL_GATE_STEP, reason: 'the loader for the PreToolUse extensions another plugin registers' },
 });
 const HOOK_MODULE_PATHS = Object.freeze(Object.keys(HOOK_MODULES));
 
@@ -1178,4 +1180,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // must produce something when applied. The test membership-tests each real
 // check's id against this table, not a hand-kept list of ids, so a
 // capability added here later is covered with no test edit.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, HARNESS_DISPATCH_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };
