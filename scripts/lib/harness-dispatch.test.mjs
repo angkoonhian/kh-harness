@@ -31,6 +31,7 @@ import { dirname, join, resolve } from 'node:path';
 import { readEvents, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { combine, runHalves } from '../../assets/scripts/harness-dispatch.mjs';
 import { GATES_PATH } from '../../assets/scripts/tool-gate.mjs';
+import { addedLatency } from './latency-fixtures.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const ASSETS = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts');
@@ -298,4 +299,37 @@ test('the PreToolUse and PostToolUseFailure entry scripts never spawn a child pr
   assert.deepEqual(outputs.map(r => r.status), [0, 0, 0]);
   assert.deepEqual(outputs.map(r => r.stdout), ['', '', WARNING_OUTPUT]);
   assert.equal(existsSync(trap), false);
+});
+
+// Measured on the development machine (linux, Node 26.13.1) on 2026-11-25:
+// the fastest run of dispatch-pre-tool.mjs (in a project with one gate that
+// does not match), dispatch-post-tool.mjs and dispatch-tool-failure.mjs was
+// 32.7, 30.2 and 32.3 ms against 15.8, 15.6 and 16.3 ms for a bare
+// `node -e 0`, so they add about 17, 15 and 16 ms.
+// The budget bounds what an entry script adds over a bare start;
+// latency-fixtures.mjs says how that is measured on a busy machine.
+const ADDED_LATENCY_BUDGET_MS = 100;
+const LATENCY_PAIRS = 40;
+
+/** Asserts `name` stays within the budget over LATENCY_PAIRS runs of `payload` and logged each run. */
+function assertWithinBudget(name, root, payload) {
+  const stdin = JSON.stringify(payload);
+  const { added, summary } = addedLatency({
+    runHookOnce: () => { const r = runEntry(name, root, stdin); assert.equal(r.status, 0, r.stderr); assert.equal(r.stderr, ''); },
+    stdin, env: { ...process.env, CLAUDE_PROJECT_DIR: root }, pairs: LATENCY_PAIRS,
+  });
+  assert.ok(added <= ADDED_LATENCY_BUDGET_MS, `${summary}; budget for the difference ${ADDED_LATENCY_BUDGET_MS} ms`);
+  assert.equal(readEvents(root, payload.session_id).events.filter(e => e.type === payload.hook_event_name).length, LATENCY_PAIRS);
+}
+
+test('latency budget: dispatch-pre-tool.mjs — the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
+  assertWithinBudget('dispatch-pre-tool.mjs', gatedProject(), call('latency-pre', 'npm test'));
+});
+
+test('latency budget: dispatch-post-tool.mjs — the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
+  assertWithinBudget('dispatch-post-tool.mjs', project(), { session_id: 'latency-post', hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: { stdout: 'x'.repeat(4096) }, duration_ms: 10 });
+});
+
+test('latency budget: dispatch-tool-failure.mjs — the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
+  assertWithinBudget('dispatch-tool-failure.mjs', project(), failure('latency-fail'));
 });
