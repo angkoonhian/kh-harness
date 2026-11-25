@@ -259,9 +259,14 @@ const sha256Hex = data => createHash('sha256').update(data).digest('hex');
 
 /** CRLF to LF on the raw bytes; latin1 maps each byte to one code unit, so
  * nothing else changes and a lone CR stays. */
-function lfNormalised(buf) {
+export function lfNormalised(buf) {
   return buf.includes(0x0d) ? Buffer.from(buf.toString('latin1').replace(/\r\n/g, '\n'), 'latin1') : buf;
 }
+
+/** SHA-256 hex of `bytes` with each CRLF made LF: how an installed script,
+ * and an extension module, is compared with the hash recorded for it, so a
+ * checkout that turned line endings to CRLF still matches. */
+export const lfSha256 = bytes => sha256Hex(lfNormalised(bytes));
 
 /** A relative path that resolves inside `root`; on win32 a drive-relative
  * `C:x` resolves elsewhere and `relative` then returns an absolute path. */
@@ -289,7 +294,7 @@ const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray
 
 function fileDigest(path) {
   try {
-    return sha256Hex(lfNormalised(readBounded(path, MAX_SMALL_FILE_BYTES)));
+    return lfSha256(readBounded(path, MAX_SMALL_FILE_BYTES));
   } catch (error) {
     return error?.code === 'ENOENT' ? 'missing' : UNREADABLE;
   }

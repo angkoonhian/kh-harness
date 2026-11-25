@@ -6,12 +6,17 @@
 // Every test runs against a temporary KH_DATA_DIR and HK_MARKER_DIR.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { EXTENSIONS_PATH, EXTENSION_LIMITS, moduleSha256, moduleState, readExtensions } from '../../assets/scripts/harness-extensions.mjs';
+import { lfSha256 } from '../../assets/scripts/harness-log.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
+
+const EXTENSIONS_MODULE = resolve(import.meta.dirname, '..', '..', 'assets', 'scripts', 'harness-extensions.mjs');
 
 const made = [];
 const tempDir = prefix => {
@@ -83,6 +88,7 @@ test('each entry is returned as a fresh object of the five fields', () => {
 
 test('a file that cannot be used is malformed, with fixed text that quotes nothing from it', async (t) => {
   const ENTRY_1 = 'entry 1 is not an extension entry as docs/CONTRACT.md describes one';
+  const NOT_A_DIRECTORY = '.claude or .claude/kh-harness is a link or not a directory';
   const valid = { id: 'a', version: '1.0.0', module: '.claude/ext/a.mjs', sha256: moduleSha256(Buffer.from(ALLOW)), onFailure: 'block' };
   const changed = o => ({ ...valid, ...o });
   const { sha256: _sha256, ...withoutSha } = valid;
@@ -106,26 +112,53 @@ test('a file that cannot be used is malformed, with fixed text that quotes nothi
     ['a short sha256', changed({ sha256: 'abc' })],
     ['an upper-case sha256', changed({ sha256: valid.sha256.toUpperCase() })],
     ['an unknown onFailure', changed({ onFailure: 'warn' })],
+    ['a module segment ending in a dot', changed({ module: '.claude/ext./x.mjs' })],
+    ['a module segment ending in a space', changed({ module: '.claude/ext /x.mjs' })],
   ];
+  const UNDER_SCRIPTS = 'entry 1 names a module under .claude/scripts/, where the kit keeps its own hooks';
   const nine = Array.from({ length: 9 }, (_, i) => changed({ id: `e${i}` }));
   const rows = [
     ['a file over the bound', root => writeExtensions(root, 'x'.repeat(EXTENSION_LIMITS.fileMaxBytes + 1)), 'it is larger than 65536 bytes'],
     ['a directory at the path', root => mkdirSync(join(root, EXTENSIONS_PATH), { recursive: true }), 'it is not a regular file'],
-    ['a link at the path', root => {
+    ['a link at the path', (root, st) => {
       writeAt(join(root, '.claude/kh-harness/real.json'), '[]');
-      return linkOrSkip(t, join(root, '.claude/kh-harness/real.json'), join(root, EXTENSIONS_PATH), 'file');
+      return linkOrSkip(st, join(root, '.claude/kh-harness/real.json'), join(root, EXTENSIONS_PATH), 'file');
     }, 'it is not a regular file'],
+    ['.claude/kh-harness a file', root => writeAt(join(root, '.claude/kh-harness'), ''), NOT_A_DIRECTORY],
+    ['.claude a file', root => writeAt(join(root, '.claude'), ''), NOT_A_DIRECTORY],
+    ['.claude/kh-harness a link to a directory outside the repository', (root, st) => {
+      const outside = tempDir('hk-ext-outside-');
+      writeAt(join(outside, 'extensions.json'), '[]');
+      mkdirSync(join(root, '.claude'));
+      return linkOrSkip(st, outside, join(root, '.claude/kh-harness'), 'junction');
+    }, NOT_A_DIRECTORY],
+    ['.claude/kh-harness a dangling link', (root, st) => {
+      mkdirSync(join(root, '.claude'));
+      return linkOrSkip(st, join(root, 'gone'), join(root, '.claude/kh-harness'), 'junction');
+    }, NOT_A_DIRECTORY],
+    ['.claude a link to an empty directory outside the repository', (root, st) => linkOrSkip(st, tempDir('hk-ext-outside-'), join(root, '.claude'), 'junction'), NOT_A_DIRECTORY],
+    ['.claude a link to a directory inside the repository', (root, st) => {
+      writeAt(join(root, 'elsewhere/kh-harness/extensions.json'), '[]');
+      return linkOrSkip(st, join(root, 'elsewhere'), join(root, '.claude'), 'junction');
+    }, NOT_A_DIRECTORY],
     ['not JSON', root => writeExtensions(root, '{ not json'), 'it is not JSON'],
     ['an object, not an array', root => writeExtensions(root, '{"extensions":[]}'), 'it is not a JSON array'],
     ['nine entries', root => writeExtensions(root, nine), 'it lists more than 8 extensions'],
     ['two entries with one id', root => writeExtensions(root, [valid, valid]), 'two entries share an id'],
+    ['two entries with one module', root => writeExtensions(root, [valid, changed({ id: 'b' })]), 'two entries share a module'],
+    ['two entries whose modules differ only in case', root => writeExtensions(root, [valid, changed({ id: 'b', module: '.claude/EXT/a.mjs' })]), 'two entries share a module'],
+    ['a __proto__ key', root => writeExtensions(root, JSON.stringify([valid]).replace('{', '{"__proto__":{},')), ENTRY_1],
+    ['a constructor key', root => writeExtensions(root, JSON.stringify([valid]).replace('{', '{"constructor":"x",')), ENTRY_1],
+    ['a __proto__ key in place of sha256', root => writeExtensions(root, JSON.stringify([withoutSha]).replace('{', '{"__proto__":"x",')), ENTRY_1],
+    ['a module under .claude/scripts/', root => writeExtensions(root, [changed({ module: '.claude/scripts/dispatch-pre-tool.mjs' })]), UNDER_SCRIPTS],
+    ['a module under .claude/Scripts/', root => writeExtensions(root, [changed({ module: '.claude/Scripts/x.mjs' })]), UNDER_SCRIPTS],
     ...badEntries.map(([name, entry]) => [name, root => writeExtensions(root, [entry]), ENTRY_1]),
-    ['a bad second entry', root => writeExtensions(root, [valid, changed({ id: 'b', onFailure: 'warn' })]), 'entry 2 is not an extension entry as docs/CONTRACT.md describes one'],
+    ['a bad second entry', root => writeExtensions(root, [valid, changed({ id: 'b', module: '.claude/ext/b.mjs', onFailure: 'warn' })]), 'entry 2 is not an extension entry as docs/CONTRACT.md describes one'],
   ];
   for (const [name, setUp, problem] of rows) {
-    await t.test(name, () => {
+    await t.test(name, (st) => {
       const root = project();
-      if (setUp(root) === false) return;
+      if (setUp(root, st) === false) return;
       assert.deepEqual(readExtensions(root), { state: 'malformed', problem });
     });
   }
@@ -137,24 +170,43 @@ test('a file that cannot be used is malformed, with fixed text that quotes nothi
   });
 });
 
-test('an extensions path that cannot be examined is malformed, not absent', () => {
+test('no .claude, or no .claude/kh-harness, means no extensions', () => {
   const root = project();
-  // `.claude/kh-harness` a file: the path beneath it cannot be stat'd.
-  writeAt(join(root, '.claude/kh-harness'), '');
-  assert.deepEqual(readExtensions(root), { state: 'malformed', problem: 'it could not be read' });
+  assert.deepEqual(readExtensions(root), { state: 'absent' });
+  mkdirSync(join(root, '.claude'));
+  assert.deepEqual(readExtensions(root), { state: 'absent' });
+});
+
+test('a repository root reached through a link still reads and judges its extensions', (t) => {
+  const root = project();
+  const e = extension(root, 'a', ALLOW);
+  writeExtensions(root, [e]);
+  const link = join(tempDir('hk-ext-link-'), 'repo');
+  if (!linkOrSkip(t, root, link, 'junction')) return;
+  assert.deepEqual(readExtensions(link), { state: 'ok', entries: [e] });
+  assert.equal(moduleState(link, e).state, 'matches');
+  assert.equal(moduleState(link, e).path, realpathSync.native(join(root, e.module)));
 });
 
 // --- moduleState ----------------------------------------------------------
 
-test('a module whose bytes hash to the recorded value matches, and the real path is returned', () => {
+test('a module whose bytes hash to the recorded value matches, and its real path and the bytes hashed are returned', () => {
   const root = project(); const e = extension(root, 'a', ALLOW);
-  assert.deepEqual(moduleState(root, e), { state: 'matches', path: realpathSync.native(join(root, e.module)) });
+  const state = moduleState(root, e);
+  assert.deepEqual(state, { state: 'matches', path: realpathSync.native(join(root, e.module)), bytes: Buffer.from(ALLOW) });
+  assert.equal(moduleSha256(state.bytes), e.sha256);
 });
 
-test('REVIEW FOCUS 2: the same module with CRLF line endings still matches', () => {
+test('REVIEW FOCUS 2: the same module with CRLF line endings still matches, and the bytes returned are the LF ones hashed', () => {
   const root = project(); const e = extension(root, 'a', ALLOW);
   writeFileSync(join(root, e.module), ALLOW.replace(/\n/g, '\r\n'));
-  assert.equal(moduleState(root, e).state, 'matches');
+  const state = moduleState(root, e);
+  assert.equal(state.state, 'matches');
+  assert.deepEqual(state.bytes, Buffer.from(ALLOW));
+});
+
+test('moduleSha256 is the hash harness-log.mjs gives an installed script', () => {
+  assert.equal(moduleSha256, lfSha256);
 });
 
 test('the hash makes each CRLF an LF and leaves a lone CR', () => {
@@ -177,6 +229,8 @@ test('a missing module is missing', () => {
 
 test('a module over the size bound, or a directory at its path, is unreadable', () => {
   const root = project(); const e = extension(root, 'a', ALLOW);
+  writeFileSync(join(root, e.module), 'x'.repeat(EXTENSION_LIMITS.moduleMaxBytes));
+  assert.deepEqual(moduleState(root, e), { state: 'differs' }, 'a module of exactly the bound is read');
   writeFileSync(join(root, e.module), 'x'.repeat(EXTENSION_LIMITS.moduleMaxBytes + 1));
   assert.deepEqual(moduleState(root, e), { state: 'unreadable' });
   rmSync(join(root, e.module));
@@ -217,7 +271,7 @@ test('a link inside .claude to another file inside .claude is followed', (t) => 
   const target = extension(root, 'real', ALLOW);
   const e = { ...target, id: 'a', module: '.claude/ext/a.mjs' };
   if (!linkOrSkip(t, join(root, target.module), join(root, e.module), 'file')) return;
-  assert.deepEqual(moduleState(root, e), { state: 'matches', path: realpathSync.native(join(root, target.module)) });
+  assert.deepEqual(moduleState(root, e), { state: 'matches', path: realpathSync.native(join(root, target.module)), bytes: Buffer.from(ALLOW) });
 });
 
 test('a module that is a dangling link is missing', (t) => {
@@ -226,6 +280,41 @@ test('a module that is a dangling link is missing', (t) => {
   mkdirSync(join(root, '.claude/ext'), { recursive: true });
   if (!linkOrSkip(t, join(root, '.claude/ext/gone.mjs'), join(root, e.module), 'file')) return;
   assert.deepEqual(moduleState(root, e), { state: 'missing' });
+});
+
+test('a module that is a FIFO is unreadable, and judging it does not wait for a writer', (t) => {
+  const root = project();
+  const e = { id: 'a', version: '1.0.0', module: '.claude/ext/a.mjs', sha256: moduleSha256(Buffer.from(ALLOW)), onFailure: 'block' };
+  mkdirSync(join(root, '.claude/ext'), { recursive: true });
+  const made = spawnSync('mkfifo', [join(root, e.module)]);
+  if (made.status !== 0) {
+    t.skip('this platform has no mkfifo');
+    return;
+  }
+  // In a child process: were the open to wait for a writer, this test would
+  // time out instead of hanging the suite.
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `import { moduleState } from ${JSON.stringify(pathToFileURL(EXTENSIONS_MODULE).href)}; process.stdout.write(JSON.stringify(moduleState(process.argv[1], JSON.parse(process.argv[2]))));`,
+    root, JSON.stringify(e)], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(r.signal, null, 'judging a FIFO returned');
+  assert.deepEqual(JSON.parse(r.stdout), { state: 'unreadable' });
+});
+
+test('a module that is a link loop is unreadable', (t) => {
+  const root = project();
+  const e = { id: 'a', version: '1.0.0', module: '.claude/ext/a.mjs', sha256: moduleSha256(Buffer.from(ALLOW)), onFailure: 'block' };
+  mkdirSync(join(root, '.claude/ext'), { recursive: true });
+  if (!linkOrSkip(t, join(root, '.claude/ext/b.mjs'), join(root, e.module), 'file')) return;
+  if (!linkOrSkip(t, join(root, e.module), join(root, '.claude/ext/b.mjs'), 'file')) return;
+  assert.deepEqual(moduleState(root, e), { state: 'unreadable' });
+});
+
+test('a module reached through a link into .claude/scripts/ is outside', (t) => {
+  const root = project();
+  writeAt(join(root, '.claude/scripts/dispatch-pre-tool.mjs'), ALLOW);
+  const e = { id: 'a', version: '1.0.0', module: '.claude/ext/dispatch-pre-tool.mjs', sha256: moduleSha256(Buffer.from(ALLOW)), onFailure: 'block' };
+  if (!linkOrSkip(t, join(root, '.claude/scripts'), join(root, '.claude/ext'), 'junction')) return;
+  assert.deepEqual(moduleState(root, e), { state: 'outside' });
 });
 
 test('moduleState never throws, whatever it is handed', () => {
