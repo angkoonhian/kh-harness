@@ -590,6 +590,82 @@ export function appendEvent(root, sessionId, event) {
   }
 }
 
+/** The most bytes of JSON an external event's `data` may take. Under the
+ * default `inlineCapBytes`, so no blob is written for it. */
+export const EXTERNAL_DATA_MAX_BYTES = 16384;
+
+// `source` and `type` are kept by retention and shown in reports, so each
+// is drawn from a fixed set of characters with a fixed length.
+const EXTERNAL_SOURCE = /^[a-z][a-z0-9-]{0,63}$/;
+const EXTERNAL_TYPE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+
+const EXTERNAL_REFUSALS = Object.freeze({
+  session: 'no safe session id',
+  root: 'root must be an absolute path',
+  disabled: 'the session log is not enabled for this repository',
+  source: 'source must be lower-case letters, digits and hyphens, starting with a letter, at most 64 characters',
+  type: 'type must be letters, digits, dot, underscore and hyphen, starting with a letter, at most 64 characters',
+  data: 'data must be a JSON object',
+  size: `data is larger than ${EXTERNAL_DATA_MAX_BYTES} bytes`,
+  unwritten: 'the event could not be written',
+});
+
+const refusal = reason => ({ recorded: false, reason: EXTERNAL_REFUSALS[reason] });
+
+/** `{ body }`, the JSON object `data` stands for; `{ over: true }` when its
+ * JSON is longer than `EXTERNAL_DATA_MAX_BYTES`; null when it has no JSON or
+ * its JSON is not an object. `data` is read once, so a `toJSON` or a getter
+ * cannot answer one way when checked and another when written. */
+function externalData(data) {
+  let json;
+  try {
+    json = JSON.stringify(data);
+  } catch {
+    return null;
+  }
+  if (typeof json !== 'string') return null;
+  const body = JSON.parse(json);
+  if (!isPlainObject(body)) return null;
+  return Buffer.byteLength(json, 'utf8') > EXTERNAL_DATA_MAX_BYTES ? { over: true } : { body };
+}
+
+/**
+ * Appends one event another plugin records to session `sessionId`'s log of
+ * the repository at `root`: the function `docs/CONTRACT.md` promises. Its
+ * signature, its `reason` texts and the fields of the line it writes change
+ * only with the contract number.
+ *
+ * The line is `{ schema, ts, pid, type: 'plugin_event', session_id, source,
+ * kind, data }`, `kind` being the caller's `type`, written by `appendEvent`
+ * and so masked as every event is. `data` must be an object whose JSON is
+ * at most `EXTERNAL_DATA_MAX_BYTES` bytes.
+ *
+ * Returns `{ recorded: true }` or `{ recorded: false, reason }`, `reason`
+ * one of `EXTERNAL_REFUSALS`; never throws. Nothing is written, not even a
+ * directory, when the id is not one `safeSessionId` accepts, `root` is not
+ * absolute, or this machine's owner has not enabled the log for the
+ * repository.
+ */
+export function recordExternalEvent(root, sessionId, event) {
+  try {
+    const id = safeSessionId(sessionId);
+    if (id === null) return refusal('session');
+    if (typeof root !== 'string' || !isAbsolute(root)) return refusal('root');
+    if (!isEnabled(root)) return refusal('disabled');
+    if (!isPlainObject(event)) return refusal('data');
+    const { source, type, data } = event;
+    if (typeof source !== 'string' || !EXTERNAL_SOURCE.test(source)) return refusal('source');
+    if (typeof type !== 'string' || !EXTERNAL_TYPE.test(type)) return refusal('type');
+    const checked = externalData(data);
+    if (checked === null) return refusal('data');
+    if (checked.over) return refusal('size');
+    const { written } = appendEvent(root, id, { type: 'plugin_event', session_id: id, source, kind: type, data: checked.body });
+    return written ? { recorded: true } : refusal('unwritten');
+  } catch {
+    return refusal('unwritten');
+  }
+}
+
 /** The JSON object `line` holds, or null when it does not parse as one. */
 export function parsedObject(line) {
   try {

@@ -15,6 +15,7 @@ import {
   appendEvent,
   canonicalJson,
   dataRoot,
+  EXTERNAL_DATA_MAX_BYTES,
   GATES_PATH,
   harnessIdentity,
   isEnabled,
@@ -23,6 +24,7 @@ import {
   LOG_SCHEMA,
   readConfig,
   readEvents,
+  recordExternalEvent,
   repoDataDir,
   repoKey,
   SCRUB_MARK,
@@ -943,4 +945,263 @@ test('reading an absent, unsafe or undecompressable session never throws', () =>
   assert.deepEqual(read.events.map(e => e.n), [1], 'what could be read is still returned');
   assert.equal(read.unreadable, true);
   assert.equal(read.unparseable, 0);
+});
+
+// --- recordExternalEvent ----------------------------------------------------
+
+const EVENT = Object.freeze({ source: 'kh-orchestration', type: 'officers.run', data: { passed: 3, failed: ['V8'] } });
+
+const REASONS = Object.freeze({
+  session: 'no safe session id',
+  root: 'root must be an absolute path',
+  disabled: 'the session log is not enabled for this repository',
+  source: 'source must be lower-case letters, digits and hyphens, starting with a letter, at most 64 characters',
+  type: 'type must be letters, digits, dot, underscore and hyphen, starting with a letter, at most 64 characters',
+  data: 'data must be a JSON object',
+  size: 'data is larger than 16384 bytes',
+  unwritten: 'the event could not be written',
+});
+
+const refused = reason => ({ recorded: false, reason });
+
+function enabledRepo() {
+  const root = gitRepo();
+  setEnabled(root, true);
+  return root;
+}
+
+test('recordExternalEvent appends one plugin_event line to that session', () => {
+  const root = enabledRepo();
+  assert.deepEqual(recordExternalEvent(root, 's1', EVENT), { recorded: true });
+  const { events, unparseable } = readEvents(root, 's1');
+  assert.equal(unparseable, 0);
+  assert.equal(events.length, 1);
+  const [{ ts, pid, ...rest }] = events;
+  assert.equal(pid, process.pid);
+  assert.ok(!Number.isNaN(Date.parse(ts)), ts);
+  assert.deepEqual(rest, { schema: LOG_SCHEMA, type: 'plugin_event', session_id: 's1', source: 'kh-orchestration', kind: 'officers.run', data: { passed: 3, failed: ['V8'] } });
+  assert.deepEqual(Object.keys(events[0]), ['schema', 'ts', 'pid', 'type', 'session_id', 'source', 'kind', 'data'], 'the line holds these fields and no other');
+});
+
+test('with the log not enabled nothing is written, not even the directory', () => {
+  const root = gitRepo();
+  assert.deepEqual(recordExternalEvent(root, 's1', EVENT), refused(REASONS.disabled));
+  assert.equal(existsSync(repoDataDir(root)), false, 'not even the log directory');
+  setEnabled(root, false);
+  assert.deepEqual(recordExternalEvent(root, 's1', EVENT), refused(REASONS.disabled), 'a record saying disabled is disabled');
+  assert.equal(existsSync(join(repoDataDir(root), 'sessions')), false);
+});
+
+test('an enabled record for one repository does not let another repository\'s log be written', () => {
+  enabledRepo();
+  const other = gitRepo();
+  assert.deepEqual(recordExternalEvent(other, 's1', EVENT), refused(REASONS.disabled));
+  assert.equal(existsSync(repoDataDir(other)), false);
+});
+
+test('without a safe session id nothing is written', () => {
+  const root = enabledRepo();
+  for (const id of [undefined, null, '', '../x', 'a/b', 'a\\b', 'a.b', 's 1', 's1\n', 'x'.repeat(201), 5, ['s1'], { toString: () => 's1' }]) {
+    assert.deepEqual(recordExternalEvent(root, id, EVENT), refused(REASONS.session), String(id));
+  }
+  assert.equal(existsSync(join(repoDataDir(root), 'sessions')), false);
+});
+
+test('a root that is not an absolute path is refused, so no log is chosen by the caller\'s working directory', () => {
+  for (const root of [undefined, null, '', '.', 'repo', 5, {}]) {
+    assert.deepEqual(recordExternalEvent(root, 's1', EVENT), refused(REASONS.root), String(root));
+  }
+});
+
+test('a source, type or data of the wrong shape is refused with fixed text and nothing is written', () => {
+  const root = enabledRepo();
+  const cases = [
+    ...['Bad', '', 'a b', '1a', '-a', 'a_b', 'a.b', 'a\nb', 'ab\n', 'é', 'x'.repeat(65), 5, null, undefined, ['a']].map(source => [{ ...EVENT, source }, REASONS.source]),
+    ...['', '1x', '_x', 'a b', 'a\nb', 'ab\n', 'a/b', 'a:b', 'x'.repeat(65), 5, null, undefined].map(type => [{ ...EVENT, type }, REASONS.type]),
+    ...[undefined, null, 'text', 5, true, [1], { n: 1n }, new Date(0), { toJSON: () => [1] }].map(data => [{ ...EVENT, data }, REASONS.data]),
+    [null, REASONS.data],
+    ['text', REASONS.data],
+    [[EVENT], REASONS.data],
+    [undefined, REASONS.data],
+  ];
+  for (const [event, reason] of cases) {
+    assert.deepEqual(recordExternalEvent(root, 's1', event), refused(reason), String(JSON.stringify(event, (_, v) => (typeof v === 'bigint' ? 'bigint' : v))));
+  }
+  assert.equal(existsSync(join(repoDataDir(root), 'sessions')), false);
+});
+
+test('a source and a type at their longest are recorded', () => {
+  const root = enabledRepo();
+  const source = 'a' + '-9'.repeat(31) + 'z';
+  const type = 'A' + '._-9'.repeat(15) + 'zzz';
+  assert.equal(source.length, 64);
+  assert.equal(type.length, 64);
+  assert.deepEqual(recordExternalEvent(root, 's1', { source, type, data: {} }), { recorded: true });
+  const [e] = readEvents(root, 's1').events;
+  assert.deepEqual([e.source, e.kind, e.data], [source, type, {}]);
+});
+
+test('data that cannot be made JSON is refused and nothing is thrown', () => {
+  const root = enabledRepo();
+  const cyclic = { a: 1 };
+  cyclic.self = cyclic;
+  const throwing = { get boom() { throw new Error('from a getter'); } };
+  const throwingJson = { toJSON() { throw new Error('from toJSON'); } };
+  const proxy = new Proxy({}, { ownKeys() { throw new Error('from a proxy'); } });
+  for (const data of [cyclic, throwing, throwingJson, proxy]) {
+    assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data }), refused(REASONS.data));
+  }
+  assert.equal(existsSync(join(repoDataDir(root), 'sessions')), false);
+});
+
+test('an event whose fields throw when read is refused and nothing is thrown', () => {
+  const root = enabledRepo();
+  const event = { get source() { throw new Error('from a getter'); }, type: 'x', data: {} };
+  assert.deepEqual(recordExternalEvent(root, 's1', event), refused(REASONS.unwritten));
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  assert.deepEqual(recordExternalEvent(root, 's1', revoked.proxy), refused(REASONS.unwritten));
+  assert.equal(existsSync(join(repoDataDir(root), 'sessions')), false);
+});
+
+test('data is recorded as its JSON: toJSON is called once, symbol keys and functions are left out, and a __proto__ key stays a property', () => {
+  const root = enabledRepo();
+  let calls = 0;
+  const data = { toJSON: () => ({ call: ++calls }) };
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data }), { recorded: true });
+  assert.equal(calls, 1, 'toJSON is called once, so what is checked is what is written');
+  const odd = { [Symbol('s')]: 1, f() {}, u: undefined, n: Number.NaN, 7: 'seven', ...JSON.parse('{"__proto__": {"polluted": true}}') };
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: odd }), { recorded: true });
+  const [first, second] = readEvents(root, 's1').events;
+  assert.deepEqual(first.data, { call: 1 });
+  assert.deepEqual(second.data, JSON.parse('{"7": "seven", "n": null, "__proto__": {"polluted": true}}'));
+  assert.ok(Object.hasOwn(second.data, '__proto__'));
+  assert.equal({}.polluted, undefined);
+});
+
+test('data over the bound is refused, and data at the bound is recorded with no blob', () => {
+  const root = enabledRepo();
+  assert.equal(EXTERNAL_DATA_MAX_BYTES, 16384);
+  const sized = bytes => ({ text: 'x'.repeat(bytes - JSON.stringify({ text: '' }).length) });
+  assert.equal(Buffer.byteLength(JSON.stringify(sized(16384))), 16384);
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: sized(16384) }), { recorded: true });
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: sized(16385) }), refused(REASONS.size));
+  const multiByte = { text: 'é'.repeat(8190) };
+  assert.ok(JSON.stringify(multiByte).length <= 16384 && Buffer.byteLength(JSON.stringify(multiByte)) > 16384, 'fixture sanity: under the bound in characters, over it in bytes');
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: multiByte }), refused(REASONS.size), 'the bound is bytes, not characters');
+  assert.equal(readEvents(root, 's1').events.length, 1);
+  assert.equal(readEvents(root, 's1').events[0].data.text.length, 16384 - 11);
+  assert.equal(existsSync(join(repoDataDir(root), 'blobs')), false);
+});
+
+test('data nested deeper than the mask can walk is not written, and nothing is thrown', () => {
+  const root = enabledRepo();
+  const nested = depth => JSON.parse(`{"a":${'['.repeat(depth)}${']'.repeat(depth)}}`);
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: nested(100) }), { recorded: true });
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: nested(8000) }), refused(REASONS.unwritten), 'as deep as the bound allows');
+  const { events, unparseable } = readEvents(root, 's1');
+  assert.deepEqual([events.length, unparseable], [1, 0], 'no part of the deep event reaches the file');
+});
+
+test('a credential in data is masked at every depth and in keys, and a value under a credential-named key is hidden whole', () => {
+  const root = enabledRepo();
+  const token = githubToken();
+  const credValue = secretValue('ext');
+  const data = { note: `pushed with ${token}`, [PASSWORD]: credValue, deep: [{ [token]: 'v', args: ['--' + PASSWORD, secretValue('flag')] }] };
+  assert.deepEqual(recordExternalEvent(root, 's2', { ...EVENT, data }), { recorded: true });
+  const raw = rawSession(root, 's2');
+  for (const secret of [token, credValue, secretValue('flag')]) assert.ok(!raw.includes(secret), 'no credential reaches the file');
+  const [e] = readEvents(root, 's2').events;
+  assert.deepEqual(e.data, { note: `pushed with ${SCRUB_MARK}`, [PASSWORD]: SCRUB_MARK, deep: [{ [SCRUB_MARK]: 'v', args: ['--' + PASSWORD, SCRUB_MARK] }] });
+  assert.equal(data.note, `pushed with ${token}`, 'the caller\'s data is left alone');
+});
+
+test('a credential-shaped type is masked in the line, as every string is', () => {
+  const root = enabledRepo();
+  const type = githubToken();
+  assert.ok(type.length <= 64);
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, type }), { recorded: true });
+  assert.ok(!rawSession(root, 's1').includes(type));
+  assert.equal(readEvents(root, 's1').events[0].kind, SCRUB_MARK);
+});
+
+test('data cannot set the envelope or the event type, and control characters stay inside one line', () => {
+  const root = enabledRepo();
+  const data = { type: 'PreToolUse', schema: 9, ts: 'then', pid: -1, session_id: 'other', source: 'kh-harness', kind: 'x', note: 'line one\n{"type":"PostToolUseFailure"}\r\n \u0000\u001b[31mred' };
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data }), { recorded: true });
+  assert.equal(rawSession(root, 's1').split('\n').length, 2, 'one line and its newline');
+  const { events, unparseable } = readEvents(root, 's1');
+  assert.equal(unparseable, 0);
+  assert.equal(events.length, 1);
+  const [e] = events;
+  assert.deepEqual([e.type, e.schema, e.session_id, e.source, e.kind, e.pid], ['plugin_event', LOG_SCHEMA, 's1', 'kh-orchestration', 'officers.run', process.pid]);
+  assert.deepEqual(Object.keys(e.data).slice(0, 7), ['type', 'schema', 'ts', 'pid', 'session_id', 'source', 'kind']);
+  assert.equal(e.data.type, 'PreToolUse');
+});
+
+test('the event is not written through a link, and nothing is thrown', t => {
+  const root = enabledRepo();
+  const target = join(tempDir('hk-log-elsewhere-'), 'victim.txt');
+  writeFileSync(target, 'not ours\n');
+  mkdirSync(join(repoDataDir(root), 'sessions'), { recursive: true });
+  try {
+    symlinkSync(target, sessionFile(root, 's1'), 'file');
+  } catch (error) {
+    t.skip(`this account cannot create a file link (${error.code})`);
+    return;
+  }
+  assert.deepEqual(recordExternalEvent(root, 's1', EVENT), refused(REASONS.unwritten));
+  assert.equal(readFileSync(target, 'utf8'), 'not ours\n');
+});
+
+test('the event is not written through a sessions directory that is a link', () => {
+  const root = enabledRepo();
+  const elsewhere = tempDir('hk-log-elsewhere-');
+  linkDirectory(elsewhere, join(repoDataDir(root), 'sessions'));
+  assert.deepEqual(recordExternalEvent(root, 's1', EVENT), refused(REASONS.unwritten));
+  assert.deepEqual(readdirSync(elsewhere), []);
+});
+
+test('an unwritable sessions directory is reported, not thrown', () => {
+  const root = enabledRepo();
+  writeFileSync(join(repoDataDir(root), 'sessions'), 'a file where the directory should be');
+  assert.deepEqual(recordExternalEvent(root, 's1', EVENT), refused(REASONS.unwritten));
+});
+
+/** Runs `count` child processes at once, each appending `perChild` pairs of
+ * one kit event and one external event to one session. */
+function appendBothFromChildren(root, sessionId, count, perChild) {
+  const script = `
+    import { appendEvent, recordExternalEvent } from ${JSON.stringify(HARNESS_LOG_URL)};
+    const [root, sessionId, child, perChild] = process.argv.slice(1);
+    for (let i = 0; i < Number(perChild); i++) {
+      const pad = 'x'.repeat(2000 + Number(child) * 37 + i);
+      const kit = appendEvent(root, sessionId, { type: 'Stop', child: Number(child), i, pad });
+      if (!kit.written) { console.error(kit.reason); process.exit(1); }
+      const ext = recordExternalEvent(root, sessionId, { source: 'kh-orchestration', type: 'officers.run', data: { child: Number(child), i, pad } });
+      if (!ext.recorded) { console.error(ext.reason); process.exit(1); }
+    }`;
+  return Promise.all(Array.from({ length: count }, (_, child) => new Promise(resolve => {
+    const p = spawn(process.execPath, ['--input-type=module', '-e', script, root, sessionId, String(child), String(perChild)], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    p.stderr.on('data', chunk => { stderr += chunk; });
+    p.on('error', error => resolve({ code: null, stderr: String(error) }));
+    p.on('close', code => resolve({ code, stderr }));
+  })));
+}
+
+test('external and kit events appended at once by many processes interleave as whole lines', async () => {
+  const root = enabledRepo();
+  const results = await appendBothFromChildren(root, 'both', 30, 10);
+  assert.deepEqual(results.filter(r => r.code !== 0), [], 'every child wrote every event');
+  const { events, unparseable } = readEvents(root, 'both');
+  assert.equal(unparseable, 0);
+  assert.equal(events.length, 600);
+  const seen = new Set();
+  for (const e of events) {
+    const body = e.type === 'plugin_event' ? e.data : e;
+    assert.equal(body.pad, 'x'.repeat(2000 + body.child * 37 + body.i), 'the line arrived whole');
+    seen.add(`${e.type}:${body.child}:${body.i}`);
+  }
+  assert.equal(seen.size, 600, 'no event is duplicated or missing');
 });

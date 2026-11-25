@@ -11,9 +11,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
-import { appendEvent, readEvents, repoDataDir, sessionFileName } from '../../assets/scripts/harness-log.mjs';
+import { appendEvent, readEvents, recordExternalEvent, repoDataDir, sessionFileName, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import {
-  applyRetention, CLAIMED_SUFFIX, indexLineCount, SEAL_IDLE_MS, SEAL_TEMP_SUFFIX, sealClosedSessions, sessionsSealedSince, untrustedBecause, verifyIndex,
+  applyRetention, CLAIMED_SUFFIX, contentFieldsOf, CONTENT_FIELDS, KEPT_FIELDS, indexLineCount, SEAL_IDLE_MS, SEAL_TEMP_SUFFIX, sealClosedSessions, sessionsSealedSince, untrustedBecause, verifyIndex,
 } from '../../assets/scripts/harness-seal.mjs';
 import { FAILURE_EVENT, failureSignature } from './recurrence.mjs';
 
@@ -942,4 +942,27 @@ test('an event of a type the classification does not know loses its input, outpu
   const [event] = eventsOf(root, 'novel');
   assert.deepEqual([event.tool, event.detail, event.contentExpired], ['Bash', 'kept', true]);
   for (const f of ['input', 'output', 'prompt']) assert.equal(Object.hasOwn(event, f), false, f);
+});
+
+test('REVIEW FOCUS 5: a session holding a plugin event is sealed and verified, and retention removes its data alone', () => {
+  const root = tempDir('hk-log-plugin-');
+  setEnabled(root, true);
+  appendEvent(root, 'p', { type: 'Stop', stopHookActive: false });
+  assert.equal(recordExternalEvent(root, 'p', { source: 'kh-orchestration', type: 'officers.run', data: { failed: ['V8'] } }).recorded, true);
+  seal(root);
+  assert.deepEqual(verifyIndex(root), INTACT);
+  assert.equal(indexLines(root)[0].external, false, 'a plugin event is not outside content');
+  assert.deepEqual(applyRetention(root, { now: Date.now() + 89 * DAY_MS }).contentRemoved, 0, 'data inside the period is kept');
+  assert.deepEqual(eventsOf(root, 'p')[1].data, { failed: ['V8'] });
+  assert.equal(applyRetention(root, { now: Date.now() + 91 * DAY_MS }).contentRemoved, 1);
+  assert.deepEqual(verifyIndex(root), INTACT);
+  const [stop, plugin] = eventsOf(root, 'p');
+  assert.equal(Object.hasOwn(stop, 'contentExpired'), false, 'the kit\'s own event held no content');
+  assert.deepEqual([plugin.type, plugin.source, plugin.kind, plugin.contentExpired, Object.hasOwn(plugin, 'data')], ['plugin_event', 'kh-orchestration', 'officers.run', true, false]);
+});
+
+test('a plugin event keeps who wrote it and what kind it is, and its data is content', () => {
+  assert.deepEqual(KEPT_FIELDS.plugin_event, ['type', 'session_id', 'prompt_id', 'tool_use_id', 'agent_id', 'cwd', 'source', 'kind']);
+  assert.deepEqual(CONTENT_FIELDS.plugin_event, ['data']);
+  assert.deepEqual(contentFieldsOf('plugin_event'), ['data']);
 });

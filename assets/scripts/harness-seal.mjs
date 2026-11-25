@@ -65,8 +65,9 @@ const frozenByType = entries => Object.freeze(Object.fromEntries(Object.entries(
  * then cut to 300 characters when written, and with the tool and the input hash
  * it is a failure's signature, which recurrence detection and replay need
  * for as long as structure is kept; `root` is the project root the failure
- * happened under, which its error line's paths are made relative to. The writer's own `schema`, `ts` and
- * `pid` are kept on every event.
+ * happened under, which its error line's paths are made relative to. A
+ * plugin event keeps who wrote it and what kind it is. The writer's own
+ * `schema`, `ts` and `pid` are kept on every event.
  */
 export const KEPT_FIELDS = frozenByType({
   SessionStart: [...IDENTITY, 'source', 'transcriptPath'],
@@ -88,6 +89,7 @@ export const KEPT_FIELDS = frozenByType({
   harness: [...IDENTITY, 'base', 'learned', 'kitVersion', 'model'],
   external_content: [...IDENTITY, 'tool'],
   gate_firing: [...IDENTITY, 'gateId', 'gateSha256', 'action', 'tool'],
+  plugin_event: [...IDENTITY, 'source', 'kind'],
 });
 
 /**
@@ -102,6 +104,7 @@ export const CONTENT_FIELDS = frozenByType({
   PostToolUse: ['input', 'output'],
   PostToolUseFailure: ['input', 'output'],
   StopFailure: ['error', 'errorDetails'],
+  plugin_event: ['data'],
 });
 
 const UNKNOWN_TYPE_CONTENT = Object.freeze(['input', 'output', 'prompt']);

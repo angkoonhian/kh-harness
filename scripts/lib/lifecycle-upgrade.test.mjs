@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, wri
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DETECT, APPLY, UNINSTALL, git, kitAt, loggingScript, manifestOf, run, runEveryRegisteredHook, sandboxDataDir, settings } from './lifecycle-fixtures.mjs';
-import { HARNESS_EXTENSIONS_PATH, kitContractText, LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
+import { CONTRACT_FILES, HARNESS_EXTENSIONS_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, kitContractText, LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
 import { CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
@@ -177,6 +177,40 @@ test('an install whose harness-redact.mjs predates officer is offered, by one ap
   assert.match(readFileSync(join(d, REDACT_PATH), 'utf8'), /'officer'/);
   assert.equal(readFileSync(join(d, CONTRACT_PATH), 'utf8'), kitContractText(CURRENT));
   assert.equal(checkOf(d, 'P5.contract').state, 'declared');
+  commit(d, 'update kh-harness');
+  assert.match(run(APPLY, d), /no actions for/);
+});
+
+// The last commit before another plugin could record an event in a
+// session's log: its harness-log.mjs has no recordExternalEvent and its
+// harness-seal.mjs does not classify the event, so the hashes its contract
+// file records for both are not this kit's.
+const KIT_BEFORE_EXTERNAL = 'baeb946';
+const beforeExternal = kitAt(KIT_BEFORE_EXTERNAL);
+const skipBeforeExternal = beforeExternal === null ? `commit ${KIT_BEFORE_EXTERNAL} is not in this checkout (a shallow clone); fetch the full history to run this` : false;
+
+test('an install from before recordExternalEvent is offered, by one apply, the log and sealing modules and then the contract file, and P5.contract is declared after', { skip: skipBeforeExternal }, () => {
+  assert.ok(CONTRACT_FILES.includes(HARNESS_LOG_PATH) && CONTRACT_FILES.includes(HARNESS_SEAL_PATH), 'contract 1 speaks for both files');
+  const d = mkdtempSync(join(tmpdir(), 'hk-upgrade-external-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node -e 0' } }));
+  writeFileSync(join(d, 'index.js'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  commit(d, 'init');
+  run(beforeExternal.apply, d, '--yes');
+  const recorded = JSON.parse(readFileSync(join(d, CONTRACT_PATH), 'utf8')).files;
+  const current = JSON.parse(kitContractText(CURRENT)).files;
+  for (const path of [HARNESS_LOG_PATH, HARNESS_SEAL_PATH]) assert.notEqual(recorded[path], current[path], `fixture sanity: the older contract file records another hash for ${path}`);
+  assert.doesNotMatch(readFileSync(join(d, HARNESS_LOG_PATH), 'utf8'), /recordExternalEvent/, 'fixture sanity: the older harness-log.mjs has no recordExternalEvent');
+  commit(d, 'install the older kit');
+  const wrote = run(APPLY, d, '--yes').split('\n').filter(l => l.startsWith('wrote ')).map(l => l.slice('wrote '.length).trim());
+  for (const path of [HARNESS_LOG_PATH, HARNESS_SEAL_PATH]) assert.ok(wrote.includes(path), `${path}: ${wrote.join(', ')}`);
+  assert.equal(wrote.at(-1), CONTRACT_PATH, `the contract file is written last: ${wrote.join(', ')}`);
+  assert.match(readFileSync(join(d, HARNESS_LOG_PATH), 'utf8'), /export function recordExternalEvent/);
+  assert.match(readFileSync(join(d, HARNESS_SEAL_PATH), 'utf8'), /plugin_event/);
+  assert.equal(readFileSync(join(d, CONTRACT_PATH), 'utf8'), kitContractText(CURRENT));
+  assert.equal(checkOf(d, 'P5.contract').state, 'declared');
+  for (const r of runEveryRegisteredHook(d)) assert.equal(r.status, 0, `${r.script}: ${r.stderr}`);
   commit(d, 'update kh-harness');
   assert.match(run(APPLY, d), /no actions for/);
 });
