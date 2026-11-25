@@ -3,7 +3,7 @@ import { join, relative } from 'node:path';
 import { readIfPresent, existsAny } from './scan.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { git, isNotRepository } from './git-info.mjs';
-import { CONTRACT_FILES, installedScriptStatus, toolGateDenyRules } from './propose.mjs';
+import { CONTRACT_FILES, installedScriptStatus, kitContractText, toolGateDenyRules } from './propose.mjs';
 import { contractEvidence } from './contract.mjs';
 import { KIT_VERSION } from './manifest.mjs';
 // `findHandoff` is imported from the installed asset, and must not be
@@ -380,10 +380,11 @@ function remotes(root, env) {
   return { list: [...seen.values()], error: null };
 }
 
-/** `contractEvidence`, with `installed` mapping each of `CONTRACT_FILES`
- * to its `installedScriptStatus` unless the file was unreadable. */
+/** `contractEvidence` against the contract file this kit writes, with
+ * `installed` mapping each of `CONTRACT_FILES` to its
+ * `installedScriptStatus` unless the file was unreadable. */
 function contractWithInstalled(root) {
-  const contract = contractEvidence(root);
+  const contract = contractEvidence(root, kitContractText(KIT_VERSION));
   if (contract.state === 'unreadable') return contract;
   return { ...contract, installed: Object.fromEntries(CONTRACT_FILES.map(path => [path, installedScriptStatus(root, path, KIT_VERSION)])) };
 }

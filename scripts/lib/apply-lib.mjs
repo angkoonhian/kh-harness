@@ -779,6 +779,25 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, chm
   skipped.push({ path: targetPath, why: cls, checkId: proposal.checkId });
 }
 
+/** True when the file `proposal` names is on disk, not recorded in
+ * `manifest`, and holds exactly the proposal's contents, line endings
+ * aside. */
+function isUnrecordedCopy(root, manifest, proposal) {
+  if (classify(root, manifest, proposal.path) !== 'theirs') return false;
+  try {
+    return contentMatches(readFileSync(join(root, proposal.path)), sha256(proposal.contents));
+  } catch {
+    return false;
+  }
+}
+
+/** Records the file `proposal` names, already on disk as it would write
+ * it, without writing it. */
+function adoptFile({ proposal, nextManifest, adopted }) {
+  upsertFileEntry(nextManifest.files, { path: proposal.path, sha256: sha256(proposal.contents), step: proposal.step, writtenAt: new Date().toISOString() });
+  adopted.push({ path: proposal.path, step: proposal.step, checkId: proposal.checkId });
+}
+
 /**
  * Why a settings patch that activates a script, or a file that speaks for
  * others, must not be applied, or null when it may: each file in
@@ -1069,6 +1088,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   const patched = [];
   const skipped = [];
   const failed = [];
+  const adopted = [];
 
   const nextManifest = structuredClone(manifest ?? emptyManifest(kitVersion));
   nextManifest.files ??= [];
@@ -1079,9 +1099,11 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   // written as they come, except that a file which requires others comes
   // after every other file and is written only when they hold what it
   // requires, read from disk: a run stopped at any write then never leaves
-  // it beside a file it speaks for that is not this kit's. Settings patches
-  // are staged in memory and written once, after the loop, whether it ended
-  // or was stopped by a failure.
+  // it beside a file it speaks for that is not this kit's. Such a file found
+  // unrecorded and already holding exactly what this kit writes, as a run
+  // stopped before its manifest write leaves it, is recorded instead
+  // (`adopted`). Settings patches are staged in memory and written once,
+  // after the loop, whether it ended or was stopped by a failure.
   const speaksForOthers = p => p.kind === 'file' && p.requiresFiles !== undefined;
   let batch = null;
   for (const proposal of [...proposals.filter(p => !speaksForOthers(p)), ...proposals.filter(speaksForOthers)]) {
@@ -1089,6 +1111,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
       if (proposal.kind === 'file') {
         const unmet = speaksForOthers(proposal) ? unmetDependencies(root, proposal) : null;
         if (unmet !== null) skipped.push({ path: proposal.path, why: unmet, checkId: proposal.checkId });
+        else if (speaksForOthers(proposal) && isUnrecordedCopy(root, nextManifest, proposal)) adoptFile({ proposal, nextManifest, adopted });
         else applyFileProposal({ root, proposal, nextManifest, written, skipped, chmod });
       } else {
         batch ??= openSettingsBatch(root);
@@ -1108,7 +1131,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
   // of a file that run did not write: `P0.kitskew` reads each file's stamp.
   if (written.length || patched.length) nextManifest.kitVersion = kitVersion;
 
-  return { written, patched, skipped, failed, manifest: nextManifest };
+  return { written, patched, skipped, failed, adopted, manifest: nextManifest };
 }
 
 // `ALLOWED_PREFIXES` is exported for exactly one purpose: a test proving

@@ -18,7 +18,7 @@ import { FAILURES_PATH } from './failures-evidence.mjs';
 import { ENTRY_SCRIPTS, directRegistrations, execEntry, kitEntryHashes, registeredHook } from './hook-evidence.mjs';
 import { SETTINGS_PATH } from './settings-merge.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
-import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
+import { GATES_PATH, lfSha256 } from '../../assets/scripts/harness-log.mjs';
 import { CONTRACT_PATH, contractFileText } from './contract.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
@@ -911,9 +911,20 @@ const requiredFiles = files => files.map(f => ({ path: f.path, sha256: sha256(f.
  */
 export const CONTRACT_FILES = Object.freeze([DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]);
 
-function contractProposal({ kitVersion }) {
+/** The contract file this kit writes: each of `CONTRACT_FILES` with the LF
+ * SHA-256 of what this kit installs there. */
+export function kitContractText(kitVersion) {
+  return contractFileText(kitVersion, Object.fromEntries(CONTRACT_FILES.map(path => [path, lfSha256(Buffer.from(installedScriptProposal(path, kitVersion).contents))])));
+}
+
+/** The contract file, requiring every file it speaks for. One already on
+ * disk holding exactly this is recorded by `apply`, not written. */
+function contractProposal({ kitVersion, root }) {
+  const contents = kitContractText(kitVersion);
+  const onDisk = root !== undefined && holdsExactly(root, CONTRACT_PATH, contents);
   return [{
-    kind: 'file', path: CONTRACT_PATH, step: TOOL_GATE_STEP, contents: contractFileText(kitVersion), reason: 'no contract file found',
+    kind: 'file', path: CONTRACT_PATH, step: TOOL_GATE_STEP, contents,
+    reason: onDisk ? 'on disk as this kit writes it, and not recorded in the manifest' : 'no contract file found',
     requiresFiles: requiredFiles(CONTRACT_FILES.map(path => installedScriptProposal(path, kitVersion))),
   }];
 }

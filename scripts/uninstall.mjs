@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { displayPath, readManifestResult, MANIFEST_PATH } from './lib/manifest.mjs';
 import { planUninstall, runUninstall } from './lib/uninstall-lib.mjs';
+import { CONTRACT_PATH } from './lib/contract.mjs';
+import { CONTRACT_FILES } from './lib/propose.mjs';
 import { settingsReformattedNote } from './lib/apply-lib.mjs';
 import { parseArgv, refuseExtraArguments, warnUnknown, wantsHelp, UNINSTALL_USAGE } from './lib/cli.mjs';
 
@@ -272,8 +274,11 @@ if (result.patchesNotReverted.length > 0) {
 // with its reason, and never a failure.
 if (plan.keep.length > 0 || result.patchesKept.length > 0) {
   console.log('Kept:');
+  // A kept contract file still tells another plugin a contract holds here.
+  const contractOrphaned = CONTRACT_FILES.every(path => !existsSync(join(root, path)));
   for (const k of plan.keep) {
-    console.log(`  ${displayPath(k.path)} (${keptWhy(k)})`);
+    const orphan = k.path === CONTRACT_PATH && contractOrphaned ? ': it still declares a kh-harness contract, and the scripts it speaks for were removed; delete it by hand' : '';
+    console.log(`  ${displayPath(k.path)} (${keptWhy(k)}${orphan})`);
   }
   for (const p of result.patchesKept) {
     console.log(`  ${patchLabel(p)} (${patchWhy(p)})`);

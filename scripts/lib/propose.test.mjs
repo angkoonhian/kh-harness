@@ -4,9 +4,10 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, sha256 as sha, readManifest, writeManifest } from './manifest.mjs';
-import { buildProposals, mergePlan, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, SENSOR_MATCHER, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, kitSkew, loadedSiblings, CONTRACT_FILES, installedScriptProposal } from './propose.mjs';
-import { CONTRACT_PATH, contractFileText } from './contract.mjs';
+import { buildProposals, mergePlan, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, SENSOR_MATCHER, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, kitSkew, loadedSiblings, CONTRACT_FILES, installedScriptProposal, kitContractText } from './propose.mjs';
+import { CONTRACT_PATH } from './contract.mjs';
 import { EXTENSIONS_PATH } from '../../assets/scripts/harness-extensions.mjs';
+import { lfSha256 } from '../../assets/scripts/harness-log.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { selectProfile } from './profiles/index.mjs';
@@ -2452,7 +2453,7 @@ test('the contract speaks for the PreToolUse entry script and every installed fi
 
 test('the contract generator writes one stamped file at step 30, requiring the files it speaks for', () => {
   assert.deepEqual(GENERATORS['P5.contract']({ kitVersion: '0.2.0' }), [{
-    kind: 'file', path: CONTRACT_PATH, step: 30, contents: contractFileText('0.2.0'), reason: 'no contract file found',
+    kind: 'file', path: CONTRACT_PATH, step: 30, contents: kitContractText('0.2.0'), reason: 'no contract file found',
     requiresFiles: CONTRACT_FILES.map(path => ({ path, sha256: sha(installedScriptProposal(path, '0.2.0').contents) })),
   }]);
 });
@@ -2483,5 +2484,34 @@ test('an upgrade writes the contract file after every file it speaks for', () =>
   assert.deepEqual(result.failed, []);
   assert.equal(result.written.at(-1).path, CONTRACT_PATH);
   for (const path of CONTRACT_FILES) assert.ok(result.written.some(w => w.path === path), path);
-  assert.equal(readF(join(d, CONTRACT_PATH), 'utf8'), contractFileText('0.2.0'));
+  assert.equal(readF(join(d, CONTRACT_PATH), 'utf8'), kitContractText('0.2.0'));
+});
+
+test('the contract file lists each file it speaks for with the LF sha256 of what this kit installs there, in CONTRACT_FILES order', () => {
+  const file = JSON.parse(kitContractText('0.2.0'));
+  assert.deepEqual(Object.keys(file), ['contract', 'generatedBy', 'files']);
+  assert.deepEqual(Object.keys(file.files), CONTRACT_FILES);
+  for (const path of CONTRACT_FILES) assert.equal(file.files[path], lfSha256(Buffer.from(installedScriptProposal(path, '0.2.0').contents)), path);
+  assert.notEqual(kitContractText('0.2.0'), kitContractText('0.2.1'), 'a kit update changes the listed hashes with the stamps');
+});
+
+test('after an upgrade the contract file lists the hashes of the files on disk', () => {
+  const d = installedAt('0.1.9');
+  const ctx = detectedAt(d, '0.2.0');
+  applyProposals({ root: d, proposals: buildProposals(ctx), manifest: ctx.manifest, kitVersion: '0.2.0' });
+  const { files } = JSON.parse(readF(join(d, CONTRACT_PATH), 'utf8'));
+  for (const [path, hash] of Object.entries(files)) assert.equal(lfSha256(readF(join(d, path))), hash, path);
+});
+
+test('an upgrade that adds a missing sibling the entry script loads still proposes the contract file', () => {
+  const d = installedWithoutLoader();
+  rmSync(join(d, CONTRACT_PATH));
+  const m = readManifest(d);
+  m.files = m.files.filter(f => f.path !== CONTRACT_PATH);
+  writeManifest(d, m);
+  const ctx = detectedAt(d, '0.2.0');
+  const gap = ctx.checks.find(c => c.id === 'P5.contract');
+  assert.deepEqual([gap.state, gap.decidable], ['absent', true], JSON.stringify(gap));
+  const paths = buildProposals(ctx).map(p => p.path);
+  assert.ok(paths.includes(HARNESS_EXTENSIONS_PATH) && paths.includes(CONTRACT_PATH), JSON.stringify(paths));
 });

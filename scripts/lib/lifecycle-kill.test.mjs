@@ -21,10 +21,9 @@ import { buildGaps } from './gap-model.mjs';
 import { gitInfo } from './git-info.mjs';
 import { APPLY, DETECT, fixture, git, kitAt, run, runEveryRegisteredHook, runResult, sandboxDataDir, settings, UNINSTALL } from './lifecycle-fixtures.mjs';
 import { emptyManifest, KIT_VERSION, MANIFEST_PATH, readManifestResult, replaceFile, sha256, writeManifest } from './manifest.mjs';
-import { contractFileText } from './contract.mjs';
 import { planUninstall, runUninstall } from './uninstall-lib.mjs';
 import { selectProfile } from './profiles/index.mjs';
-import { buildProposals, CONTRACT_FILES, GENERATORS, installedScriptProposal, installedScriptStatus } from './propose.mjs';
+import { buildProposals, CONTRACT_FILES, GENERATORS, installedScriptProposal, installedScriptStatus, kitContractText } from './propose.mjs';
 import { listFiles } from './scan.mjs';
 
 sandboxDataDir();
@@ -233,8 +232,11 @@ for (const [point, dies, at] of [
 
     const applied = runResult(APPLY, d, '--yes', '--allow-dirty');
     assert.equal(applied.status, 0, applied.stdout + applied.stderr);
-    assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), contractFileText(KIT_VERSION));
+    assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), kitContractText(KIT_VERSION));
     assert.ok(contractFilesCurrent(d));
+    assert.ok(readManifestResult(d).manifest.files.some(f => f.path === CONTRACT_FILE), 'the contract file is recorded, so uninstall removes it');
+    assert.equal(uninstallOrder(t, d)[0], CONTRACT_FILE);
+    assert.equal(existsSync(join(d, CONTRACT_FILE)), false);
   });
 }
 
@@ -243,9 +245,27 @@ test('an update that is not killed ends with the contract file beside the entry 
   const applied = runResult(APPLY, d, '--yes', '--allow-dirty');
   assert.equal(applied.status, 0, applied.stdout + applied.stderr);
   assert.ok(applied.stdout.trimEnd().split('\n').filter(l => l.startsWith('wrote')).at(-1).endsWith(CONTRACT_FILE), applied.stdout);
-  assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), contractFileText(KIT_VERSION));
+  assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), kitContractText(KIT_VERSION));
   assert.ok(contractFilesCurrent(d));
 });
+
+/** The repository paths an uninstall of `d` removes, in the order it
+ * removes them. */
+function uninstallOrder(t, d) {
+  const rm = fs.rmSync;
+  const order = [];
+  const restore = () => { fs.rmSync = rm; syncBuiltinESMExports(); };
+  t.after(restore);
+  fs.rmSync = (path, ...rest) => {
+    order.push(String(path).slice(d.length + 1).split('\\').join('/'));
+    return rm(path, ...rest);
+  };
+  syncBuiltinESMExports();
+  const manifest = readManifestResult(d).manifest;
+  runUninstall({ root: d, manifest, plan: planUninstall({ root: d, manifest }) });
+  restore();
+  return order;
+}
 
 test('uninstall removes the contract file before any script, so a kill midway never leaves it beside a missing one', (t) => {
   const d = fixture();

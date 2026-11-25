@@ -18,7 +18,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, CONTRACT_FILES, heldContractEvidence, heldContractQuestion, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { buildProposals, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, CONTRACT_FILES, heldContractEvidence, heldContractQuestion, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { CONTRACT, CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { displayPath, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
@@ -133,6 +133,20 @@ const MAX_INSTRUCTION_LINES = 150;
 function manifestAbsence(root) {
   if (root === undefined) return 'unread';
   return readManifestResult(root).state === 'corrupt' ? 'corrupt' : 'missing';
+}
+
+/**
+ * The entries of `notCurrent`, `[path, status]` pairs, that no proposal of
+ * this run writes: the proposals `buildProposals` makes from the checks
+ * evaluated so far, with P0.hookmerge's and P0.kitskew's generators, which
+ * come later, run as well. Without `root` and `kitVersion` none is judged.
+ */
+function notWrittenByRun(notCurrent, { checks, manifest, kitVersion, harness, root, stack, files }) {
+  if (notCurrent.length === 0 || root === undefined || kitVersion === undefined) return [];
+  const later = [{ id: 'P0.hookmerge', state: 'absent' }, ...(manifest ? [{ id: 'P0.kitskew', state: 'absent' }] : [])];
+  const written = new Set(buildProposals({ checks: [...checks, ...later], manifest, kitVersion, harness, root, stack, files })
+    .filter(p => p.kind === 'file').map(p => p.path));
+  return notCurrent.filter(([path]) => !written.has(path));
 }
 
 /**
@@ -910,32 +924,43 @@ const CHECKS = [
   {
     id: 'P5.contract', step: 30, phase: 5,
     lookedFor: [CONTRACT_PATH, `${CONTRACT_FILES.join(', ')} against what this kit installs`],
-    // Read from `harness.contract`: what the file says, and each file it
-    // speaks for against what this kit installs there. Nothing executes, so
-    // it is never `verified`, and the number is reported as read, not as
-    // honoured. Whether anything registers the entry script is P5.toolgate's
-    // and P5.extensions' to say: the number speaks for the installed files.
-    check: ({ harness, manifest, heldScript }) => {
+    // Read from `harness.contract`: what the file says, whether it is the
+    // file this kit writes, and each file it speaks for against what this
+    // kit installs there. Nothing executes, so it is never `verified`, and
+    // the number is reported as read, not as honoured. Whether anything
+    // registers the entry script is P5.toolgate's and P5.extensions' to say:
+    // the number speaks for the installed files. Absent, it is proposed only
+    // when this run leaves every file it speaks for as this kit installs it;
+    // present and unrecorded, it is proposed for `apply` to record.
+    check: ({ harness, manifest, heldScript, checks, kitVersion, root, stack, files }) => {
       const file = harness.contract;
       if (!file) return { state: 'n/a', evidence: ['the contract file was not read'] };
       if (file.state === 'unreadable') {
-        return { state: 'failing', evidence: [file.link
-          ? `${CONTRACT_PATH} is reached through a link (${file.link} is one), so it was not read: a contract file must be a file of the repository itself`
-          : `${CONTRACT_PATH} exists and holds no contract number`] };
+        const why = file.link ? `${CONTRACT_PATH} is reached through a link (${file.link} is one), so it was not read: a contract file must be a file of the repository itself`
+          : file.notDirectory ? `${file.notDirectory} is not a directory, so there is no ${CONTRACT_PATH} and no contract number was read`
+            : `${CONTRACT_PATH} exists and holds no contract number`;
+        return { state: 'failing', evidence: [why] };
       }
       const installed = Object.entries(file.installed ?? {});
       if (file.state === 'ok') {
         const says = `${CONTRACT_PATH}: contract ${file.contract}${file.contract === CONTRACT ? '' : ` (this kit honours contract ${CONTRACT})`}`;
         const notKit = installed.filter(([, status]) => status !== 'current');
-        if (!notKit.length) return { state: 'declared', evidence: [says] };
-        const n = notKit.length;
-        return {
-          state: 'failing',
-          evidence: [says,
-            `the contract file says ${file.contract}, but ${n} of the ${CONTRACT_FILES.length} files it speaks for ${n === 1 ? 'is' : 'are'} not what this kit installs: ` +
+        const problems = [
+          ...(file.kitWritten ? [] : [`${CONTRACT_PATH} says contract ${file.contract}, but it is not the file this kit writes there: its number, its list of files and their sha256, or its stamp differ, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`]),
+          ...(notKit.length === 0 ? [] : [
+            `the contract file says ${file.contract}, but ${notKit.length} of the ${CONTRACT_FILES.length} files it speaks for ${notKit.length === 1 ? 'is' : 'are'} not what this kit installs: ` +
             `${notKit.map(([path, status]) => `${path} (${INSTALLED_STATUS_WORDS[status]})`).join(', ')}; whether the installed files honour it was not read. ` +
-            `apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them`],
-        };
+            'apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them']),
+        ];
+        if (problems.length) return { state: 'failing', evidence: [says, ...problems] };
+        if (!(manifest?.files ?? []).some(f => f.path === CONTRACT_PATH)) {
+          return {
+            state: 'absent',
+            evidence: [says, `${CONTRACT_PATH} holds what this kit writes there, but ${MANIFEST_PATH} does not record it, so uninstall would leave it behind`],
+            proposal: `record ${CONTRACT_PATH} in ${MANIFEST_PATH}, as the file this kit writes there`,
+          };
+        }
+        return { state: 'declared', evidence: [says] };
       }
       const none = `no ${CONTRACT_PATH}`;
       const causes = [...new Map(CONTRACT_FILES.flatMap(path => heldScript(path) ?? []).map(c => [c.path, c])).values()];
@@ -948,6 +973,17 @@ const CHECKS = [
           state: 'absent', decidable: false,
           evidence: [none, `${CONTRACT_PATH} is not written: ${list} ${was} deleted since kh-harness wrote ${it}, apply does not write again a file the owner deleted, and the contract number speaks for the PreToolUse entry script and every file it loads`],
           question: `${list} ${was} deleted since kh-harness wrote ${it}, so kh-harness does not write ${CONTRACT_PATH}. Restore ${it} from git and run apply again; or leave ${it} deleted, and no contract file is written. Which?`,
+        };
+      }
+      const unwritten = notWrittenByRun(installed.filter(([, status]) => status !== 'current'), { checks, manifest, kitVersion, harness, root, stack, files });
+      if (unwritten.length) {
+        const paths = unwritten.map(([path]) => path);
+        const [list, is, it] = [paths.join(', '), paths.length === 1 ? 'is' : 'are', paths.length === 1 ? 'it' : 'them'];
+        const what = unwritten.every(([, status]) => status === 'missing') ? `${is} missing` : `${is} not what this kit installs`;
+        return {
+          state: 'absent', decidable: false,
+          evidence: [none, `${CONTRACT_PATH} is not written: ${list} ${what} and nothing in this run writes ${it}, and the contract number speaks for the PreToolUse entry script and every file it loads`],
+          question: `${list} ${what}, not recorded in ${MANIFEST_PATH}, and written by nothing in this run, so kh-harness does not write ${CONTRACT_PATH}. Restore ${it} from git and run apply again; or leave ${it} ${unwritten.every(([, status]) => status === 'missing') ? 'missing' : 'as it is'}, and no contract file is written. Which?`,
         };
       }
       return { state: 'absent', evidence: [none], proposal: `write ${CONTRACT_PATH}, which tells another plugin which kh-harness contract this install honours` };

@@ -274,6 +274,7 @@ for (const w of result.written) {
     process.stdout.write(`note: Windows cannot record the execute bit — run \`git update-index --chmod=+x ${w.path}\` before committing\n`);
   }
 }
+for (const a of result.adopted) process.stdout.write(`recorded   ${a.path} (already on disk as this kit writes it)\n`);
 for (const p of result.patched) {
   const removed = p.replaced ? `; ${p.replaced} separate registration${p.replaced === 1 ? '' : 's'} removed` : '';
   process.stdout.write(`patched    .claude/settings.json (${p.event}${removed})\n`);

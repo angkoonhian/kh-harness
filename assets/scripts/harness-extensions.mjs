@@ -38,7 +38,8 @@ import { escapeDelimiters, markerPath, maskText, projectRoot, safeSessionId, str
  * extension's entry records. */
 export { lfSha256 as moduleSha256 };
 
-export const EXTENSIONS_PATH = '.claude/kh-harness/extensions.json';
+const EXTENSIONS_NAME = 'extensions.json';
+export const EXTENSIONS_PATH = `.claude/kh-harness/${EXTENSIONS_NAME}`;
 
 /** `moduleMaxBytes` bounds a module file as it is on disk, before its line
  * endings are normalised; `messageMax` a block message both as returned and
@@ -106,6 +107,50 @@ function reached(path) {
   }
 }
 
+/**
+ * The file `name` in `<root>/.claude/kh-harness/`, read as a file of the
+ * repository itself, within `maxBytes`:
+ * - `absent` when nothing is there, including a `.claude` that is a link
+ *   through which no such file is reached (a `.claude` kept in a dotfiles
+ *   directory is otherwise no concern of the kit's own files);
+ * - `link` with the `path` that is one: `.claude` when the file is reached
+ *   through it, `.claude/kh-harness`, or the file itself;
+ * - `not-a-directory` with the `path` that is not one;
+ * - `not-a-file`, `too-large`, or `ok` with its `bytes`, read from one
+ *   descriptor so the file measured is the file read.
+ * `root` itself may be reached through a link. Throws what the file system
+ * throws, `ELOOP` among it for a file swapped for a link before its open.
+ */
+export function readKitDirFile(root, name, maxBytes) {
+  const rel = `.claude/kh-harness/${name}`;
+  const claude = lstatOrNull(join(root, '.claude'));
+  if (claude === null) return { state: 'absent' };
+  if (claude.isSymbolicLink()) return reached(join(root, rel)) ? { state: 'link', path: '.claude' } : { state: 'absent' };
+  if (!claude.isDirectory()) return { state: 'not-a-directory', path: '.claude' };
+  const khHarness = lstatOrNull(join(root, '.claude/kh-harness'));
+  if (khHarness === null) return { state: 'absent' };
+  if (khHarness.isSymbolicLink()) return { state: 'link', path: '.claude/kh-harness' };
+  if (!khHarness.isDirectory()) return { state: 'not-a-directory', path: '.claude/kh-harness' };
+  const path = join(root, rel);
+  const st = lstatOrNull(path);
+  if (st === null) return { state: 'absent' };
+  if (st.isSymbolicLink()) return { state: 'link', path: rel };
+  if (!st.isFile()) return { state: 'not-a-file' };
+  const bytes = readFileWithin(path, maxBytes);
+  if (bytes === NOT_A_FILE) return { state: 'not-a-file' };
+  if (bytes === TOO_LARGE) return { state: 'too-large' };
+  return { state: 'ok', bytes };
+}
+
+/** What `readExtensions` says of each `readKitDirFile` state but `ok` and
+ * `absent`. */
+function unreadableProblem(file) {
+  if (file.state === 'link' && file.path === '.claude') return '.claude is a link, and an extensions file must be a file of the repository itself';
+  if (file.state === 'not-a-directory' || (file.state === 'link' && file.path === '.claude/kh-harness')) return NOT_A_DIRECTORY;
+  if (file.state === 'too-large') return `it is larger than ${EXTENSION_LIMITS.fileMaxBytes} bytes`;
+  return 'it is not a regular file';
+}
+
 /** The extensions file under `root`: `absent`, `malformed` with a fixed
  * `problem`, or `ok` with its entries in order. One bad entry, or two with
  * one id or one module, makes the whole file malformed. `root` itself may be
@@ -113,25 +158,12 @@ function reached(path) {
  * reached through it; `.claude/kh-harness` may not. Never throws. */
 export function readExtensions(root) {
   try {
-    const claude = lstatOrNull(join(root, '.claude'));
-    if (claude === null) return { state: 'absent' };
-    if (claude.isSymbolicLink()) {
-      return reached(join(root, EXTENSIONS_PATH)) ? malformed('.claude is a link, and an extensions file must be a file of the repository itself') : { state: 'absent' };
-    }
-    if (!claude.isDirectory()) return malformed(NOT_A_DIRECTORY);
-    const khHarness = lstatOrNull(join(root, '.claude/kh-harness'));
-    if (khHarness === null) return { state: 'absent' };
-    if (!khHarness.isDirectory()) return malformed(NOT_A_DIRECTORY);
-    const path = join(root, EXTENSIONS_PATH);
-    const st = lstatOrNull(path);
-    if (st === null) return { state: 'absent' };
-    if (!st.isFile()) return malformed('it is not a regular file');
-    const bytes = readFileWithin(path, EXTENSION_LIMITS.fileMaxBytes);
-    if (bytes === NOT_A_FILE) return malformed('it is not a regular file');
-    if (bytes === TOO_LARGE) return malformed(`it is larger than ${EXTENSION_LIMITS.fileMaxBytes} bytes`);
+    const file = readKitDirFile(root, EXTENSIONS_NAME, EXTENSION_LIMITS.fileMaxBytes);
+    if (file.state === 'absent') return { state: 'absent' };
+    if (file.state !== 'ok') return malformed(unreadableProblem(file));
     let list;
     try {
-      list = JSON.parse(bytes.toString('utf8'));
+      list = JSON.parse(file.bytes.toString('utf8'));
     } catch {
       return malformed('it is not JSON');
     }

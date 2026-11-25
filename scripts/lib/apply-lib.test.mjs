@@ -908,6 +908,32 @@ test('a file proposal that requires files is not attempted after a write failure
   assert.equal(existsSync(join(d, CONTRACT)), false);
 });
 
+test('a file that speaks for others, found unrecorded holding exactly what this kit writes beside what it requires, is recorded and not written', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude/scripts'), { recursive: true });
+  mkdirSync(join(d, '.claude/kh-harness'), { recursive: true });
+  writeFileSync(join(d, X), 'x\n');
+  writeFileSync(join(d, CONTRACT), '{}\r\n');
+  const r = applyProposals({ root: d, proposals: [speaker()], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual([r.written, r.skipped, r.failed], [[], [], []]);
+  assert.deepEqual(r.adopted, [{ path: CONTRACT, step: 30, checkId: 'P5.contract' }]);
+  assert.deepEqual(r.manifest.files.map(f => [f.path, f.sha256]), [[CONTRACT, sha256('{}\n')]]);
+  assert.equal(readFileSync(join(d, CONTRACT), 'utf8'), '{}\r\n', 'the file is left as it is');
+});
+
+test('a file that speaks for others, found unrecorded with other bytes, is neither recorded nor written', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude/scripts'), { recursive: true });
+  mkdirSync(join(d, '.claude/kh-harness'), { recursive: true });
+  writeFileSync(join(d, X), 'x\n');
+  writeFileSync(join(d, CONTRACT), '{ "contract": 2 }\n');
+  const r = applyProposals({ root: d, proposals: [speaker()], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual([r.written, r.adopted], [[], []]);
+  assert.deepEqual(r.skipped.map(s => [s.path, s.why]), [[CONTRACT, 'theirs']]);
+  assert.deepEqual(r.manifest.files, []);
+  assert.equal(readFileSync(join(d, CONTRACT), 'utf8'), '{ "contract": 2 }\n');
+});
+
 // --- The settings patches of one run are one write --------------------------
 
 const batchHook = event => ({ kind: 'settings-hook', event, step: 31, checkId: 'P5.sessionlog', reason: 'r', entry: { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/session-log.mjs'] } });

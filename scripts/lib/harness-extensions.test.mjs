@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { EXTENSIONS_PATH, EXTENSION_LIMITS, moduleSha256, moduleState, readExtensions } from '../../assets/scripts/harness-extensions.mjs';
+import { EXTENSIONS_PATH, EXTENSION_LIMITS, moduleSha256, moduleState, readExtensions, readKitDirFile } from '../../assets/scripts/harness-extensions.mjs';
 import { lfSha256 } from '../../assets/scripts/harness-log.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
@@ -409,4 +409,41 @@ test('a module reached through a link into .claude/scripts/ is outside', (t) => 
 test('moduleState never throws, whatever it is handed', () => {
   assert.deepEqual(moduleState(project(), { module: 7 }), { state: 'unreadable' });
   assert.deepEqual(moduleState(join(tmpdir(), 'hk-ext-no-such-root'), { module: '.claude/a.mjs' }), { state: 'missing' });
+});
+
+// --- The reader another kit file shares --------------------------------------
+
+test('readKitDirFile reads a file of .claude/kh-harness within a bound, and names what is in the way', { skip: process.platform === 'win32' && 'win32 needs elevation to make a link' }, () => {
+  const read = (root, max = 16) => readKitDirFile(root, 'x.json', max);
+  assert.deepEqual(read(project()), { state: 'absent' });
+  const fine = project();
+  writeAt(join(fine, '.claude/kh-harness/x.json'), '{}');
+  const got = read(fine);
+  assert.deepEqual([got.state, got.bytes.toString('utf8')], ['ok', '{}']);
+  assert.deepEqual(read(fine, 1), { state: 'too-large' });
+  const dir = project();
+  mkdirSync(join(dir, '.claude/kh-harness/x.json'), { recursive: true });
+  assert.deepEqual(read(dir), { state: 'not-a-file' });
+  const claudeFile = project();
+  writeAt(join(claudeFile, '.claude'), '');
+  assert.deepEqual(read(claudeFile), { state: 'not-a-directory', path: '.claude' });
+  const kitFile = project();
+  writeAt(join(kitFile, '.claude/kh-harness'), '');
+  assert.deepEqual(read(kitFile), { state: 'not-a-directory', path: '.claude/kh-harness' });
+  const outside = tempDir('hk-ext-outside-');
+  writeAt(join(outside, 'kh-harness/x.json'), '{}');
+  const fileLink = project();
+  mkdirSync(join(fileLink, '.claude/kh-harness'), { recursive: true });
+  symlinkSync(join(outside, 'kh-harness/x.json'), join(fileLink, '.claude/kh-harness/x.json'), 'file');
+  assert.deepEqual(read(fileLink), { state: 'link', path: '.claude/kh-harness/x.json' });
+  const dirLink = project();
+  mkdirSync(join(dirLink, '.claude'));
+  symlinkSync(join(outside, 'kh-harness'), join(dirLink, '.claude/kh-harness'), 'dir');
+  assert.deepEqual(read(dirLink), { state: 'link', path: '.claude/kh-harness' });
+  const claudeLink = project();
+  symlinkSync(outside, join(claudeLink, '.claude'), 'dir');
+  assert.deepEqual(read(claudeLink), { state: 'link', path: '.claude' });
+  const emptyLink = project();
+  symlinkSync(tempDir('hk-ext-outside-'), join(emptyLink, '.claude'), 'dir');
+  assert.deepEqual(read(emptyLink), { state: 'absent' });
 });

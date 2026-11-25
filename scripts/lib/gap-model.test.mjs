@@ -2182,10 +2182,17 @@ test('P5.extensions never proposes and is never verified', () => {
 // --- P5.contract -------------------------------------------------------------
 
 const CONTRACT_FILES_CURRENT = Object.freeze(Object.fromEntries(CONTRACT_FILES.map(path => [path, 'current'])));
-const contractCheck = harness => byId(gaps(bareStack, harness), 'P5.contract');
+const contractRoot = mkdtempSync(join(tmpdir(), 'hk-contract-gap-'));
+const RECORDS_CONTRACT = Object.freeze({ ...emptyManifest('0.2.0'), files: [{ path: CONTRACT_PATH, sha256: '0'.repeat(64), step: 30, writtenAt: '2026-11-25T00:00:00.000Z' }] });
+/** P5.contract for `harness`, against a manifest that records the contract
+ * file unless another is given. */
+const contractCheck = (harness, manifest = RECORDS_CONTRACT) => byId(buildGaps({ stack: bareStack, harness, exposures: [], profile: selectProfile(bareStack),
+  git: { branch: 'main', isRepo: true }, files: [], root: contractRoot, manifest, kitVersion: '0.2.0' }), 'P5.contract');
+const kitContract = (installed = CONTRACT_FILES_CURRENT) => ({ state: 'ok', contract: 1, kitWritten: true, installed });
 const NOT_KIT = 'the contract file says 1, but 2 of the ' + CONTRACT_FILES.length + ' files it speaks for are not what this kit installs: ' +
   `${DISPATCH_PRE_PATH} (is not the file this kit installs), ${HARNESS_EXTENSIONS_PATH} (is missing); whether the installed files honour it was not read. ` +
   'apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them';
+const NOT_WRITTEN = n => `${CONTRACT_PATH} says contract ${n}, but it is not the file this kit writes there: its number, its list of files and their sha256, or its stamp differ, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`;
 
 test('P5.contract sits directly after P5.extensions, at the gate hook\'s step, and says what it looked for', () => {
   const ids = gaps(bareStack, bareHarness).map(c => c.id);
@@ -2196,21 +2203,45 @@ test('P5.contract sits directly after P5.extensions, at the gate hook\'s step, a
   assert.equal(CONTRACT_FILES[0], DISPATCH_PRE_PATH);
 });
 
-test('P5.contract: n/a unread, absent with a proposal, declared with the number, failing when unreadable', () => {
+test('P5.contract: n/a unread, absent with a proposal, declared only for the file this kit writes, failing when unreadable', () => {
   const unread = contractCheck(bareHarness);
   assert.deepEqual([unread.state, unread.evidence, unread.proposal], ['n/a', ['the contract file was not read'], null]);
   const absent = contractCheck({ ...bareHarness, contract: { state: 'absent' } });
   assert.deepEqual([absent.state, absent.evidence, absent.proposal, absent.via],
     ['absent', [`no ${CONTRACT_PATH}`], 'write .claude/kh-harness/contract.json, which tells another plugin which kh-harness contract this install honours', 'apply']);
-  const one = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1 } });
+  const one = contractCheck({ ...bareHarness, contract: kitContract() });
   assert.deepEqual([one.state, one.evidence, one.proposal], ['declared', ['.claude/kh-harness/contract.json: contract 1'], null]);
-  const two = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 2 } });
-  assert.deepEqual([two.state, two.evidence], ['declared', ['.claude/kh-harness/contract.json: contract 2 (this kit honours contract 1)']]);
   const unreadable = contractCheck({ ...bareHarness, contract: { state: 'unreadable' } });
   assert.deepEqual([unreadable.state, unreadable.evidence, unreadable.proposal], ['failing', ['.claude/kh-harness/contract.json exists and holds no contract number'], null]);
 });
 
-test('P5.contract says which link a contract file is reached through, and reads nothing through it', () => {
+test('P5.contract is failing for a contract file this kit did not write as it is, whatever its number', () => {
+  const two = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 2, kitWritten: false, installed: CONTRACT_FILES_CURRENT } });
+  assert.deepEqual([two.state, two.proposal], ['failing', null]);
+  assert.deepEqual(two.evidence, ['.claude/kh-harness/contract.json: contract 2 (this kit honours contract 1)', NOT_WRITTEN(2)]);
+  const one = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, kitWritten: false, installed: CONTRACT_FILES_CURRENT } });
+  assert.deepEqual([one.state, one.evidence], ['failing', ['.claude/kh-harness/contract.json: contract 1', NOT_WRITTEN(1)]]);
+  const unrecorded = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, kitWritten: false, installed: CONTRACT_FILES_CURRENT } }, null);
+  assert.deepEqual([unrecorded.state, unrecorded.proposal], ['failing', null], 'a file this kit did not write is not adopted');
+});
+
+test('P5.contract proposes recording a contract file that holds what this kit writes beside the files it speaks for, when the manifest does not record it', () => {
+  for (const manifest of [null, emptyManifest('0.2.0')]) {
+    const c = contractCheck({ ...bareHarness, contract: kitContract() }, manifest);
+    assert.deepEqual([c.state, c.via], ['absent', 'apply']);
+    assert.deepEqual(c.evidence, ['.claude/kh-harness/contract.json: contract 1',
+      '.claude/kh-harness/contract.json holds what this kit writes there, but .claude/kh-harness.manifest.json does not record it, so uninstall would leave it behind']);
+    assert.equal(c.proposal, 'record .claude/kh-harness/contract.json in .claude/kh-harness.manifest.json, as the file this kit writes there');
+  }
+  const stale = contractCheck({ ...bareHarness, contract: kitContract({ ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'missing' }) }, null);
+  assert.deepEqual([stale.state, stale.proposal], ['failing', null], 'not adopted beside a file it speaks for that is not this kit\'s');
+});
+
+test('P5.contract words a .claude or .claude/kh-harness that is not a directory, and says which link a contract file is reached through', () => {
+  for (const path of ['.claude', '.claude/kh-harness']) {
+    const c = contractCheck({ ...bareHarness, contract: { state: 'unreadable', notDirectory: path } });
+    assert.deepEqual([c.state, c.proposal, c.evidence], ['failing', null, [`${path} is not a directory, so there is no ${CONTRACT_PATH} and no contract number was read`]]);
+  }
   for (const link of ['.claude', '.claude/kh-harness', CONTRACT_PATH]) {
     const c = contractCheck({ ...bareHarness, contract: { state: 'unreadable', link } });
     assert.deepEqual([c.state, c.proposal], ['failing', null]);
@@ -2220,12 +2251,10 @@ test('P5.contract says which link a contract file is reached through, and reads 
 
 test('P5.contract is failing when the contract file is there and the files it speaks for are not all this kit\'s, and names them', () => {
   const installed = { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other', [HARNESS_EXTENSIONS_PATH]: 'missing' };
-  const c = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, installed } });
+  const c = contractCheck({ ...bareHarness, contract: kitContract(installed) });
   assert.deepEqual([c.state, c.proposal], ['failing', null]);
   assert.deepEqual(c.evidence, ['.claude/kh-harness/contract.json: contract 1', NOT_KIT]);
-  const current = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, installed: CONTRACT_FILES_CURRENT } });
-  assert.deepEqual([current.state, current.evidence], ['declared', ['.claude/kh-harness/contract.json: contract 1']]);
-  const otherVersion = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, installed: { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other-version' } } });
+  const otherVersion = contractCheck({ ...bareHarness, contract: kitContract({ ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other-version' }) });
   assert.equal(otherVersion.state, 'failing');
   assert.match(otherVersion.evidence[1], /^the contract file says 1, but 1 of the \d+ files it speaks for is not what this kit installs: \.claude\/scripts\/dispatch-pre-tool\.mjs \(carries another kh-harness version's stamp\);/);
 });
