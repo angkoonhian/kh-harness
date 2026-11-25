@@ -229,11 +229,12 @@ test('a .claude that is a link through which no extensions file is reached means
       return outside;
     }],
     ['a dangling link', root => join(root, 'gone')],
+    ['a link that loops on itself', root => join(root, '.claude')],
   ];
   for (const [name, target] of rows) {
     await t.test(name, (st) => {
       const root = project();
-      if (!linkOrSkip(st, target(root), join(root, '.claude'), 'junction')) return;
+      if (!linkOrSkip(st, target(root), join(root, '.claude'), name.includes('loops') ? 'dir' : 'junction')) return;
       assert.deepEqual(readExtensions(root), { state: 'absent' });
     });
   }

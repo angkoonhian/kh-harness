@@ -142,6 +142,8 @@ test('REVIEW FOCUS 3: an install made before the extension loader existed gets i
   assert.equal(existsSync(join(d, HARNESS_EXTENSIONS_PATH)), false, 'fixture sanity: the older kit did not install the loader');
   commit(d, 'install the older kit');
   run(APPLY, d, '--yes');
+  assert.equal(stampOf(d, '.claude/scripts/dispatch-pre-tool.mjs'), CURRENT, 'the entry script was updated by the same apply');
+  assert.match(readFileSync(join(d, '.claude/scripts/dispatch-pre-tool.mjs'), 'utf8'), /'\.\/harness-extensions\.mjs'/);
   assert.ok(existsSync(join(d, HARNESS_EXTENSIONS_PATH)));
   assert.ok(manifestOf(d).files.some(f => f.path === HARNESS_EXTENSIONS_PATH));
   for (const r of runEveryRegisteredHook(d)) assert.equal(r.status, 0, `${r.script}: ${r.stderr}`);

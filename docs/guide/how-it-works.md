@@ -143,13 +143,15 @@ The 16 events `session-log.mjs` is registered on are `SessionStart`,
 
 Notes on the table:
 
-- Two scripts run your repository's own commands: `lint-touched.mjs` and
-  `verify-touched.mjs`. The other five run no script of the repository's.
-  Only the `PreToolUse` entry script loads repository code: each module
-  another plugin lists in `.claude/kh-harness/extensions.json`, one
-  self-contained file under `.claude/` run only when its bytes match the
-  hash recorded for it, which can block the call. kh-harness never writes
-  that file.
+- Three things run your repository's own code: `lint-touched.mjs` and
+  `verify-touched.mjs` run its commands, and the `PreToolUse` entry script
+  runs each module `.claude/kh-harness/extensions.json` lists, one
+  self-contained file under `.claude/` each, which can block the call. The
+  other four hook scripts run nothing of the repository's. The extensions
+  file and its modules are files in the repository, so a `git pull` that
+  adds or changes them changes what runs before every tool call by itself;
+  the sha256 recorded for a module proves only that its bytes are the ones
+  named, which is not an approval. kh-harness never writes that file.
 - On the three tool-call events the kit's two hooks run one after the
   other, always in the same order: before a call, the gate hook and then
   the session log; after a call, the session log and then the lint

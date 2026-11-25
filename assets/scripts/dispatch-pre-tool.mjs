@@ -50,12 +50,13 @@ function extensionsExpected(root) {
 }
 
 /** True when something is at `path`, following every link on the way;
- * false when nothing is, or a component of it is not a directory. */
+ * false when nothing is, a component of it is not a directory, or the links
+ * on the way loop. */
 function reached(path) {
   try {
     return statSync(path, { throwIfNoEntry: false }) !== undefined;
   } catch (error) {
-    if (error?.code === 'ENOTDIR') return false;
+    if (error?.code === 'ENOTDIR' || error?.code === 'ELOOP') return false;
     throw error;
   }
 }

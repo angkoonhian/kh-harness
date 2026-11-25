@@ -20,8 +20,9 @@
 //
 // A module that passes is run from the very bytes that were hashed, so it is
 // one self-contained file: it may import Node built-ins and nothing else.
-// Each runs on its own copy of the payload, with standard output and
-// standard error silenced and `process.exit` made to throw, and whatever goes
+// Each runs on its own copy of the payload, with `process.exit` made to
+// throw, and once one has run, standard output and standard error write
+// nothing for the rest of the process; whatever goes
 // wrong with it is its entry's `onFailure`: the call is blocked, or the
 // person is told once per session that the extension checks nothing. What
 // reaches the model is fixed text, an entry's `id`, and a block message after
@@ -40,10 +41,10 @@ export { lfSha256 as moduleSha256 };
 export const EXTENSIONS_PATH = '.claude/kh-harness/extensions.json';
 
 /** `moduleMaxBytes` bounds a module file as it is on disk, before its line
- * endings are normalised. */
-/** `loadMaxMs` bounds how long a module may take to load: a top-level
- * await that never settles would otherwise leave the event loop empty,
- * which ends the entry script's run before the gate. */
+ * endings are normalised; `messageMax` a block message both as returned and
+ * once cleaned; `loadMaxMs` how long a module may take to load, since a
+ * top-level await that never settles would otherwise leave the event loop
+ * empty, which ends the entry script's run before the gate. */
 export const EXTENSION_LIMITS = Object.freeze({ fileMaxBytes: 65536, entriesMax: 8, moduleMaxBytes: 1024 * 1024, messageMax: 300, loadMaxMs: 1000 });
 
 const NOT_A_DIRECTORY = '.claude or .claude/kh-harness is a link or not a directory';
@@ -94,13 +95,13 @@ function lstatOrNull(path) {
 }
 
 /** True when something is at `path`, following every link on the way;
- * false when nothing is, or a component of it is not a directory. Throws
- * what else the file system throws. */
+ * false when nothing is, a component of it is not a directory, or the links
+ * on the way loop. Throws what else the file system throws. */
 function reached(path) {
   try {
     return statSync(path, { throwIfNoEntry: false }) !== undefined;
   } catch (error) {
-    if (error?.code === 'ENOTDIR') return false;
+    if (error?.code === 'ENOTDIR' || error?.code === 'ELOOP') return false;
     throw error;
   }
 }
@@ -224,7 +225,7 @@ const REASONS = Object.freeze({
   result: 'its preToolUse returned neither an allow nor a block with a usable message',
 });
 
-const LINE_BREAK_ALL = /[\r\n\p{Zl}\p{Zp}]+/gu;
+const BREAKS_AND_TABS = /[\t\r\n\u0085\p{Zl}\p{Zp}]+/gu;
 
 const blockText = (id, message) => `kh-harness extension ${id}: ${message}`;
 const failBlockText = (id, reason) => `kh-harness extension ${id}: ${reason}, so this call is blocked (onFailure: block). Reinstall the plugin that registered it, or remove its entry from .claude/kh-harness/extensions.json outside this session.`;
@@ -244,12 +245,16 @@ function halfResult({ blocks, notices }) {
   return { json, stderr: '', exitCode: 0 };
 }
 
-/** A block message as the model is shown it: stripped of what a reader
- * cannot see, on one line, unable to open or close a delimited block, and
- * masked; null when nothing is left. */
+/** A block message as the model is shown it: on one line, with each run of
+ * line breaks and tabs a space (before the strip, which would otherwise
+ * remove a line or paragraph separator and join two words), stripped of
+ * what a reader cannot see, unable to open or close a delimited block, and
+ * masked; null when nothing is left, or when escaping has made it longer
+ * than `messageMax`, which is a malformed result as an over-long message
+ * is: cutting it could split an escape or a mask. */
 function cleanMessage(message) {
-  const cleaned = maskText(escapeDelimiters(stripUnsafe(message).replace(LINE_BREAK_ALL, ' ')), { floors: 'sweep' }).trim();
-  return cleaned === '' ? null : cleaned;
+  const cleaned = maskText(escapeDelimiters(stripUnsafe(message.replace(BREAKS_AND_TABS, ' '))), { floors: 'sweep' }).trim();
+  return cleaned === '' || cleaned.length > EXTENSION_LIMITS.messageMax ? null : cleaned;
 }
 
 /** `{ kind: 'allow' }` or `{ kind: 'block', message }` for a result that is
@@ -266,18 +271,26 @@ function judged(result) {
   return cleaned === null ? null : { kind: 'block', message: cleaned };
 }
 
-/** Runs `fn` with standard output and standard error writing nothing and
- * `process.exit` throwing, and puts all three back however it ends. */
-async function quietly(fn) {
-  const { stdout, stderr } = process;
-  const saved = [stdout.write, stderr.write, process.exit];
-  stdout.write = () => true;
-  stderr.write = () => true;
+/** Silences standard output and standard error for the rest of the
+ * process. Not undone: a callback an extension leaves behind can write
+ * after it returned, and one stray byte before the hook's JSON line loses
+ * every block. The entry script's output goes through harness-dispatch.mjs,
+ * which holds the streams' own writes from before any extension ran, and
+ * the kit's halves return their output rather than write it. */
+function silenceForGood() {
+  process.stdout.write = () => true;
+  process.stderr.write = () => true;
+}
+
+/** Runs `fn` with `process.exit` throwing, and puts it back however `fn`
+ * ends. */
+async function withoutExit(fn) {
+  const exit = process.exit;
   process.exit = () => { throw new Error('an extension called process.exit'); };
   try {
     return await fn();
   } finally {
-    [stdout.write, stderr.write, process.exit] = saved;
+    process.exit = exit;
   }
 }
 
@@ -303,7 +316,8 @@ async function loadFrom(bytes) {
 async function runExtension(root, entry, payload) {
   const state = moduleState(root, entry);
   if (state.state !== 'matches') return { kind: 'failed', reason: REASONS[state.state] };
-  return quietly(async () => {
+  silenceForGood();
+  return withoutExit(async () => {
     const module = await loadFrom(state.bytes);
     if (module === null) return { kind: 'failed', reason: REASONS.load };
     let preToolUse;

@@ -31,10 +31,13 @@ enforces whatever the gate files hold, however a gate got there. See
 - Its lint sensor and stop gate run this repository's own `lint`,
   `typecheck` or `test` scripts automatically, after edits and at each turn
   end.
-- Before every tool call it loads and runs each module another plugin
-  lists in `.claude/kh-harness/extensions.json`: one self-contained file
-  under `.claude/`, run only when its bytes match the hash that file
-  records, which can block the call. kh-harness never writes that file.
+- Before every tool call it loads and runs each module listed in
+  `.claude/kh-harness/extensions.json`, which can block the call. The file
+  and its modules are files in this repository, so a `git pull` that adds
+  or changes them changes what runs before every tool call by itself. The
+  sha256 the file records for a module proves only that the module holds
+  the bytes the file names; it is not an approval. kh-harness never writes
+  that file.
 - Once you enable the session log, it stores every prompt and every tool
   call's input and output on this machine, after a best-effort credential
   scrub.
@@ -160,7 +163,10 @@ upgrade, and it happens only if you agree.
 > itself. On a large codebase the stop gate can add 10–30 s per turn. The
 > plugin installs none of this; `apply` writes the hooks into your
 > repository when you ask it to. The plugin's own hook, the start-of-session
-> notice, runs no repository script.
+> notice, runs no repository script. The before-a-tool-call hook it installs
+> also runs each module `.claude/kh-harness/extensions.json` lists, and those
+> are repository files too: a `git pull` that adds or changes them changes
+> what runs before every tool call.
 
 **2. Inventory the repository.** From the repository, on a branch:
 
@@ -215,8 +221,8 @@ kh-harness: 35 actions to close 9 capability gaps for <repo>
 …
 WHAT THE HOOKS EXECUTE — read this before running `apply`
   `apply` registers up to seven hook scripts, each on the events named below.
-  Two of them run THIS REPOSITORY'S OWN SCRIPTS AUTOMATICALLY, by Claude Code,
-  without being asked each time:
+  Three of them can run THIS REPOSITORY'S OWN CODE AUTOMATICALLY, by Claude
+  Code, without being asked each time:
 …
   On PreToolUse and PostToolUseFailure, and on PostToolUse where the lint
   hook is installed, the two hooks of the event are started by one of three

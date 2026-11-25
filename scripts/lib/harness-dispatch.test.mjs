@@ -27,6 +27,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { readEvents, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { combine, runHalves } from '../../assets/scripts/harness-dispatch.mjs';
@@ -279,6 +280,53 @@ for (const [fault, text] of Object.entries(LATER_FAULTS)) {
     assert.deepEqual(r, { status: 0, stdout: single.stdout, stderr: '' });
   });
 }
+
+// The faults above end in a half that settles by itself. Each below never
+// settles, so what ends the run is told apart: an event loop left with
+// nothing to do, or, with a live handle keeping it busy, the run deadline.
+const STRANDED = {
+  'throws from a callback and never settles': 'export function logHalf() {\n  setTimeout(() => { throw new Error(\'boom\'); }, 0);\n  return new Promise(() => {});\n}\n',
+  'leaves a rejection unhandled and never settles': 'export function logHalf() {\n  Promise.reject(new Error(\'boom\'));\n  return new Promise(() => {});\n}\n',
+};
+
+for (const [fault, text] of Object.entries(STRANDED)) {
+  test(`a gate denial is written as soon as nothing is left to run when the half after it ${fault}`, () => {
+    const single = direct(GATE, gatedProject(), call('stranded-1', 'rm -rf build'));
+    const started = Date.now();
+    const r = runEntry('dispatch-pre-tool.mjs', gatedProject(), call('stranded-1', 'rm -rf build'), { dir: installed({ 'session-log.mjs': text }), env: { HK_RUN_DEADLINE_MS: '60000' } });
+    assert.deepEqual(r, { status: 0, stdout: single.stdout, stderr: '' });
+    assert.ok(Date.now() - started < 30_000, 'not held to the deadline');
+  });
+}
+
+test('a gate denial is written at the run deadline when the half after it never settles and leaves a live handle', () => {
+  const single = direct(GATE, gatedProject(), call('deadline-1', 'rm -rf build'));
+  const hang = 'export function logHalf() {\n  setInterval(() => {}, 1000);\n  return new Promise(() => {});\n}\n';
+  const started = Date.now();
+  const r = runEntry('dispatch-pre-tool.mjs', gatedProject(), call('deadline-1', 'rm -rf build'), { dir: installed({ 'session-log.mjs': hang }), env: { HK_RUN_DEADLINE_MS: '1500' } });
+  const took = Date.now() - started;
+  assert.deepEqual(r, { status: 0, stdout: single.stdout, stderr: '' });
+  assert.ok(took >= 1400 && took < 15_000, `written at the deadline: ${took} ms`);
+});
+
+test('a lint report is written with exit 2 at the run deadline when a half after it never settles and leaves a live handle', () => {
+  const report = direct(LINT, failingRepo(), edit('src/a.ts', 'deadline-2'));
+  const lint = "core.half('lint', 'lint-touched.mjs', 'lintHalf', () => import('./lint-touched.mjs')),";
+  const entry = readFileSync(join(ASSETS, 'dispatch-post-tool.mjs'), 'utf8');
+  const dir = installed({ 'dispatch-post-tool.mjs': entry.replace(lint, `${lint}\n    { name: 'hang', run: () => { setInterval(() => {}, 1000); return new Promise(() => {}); } },`) });
+  const r = runEntry('dispatch-post-tool.mjs', failingRepo(), edit('src/a.ts', 'deadline-2'), { dir, env: { HK_RUN_DEADLINE_MS: '1500' } });
+  assert.deepEqual(r, { status: 2, stdout: '', stderr: report.stderr });
+});
+
+test('the run deadline does not keep a finished run alive', () => {
+  const core = pathToFileURL(join(ASSETS, 'harness-dispatch.mjs')).href;
+  const started = Date.now();
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', `import { dispatch } from ${JSON.stringify(core)};\nprocess.exitCode = await dispatch('PreToolUse', [{ name: 'quick', run: async () => null }]);\n`], {
+    input: '{}', encoding: 'utf8', env: { ...process.env, HK_RUN_DEADLINE_MS: '60000' },
+  });
+  assert.deepEqual([r.status, r.stdout, r.stderr], [0, '', '']);
+  assert.ok(Date.now() - started < 30_000, 'the process ended without waiting for the deadline');
+});
 
 test('a lint report is still written, with exit 2, when a half after it never settles', () => {
   const report = direct(LINT, failingRepo(), edit('src/a.ts', 'late-2'));

@@ -13,9 +13,15 @@
 // nothing, and the halves after it still run. A fault a half leaves behind
 // it — an exception thrown from a callback, a rejection nobody handles —
 // changes nothing: it drops no result already gathered, and the halves
-// still to run still run. A half whose promise can never settle ends the
-// run instead: what the halves had returned by then is written, and no half
-// after it runs.
+// still to run still run. A half whose promise does not settle ends the run
+// instead, when the event loop has nothing left to do or, if something keeps
+// it busy, at `RUN_DEADLINE_MS`: what the halves had returned by then is
+// written, and no half after it runs.
+//
+// The output is written through the standard output and standard error
+// this module found when it was loaded, before any half ran, so a half that
+// replaces `process.stdout.write` (the extensions half silences it for good
+// once an extension has run) cannot silence or corrupt the output.
 //
 // Runs on every tool call, so it imports nothing and never spawns a child
 // process.
@@ -25,6 +31,17 @@ const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to 
 // A hard ceiling on how long reading stdin may block; see lint-touched.mjs's
 // STDIN_TIMEOUT_MS for why the read is asynchronous.
 const STDIN_TIMEOUT_MS = Number(process.env.HK_STDIN_TIMEOUT_MS) || 5_000;
+
+// How long a run may last before what was gathered is written regardless.
+// Above the slowest a kit half takes by its own bounds, the PostToolUse
+// lint half's: this read of stdin (5 s), the lint run (30 s,
+// lint-touched.mjs's LINT_TIMEOUT_MS) and its kill grace (5 s), 40 s in all.
+// Well under the 600 s Claude Code allows a command hook by default, after
+// which it discards the output. Overridable so a test need not wait.
+const RUN_DEADLINE_MS = Number(process.env.HK_RUN_DEADLINE_MS) || 120_000;
+
+const writeOut = process.stdout.write.bind(process.stdout);
+const writeErr = process.stderr.write.bind(process.stderr);
 
 function readStdin(timeoutMs) {
   return new Promise(resolve => {
@@ -121,10 +138,11 @@ export function combine(event, results) {
 }
 
 /** Writes `combined`: its JSON and a newline to standard output when there
- * is any, and its standard error when it is not empty. */
+ * is any, and its standard error when it is not empty, through the streams'
+ * own writes as they were when this module was loaded. */
 export function emit(combined) {
-  if (combined.json !== null) process.stdout.write(JSON.stringify(combined.json) + '\n');
-  if (combined.stderr !== '') process.stderr.write(combined.stderr);
+  if (combined.json !== null) writeOut(JSON.stringify(combined.json) + '\n');
+  if (combined.stderr !== '') writeErr(combined.stderr);
 }
 
 /** Runs `halves` on the payload standard input holds, writes their
@@ -133,13 +151,16 @@ export function emit(combined) {
  *
  * Until it returns, an uncaught exception or an unhandled rejection is
  * ignored, with no stack trace, so a fault one half leaves behind (the
- * PreToolUse extensions run first, and are another plugin's code) can stop
+ * PreToolUse extensions run first, and are code from the repository) can stop
  * neither the halves after it nor the output. An event loop left with
  * nothing to do (a half whose promise never settles, for which Node would
  * otherwise exit 13 with a warning on standard error, since each entry
  * script awaits this at its top level) writes the combined output of the
- * results gathered so far and exits with its code. A block an earlier half
- * decided therefore stands whatever a later half does. */
+ * results gathered so far and exits with its code, and so does reaching
+ * `RUN_DEADLINE_MS`, on a timer that keeps no process alive by itself, when
+ * a half that does not settle has left something that keeps the loop busy.
+ * A block an earlier half decided therefore stands whatever a later half
+ * does. */
 export async function dispatch(event, halves) {
   const results = [];
   let written = null;
@@ -153,9 +174,12 @@ export async function dispatch(event, halves) {
   const ignore = () => {};
   process.on('uncaughtException', ignore);
   process.on('unhandledRejection', ignore);
-  process.on('beforeExit', () => process.exit(write()));
+  const abandon = () => process.exit(write());
+  process.on('beforeExit', abandon);
+  const deadline = setTimeout(abandon, RUN_DEADLINE_MS).unref();
   const payload = await readPayload();
   if (payload !== null) await runHalves(payload, halves, results);
+  clearTimeout(deadline);
   return write();
 }
 

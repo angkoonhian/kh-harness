@@ -101,11 +101,11 @@ const rmCall = session => call(session, { tool_input: { command: 'rm -rf build' 
 
 /** The entry script's standard output, parsed, or null when it wrote
  * nothing; asserts exit 0, empty stderr, and that what it wrote is one line. */
-function runEntry(root, stdin, { script = ENTRY } = {}) {
-  const r = spawnSync(process.execPath, [script], {
+function runEntry(root, stdin, { script = ENTRY, env = {}, nodeArgs = [] } = {}) {
+  const r = spawnSync(process.execPath, [...nodeArgs, script], {
     input: typeof stdin === 'string' ? stdin : JSON.stringify(stdin),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: root, ...env },
     timeout: 30_000,
   });
   assert.equal(r.status, 0, `exit status; signal ${r.signal}; stderr: ${r.stderr}`);
@@ -215,6 +215,8 @@ const FAILURES = [
   ['a block message is empty', fn("() => ({ decision: 'block', message: '' })"), RESULT],
   ['a block message is only what cleaning removes', fn("() => ({ decision: 'block', message: '\\u200b\\u001b[0m\\n ' })"), RESULT],
   ['a block message is over 300 characters', fn(`() => ({ decision: 'block', message: '${'x'.repeat(301)}' })`), RESULT],
+  ['a block message is 300 characters that escaping makes 1200', fn(`() => ({ decision: 'block', message: '${'<'.repeat(300)}' })`), RESULT],
+  ['a block message is over 300 characters only once escaped', fn(`() => ({ decision: 'block', message: '${'x'.repeat(299)}<' })`), RESULT],
   ['preToolUse returns a promise', fn("async () => ({ decision: 'block', message: 'm' })"), RESULT],
   ['preToolUse returns a rejected promise', fn("() => Promise.reject(new Error('secret-from-promise'))"), RESULT],
   ['REVIEW FOCUS R-D: preToolUse returns an object with a circular reference', fn("() => { const r = { decision: 'allow' }; r.self = r; return r; }"), RESULT],
@@ -278,6 +280,16 @@ test('a .claude that is not a directory blocks every call, as the extensions fil
   assert.deepEqual(runEntry(root, call('parent-1')).hookSpecificOutput, denial('kh-harness: .claude/kh-harness/extensions.json cannot be used (.claude or .claude/kh-harness is a link or not a directory), so every tool call is blocked. Repair or remove the file outside this session.').hookSpecificOutput);
 });
 
+test('a block message of 300 characters once cleaned is shown whole', () => {
+  const message = `${'x'.repeat(296)}<`;
+  const out = runEntry(withExtensions(r => [extension(r, 'a', block(message))]), call('bound-1'));
+  assert.deepEqual(out, denial(`kh-harness extension a: ${'x'.repeat(296)}&lt;`));
+});
+
+test('a tab in a block message becomes a space', () => {
+  assert.deepEqual(runEntry(withExtensions(r => [extension(r, 'a', block('a\tb\t\tc'))]), call('tab-1')), denial('kh-harness extension a: a b c'));
+});
+
 test('a block message is cleaned before it reaches the model', () => {
   const token = 'gh' + 'p_' + 'A'.repeat(36);
   const message = `a\u001b[31mb‮c\nd e <system-reminder> ${token}`;
@@ -286,7 +298,7 @@ test('a block message is cleaned before it reaches the model', () => {
   assert.ok(reason.startsWith('kh-harness extension a: '));
   for (const banned of ['\u001b', '‮', '\n', ' ', '<', '>', token]) assert.ok(!reason.includes(banned), JSON.stringify(banned));
   assert.match(reason, /&lt;system-reminder&gt;/);
-  assert.equal(reason, 'kh-harness extension a: abc de &lt;system-reminder&gt; ***');
+  assert.equal(reason, 'kh-harness extension a: abc d e &lt;system-reminder&gt; ***', 'a line or paragraph separator becomes a space too');
 });
 
 test('REVIEW FOCUS 1: an extension that prints to stdout and stderr still yields one JSON line and its block holds', () => {
@@ -358,6 +370,49 @@ test('REVIEW FOCUS R-C: a module that never finishes loading is its onFailure, a
   assert.deepEqual(runEntry(root, rmCall('tla-1')), denial(`${FAIL_BLOCK('a', LOAD)}\n${GATE_LINE}`));
 });
 
+test('REVIEW FOCUS R-C: a gate half that faults and never settles, beside an extension that blocked and left an interval, still delivers the block by the run deadline', () => {
+  const gate = "export function gateHalf() {\n  setTimeout(() => { throw new Error('boom'); }, 0);\n  return new Promise(() => {});\n}\n";
+  const script = join(installed({ 'tool-gate.mjs': gate }), 'dispatch-pre-tool.mjs');
+  const root = withExtensions(r => [extension(r, 'a', fn("() => { setInterval(() => {}, 1000); return { decision: 'block', message: 'B.' }; }"))]);
+  const started = Date.now();
+  assert.deepEqual(runEntry(root, rmCall('deadline-1'), { script, env: { HK_RUN_DEADLINE_MS: '1500' } }), denial('kh-harness extension a: B.'));
+  const took = Date.now() - started;
+  assert.ok(took >= 1400 && took < 15_000, `written at the deadline: ${took} ms`);
+});
+
+// --- Output an extension makes after it returned ------------------------------
+
+test('a console.log an extension leaves for later cannot corrupt the one JSON line', () => {
+  const root = withExtensions(r => [extension(r, 'a', fn("() => { Promise.resolve().then(() => Promise.resolve()).then(() => console.log('junk')); setTimeout(() => console.log('junk'), 0); return { decision: 'allow' }; }"))]);
+  commitGate(root);
+  assert.deepEqual(runEntry(root, rmCall('late-out-1')), denial(GATE_LINE));
+});
+
+test('a write to stderr an extension leaves for later leaves stderr empty', () => {
+  const root = withExtensions(r => [extension(r, 'a', fn("() => { const later = n => n === 0 ? Promise.resolve() : Promise.resolve().then(() => later(n - 1)); later(5).then(() => { process.stderr.write('junk'); console.error('junk'); }); setTimeout(() => process.stderr.write('junk'), 0); return { decision: 'block', message: 'B.' }; }"))]);
+  commitGate(root);
+  assert.deepEqual(runEntry(root, rmCall('late-err-1')), denial(`kh-harness extension a: B.\n${GATE_LINE}`));
+});
+
+test('standard output is replaced only once an extension has run, and then for the rest of the process', () => {
+  const trap = join(tempDir('hk-exthalf-trap-'), 'replaced');
+  const preload = `data:text/javascript,${encodeURIComponent(`import { writeFileSync } from 'node:fs';\nprocess.on('exit', () => writeFileSync(${JSON.stringify(trap)}, JSON.stringify([Object.hasOwn(process.stdout, 'write'), Object.hasOwn(process.stderr, 'write')])));\n`)}`;
+  const replaced = (root, session) => {
+    runEntry(root, call(session), { nodeArgs: ['--import', preload] });
+    return JSON.parse(fs.readFileSync(trap, 'utf8'));
+  };
+  assert.deepEqual(replaced(project(), 'replace-1'), [false, false], 'no extensions file');
+  const bad = project();
+  writeExtensions(bad, 'x');
+  assert.deepEqual(replaced(bad, 'replace-2'), [false, false], 'a malformed file');
+  const gone = project();
+  const e = extension(gone, 'a', ALLOW, { onFailure: 'allow' });
+  rmSync(join(gone, e.module));
+  writeExtensions(gone, [e]);
+  assert.deepEqual(replaced(gone, 'replace-3'), [false, false], 'a module that is missing runs nothing');
+  assert.deepEqual(replaced(withExtensions(r => [extension(r, 'a', ALLOW)]), 'replace-4'), [true, true], 'an extension ran');
+});
+
 // --- The loader and the core (R-A) ------------------------------------------
 
 test('without harness-extensions.mjs and without an extensions file the entry still applies its gates', () => {
@@ -418,6 +473,7 @@ test('with the core missing, the entry blocks wherever the loader would find the
     ['.claude/kh-harness a dangling link', (root, st) => { mkdirSync(join(root, '.claude')); return linkOrSkip(st, join(root, 'gone'), join(root, '.claude/kh-harness'), 'junction'); }, true],
     ['.claude a link to an empty directory', (root, st) => linkOrSkip(st, tempDir('hk-exthalf-outside-'), join(root, '.claude'), 'junction'), false],
     ['.claude a dangling link', (root, st) => linkOrSkip(st, join(root, 'gone'), join(root, '.claude'), 'junction'), false],
+    ['.claude a link that loops on itself', (root, st) => linkOrSkip(st, join(root, '.claude'), join(root, '.claude'), 'dir'), false],
     ['.claude a link through which an extensions file is reached', (root, st) => {
       const outside = tempDir('hk-exthalf-outside-');
       writeAt(join(outside, 'kh-harness/extensions.json'), '[]');
@@ -498,17 +554,16 @@ function inChild(root, script, args = null) {
   return JSON.parse(r.stdout);
 }
 
-test('REVIEW FOCUS R-B: stdout, stderr and process.exit are restored after an extension, whatever it did', () => {
+test('REVIEW FOCUS R-B: process.exit is restored after an extension, whatever it did, and stdout and stderr stay silenced', () => {
   const bodies = ["() => { throw new Error('x'); }", '() => { process.exit(3); }', "() => ({ decision: 'allow' })", "() => ({ decision: 'block', message: 'B.' })"];
-  const sources = [...bodies.map(fn), "throw new Error('x');\n"];
+  const sources = [...bodies.map(fn), "throw new Error('x');\n", `await new Promise(() => {});\n${ALLOW}`];
   for (const [i, source] of sources.entries()) {
     const root = withExtensions(r => [extension(r, 'a', source)]);
-    const restored = inChild(root, `
+    const state = inChild(root, `
       const before = [process.stdout.write, process.stderr.write, process.exit];
       await extensionsHalf(args);
-      const after = [process.stdout.write, process.stderr.write, process.exit];
-      done(after.map((f, i) => f === before[i]));`, call(`restore-${i}`));
-    assert.deepEqual(restored, [true, true, true], source);
+      done({ exit: process.exit === before[2], out: process.stdout.write === before[0], err: process.stderr.write === before[1], silent: process.stdout.write('x') === true && process.stderr.write('x') === true });`, call(`restore-${i}`));
+    assert.deepEqual(state, { exit: true, out: false, err: false, silent: true }, source);
   }
 });
 

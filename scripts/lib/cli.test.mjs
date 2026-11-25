@@ -225,8 +225,10 @@ test('the execution disclosure says what the loop-warning hook reads, keeps and 
 });
 
 test('the execution disclosure says which hooks run this repository\'s scripts and that the others run none', () => {
-  assert.match(disclosed, /Two of them run THIS REPOSITORY'S OWN SCRIPTS AUTOMATICALLY/);
-  assert.match(disclosed, /The other five run no script of this repository's\. Each reads what is said below, and only the PreToolUse hook can load code: the modules an extensions file lists\./);
+  assert.match(disclosed, /Three of them can run THIS REPOSITORY'S OWN CODE AUTOMATICALLY/);
+  assert.match(disclosed, /PreToolUse \(per call\) each module \.claude\/kh-harness\/extensions\.json lists, before every tool call/);
+  assert.match(disclosed, /The other four run nothing of this repository's\. Each reads what is said below and executes no command\./);
+  assert.doesNotMatch(disclosed, /Two of them run|The other five/);
   assert.match(disclosed, /SessionStart \(per session\) reads HANDOFF\.md \(or docs\/HANDOFF\.md\)/);
 });
 
@@ -235,11 +237,33 @@ test('the execution disclosure says the PreToolUse hook loads the modules an ext
   assert.match(entry, /\.claude\/kh-harness\/extensions\.json/);
   assert.match(entry, /loads and runs each module that file lists/);
   assert.match(entry, /one self-contained file under \.claude\//);
-  assert.match(entry, /the hash the file records for it/);
+  assert.match(entry, /the sha256 the file records for it, a check that the bytes are the ones named and not an approval/);
   assert.match(entry, /such a module can BLOCK a call/i);
+  assert.match(entry, /a `git pull` that adds or changes them changes what runs before every tool call/);
   assert.match(entry, /kh-harness never writes that file/);
   assert.doesNotMatch(entry, /It executes nothing, and no gate exists/);
-  assert.doesNotMatch(disclosed, /The other \w+ run nothing of this repository's\. Each reads what is said\s+below and executes no command\./);
+  assert.doesNotMatch(disclosed, /another plugin/);
+});
+
+test('the execution disclosure warns that a pull which adds or changes the extensions file or a module changes what runs by itself', () => {
+  assert.match(disclosed, /so does a `git pull` that adds or changes \.claude\/kh-harness\/extensions\.json or a module it lists/);
+  assert.match(disclosed, /the extensions file and its modules are files in this repository/);
+  assert.match(disclosed, /proves only that the module holds the bytes the file names — it is not an approval/);
+  assert.match(disclosed, /None of the three is installed unless its check reported `absent` and you ran `apply --yes`/);
+});
+
+test('the README and the guide say the same of the extensions as the disclosure', () => {
+  const readme = readFileSync(README, 'utf8').replace(/\s+/g, ' ');
+  const how = readFileSync(resolve(import.meta.dirname, '..', '..', 'docs/guide/how-it-works.md'), 'utf8').replace(/\s+/g, ' ');
+  for (const [name, text] of [['README.md', readme], ['how-it-works.md', how]]) {
+    assert.doesNotMatch(text, /another plugin lists/, name);
+    assert.match(text, /a `git pull` that adds or changes (them|that file or a module it lists) changes what runs before every tool call/, name);
+    assert.match(text, /not an approval/, name);
+  }
+  assert.match(readme, /Three of them can run THIS REPOSITORY'S OWN CODE AUTOMATICALLY/, 'the README\'s excerpt of the disclosure');
+  assert.doesNotMatch(readme, /Two of them run THIS REPOSITORY'S OWN SCRIPTS/);
+  assert.match(how, /The other four hook scripts run nothing of the repository's/);
+  assert.doesNotMatch(how, /The other five/);
 });
 
 test('the execution disclosure names the terminal check for what it checks', () => {
