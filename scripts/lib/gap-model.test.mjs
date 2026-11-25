@@ -9,10 +9,13 @@ import { buildReport, deriveCouldNotDerive, renderSummary } from './report.mjs';
 import { MANIFEST_PATH } from './manifest.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, GENERATORS, toolGateDenyRules } from './propose.mjs';
+import {
+  LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH,
+  SENSOR_MATCHER, GENERATOR_SCRIPT_PATHS, GENERATORS, toolGateDenyRules,
+} from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { hasEquivalentHook, hookEntrySha256 } from './settings-merge.mjs';
-import { execEntry, registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, execEntry, registeredHook } from './hook-evidence.mjs';
 import { UNREADABLE_KIND, splitExposures } from './detect-exposure.mjs';
 
 /** `byEvent` with `entry` appended on every logged event: the logging hook
@@ -1336,6 +1339,54 @@ test('P4.sessionbrief is declared via the install record of the shell form the k
 
 test('registeredHook refuses to judge without the kit\'s hook scripts', () => {
   assert.throws(() => registeredHook(withHooks({}), 'Stop', VERIFY_TOUCHED_PATH, null, { manifest: null, root: tmpRepo() }), /kitScripts/);
+});
+
+// --- A hook run by its event's entry script ----------------------------------
+//
+// On the three tool-call events one entry script runs the kit's hooks there
+// in one process, and the hooks it runs are not registered separately.
+
+/** A harness whose hook registry is `hookRegistrations`, beside every deny
+ * rule the gate hook is installed with. */
+const withRegistrations = hookRegistrations => ({ ...bareHarness,
+  claudeDir: { ...bareHarness.claudeDir, denyRules: toolGateDenyRules().length, denyRuleList: toolGateDenyRules(), hookRegistrations } });
+const lintStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint'] }] };
+// Each entry script on its own event, the logging hook on every other.
+const merged = withRegistrations(Object.fromEntries(LOGGED_EVENTS.map(event => [event, [{ script: ENTRY_SCRIPTS[event]?.path ?? SESSION_LOG_PATH, matcher: null }]])));
+
+test('each of the four hook checks is declared when its event holds the entry script in place of the single script', () => {
+  const checks = gaps(lintStack, merged);
+  for (const id of ['P5.toolgate', 'P2.sensor', 'P2.loopwatch', 'P5.sessionlog']) assert.equal(byId(checks, id).state, 'declared', id);
+  assert.deepEqual(byId(checks, 'P5.toolgate').evidence, [`PreToolUse hook: ${TOOL_GATE_PATH}, run by ${DISPATCH_PRE_PATH}`]);
+  assert.deepEqual(byId(checks, 'P2.sensor').evidence, [`PostToolUse hook: ${LINT_TOUCHED_PATH}, run by ${DISPATCH_POST_PATH}`]);
+  assert.deepEqual(byId(checks, 'P5.sessionlog').evidence, [
+    `${SESSION_LOG_PATH} is registered on all ${LOGGED_EVENTS.length} logged events: ${LOGGED_EVENTS.join(', ')}`,
+    `PreToolUse hook: ${SESSION_LOG_PATH}, run by ${DISPATCH_PRE_PATH}`,
+    `PostToolUse hook: ${SESSION_LOG_PATH}, run by ${DISPATCH_POST_PATH}`,
+    `PostToolUseFailure hook: ${SESSION_LOG_PATH}, run by ${DISPATCH_FAILURE_PATH}`,
+  ]);
+});
+
+test('an entry script on an event it is not for credits nothing there', () => {
+  const c = byId(gaps(lintStack, withRegistrations({ PostToolUse: [{ script: DISPATCH_PRE_PATH, matcher: null }] })), 'P2.sensor');
+  assert.equal(c.state, 'absent');
+  assert.deepEqual(c.evidence, [`PostToolUse already holds another kh-harness hook: ${DISPATCH_PRE_PATH}`]);
+});
+
+test('the PostToolUse entry script under a matcher that does not fire for edits credits the log and not the lint sensor', () => {
+  const h = withRegistrations({ PostToolUse: [{ script: DISPATCH_POST_PATH, matcher: 'Bash' }] });
+  assert.equal(registeredHook(h, 'PostToolUse', LINT_TOUCHED_PATH, 'p', { matcher: SENSOR_MATCHER, kitScripts: GENERATOR_SCRIPT_PATHS }).state, 'absent');
+  assert.equal(registeredHook(h, 'PostToolUse', SESSION_LOG_PATH, null, { kitScripts: GENERATOR_SCRIPT_PATHS }).state, 'declared');
+});
+
+test('an entry script the file scan cannot resolve is credited from the install record and the file on disk', () => {
+  const sha = hookEntrySha256(execEntry(DISPATCH_PRE_PATH));
+  const unresolved = Object.defineProperty({ script: null, matcher: null }, 'entrySha256', { value: sha });
+  const d = repoWith({ [DISPATCH_PRE_PATH]: '//' });
+  const manifest = { schema: 1, files: [], settingsPatches: [{ event: 'PreToolUse', container: '/hooks/PreToolUse', entrySha256: sha }] };
+  const r = registeredHook(withRegistrations({ PreToolUse: [unresolved] }), 'PreToolUse', TOOL_GATE_PATH, 'p', { manifest, root: d, kitScripts: GENERATOR_SCRIPT_PATHS });
+  assert.deepEqual(r, { state: 'declared', evidence: [`PreToolUse hook: ${TOOL_GATE_PATH}, run by ${DISPATCH_PRE_PATH} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] });
+  assert.equal(registeredHook(withRegistrations({ PreToolUse: [unresolved] }), 'PreToolUse', TOOL_GATE_PATH, 'p', { manifest: { ...manifest, settingsPatches: [] }, root: d, kitScripts: GENERATOR_SCRIPT_PATHS }).state, 'absent');
 });
 
 test('P4.sessionbrief is not declared via its install record once its entry is gone from the event', () => {

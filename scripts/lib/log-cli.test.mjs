@@ -15,6 +15,7 @@ import { EXIT_CODES, LOG_USAGE } from './cli.mjs';
 import {
   CANARY, DATA_ROOT, DAY_MS, project, runLog, sealAll, sealedFile, sessionFile, snapshot, statusJson, tempDir, touchAgo, writeBlob, writeSession,
 } from './log-fixtures.mjs';
+import { ENTRY_SCRIPTS } from './hook-evidence.mjs';
 import { logStatus, SESSION_LOG_SCRIPT } from './log-lib.mjs';
 import { DATA_MARKERS } from './log-report.mjs';
 
@@ -62,11 +63,18 @@ test('enable names the retention period the owner configured', () => {
   assert.match(r.stdout, /30 days/);
 });
 
+/** The settings entry that runs `script` on an event. */
+const entryRunning = script => [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${script}`] }] }];
+
+/** Writes the project's settings with `hooks` as its hook registry. */
+function writeHooks(root, hooks) {
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude/settings.json'), JSON.stringify({ hooks }));
+}
+
 /** Registers the logging hook on `events` in the project's settings. */
 function registerHook(root, events) {
-  const entry = [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_SCRIPT}`] }] }];
-  mkdirSync(join(root, '.claude'), { recursive: true });
-  writeFileSync(join(root, '.claude/settings.json'), JSON.stringify({ hooks: Object.fromEntries(events.map(event => [event, entry])) }));
+  writeHooks(root, Object.fromEntries(events.map(event => [event, entryRunning(SESSION_LOG_SCRIPT)])));
 }
 
 test('enable says recording starts only when the hook is registered on every logged event', () => {
@@ -92,6 +100,19 @@ test('a hook registered on some of the logged events is said to record only thos
   assert.equal(json.hookRegistered, false, 'not on every event');
   assert.deepEqual(json.hookEvents, { registered: 2, logged: LOGGED_EVENTS.length });
   assert.match(runLog(root, 'status').stdout, new RegExp(`the hook is registered on 2 of the ${LOGGED_EVENTS.length} logged events`));
+});
+
+test('status counts a logged event that holds its entry script', () => {
+  const root = project();
+  writeHooks(root, Object.fromEntries(LOGGED_EVENTS.map(event => [event, entryRunning(ENTRY_SCRIPTS[event]?.path ?? SESSION_LOG_SCRIPT)])));
+  assert.deepEqual(statusJson(root).hookEvents, { registered: LOGGED_EVENTS.length, logged: LOGGED_EVENTS.length });
+  assert.equal(statusJson(root).hookRegistered, true);
+});
+
+test('status does not count an entry script registered on an event it is not for', () => {
+  const root = project();
+  writeHooks(root, { PostToolUse: entryRunning(ENTRY_SCRIPTS.PreToolUse.path) });
+  assert.deepEqual(statusJson(root).hookEvents, { registered: 0, logged: LOGGED_EVENTS.length });
 });
 
 test('an unreadable settings file is reported as unreadable, not as unregistered', () => {

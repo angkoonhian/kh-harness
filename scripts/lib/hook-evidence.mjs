@@ -55,6 +55,19 @@ export function runsKitScript(registration, scriptPath, matcher) {
   return recordedHashes(scriptPath, matcher).has(registration.entrySha256);
 }
 
+/** The entry script that runs `scriptPath` on `event`, or null when no
+ * entry script runs it there. */
+export function entryScriptFor(event, scriptPath) {
+  const entry = ENTRY_SCRIPTS[event];
+  return entry?.halves.includes(scriptPath) ? entry.path : null;
+}
+
+/** The registrations on `event` that run `scriptPath` itself, rather than
+ * through an entry script. */
+export function directRegistrations(harness, event, scriptPath, matcher) {
+  return (harness.claudeDir.hookRegistrations?.[event] ?? []).filter(r => runsKitScript(r, scriptPath, matcher));
+}
+
 /**
  * Credits an event from `.claude/settings.json`'s hook registry, never from
  * a filename under `.claude/scripts/`: a hook's script may live anywhere in
@@ -63,7 +76,8 @@ export function runsKitScript(registration, scriptPath, matcher) {
  *
  * `declared` means OUR script (`ourPath`, the path the generator in
  * propose.mjs registers for this event) is among what is registered, under
- * a matcher that fires whenever ours would (`matcherCovers`): not merely
+ * a matcher that fires whenever ours would (`matcherCovers`), itself or as
+ * a hook its event's entry script runs (`entryScriptFor`): not merely
  * that the event is occupied, since a user's own unrelated hook on the
  * event is not the capability, and not our script under a matcher that
  * does not fire for ours. This is the identification `apply-lib.mjs`'s
@@ -81,22 +95,29 @@ export function runsKitScript(registration, scriptPath, matcher) {
  * kit when its script is one of `kitScripts` (propose.mjs's
  * `GENERATOR_SCRIPT_PATHS`), as not this kit's when it resolves to any other
  * script, and as unknown when it does not resolve. A user's hook is never
- * listed as part of what is credited as ours.
+ * listed as part of what is credited as ours. The entry script that runs
+ * ours is ours too, so it is never listed as an occupant.
  */
 export function registeredHook(harness, event, ourPath, proposal, { manifest, root, matcher, kitScripts }) {
   if (!Array.isArray(kitScripts)) throw new TypeError('registeredHook: `kitScripts` is required, or another kit hook on the event would be named as not this kit\'s.');
   const registrations = harness.claudeDir.hookRegistrations?.[event] ?? [];
-  const scripts = registrations.map(r => r.script);
+  const entry = entryScriptFor(event, ourPath);
   const ours = registrations.filter(r => r.script === ourPath);
-  if (ours.length && !ours.some(r => matcherCovers(r.matcher, matcher))) {
+  const viaEntry = entry === null ? [] : registrations.filter(r => r.script === entry);
+  if (ours.some(r => matcherCovers(r.matcher, matcher))) return { state: 'declared', evidence: [`${event} hook: ${ourPath}`] };
+  if (viaEntry.some(r => matcherCovers(r.matcher, matcher))) return { state: 'declared', evidence: [`${event} hook: ${ourPath}, run by ${entry}`] };
+  if (ours.length || viaEntry.length) {
     // Registered, but under a matcher that does not fire when ours would:
     // not the capability, and the user is told exactly why.
+    const under = r => `under matcher "${r.matcher}", which does not fire for ${normalizeMatcher(matcher)} — a registration that does is still needed`;
     return {
       state: 'absent', proposal,
-      evidence: ours.map(r => `${event} hook: ${ourPath} is registered, but under matcher "${r.matcher}", which does not fire for ${normalizeMatcher(matcher)} — a registration that does is still needed`),
+      evidence: [
+        ...ours.map(r => `${event} hook: ${ourPath} is registered, but ${under(r)}`),
+        ...viaEntry.map(r => `${event} hook: ${ourPath} is run by ${entry}, but ${under(r)}`),
+      ],
     };
   }
-  if (ours.length) return { state: 'declared', evidence: [`${event} hook: ${ourPath}`] };
   // `commandScript` (detect-harness.mjs) resolves a hook's script only
   // against the scan list, which holds tracked files or what the fallback
   // walk sees, so a repository that gitignores `.claude/` makes our own
@@ -119,16 +140,23 @@ export function registeredHook(harness, event, ourPath, proposal, { manifest, ro
   // script: a patch names its script only through that hash, matched
   // against each form the kit has registered the script in, and the entry
   // must still be on the event, or a hook deleted by hand would be credited
-  // from its leftover record.
-  const hashes = recordedHashes(ourPath, matcher);
-  const recorded = new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && hashes.has(p.entrySha256)).map(p => p.entrySha256));
-  if (root && registrations.some(r => r.script === null && recorded.has(r.entrySha256)) && existsSync(join(root, ourPath))) {
-    return { state: 'declared', evidence: [`${event} hook: ${ourPath} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] };
+  // from its leftover record. The entry script that runs ours is credited
+  // the same way, from the patch the kit records for it, which carries no
+  // matcher.
+  const unseen = '(not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)';
+  const confirmed = (script, hashes) => {
+    if (!root) return false;
+    const recorded = new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && hashes.has(p.entrySha256)).map(p => p.entrySha256));
+    return registrations.some(r => r.script === null && recorded.has(r.entrySha256)) && existsSync(join(root, script));
+  };
+  if (confirmed(ourPath, recordedHashes(ourPath, matcher))) return { state: 'declared', evidence: [`${event} hook: ${ourPath} ${unseen}`] };
+  if (entry !== null && confirmed(entry, new Set([hookEntrySha256(execEntry(entry))]))) {
+    return { state: 'declared', evidence: [`${event} hook: ${ourPath}, run by ${entry} ${unseen}`] };
   }
-  if (scripts.length === 0) return { state: 'absent', proposal, evidence: [] };
+  if (registrations.length === 0) return { state: 'absent', proposal, evidence: [] };
   return {
     state: 'absent', proposal,
-    evidence: scripts.map(s => {
+    evidence: registrations.map(({ script: s }) => {
       if (s === null) return `${event} already holds a hook whose script could not be resolved, so it is not known whose it is`;
       if (kitScripts.includes(s)) return `${event} already holds another kh-harness hook: ${s}`;
       return `${event} already holds a hook that is not this kit's: ${s}`;

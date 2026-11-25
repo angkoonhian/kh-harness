@@ -14,8 +14,8 @@ import { join } from 'node:path';
 import { rulesRegistryEvidence, ruleShapedLines, RULE_SHAPED } from './rules-evidence.mjs';
 import { MAX_DOCUMENT_BYTES, OVER_DOCUMENT_LIMIT } from './scan.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
-import { SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, toolGateDenyRules } from './propose.mjs';
-import { execEntry } from './hook-evidence.mjs';
+import { DISPATCH_PRE_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, toolGateDenyRules } from './propose.mjs';
+import { ENTRY_SCRIPTS, execEntry } from './hook-evidence.mjs';
 import { hookEntrySha256 } from './settings-merge.mjs';
 
 function repo() { return mkdtempSync(join(tmpdir(), 'hk-rules-ev-')); }
@@ -104,6 +104,17 @@ test('it resolves when the Stop gate is also registered', () => {
   assert.deepEqual(rulesRegistryEvidence(d, onStop([LOGGING, { script: VERIFY_TOUCHED_PATH, matcher: null }])).missingPointers, []);
   assert.deepEqual(rulesRegistryEvidence(d, onStop([LOGGING_UNRESOLVED, { script: null, matcher: null, entrySha256: 'another entry' }])).missingPointers, [],
     'an unresolved entry that is not the logging hook may be what enforces the rule');
+});
+
+test('settings:hooks.PreToolUse resolves when the entry script is the only hook on PreToolUse', () => {
+  const d = repo();
+  write(d, RULES_PATH, '## R4 — r\n- enforced-by: hook\n- pointer: settings:hooks.PreToolUse\n');
+  const harness = { ...bare, claudeDir: { ...bare.claudeDir, hookRegistrations: { PreToolUse: [{ script: DISPATCH_PRE_PATH, matcher: null }] } } };
+  assert.deepEqual(rulesRegistryEvidence(d, harness).missingPointers, []);
+});
+
+test('every entry script runs a hook besides the logging one, so its registration is never the logging half alone', () => {
+  for (const [event, { halves }] of Object.entries(ENTRY_SCRIPTS)) assert.ok(halves.some(h => h !== SESSION_LOG_PATH), event);
 });
 
 /** A harness whose deny rules in effect are `denyRuleList`, as `detect`

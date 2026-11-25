@@ -9,8 +9,9 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { after } from 'node:test';
+import { entryScriptFor } from './hook-evidence.mjs';
 import { SESSION_LOG_PATH } from './propose.mjs';
 
 export const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
@@ -66,6 +67,16 @@ export function runRegisteredHook(d, event, script, payload) {
   });
 }
 export const settings = d => JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+
+/** The basename of the script that runs the logging hook on `event` in
+ * `d`'s settings: the event's entry script when they register it there,
+ * else `session-log.mjs`. */
+export function loggingScript(d, event) {
+  const entry = entryScriptFor(event, SESSION_LOG_PATH);
+  const arg = `\${CLAUDE_PROJECT_DIR}/${entry}`;
+  const registered = entry !== null && (settings(d).hooks?.[event] ?? []).flatMap(m => m.hooks ?? []).some(h => h.command === 'node' && h.args?.[0] === arg);
+  return registered ? basename(entry) : 'session-log.mjs';
+}
 export const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/kh-harness.manifest.json'), 'utf8'));
 
 const LOGGING_HOOK_ARG = `\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_PATH}`;
