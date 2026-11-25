@@ -758,9 +758,11 @@ block it with a message the model is shown.
 ### The extensions file
 
 - **kh-harness never writes it**, never records it in its manifest, and
-  `uninstall` leaves it and its modules in place. The plugin that
-  registers an extension writes the file, and records it in its own
-  manifest.
+  `uninstall` leaves it and its modules in place, saying in one line, in
+  its dry run and with `--yes`, how many extensions the file lists (or that
+  it could not be read) and that none of them runs once the hook is
+  removed. The plugin that registers an extension writes the file, and
+  records it in its own manifest.
 - `apply` installs the permission rule `Edit(/.claude/kh-harness/**)` in
   `.claude/settings.json`, which stops Claude Code's file-editing tools
   changing anything under `.claude/kh-harness/`. A plugin's installer

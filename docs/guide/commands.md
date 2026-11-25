@@ -315,7 +315,8 @@ leaves the contract number beside missing scripts. Without `--yes` it is a
 dry run. The repository path is required: there is no default.
 `.claude/kh-harness/extensions.json` and the modules it lists were written
 by another plugin and are not in the manifest, so `uninstall` leaves them;
-with the entry script removed, nothing runs them.
+with the entry script removed, nothing runs them. It says so in one line,
+dry run or not, with the number of extensions the file lists.
 
 - **A hook entry left registered**: Claude Code runs every registered hook
   entry on its event, and a script that is gone fails there. So a kit hook

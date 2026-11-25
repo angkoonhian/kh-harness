@@ -1277,6 +1277,32 @@ test('a contract file reached through a .claude link is failing, says what the o
   assert.doesNotMatch(run(APPLY, d), /--- \.claude\/kh-harness\/contract\.json/, 'not even as an update from an older kit');
 });
 
+test('uninstall says, in its dry run and with --yes, that another plugin\'s extensions stop running and are left in place', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const LEFT = 'The file and its modules are left in place: kh-harness did not write them.';
+  const line = out => out.split('\n').filter(l => l.startsWith('.claude/kh-harness/extensions.json '));
+  writeFileSync(join(d, '.claude/kh-harness/extensions.json'), JSON.stringify([
+    { id: 'a', version: '1.0.0', module: '.claude/ext/a.mjs', sha256: 'a'.repeat(64), onFailure: 'block' },
+    { id: 'b', version: '1.0.0', module: '.claude/ext/b.mjs', sha256: 'b'.repeat(64), onFailure: 'allow' },
+  ]));
+  const lists = `.claude/kh-harness/extensions.json lists 2 extensions another plugin registered, and none of them runs once the PreToolUse hook is removed. ${LEFT}`;
+  assert.deepEqual(line(run(UNINSTALL, d)), [lists], 'the dry run');
+  writeFileSync(join(d, '.claude/kh-harness/extensions.json'), '[ not json');
+  assert.deepEqual(line(run(UNINSTALL, d)), [`.claude/kh-harness/extensions.json could not be read as an extensions file, and nothing it lists runs once the PreToolUse hook is removed. ${LEFT}`]);
+  writeFileSync(join(d, '.claude/kh-harness/extensions.json'), '[{"id":"a","version":"1.0.0","module":".claude/ext/a.mjs","sha256":"' + 'a'.repeat(64) + '","onFailure":"block"}]');
+  const result = runResult(UNINSTALL, d, '--yes');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(line(result.stdout), [`.claude/kh-harness/extensions.json lists 1 extension another plugin registered, and it does not run once the PreToolUse hook is removed. ${LEFT}`]);
+  assert.equal(existsSync(join(d, '.claude/kh-harness/extensions.json')), true);
+});
+
+test('uninstall says nothing of extensions where there is no extensions file', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  assert.doesNotMatch(run(UNINSTALL, d), /extensions\.json/);
+});
+
 test('uninstall leaves .claude/kh-harness in place while another plugin\'s extensions file is in it', () => {
   const d = fixture();
   run(APPLY, d, '--yes');
