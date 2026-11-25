@@ -29,7 +29,6 @@ import { integrityEvidence } from './integrity-evidence.mjs';
 import { EXTENSION_HOOK_FILES } from './extensions-evidence.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 import { EXTENSIONS_PATH } from '../../assets/scripts/harness-extensions.mjs';
-import { normalizeMatcher } from './settings-merge.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
@@ -56,23 +55,24 @@ const KIT_FILES_REMEDY = 'run kh-harness apply --yes; P0.kitskew says whether it
 
 /**
  * What the PreToolUse hook does with the extensions file, as far as the
- * registration and the installed files it depends on (`installed`, keyed
- * by `EXTENSION_HOOK_FILES`) tell, decided as dispatch-pre-tool.mjs decides
- * it: `none` (nothing runs it), `unresolved` (whether anything does is not
- * known), `unread` (an installed file is not the one this kit installs, so
- * its behaviour was not read), `blocked` (the current entry script blocks
- * every call it runs on whatever the file says, because the core cannot be
- * imported for a missing file, or the core is current and the loader
- * cannot be imported for one), or `runs` (each entry is applied as
- * harness-extensions.mjs applies it).
- * `why` is fixed text naming kit paths only; `everyTool` is whether a
- * registration of the entry script fires for every tool.
+ * registration, the project settings and the installed files it depends on
+ * (`installed`, keyed by `EXTENSION_HOOK_FILES`) tell, decided as
+ * dispatch-pre-tool.mjs decides it: `none` (nothing runs it), `unresolved`
+ * (whether anything does is not known), `unsure` (it is registered, but
+ * whether it runs, and can block, on every call is not known: a settings
+ * file may turn every hook off, or the registration is not the form apply
+ * writes on every call), `unread` (an installed file is not the one this
+ * kit installs, so its behaviour was not read), `blocked` (the current
+ * entry script blocks every call whatever the file says, because the core
+ * cannot be imported for a missing file, or the core is current and the
+ * loader cannot be imported for one), or `runs` (each entry is applied as
+ * harness-extensions.mjs applies it, before every tool call).
+ * `why` is fixed text naming kit paths and settings files only.
  */
 function extensionsRun(harness, installed, { manifest, root }) {
   const declared = registeredHook(harness, 'PreToolUse', DISPATCH_PRE_PATH, null, { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
   const direct = directRegistrations(harness, 'PreToolUse', DISPATCH_PRE_PATH);
-  const everyTool = direct.some(r => normalizeMatcher(r.matcher) === null);
-  const result = (kind, why = null) => ({ kind, why, everyTool });
+  const result = (kind, why = null) => ({ kind, why });
   const registeredAs = declared ? 'it is registered on PreToolUse' : direct.length ? 'PreToolUse holds the registration kh-harness writes for it' : null;
   if (installed[DISPATCH_PRE_PATH] === 'missing' && registeredAs !== null) return result('none', `${DISPATCH_PRE_PATH} is not in the repository, though ${registeredAs}`);
   if (!declared) {
@@ -80,6 +80,11 @@ function extensionsRun(harness, installed, { manifest, root }) {
       return result('unresolved', `PreToolUse holds a hook whose script could not be resolved, so whether ${DISPATCH_PRE_PATH} is registered is not known`);
     }
     return result('none', `${DISPATCH_PRE_PATH} is not registered on PreToolUse`);
+  }
+  const hooksOff = harness.claudeDir.disableAllHooksIn ?? [];
+  if (hooksOff.length) return result('unsure', `${hooksOff.join(' and ')} set${hooksOff.length === 1 ? 's' : ''} disableAllHooks to a value other than false, which turns every hook off for true and for "true"`);
+  if (!direct.some(r => r.everyCall)) {
+    return result('unsure', `${DISPATCH_PRE_PATH} is registered on PreToolUse, but not as apply writes it (no matcher, or "" or "*", and a hook of exactly type, command and args), so it may not run, or may not block, on every call`);
   }
   const named = path => `${path} ${INSTALLED_STATUS_WORDS[installed[path]]}`;
   if (installed[DISPATCH_PRE_PATH] !== 'current') return result('unread', named(DISPATCH_PRE_PATH));
@@ -897,7 +902,7 @@ const CHECKS = [
       if (!file) return { state: 'n/a', evidence: ['the extensions file was not read'] };
       if (file.state === 'absent') return { state: 'n/a', evidence: [`no ${EXTENSIONS_PATH}: no plugin has registered an extension`] };
       const run = extensionsRun(harness, file.installed, { manifest, root });
-      const blocked = `every tool call${run.everyTool ? '' : ' its PreToolUse matcher selects'} is blocked`;
+      const blocked = 'every tool call is blocked';
       const tail = {
         blocked: `, and ${blocked}: ${run.why}; ${KIT_FILES_REMEDY}`,
         unread: `, and what the hook does with the file was not read: ${run.why}; ${KIT_FILES_REMEDY}`,
@@ -907,16 +912,18 @@ const CHECKS = [
           runs: `, so ${blocked}`,
           none: `, and nothing reads it: ${run.why}`,
           unresolved: `, and whether anything reads it was not read: ${run.why}`,
+          unsure: `, and whether the hook reads it on every call is not known: ${run.why}`,
         }[run.kind];
         return { state: 'failing', evidence: [`${EXTENSIONS_PATH} cannot be used (${file.problem})${end}`] };
       }
       const n = file.extensions.length;
-      if (n === 0 && (run.kind === 'runs' || run.kind === 'none')) return { state: 'n/a', evidence: [`${EXTENSIONS_PATH} lists no extension`] };
+      if (n === 0 && ['runs', 'none', 'unsure'].includes(run.kind)) return { state: 'n/a', evidence: [`${EXTENSIONS_PATH} lists no extension`] };
       const lists = `${EXTENSIONS_PATH} lists ${n === 0 ? 'no extension' : `${n} extension${n === 1 ? '' : 's'}`}`;
       const header = lists + (tail ?? {
-        runs: `, run by ${DISPATCH_PRE_PATH} before ${run.everyTool ? 'every tool call' : 'each tool call its PreToolUse matcher selects'}`,
+        runs: `, run by ${DISPATCH_PRE_PATH} before every tool call`,
         none: `, and none runs: ${run.why}`,
         unresolved: `, and whether any runs was not read: ${run.why}`,
+        unsure: `, and whether they run before every tool call is not known: ${run.why}`,
       }[run.kind]);
       const consequence = { block: `so ${blocked}`, allow: 'so it checks no call' };
       const lines = file.extensions.map(e => {
@@ -942,7 +949,7 @@ const CHECKS = [
       const file = harness.contract;
       if (!file) return { state: 'n/a', evidence: ['the contract file was not read'] };
       if (file.state === 'unreadable') {
-        const why = file.link ? `${CONTRACT_PATH} is reached through a link (${file.link} is one), so it was not read: a contract file must be a file of the repository itself`
+        const why = file.link ? `${CONTRACT_PATH} is reached through a link (${file.link} is one), so it was not read: a contract file must be a file of the repository itself${file.link === '.claude' ? '. Contract 1 is not available to a repository whose .claude is a link, so no plugin can rely on this file: delete it, or make .claude a directory of the repository and run apply again' : ''}`
           : file.notDirectory ? `${file.notDirectory} is not a directory, so there is no ${CONTRACT_PATH} and no contract number was read`
             : `${CONTRACT_PATH} exists and holds no contract number`;
         return { state: 'failing', evidence: [why] };
@@ -969,6 +976,13 @@ const CHECKS = [
         return { state: 'declared', evidence: [says] };
       }
       const none = `no ${CONTRACT_PATH}`;
+      if (file.link === '.claude') {
+        return {
+          state: 'absent', decidable: false,
+          evidence: [none, 'contract 1 is not available to a repository whose .claude is a link: another plugin must refuse a contract file reached through one, so kh-harness does not write it'],
+          question: `.claude is a link, and another plugin must refuse a contract file reached through one, so contract 1 is not available to this repository and kh-harness does not write ${CONTRACT_PATH}. Make .claude a directory of the repository and run apply again, or leave it a link and go without the contract. Which?`,
+        };
+      }
       const causes = [...new Map(CONTRACT_FILES.flatMap(path => heldScript(path) ?? []).map(c => [c.path, c])).values()];
       if (causes.length) return { state: 'absent', decidable: false, evidence: [none, heldContractEvidence(causes)], question: heldContractQuestion(causes) };
       const recorded = new Set((manifest?.files ?? []).map(f => f.path));

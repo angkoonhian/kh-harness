@@ -19,7 +19,7 @@ import { ENTRY_SCRIPTS, directRegistrations, execEntry, kitEntryHashes, register
 import { SETTINGS_PATH } from './settings-merge.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { GATES_PATH, lfSha256 } from '../../assets/scripts/harness-log.mjs';
-import { CONTRACT_PATH, contractFileText } from './contract.mjs';
+import { CONTRACT_PATH, claudeIsLink, contractFileText } from './contract.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -918,8 +918,11 @@ export function kitContractText(kitVersion) {
 }
 
 /** The contract file, requiring every file it speaks for. One already on
- * disk holding exactly this is recorded by `apply`, not written. */
+ * disk holding exactly this is recorded by `apply`, not written. None where
+ * `.claude` is a link, through which no plugin may read one, whether it is
+ * absent or an older kit wrote it. */
 function contractProposal({ kitVersion, root }) {
+  if (root !== undefined && claudeIsLink(root)) return [];
   const contents = kitContractText(kitVersion);
   const onDisk = root !== undefined && holdsExactly(root, CONTRACT_PATH, contents);
   return [{

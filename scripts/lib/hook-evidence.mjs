@@ -36,6 +36,34 @@ export const ENTRY_SCRIPTS = Object.freeze({
   PostToolUseFailure: { path: '.claude/scripts/dispatch-tool-failure.mjs', halves: ['.claude/scripts/session-log.mjs', '.claude/scripts/loop-watch.mjs'] },
 });
 
+const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * True when `hook`, one hook of `element`, an element of a settings file's
+ * `hooks.<event>`, runs on every call of its event and can block it, in the
+ * one form `apply` writes: an element with no key but `matcher` and
+ * `hooks`, a matcher that is absent, `""` or `"*"`, and a hook of exactly
+ * `type`, `command` and `args`, as `execEntry` builds it. Any other key on
+ * the hook (`async`, `timeout`, `if`, `onFailure`, …) can stop it running,
+ * or blocking, on some call. The rule docs/CONTRACT.md tells another plugin
+ * to check, and the only copy of it in the kit.
+ */
+export function runsOnEveryCall(element, hook) {
+  if (!isObject(element) || !Object.keys(element).every(k => k === 'matcher' || k === 'hooks')) return false;
+  if (!(element.matcher === undefined || element.matcher === '' || element.matcher === '*')) return false;
+  if (!isObject(hook) || Object.keys(hook).length !== 3 || !Array.isArray(hook.args) || hook.args.length !== 1 || typeof hook.args[0] !== 'string') return false;
+  const prefix = '${CLAUDE_PROJECT_DIR}/';
+  if (!hook.args[0].startsWith(prefix)) return false;
+  const expected = execEntry(hook.args[0].slice(prefix.length));
+  return Object.keys(expected).every(k => Object.hasOwn(hook, k)) && hook.type === expected.type && hook.command === expected.command;
+}
+
+/** True when `settings`, a settings file's object, sets `disableAllHooks`
+ * to anything but `false`. Claude Code was seen to turn every hook off for
+ * `true` and for the string `"true"`; how it reads any other value was not
+ * seen. */
+export const disablesAllHooks = settings => isObject(settings) && Object.hasOwn(settings, 'disableAllHooks') && settings.disableAllHooks !== false;
+
 /** The entry the kit wrote before the exec form. */
 const shellEntry = scriptPath => ({ type: 'command', command: `node ${scriptPath}` });
 

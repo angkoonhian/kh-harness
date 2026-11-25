@@ -107,7 +107,7 @@ test('a contract file reached through a link is unreadable, and names the link',
   // no contract file, as the extensions loader reads a .claude link.
   const emptyLink = tempDir();
   symlinkSync(tempDir('hk-contract-outside-'), join(emptyLink, '.claude'), 'dir');
-  assert.deepEqual(contractEvidence(emptyLink, TEXT), { state: 'absent' });
+  assert.deepEqual(contractEvidence(emptyLink, TEXT), { state: 'absent', link: '.claude' }, 'and names the link, since no contract file can be written through it');
 
   // The repository root itself may be reached through a link.
   const real = withContract(TEXT);

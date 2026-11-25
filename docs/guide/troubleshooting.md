@@ -622,6 +622,12 @@ event. Run it again later.
   line ends with what that does to a call, by the entry's `onFailure`;
 - `.claude/scripts/dispatch-pre-tool.mjs` is not registered on
   `PreToolUse`, so no extension runs;
+- it is registered, but not as `apply` writes it (no matcher, or `""` or
+  `"*"`, and a hook of exactly `type`, `command` and `args`), or
+  `.claude/settings.json` or `.claude/settings.local.json` sets
+  `disableAllHooks` to anything but `false`, so whether the extensions run
+  before every call is not known. Put the registration back as `apply`
+  wrote it, or remove `disableAllHooks`;
 - the entry script, `harness-dispatch.mjs`, `harness-extensions.mjs` or a
   module it loads is missing or is not the file this kit installs. Run
   `apply --yes`; `P0.kitskew` says whether it can update each one.

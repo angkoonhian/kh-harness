@@ -71,10 +71,12 @@ never exits 3.
 Two checks concern other plugins. `P5.extensions` lists each extension in
 `.claude/kh-harness/extensions.json` with its version, whether its module
 matches the sha256 recorded for it, and its `onFailure`, and says whether
-the `PreToolUse` entry script that runs them is registered and is this
-kit's; it never loads a module and never proposes anything, and is `n/a`
-without the file. `P5.contract` reads `.claude/kh-harness/contract.json`:
-`absent` with a proposal on an install without it; `declared` when it is
+the `PreToolUse` entry script that runs them is registered, as `apply`
+writes it on every call with hooks not turned off, and is this kit's; it
+never loads a module and never proposes anything, and is `n/a` without the
+file. `P5.contract` reads `.claude/kh-harness/contract.json`: `absent` with
+a proposal on an install without it, and without one, with a question,
+where `.claude` is a link; `declared` when it is
 the file this kit writes, the manifest records it, and every file it
 speaks for is this kit's; `failing` otherwise, for example when it is
 reached through a link or a file it speaks for has changed since, with a

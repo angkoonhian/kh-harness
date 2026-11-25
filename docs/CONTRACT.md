@@ -70,6 +70,10 @@ repository honours. It is read-only to every other plugin.
   section).
 - `uninstall --yes` removes it before any other file. An edited copy is
   kept by `uninstall`.
+- Where `.claude` is a link, `apply` writes no contract file and updates
+  none: a plugin must refuse a contract file reached through a link (step 1
+  below), so contract 1 is not available to such a repository. `detect`
+  and `apply`'s dry run say so.
 
 The file is a JSON object:
 
@@ -952,6 +956,11 @@ the kit's own hooks had returned, as it does without the extension point.
 `version`, `module`, whether the module matches its `sha256`, and its
 `onFailure`, and says whether `dispatch-pre-tool.mjs` is registered and
 whether the installed entry script, core and loader are this kit's. It
+says the extensions run before every tool call only where the registration
+is the one [step 3](#what-a-plugin-must-check-before-relying-on-contract-1)
+requires and neither project settings file sets `disableAllHooks` to
+anything but `false`; otherwise `P5.extensions` is `failing`, with the
+reason. It
 never loads a module. It never prints the `sha256`. It is a diagnostic for
 people: neither its wording nor its states are promised.
 

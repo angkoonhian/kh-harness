@@ -68,7 +68,9 @@ function entryWithoutExtensions() {
 
 const harness = d => ({
   instructions: { path: null, lines: 0 }, agentsMd: null, reconPresent: false,
-  claudeDir: { settings: true, localSettings: false, denyRules: 0, hooks: [], hookRegistrations: { PreToolUse: [{ script: DISPATCH_PRE_PATH, matcher: null }] }, agents: [], skills: [], commands: [], rules: [] },
+  // Registered as apply registers it: detect-harness.mjs records that out
+  // of sight of the report, as `everyCall`.
+  claudeDir: { settings: true, localSettings: false, disableAllHooksIn: [], denyRules: 0, hooks: [], hookRegistrations: { PreToolUse: [Object.defineProperty({ script: DISPATCH_PRE_PATH, matcher: null }, 'everyCall', { value: true })] }, agents: [], skills: [], commands: [], rules: [] },
   otherEditors: [], architecture: null, handoff: null, bootstrap: null, gitattributes: false, remotes: [],
   extensions: extensionsEvidence(d),
 });

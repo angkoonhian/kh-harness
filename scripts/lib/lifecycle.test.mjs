@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
@@ -1234,6 +1234,47 @@ test('a contract file written by an older kit version is updated by apply', () =
   assert.match(dry, /--- \.claude\/kh-harness\/contract\.json {2}\[P0\.kitskew\]/);
   run(APPLY, d, '--yes', '--allow-dirty');
   assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), kitContractText(KIT_VERSION));
+});
+
+/** `d` with its `.claude` moved to `cfg/claude` inside the repository and
+ * a link left in its place, as a repository that keeps it elsewhere has
+ * it. Returns false where this platform cannot make the link. */
+function claudeLinkedInside(d) {
+  mkdirSync(join(d, 'cfg'), { recursive: true });
+  if (existsSync(join(d, '.claude'))) renameSync(join(d, '.claude'), join(d, 'cfg/claude'));
+  else mkdirSync(join(d, 'cfg/claude'));
+  try {
+    symlinkSync(join(d, 'cfg', 'claude'), join(d, '.claude'), 'junction');
+    return true;
+  } catch {
+    return false;
+  }
+}
+const NO_CONTRACT_THROUGH_LINK = /\.claude is a link, and another plugin must refuse a contract file reached through one, so contract 1 is not available to this repository and kh-harness does not write \.claude\/kh-harness\/contract\.json\. Make \.claude a directory of the repository and run apply again, or leave it a link and go without the contract\. Which\?/;
+
+test('with .claude a link inside the repository, apply does not write the contract file, and the dry run and detect say why', t => {
+  const d = fixture();
+  if (!claudeLinkedInside(d)) return t.skip('this platform cannot make the link');
+  const dry = run(APPLY, d);
+  assert.doesNotMatch(dry, /--- \.claude\/kh-harness\/contract\.json/);
+  assert.match(dry, NO_CONTRACT_THROUGH_LINK);
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(existsSync(join(d, CONTRACT_FILE)), false);
+  const gap = contractGap(d);
+  assert.deepEqual([gap.state, gap.decidable, gap.proposal], ['absent', false, null]);
+  assert.deepEqual(gap.evidence, [`no ${CONTRACT_FILE}`, 'contract 1 is not available to a repository whose .claude is a link: another plugin must refuse a contract file reached through one, so kh-harness does not write it']);
+  assert.match(gap.question, NO_CONTRACT_THROUGH_LINK);
+});
+
+test('a contract file reached through a .claude link is failing, says what the owner should do, and is not rewritten', t => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  if (!claudeLinkedInside(d)) return t.skip('this platform cannot make the link');
+  const gap = contractGap(d);
+  assert.equal(gap.state, 'failing');
+  assert.deepEqual(gap.evidence, [`${CONTRACT_FILE} is reached through a link (.claude is one), so it was not read: a contract file must be a file of the repository itself. Contract 1 is not available to a repository whose .claude is a link, so no plugin can rely on this file: delete it, or make .claude a directory of the repository and run apply again`]);
+  recordedAs(d, CONTRACT_FILE, kitContractText('0.1.0'));
+  assert.doesNotMatch(run(APPLY, d), /--- \.claude\/kh-harness\/contract\.json/, 'not even as an update from an older kit');
 });
 
 test('uninstall leaves .claude/kh-harness in place while another plugin\'s extensions file is in it', () => {

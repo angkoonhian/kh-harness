@@ -1014,4 +1014,19 @@ test('detect --json on a repository with an extensions file reports P5.extension
   assert.equal(written.harness.extensions.extensions[0].id, 'a');
   assert.deepEqual(Object.keys(written.harness.extensions.extensions[0]).sort(), ['hash', 'id', 'module', 'onFailure', 'version']);
   assert.deepEqual(new Set(Object.values(written.harness.extensions.installed)), new Set(['current']));
+
+  // A registration that cannot block every call, and hooks turned off, are
+  // each failing, with the reason.
+  const exact = { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-pre-tool.mjs'] };
+  for (const [settings, why] of [
+    [{ hooks: { PreToolUse: [{ hooks: [{ ...exact, async: true }] }] } }, /registered on PreToolUse, but not as apply writes it/],
+    [{ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [exact] }] } }, /registered on PreToolUse, but not as apply writes it/],
+    [{ disableAllHooks: 'true', hooks: { PreToolUse: [{ hooks: [exact] }] } }, /\.claude\/settings\.json sets disableAllHooks to a value other than false/],
+  ]) {
+    write(d, '.claude/settings.json', JSON.stringify(settings));
+    const weak = JSON.parse(cli(d, '--json')).checks.find(c => c.id === 'P5.extensions');
+    assert.equal(weak.state, 'failing', JSON.stringify(settings));
+    assert.match(weak.evidence[0], /^\.claude\/kh-harness\/extensions\.json lists 1 extension, and whether they run before every tool call is not known: /);
+    assert.match(weak.evidence[0], why);
+  }
 });
