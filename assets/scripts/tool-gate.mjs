@@ -293,9 +293,16 @@ async function main() {
   } catch {
     return;
   }
-  if (!isToolCall(payload)) return;
+  const result = gateHalf(payload);
+  if (result !== null) process.stdout.write(JSON.stringify(result.json) + '\n');
+}
+
+/** What this hook says for `payload`, as `{ json, stderr, exitCode }`, or
+ * null when it says nothing. Writes nothing and never exits. */
+export function gateHalf(payload) {
+  if (!isToolCall(payload)) return null;
   const output = siblings.problem === undefined ? decide(lib.projectRoot(), payload) : siblingNotice(payload);
-  if (output !== null) process.stdout.write(JSON.stringify(output) + '\n');
+  return output === null ? null : { json: output, stderr: '', exitCode: 0 };
 }
 
 const isToolCall = payload =>

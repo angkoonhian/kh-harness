@@ -40,7 +40,8 @@
 // usable session id, an unusable agent id, and any internal failure are all
 // nothing to do.
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, fstatSync, readSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, constants, fstatSync, readSync, realpathSync, writeFileSync, writeSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // The shared asset beside this hook can be older than the hook: `apply`
 // leaves a hand-edited copy in place, and a static import of a name that
@@ -172,42 +173,70 @@ async function main() {
   } catch {
     return;
   }
-  if (!payload || typeof payload !== 'object') return;
+  const result = countFailure(payload);
+  if (result !== null) process.stdout.write(JSON.stringify(result.json) + '\n');
+}
+
+/** Counts the failure `payload` reports and returns what this hook says
+ * about it, as `{ json, stderr, exitCode }`, or null when it says nothing. */
+function countFailure(payload) {
+  if (!payload || typeof payload !== 'object') return null;
   const { tool_name: toolName, tool_input: toolInput, error } = payload;
-  if (typeof toolName !== 'string' || typeof error !== 'string') return;
+  if (typeof toolName !== 'string' || typeof error !== 'string') return null;
   if (assetProblem !== null) {
     const sentence = `kh-harness loop-watch: .claude/scripts/harness-redact.mjs ${assetProblem}, so repeated failures are not counted — ${REMEDY}`;
-    if (firstTelling(payload.session_id, sentence)) process.stdout.write(JSON.stringify({ systemMessage: sentence }) + '\n');
-    return;
+    return firstTelling(payload.session_id, sentence) ? { json: { systemMessage: sentence }, stderr: '', exitCode: 0 } : null;
   }
   const sessionId = safeSessionId(payload.session_id);
   const agent = agentKey(payload.agent_id);
-  if (sessionId === null || agent === null) return;
+  if (sessionId === null || agent === null) return null;
   const base = markerPath(projectRoot(), sessionId, 'loop-watch');
-  if (base === null) return;
+  if (base === null) return null;
   const record = `${signatureOf(toolName, toolInput, error)} ${randomBytes(NONCE_BYTES).toString('hex')}`;
   const fd = openMarker(`${base}.${agent}`, constants.O_RDWR | constants.O_APPEND | constants.O_CREAT);
-  if (fd === null) return;
+  if (fd === null) return null;
   let count;
   try {
     const line = Buffer.from(`\n${record}`, 'latin1');
-    if (writeSync(fd, line) !== line.length) return;
+    if (writeSync(fd, line) !== line.length) return null;
     count = runEndingAt(fd, record);
   } finally {
     closeSync(fd);
   }
-  if (count !== WARN_AT) return;
-  process.stdout.write(JSON.stringify({
-    systemMessage: WARNING,
-    hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: WARNING },
-  }) + '\n');
+  if (count !== WARN_AT) return null;
+  return {
+    json: {
+      systemMessage: WARNING,
+      hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: WARNING },
+    },
+    stderr: '',
+    exitCode: 0,
+  };
 }
 
-(async () => {
+/** What this hook says for a `PostToolUseFailure` payload, as
+ * `{ json, stderr, exitCode }`, or null for any other event or when it says
+ * nothing. Writes nothing and never exits. */
+export function loopHalf(payload) {
+  return payload?.hook_event_name === 'PostToolUseFailure' ? countFailure(payload) : null;
+}
+
+/** True when this file is the process's entry point rather than an import.
+ * Both sides are resolved to their real spelling, since the command line may
+ * name the script through a link or a win32 short name. */
+function isEntryPoint() {
+  try {
+    return realpathSync.native(process.argv[1]) === realpathSync.native(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   try {
     await main();
   } catch {
     // never throw — a hook that breaks a session is worse than none
   }
   process.exit(0);
-})();
+}
