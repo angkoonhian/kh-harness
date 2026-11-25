@@ -42,7 +42,6 @@ const HARNESS_DISPATCH_PATH = '.claude/scripts/harness-dispatch.mjs';
 const DISPATCH_PRE_PATH = ENTRY_SCRIPTS.PreToolUse.path;
 const DISPATCH_POST_PATH = ENTRY_SCRIPTS.PostToolUse.path;
 const DISPATCH_FAILURE_PATH = ENTRY_SCRIPTS.PostToolUseFailure.path;
-const ENTRY_SCRIPT_PATHS = Object.freeze([DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH]);
 
 /**
  * A settings-hook proposal's `reason`: the check's own evidence, which is
@@ -723,7 +722,7 @@ export function mergePlan(event, { harness, manifest, root, stack }) {
  * with every installed script it loads, and its registration, with no
  * `matcher`, requiring all of them, which takes the place of the
  * registrations `plan.remove` names when it names any. */
-export function entryProposals(event, plan, { kitVersion, reason }) {
+function entryProposals(event, plan, { kitVersion, reason }) {
   const files = hookFiles(plan.entry, kitVersion);
   const registration = {
     event, step: HOOK_SCRIPTS[plan.entry].step,
@@ -1179,4 +1178,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // must produce something when applied. The test membership-tests each real
 // check's id against this table, not a hand-kept list of ids, so a
 // capability added here later is covered with no test edit.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, HARNESS_DISPATCH_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, ENTRY_SCRIPT_PATHS, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, HARNESS_DISPATCH_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };

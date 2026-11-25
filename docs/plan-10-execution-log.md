@@ -135,18 +135,13 @@ Each is taken from the ledger above.
 
 Deferred in the ledger and not fixed. Ledger wording, shortened only where the ledger line was long. The ledger marks some of these "FINAL REVIEW SHOULD FIX".
 
-- Task 1 (the ledger sent this one to fix round 1 as a wording fix and says that round addressed 3 findings without naming them; not checked here): lint-touched.mjs comment above `report` says "ONLY place … builds a result's stderr" though two helpers build `stderr: ''`.
 - Task 1: lintHalf hard-codes 'Write'/'Edit'; the test checks one direction against SENSOR_MATCHER.
-- Task 2: core-load check uses `name in core` while half() uses typeof function — a non-function export fails silently.
-- Task 2: core missing/older tested only through dispatch-tool-failure.mjs; loop over ENTRY_SCRIPTS.
 - Task 2: notice tests stop at " — "; pin each entry script's REMEDY copy to tool-gate's.
-- Task 2: entry scripts' CORE list still names combine/emit/readPayload/runHalves though they call only dispatch and half.
 - Task 3: pre latency test does not assert stdout '' (gate loaded and did not match).
 - Task 3: post latency run does not include the lint spawn path (Bash payload) — stated in the comment.
 - Task 4: mixed resolved/unresolved registrations name the entry script or understate (practically unreachable).
 - Task 4: the added matcher-mismatch evidence line (hook-evidence.mjs ~198) and P2.loopwatch evidence are not asserted by a test.
 - Task 4: hook-evidence.mjs header caller list omits log-lib.mjs and lifecycle-fixtures.mjs; log-lib.mjs comment rewrap.
-- Task 5: separateRegistrations lays PreToolUse out as [tool-gate, session-log]; a real pre-merge apply wrote [session-log, tool-gate] (CHECKS order). Task 7 was to order the halves as the old apply did (the ledger does not record that it did).
 - Task 5: guard `proposing` in sessionLogProposal restates buildProposals' absent-and-decidable rule; share one predicate.
 - Task 5: fixture SEPARATE_HALVES duplicates steps/check ids/matcher held in propose.mjs.
 - Task 5: TDD order slipped (code before tests; RED recorded by stashing).
@@ -157,12 +152,29 @@ Deferred in the ledger and not fixed. Ledger wording, shortened only where the l
 - Task 7: kept-elements computation in apply-lib.mjs:905 is positional (slice(0,-1)); doubled where the entry's own element changed is untested; owner edits other than timeout untested; two-apply convergence after a re-added half untested; doubled evidence says "some of them".
 - Task 7: `?? SETTINGS_PATH` default exists only for hand-built unit fixtures.
 - Task 7 (pre-existing edge): logging hook only in settings.local.json with no record and an unresolvable script: P5.sessionlog absent while the plan reads mergeable, so logging runs twice.
-- Task 8 (FINAL REVIEW SHOULD FIX, user-facing wording): CHANGELOG.md ~:49 and docs/guide/commands.md ~:167 say an event the owner edited or removed "is left alone"/"is not proposed" without saying a hook the owner removed is offered again by its own check on that apply.
-- Task 8 (FINAL REVIEW SHOULD FIX): README.md ~:383 says an older install is moved "by the next `apply`"; it is moved only by `apply --yes`.
 - Task 8: history narration in how-it-works.md ~:186 ("as it did under its own …") and ~:305 ("as before"); ragged wrapping README ~:380, troubleshooting ~:487.
 - Task 8 (pre-existing): example counts "12 proposals…" (real: 16 = 11/4/1 at eead407 and HEAD) and "35 actions to close 9 capability gaps" (real: 37/11 at eead407, 38/11 at HEAD) were stale before this branch; a separate docs pass.
 - Task 9: no measurement on a quiet machine. The dated comment above the latency tests in scripts/lib/harness-dispatch.test.mjs keeps the Task 3 figures; the brief's Step 3 is deferred to the owner (see the latency section).
 
+### Resolved since the ledger was copied
+
+- Task 1: the comment above `report` in lint-touched.mjs now says it is the only place in the file that builds a non-empty `stderr` (96925d7).
+- Task 5: `separateRegistrations` writes the logging hook's element first on every event, as the pre-merge `apply` did (aed1770).
+- Task 2: the entry scripts check that the core's `dispatch` and `half` are functions, and only those two names; the core missing or older is tested through all three entry scripts (d58e602; whole-branch review F2).
+- Task 8: CHANGELOG.md and docs/guide/commands.md say the move leaves such an event alone while a hook the owner removed is still offered again by its own check; README.md says the move is made by `apply --yes` (637ae54; whole-branch review F4).
+
+## Whole-branch review
+
+A review of the whole branch (eead407 to 54dab04) found six findings; each was fixed in the commits after 54dab04.
+
+- F1 (Important): half isolation covered a throw only. An exception thrown from a later half's callback, an unhandled rejection or a promise that never settles made the entry script exit 1 with a stack trace, or 13 with Node's unsettled top-level await warning, and lost an earlier half's output, a gate's denial among it. `dispatch` now writes the combined output of the results gathered so far and exits with its code on `uncaughtException`, `unhandledRejection` and `beforeExit`. A half that hangs synchronously cannot be handled in the process; docs/guide/how-it-works.md says Claude Code's hook timeout ends it and nothing from that entry script is delivered (d58e602).
+- F2 (Minor): the entry scripts' core check accepted exports that are not functions and required four names they never call (d58e602).
+- F3 (Important, wording): the notice for a missing or older hook file said the hook "did not run on this event", false when an older kit's `apply` has also registered the hook on its own; it now says this entry script did not run it (d58e602).
+- F4 (Important, user-facing prose): CHANGELOG.md, docs/guide/commands.md and README.md, as above (637ae54).
+- F5 (Minor): this log listed two findings already fixed as open; they are under "Resolved since the ledger was copied" (the commit that adds this section).
+- F6 (Minor): `ENTRY_SCRIPT_PATHS` had no caller but tests and is removed, the tests counting `ENTRY_SCRIPTS` instead; `entryProposals` is no longer exported, since only propose.mjs calls it (the commit that adds this section).
+
+Left to the owner: the kit version bump in package.json for this release, and the quiet-machine re-measurement described under "Re-measurement on a quiet machine".
 
 ## Latency, before and after
 
