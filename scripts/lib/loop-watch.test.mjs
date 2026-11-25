@@ -36,7 +36,7 @@ import { pathToFileURL } from 'node:url';
 import { markerPath } from '../../assets/scripts/harness-redact.mjs';
 import { APPLY, DETECT, UNINSTALL, git, run, settings, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
 import { treeSnapshot } from './log-fixtures.mjs';
-import { LOOP_WATCH_PATH } from './propose.mjs';
+import { DISPATCH_FAILURE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
@@ -424,7 +424,7 @@ test('apply installs the loop warning and uninstall then leaves git status clean
   run(APPLY, d, '--yes');
   assert.ok(existsSync(join(d, LOOP_WATCH_PATH)));
   assert.ok(existsSync(join(d, '.claude/scripts/harness-redact.mjs')));
-  assert.deepEqual(hooksBesideLog(settings(d), 'PostToolUseFailure'), [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${LOOP_WATCH_PATH}`] }] }]);
+  assert.deepEqual(hooksBesideLog(settings(d), 'PostToolUseFailure'), [{ hooks: [{ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${DISPATCH_FAILURE_PATH}`] }] }]);
   const installed = JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P2.loopwatch');
   assert.equal(installed.state, 'declared');
 

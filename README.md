@@ -214,6 +214,12 @@ WHAT THE HOOKS EXECUTE — read this before running `apply`
   Two of them run THIS REPOSITORY'S OWN SCRIPTS AUTOMATICALLY, by Claude Code,
   without being asked each time:
 …
+  On PreToolUse and PostToolUseFailure, and on PostToolUse where the lint
+  hook is installed, the two hooks of the event are started by one of three
+  entry scripts (dispatch-pre-tool.mjs, dispatch-post-tool.mjs,
+  dispatch-tool-failure.mjs), so the event starts one process, not two.
+  Each hook does what is said for it here, in the same order every time.
+…
 Dry run — nothing written. Re-run with --yes to apply.
 ```
 

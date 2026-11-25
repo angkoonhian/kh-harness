@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
@@ -18,7 +18,8 @@ import { sha256, emptyManifest } from './manifest.mjs';
 // hand-maintained id list, so a capability added later is covered with no
 // test edit (same discipline as propose.test.mjs's coherence test).
 import { GENERATORS, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, SESSION_LOG_PATH } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, runResult, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, LOG, git, run, runResult, settings, manifestOf, fixture, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog, loggingScript, runEveryRegisteredHook, separateRegistrations } from './lifecycle-fixtures.mjs';
+import { ENTRY_SCRIPTS } from './hook-evidence.mjs';
 import { versionStamp } from './render.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { repoDataDir } from '../../assets/scripts/harness-log.mjs';
@@ -208,11 +209,11 @@ test('LOAD-BEARING-2: every capability this plan adds, through the same nine sta
     assert.equal(hooksBesideLog(s1, 'SessionStart').length, 2, 'the user\'s own SessionStart hook survives, ours is added beside it');
 
     const theirPostToolUse = hooksBesideLog(s1, 'PostToolUse').find(m => m.hooks[0].command === 'node my-own-thing.mjs');
-    const ourPostToolUse = hooksBesideLog(s1, 'PostToolUse').find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/lint-touched.mjs');
+    const ourPostToolUse = hooksBesideLog(s1, 'PostToolUse').find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-post-tool.mjs');
     assert.ok(theirPostToolUse, 'the user\'s own hook must still be there');
     assert.equal(theirPostToolUse.matcher, undefined, 'their hook is untouched — it never had a matcher');
     assert.ok(ourPostToolUse, 'our hook must be registered');
-    assert.equal(ourPostToolUse.matcher, 'Write|Edit');
+    assert.equal(ourPostToolUse.matcher, undefined, 'the entry script runs the lint hook only for Write and Edit itself');
 
     const theirStop = hooksBesideLog(s1, 'Stop').find(m => m.hooks[0].command === 'node my-own-stop-thing.mjs');
     const ourStop = hooksBesideLog(s1, 'Stop').find(m => m.hooks[0].args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/verify-touched.mjs');
@@ -941,10 +942,11 @@ test('a second apply after the update proposes nothing', () => {
 
 // --- The logging hook -------------------------------------------------------
 
-/** How many registrations of our logging hook each logged event holds. */
+/** How many registrations of our logging hook each logged event holds,
+ * itself or through its event's entry script. */
 const loggingHookCounts = d => LOGGED_EVENTS.map(e => (settings(d).hooks?.[e] ?? [])
   .flatMap(m => m.hooks)
-  .filter(h => h.args?.[0] === `\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_PATH}`).length);
+  .filter(h => h.args?.[0] === `\${CLAUDE_PROJECT_DIR}/.claude/scripts/${loggingScript(d, e)}`).length);
 
 test('the dry run states that the hook records tool input and output on this machine once enabled, and that it is inert until then', () => {
   const d = fixture();
@@ -969,6 +971,60 @@ test('a dry run that registers no hook does not print the disclosure', () => {
   const out = run(APPLY, d);
   assert.match(out, /--- HANDOFF\.md  \[P4\.handoff\]/, 'fixture sanity: a file is proposed');
   assert.equal(out.includes(EXECUTION_DISCLOSURE), false);
+});
+
+/** `fixture()` with a `lint` script in its package, committed. */
+function fixtureWithLint() {
+  const d = fixture();
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest', lint: 'eslint .' } }));
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'lint');
+  return d;
+}
+
+test('a fresh install starts one kh-harness process per tool-call event, and uninstall leaves none behind', () => {
+  const d = fixtureWithLint();
+  const before = readFileSync(join(d, '.claude/settings.json'), 'utf8');
+  run(APPLY, d, '--yes', '--allow-dirty');
+  const kit = event => (settings(d).hooks[event] ?? []).flatMap(m => m.hooks).map(h => h.args?.[0]).filter(a => a?.includes('.claude/scripts/'));
+  for (const [event, { path }] of Object.entries(ENTRY_SCRIPTS)) assert.deepEqual(kit(event), [`\${CLAUDE_PROJECT_DIR}/${path}`], event);
+  const checks = JSON.parse(run(DETECT, d, '--json')).checks;
+  for (const id of ['P5.toolgate', 'P2.sensor', 'P2.loopwatch', 'P5.sessionlog']) assert.equal(checks.find(c => c.id === id).state, 'declared', id);
+  assert.deepEqual(JSON.parse(run(LOG, d, 'status', '--json')).hookEvents, { registered: LOGGED_EVENTS.length, logged: LOGGED_EVENTS.length });
+  for (const h of runEveryRegisteredHook(d)) assert.notEqual(h.status, 1, `${h.script} on ${h.event}: ${h.stderr}`);
+  assert.match(run(APPLY, d, '--allow-dirty'), /no actions/);
+  run(UNINSTALL, d, '--yes');
+  assert.deepEqual(existsSync(join(d, '.claude/scripts')) ? readdirSync(join(d, '.claude/scripts')) : [], []);
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), before);
+});
+
+test('separateRegistrations puts a fresh install into the separate layout, which detect credits and uninstall removes', () => {
+  const d = fixtureWithLint();
+  const before = readFileSync(join(d, '.claude/settings.json'), 'utf8');
+  run(APPLY, d, '--yes', '--allow-dirty');
+  separateRegistrations(d);
+  const kit = event => (settings(d).hooks[event] ?? []).map(m => `${m.hooks[0].args?.[0]?.split('/').pop()} ${m.matcher}`);
+  assert.deepEqual(kit('PreToolUse'), ['tool-gate.mjs undefined', 'session-log.mjs undefined']);
+  assert.deepEqual(kit('PostToolUse'), ['session-log.mjs undefined', 'lint-touched.mjs Write|Edit']);
+  assert.deepEqual(kit('PostToolUseFailure'), ['session-log.mjs undefined', 'loop-watch.mjs undefined']);
+  const checks = JSON.parse(run(DETECT, d, '--json')).checks;
+  for (const id of ['P5.toolgate', 'P2.sensor', 'P2.loopwatch', 'P5.sessionlog']) assert.equal(checks.find(c => c.id === id).state, 'declared', id);
+  run(UNINSTALL, d, '--yes');
+  assert.deepEqual(existsSync(join(d, '.claude/scripts')) ? readdirSync(join(d, '.claude/scripts')) : [], []);
+  assert.equal(readFileSync(join(d, '.claude/settings.json'), 'utf8'), before);
+});
+
+test('in a repository whose profile has no lint sensor, PostToolUse still gets the logging hook though a package declares lint', () => {
+  const d = fixture();
+  // No tsconfig.json and no source file: the generic profile, which leaves
+  // out the per-edit sensor, whatever the package declares.
+  rmSync(join(d, 'tsconfig.json'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'docs', scripts: { lint: 'markdownlint .' } }));
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'docs only');
+  assert.equal(JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P2.sensor').state, 'n/a', 'fixture sanity: no sensor under this profile');
+  run(APPLY, d, '--yes', '--allow-dirty');
+  const postToolUse = (settings(d).hooks.PostToolUse ?? []).flatMap(m => m.hooks).map(h => h.args?.[0]);
+  assert.deepEqual(postToolUse, [`\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_PATH}`]);
+  assert.equal(JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P5.sessionlog').state, 'declared');
 });
 
 test('a second apply proposes nothing', () => {

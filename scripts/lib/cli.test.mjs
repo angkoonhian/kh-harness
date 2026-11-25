@@ -175,23 +175,29 @@ const disclosed = EXECUTION_DISCLOSURE.replace(/\s+/g, ' ');
 
 test('the execution disclosure names every event a hook generator registers on, and how many hook scripts there are', () => {
   const stack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'typecheck'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
-  const harness = { claudeDir: {}, rulesRegistry: { count: 1, injectable: 1 } };
+  const fresh = { claudeDir: {}, rulesRegistry: { count: 1, injectable: 1 } };
+  // An install whose logging hook is on every event gets the other hooks of
+  // the tool-call events by themselves, so between them the two harnesses
+  // reach every script a generator can register.
+  const loggedEverywhere = { ...fresh, claudeDir: { hookRegistrations: Object.fromEntries(LOGGED_EVENTS.map(e => [e, [{ script: '.claude/scripts/session-log.mjs', matcher: null }]])) } };
   const events = new Set();
   const scripts = new Set();
-  for (const [id, generate] of Object.entries(GENERATORS)) {
-    if (id === 'P0.kitskew') continue;
-    for (const p of generate({ kitVersion: '0.2.0', stack, harness, files: [], checks: [], check: { evidence: [] }, manifest: null })) {
-      if (p.kind !== 'settings-hook') continue;
-      events.add(p.event);
-      scripts.add(p.entry.args[0]);
+  for (const harness of [fresh, loggedEverywhere]) {
+    for (const [id, generate] of Object.entries(GENERATORS)) {
+      if (id === 'P0.kitskew') continue;
+      for (const p of generate({ kitVersion: '0.2.0', stack, harness, files: [], checks: [], check: { evidence: [] }, manifest: null })) {
+        if (p.kind !== 'settings-hook') continue;
+        events.add(p.event);
+        scripts.add(p.entry.args[0]);
+      }
     }
   }
   assert.ok(events.size >= LOGGED_EVENTS.length, 'fixture sanity: the generators registered their hooks');
   for (const event of events) assert.ok(disclosed.includes(event), `the disclosure does not name ${event}`);
-  const registrable = GENERATOR_SCRIPT_PATHS.filter(s => !ENTRY_SCRIPT_PATHS.includes(s));
-  assert.deepEqual([...scripts].map(s => s.split('/').pop()).sort(), registrable.map(s => s.split('/').pop()).sort());
+  assert.deepEqual([...scripts].map(s => s.split('/').pop()).sort(), GENERATOR_SCRIPT_PATHS.map(s => s.split('/').pop()).sort());
   assert.equal(GENERATOR_SCRIPT_PATHS.length - ENTRY_SCRIPT_PATHS.length, 7, 'the disclosure says seven; a hook script added changes that sentence and gets its own entry');
   assert.match(disclosed, /registers up to seven hook scripts/);
+  assert.match(disclosed, /three entry scripts/);
   assert.doesNotMatch(disclosed, /the two process hooks/);
 });
 

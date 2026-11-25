@@ -15,7 +15,7 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 // the other five.
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
-import { ENTRY_SCRIPTS, execEntry, registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, directRegistrations, execEntry, registeredHook } from './hook-evidence.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 
@@ -117,8 +117,11 @@ function protectedPathProposal({ stack, files }) {
  * this generator writes. */
 const SENSOR_MATCHER = 'Write|Edit';
 
-function sensorProposal({ kitVersion, stack, check }) {
+function sensorProposal({ kitVersion, stack, check, harness, manifest, root }) {
   if (!hasLintScript(stack)) return [];
+  const reason = hookRegistrationReason('PostToolUse', check);
+  const plan = mergePlan('PostToolUse', { harness, manifest, root, stack });
+  if (plan.state === 'mergeable') return entryProposals('PostToolUse', plan, { kitVersion, reason });
   const files = hookFiles(LINT_TOUCHED_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PostToolUse', step: 9,
@@ -128,7 +131,7 @@ function sensorProposal({ kitVersion, stack, check }) {
     // script loads are on disk holding this kit's bytes: apply-lib.mjs's
     // `unmetDependencies` reads the files themselves, after the write phase.
     requiresFiles: requiredFiles(files),
-    reason: hookRegistrationReason('PostToolUse', check),
+    reason,
   }];
 }
 
@@ -194,13 +197,16 @@ const LOOP_WATCH_STEP = 13;
  * session can loop on a failing call, and no `matcher`, since a failure of
  * any tool counts.
  */
-function loopWatchProposal({ kitVersion, check }) {
+function loopWatchProposal({ kitVersion, check, harness, manifest, root, stack }) {
+  const reason = hookRegistrationReason('PostToolUseFailure', check);
+  const plan = mergePlan('PostToolUseFailure', { harness, manifest, root, stack });
+  if (plan.state === 'mergeable') return entryProposals('PostToolUseFailure', plan, { kitVersion, reason });
   const files = hookFiles(LOOP_WATCH_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PostToolUseFailure', step: LOOP_WATCH_STEP,
     entry: execEntry(LOOP_WATCH_PATH),
     requiresFiles: requiredFiles(files),
-    reason: hookRegistrationReason('PostToolUseFailure', check),
+    reason,
   }];
 }
 
@@ -222,11 +228,19 @@ export function sessionLogRegistrations(harness, { manifest, root } = {}) {
  * `matcher`, so the tool events fire for every tool. No evidence gate: the
  * hook records nothing until the log is enabled for the repository on this
  * machine, which no file in the repository can say. An install that
- * predates an event is given only the events it lacks.
+ * predates an event is given only the events it lacks. A missing event
+ * whose entry script can be registered is left to the other hook's
+ * generator when that generator runs in this proposal (its check is among
+ * `checks`, absent and decidable), since it registers the entry script
+ * there; on every other missing event the logging hook is registered by
+ * itself, so no event goes without it.
  */
-function sessionLogProposal({ kitVersion, harness, manifest, root }) {
+function sessionLogProposal({ kitVersion, harness, manifest, root, stack, checks }) {
   const files = hookFiles(SESSION_LOG_PATH, kitVersion);
-  const missing = sessionLogRegistrations(harness, { manifest, root }).filter(r => r.state !== 'declared');
+  const proposing = id => checks.some(c => c.id === id && c.state === 'absent' && c.decidable !== false);
+  const leftToEntry = event => Object.hasOwn(ENTRY_CHECKS, event) && proposing(ENTRY_CHECKS[event])
+    && mergePlan(event, { harness, manifest, root, stack }).state === 'mergeable';
+  const missing = sessionLogRegistrations(harness, { manifest, root }).filter(r => r.state !== 'declared' && !leftToEntry(r.event));
   return [...files, ...missing.map(r => ({
     kind: 'settings-hook', event: r.event, step: SESSION_LOG_STEP,
     entry: execEntry(SESSION_LOG_PATH),
@@ -323,7 +337,7 @@ export const toolGateHookRegistered = ({ harness, manifest, root }) =>
  * the deny rules it lacks are proposed, as for an install made before a rule
  * existed.
  */
-function toolGateProposal({ kitVersion, check, harness, manifest, root }) {
+function toolGateProposal({ kitVersion, check, harness, manifest, root, stack }) {
   const missing = missingToolGateDenyRules(harness);
   const deny = missing.length === 0 ? [] : [{
     kind: 'settings-deny', step: TOOL_GATE_STEP,
@@ -331,12 +345,15 @@ function toolGateProposal({ kitVersion, check, harness, manifest, root }) {
     reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate and \`log purge --yes\`, which removes this machine's ledger, learnings, policy and local gates: a second barrier behind their own terminal check",
   }];
   if (toolGateHookRegistered({ harness, manifest, root })) return deny;
+  const reason = hookRegistrationReason('PreToolUse', check);
+  const plan = mergePlan('PreToolUse', { harness, manifest, root, stack });
+  if (plan.state === 'mergeable') return [...entryProposals('PreToolUse', plan, { kitVersion, reason }), ...deny];
   const files = hookFiles(TOOL_GATE_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PreToolUse', step: TOOL_GATE_STEP,
     entry: execEntry(TOOL_GATE_PATH),
     requiresFiles: requiredFiles(files),
-    reason: hookRegistrationReason('PreToolUse', check),
+    reason,
   }, ...deny];
 }
 
@@ -615,6 +632,50 @@ function reinjectProposal({ kitVersion, harness, check }) {
     entry: execEntry(RULES_BRIEF_PATH),
     requiresFiles: requiredFiles(files),
     reason: hookRegistrationReason('UserPromptSubmit', check),
+  }];
+}
+
+/** The check whose generator registers each event's entry script, as the
+ * generator of the event's hook that is not the logging hook. */
+const ENTRY_CHECKS = Object.freeze({ PreToolUse: 'P5.toolgate', PostToolUse: 'P2.sensor', PostToolUseFailure: 'P2.loopwatch' });
+
+/** The matcher the kit registers each hook of an entry script under when
+ * it registers the hook by itself. */
+const halfMatcher = scriptPath => (scriptPath === LINT_TOUCHED_PATH ? SENSOR_MATCHER : undefined);
+
+/**
+ * How the kit's hooks on `event`, an event of `ENTRY_SCRIPTS`, stand against
+ * its entry script. The hooks wanted there are the event's own, leaving out
+ * the lint hook unless it is already registered or a package declares a
+ * `lint` script, as its generator decides:
+ * - `merged`: the entry script is registered on the event;
+ * - `single`: fewer than two hooks are wanted, so there is nothing to merge;
+ * - `separate`: a wanted hook is registered by itself, and the others are
+ *   registered beside it the same way (`why` says so);
+ * - `mergeable`: none is registered, and the entry script is registered in
+ *   their place (`missing`).
+ */
+export function mergePlan(event, { harness, manifest, root, stack }) {
+  const { path: entry, halves } = ENTRY_SCRIPTS[event];
+  const credited = half => registeredHook(harness, event, half, null, { manifest, root, matcher: halfMatcher(half), kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
+  const wanted = halves.filter(half => half !== LINT_TOUCHED_PATH || hasLintScript(stack) || credited(half));
+  const plan = (state, missing, why) => ({ entry, state, missing, remove: [], why });
+  if (directRegistrations(harness, event, entry, undefined).length) return plan('merged', [], null);
+  if (wanted.length < 2) return plan('single', [], null);
+  if (wanted.some(half => directRegistrations(harness, event, half, halfMatcher(half)).length)) return plan('separate', [], 'its hooks are registered separately');
+  return plan('mergeable', wanted, null);
+}
+
+/** The proposals that register `plan.entry` on `event`: the entry script
+ * with every installed script it loads, and its registration, with no
+ * `matcher`, requiring all of them. */
+export function entryProposals(event, plan, { kitVersion, reason }) {
+  const files = hookFiles(plan.entry, kitVersion);
+  return [...files, {
+    kind: 'settings-hook', event, step: HOOK_SCRIPTS[plan.entry].step,
+    entry: execEntry(plan.entry),
+    requiresFiles: requiredFiles(files),
+    reason,
   }];
 }
 

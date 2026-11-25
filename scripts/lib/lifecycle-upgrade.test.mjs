@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DETECT, APPLY, UNINSTALL, git, kitAt, run, runEveryRegisteredHook, sandboxDataDir, settings } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, git, kitAt, loggingScript, run, runEveryRegisteredHook, sandboxDataDir, settings } from './lifecycle-fixtures.mjs';
 import { LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
@@ -97,7 +97,7 @@ test('UPGRADE A: a 0.1.0 install with one edited script gets no 0.2.0 hook scrip
   run(APPLY, d, '--yes');
   for (const name of scriptsOnDisk(d)) assert.equal(stampOf(d, `.claude/scripts/${name}`), CURRENT, name);
   for (const event of LOGGED_EVENTS) {
-    assert.ok((settings(d).hooks[event] ?? []).some(m => m.hooks.some(h => h.args?.[0]?.endsWith(SESSION_LOG_PATH))), `the logging hook is on ${event}`);
+    assert.ok((settings(d).hooks[event] ?? []).some(m => m.hooks.some(h => h.args?.[0]?.endsWith(`/${loggingScript(d, event)}`))), `the logging hook is on ${event}`);
   }
   assertNoHookCrashes(d);
   for (const id of ['P5.sessionlog', 'P5.toolgate', 'P2.loopwatch', 'P2.sensor', 'P0.kitskew']) assert.equal(checkOf(d, id).state, 'declared', id);

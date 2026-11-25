@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
 import { everyLoadedSibling, GENERATORS, INSTALLED_SCRIPT_PATHS, LINT_TOUCHED_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH } from './propose.mjs';
-import { DETECT, APPLY, UNINSTALL, git, run, runResult, settings, manifestOf, fixture, sandboxDataDir, hooksBesideLog } from './lifecycle-fixtures.mjs';
+import { DETECT, APPLY, UNINSTALL, git, run, runResult, settings, manifestOf, fixture, sandboxDataDir, hooksBesideLog, separateRegistrations } from './lifecycle-fixtures.mjs';
 
 sandboxDataDir();
 
@@ -101,6 +101,7 @@ const checkOf = (d, id) => JSON.parse(run(DETECT, d, '--json')).checks.find(x =>
 
 test('on a repository that ignores .claude/, an installed logging hook does not make a missing lint sensor read as present', () => {
   const d = appliedWithClaudeDirIgnored();
+  separateRegistrations(d);
   deleteEntry(d, 'PostToolUse', LINT_TOUCHED_PATH);
   dropRecord(d, 'P2.sensor');
   assert.ok(existsSync(join(d, LINT_TOUCHED_PATH)), 'fixture sanity: the script is still on disk');
@@ -120,6 +121,7 @@ test('on a repository that ignores .claude/, an installed logging hook does not 
 
 test('on a repository that ignores .claude/, a lint sensor deleted from settings.json by hand reads as absent and is proposed again', () => {
   const d = appliedWithClaudeDirIgnored();
+  separateRegistrations(d);
   assert.equal(checkOf(d, 'P2.sensor').state, 'declared', 'fixture sanity: credited through the install record before the deletion');
   deleteEntry(d, 'PostToolUse', LINT_TOUCHED_PATH);
   const c = checkOf(d, 'P2.sensor');

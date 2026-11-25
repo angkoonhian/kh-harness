@@ -113,6 +113,12 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
   form (\`node .claude/scripts/…\`) is recognised as the same hook and left
   alone.
 
+  On PreToolUse and PostToolUseFailure, and on PostToolUse where the lint
+  hook is installed, the two hooks of the event are started by one of three
+  entry scripts (dispatch-pre-tool.mjs, dispatch-post-tool.mjs,
+  dispatch-tool-failure.mjs), so the event starts one process, not two.
+  Each hook does what is said for it here, in the same order every time.
+
   SessionStart (per session)     reads HANDOFF.md (or docs/HANDOFF.md) and
                                  prints the top of it into the session. It
                                  executes nothing.

@@ -11,8 +11,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { after } from 'node:test';
-import { entryScriptFor } from './hook-evidence.mjs';
-import { SESSION_LOG_PATH } from './propose.mjs';
+import { ENTRY_SCRIPTS, entryScriptFor, execEntry } from './hook-evidence.mjs';
+import { LINT_TOUCHED_PATH, LOOP_WATCH_PATH, SENSOR_MATCHER, SESSION_LOG_PATH, TOOL_GATE_PATH } from './propose.mjs';
+import { buildMatcherEntry, hookEntrySha256 } from './settings-merge.mjs';
 
 export const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
 export const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
@@ -78,6 +79,46 @@ export function loggingScript(d, event) {
   return registered ? basename(entry) : 'session-log.mjs';
 }
 export const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/kh-harness.manifest.json'), 'utf8'));
+
+/** The check that registers each hook of an entry script by itself, with
+ * that check's step, and the matcher it registers the hook under. */
+const SEPARATE_HALVES = Object.freeze({
+  [SESSION_LOG_PATH]: { checkId: 'P5.sessionlog', step: 31, matcher: undefined },
+  [TOOL_GATE_PATH]: { checkId: 'P5.toolgate', step: 30, matcher: undefined },
+  [LINT_TOUCHED_PATH]: { checkId: 'P2.sensor', step: 9, matcher: SENSOR_MATCHER },
+  [LOOP_WATCH_PATH]: { checkId: 'P2.loopwatch', step: 13, matcher: undefined },
+});
+
+/**
+ * Puts the installed repository `d` into the layout the kit wrote before
+ * the entry scripts: on each event of `ENTRY_SCRIPTS` whose entry script is
+ * registered, that element of `.claude/settings.json` becomes one element
+ * per hook it runs, and the manifest's record of it one record per hook,
+ * each under the check that registers the hook by itself. Every file is
+ * left as installed.
+ */
+export function separateRegistrations(d) {
+  const s = settings(d);
+  const m = manifestOf(d);
+  for (const [event, { path, halves }] of Object.entries(ENTRY_SCRIPTS)) {
+    const arg = `\${CLAUDE_PROJECT_DIR}/${path}`;
+    const at = (s.hooks?.[event] ?? []).findIndex(e => e.hooks?.some(h => h.command === 'node' && h.args?.[0] === arg));
+    if (at === -1) continue;
+    s.hooks[event].splice(at, 1, ...halves.map(half => buildMatcherEntry(execEntry(half), SEPARATE_HALVES[half].matcher)));
+    const entrySha256 = hookEntrySha256(execEntry(path));
+    const record = m.settingsPatches.findIndex(p => p.event === event && p.entrySha256 === entrySha256);
+    assert.notEqual(record, -1, `fixture sanity: ${path} is recorded on ${event}`);
+    const { appliedAt, container } = m.settingsPatches[record];
+    m.settingsPatches.splice(record, 1, ...halves.map(half => {
+      const { checkId, step, matcher } = SEPARATE_HALVES[half];
+      return { event, container, entrySha256: hookEntrySha256(execEntry(half), matcher), step, checkId, appliedAt };
+    }));
+  }
+  // Written as apply writes it, keeping whether the file ended in a newline.
+  const ending = readFileSync(join(d, '.claude/settings.json'), 'utf8').endsWith('\n') ? '\n' : '';
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + ending);
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+}
 
 const LOGGING_HOOK_ARG = `\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_PATH}`;
 /** The matcher entries on `event` in the settings object `s`, leaving out

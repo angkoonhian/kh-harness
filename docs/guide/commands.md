@@ -220,6 +220,12 @@ kh-harness: 35 actions to close 9 capability gaps for <repo>
 WHAT THE HOOKS EXECUTE — read this before running `apply`
   `apply` registers up to seven hook scripts, each on the events named below.
 …
+  On PreToolUse and PostToolUseFailure, and on PostToolUse where the lint
+  hook is installed, the two hooks of the event are started by one of three
+  entry scripts (dispatch-pre-tool.mjs, dispatch-post-tool.mjs,
+  dispatch-tool-failure.mjs), so the event starts one process, not two.
+  Each hook does what is said for it here, in the same order every time.
+…
 Dry run — nothing written. Re-run with --yes to apply.
 
 $ node scripts/apply.mjs <repo> --yes

@@ -36,7 +36,7 @@ import { parseFiringRef } from './learn-cli.mjs';
 import { landLearning, revertLearning } from './learn-land.mjs';
 import { approveLearning, demoteLearning, markWrong, retireLearning, setPolicy } from './learn-promote.mjs';
 import {
-  APPLY, DETECT, fixture, git, LEARN, linesAfter, LOG, manifestOf, runRegisteredHook, runResult, sandboxDataDir, UNINSTALL,
+  APPLY, DETECT, fixture, git, LEARN, linesAfter, LOG, loggingScript, manifestOf, runRegisteredHook, runResult, sandboxDataDir, UNINSTALL,
 } from './lifecycle-fixtures.mjs';
 import { purgeLog, purgeTarget } from './log-purge.mjs';
 import { MIN_CLEAN_CALLS, MIN_CLEAN_SESSIONS } from './replay.mjs';
@@ -130,29 +130,25 @@ test('the learning loop end to end, through the real commands and the installed 
   let toolUses = 0;
   /**
    * A session `id`: each event goes to the installed logging hook, which
-   * must stay silent; before each tool call the installed gate hook is
-   * asked, and its decision returned; a failed call also goes to the
-   * installed loop-watch hook. A call the gate denies never runs, so it has
-   * no result event.
+   * must stay silent; before each tool call the PreToolUse entry script,
+   * which runs the gate hook and the logging hook, is asked, and its
+   * decision returned; a failed call goes to the PostToolUseFailure entry
+   * script, which runs the logging hook and the loop-watch hook. A call the
+   * gate denies never runs, so it has no result event.
    */
   function session(id) {
     const base = { session_id: id, cwd: d };
     const silent = (r, what) => assert.deepEqual({ status: r.status, stdout: r.stdout, stderr: r.stderr }, { status: 0, stdout: '', stderr: '' }, what);
-    const logged = (event, fields) => runRegisteredHook(d, event, 'session-log.mjs', { ...base, hook_event_name: event, ...fields });
+    const logged = (event, fields) => runRegisteredHook(d, event, loggingScript(d, event), { ...base, hook_event_name: event, ...fields });
     const send = async (event, fields = {}) => silent(await logged(event, fields), `session-log on ${event}`);
     return {
       send,
       start: () => send('SessionStart', { source: 'startup', model: MODEL }),
-      /** One Bash call; resolves to the gate hook's output, or null when it
-       * printed nothing. Claude Code runs the hooks on one event in
-       * parallel, and so does this. */
+      /** One Bash call; resolves to the PreToolUse entry script's output,
+       * or null when it printed nothing. */
       async bash(command, { fails = false, permission = false } = {}) {
         const call = { tool_name: 'Bash', tool_input: { command, description: 'Run a command' }, tool_use_id: `toolu_${String(++toolUses).padStart(4, '0')}` };
-        const [pre, g] = await Promise.all([
-          logged('PreToolUse', call),
-          runRegisteredHook(d, 'PreToolUse', 'tool-gate.mjs', { ...base, hook_event_name: 'PreToolUse', ...call }),
-        ]);
-        silent(pre, 'session-log on PreToolUse');
+        const g = await runRegisteredHook(d, 'PreToolUse', 'dispatch-pre-tool.mjs', { ...base, hook_event_name: 'PreToolUse', ...call });
         assert.equal(g.status, 0, g.stderr);
         assert.equal(g.stderr, '');
         const decision = g.stdout === '' ? null : JSON.parse(g.stdout);
@@ -160,12 +156,7 @@ test('the learning loop end to end, through the real commands and the installed 
         if (permission) await send('PermissionRequest', call);
         if (fails) {
           const failure = { ...call, error: `${WATCH_ERROR}\n    at watch (node_modules/vitest/dist/cli.js:42:7)` };
-          const [post, watch] = await Promise.all([
-            logged('PostToolUseFailure', failure),
-            runRegisteredHook(d, 'PostToolUseFailure', 'loop-watch.mjs', { ...base, hook_event_name: 'PostToolUseFailure', ...failure }),
-          ]);
-          silent(post, 'session-log on PostToolUseFailure');
-          silent(watch, 'loop-watch on one failure');
+          silent(await runRegisteredHook(d, 'PostToolUseFailure', 'dispatch-tool-failure.mjs', { ...base, hook_event_name: 'PostToolUseFailure', ...failure }), 'the PostToolUseFailure entry script on one failure');
         } else {
           await send('PostToolUse', { ...call, tool_response: { stdout: 'done', stderr: '', interrupted: false, isImage: false } });
         }
@@ -250,12 +241,12 @@ test('the learning loop end to end, through the real commands and the installed 
 
   await step('2. apply --yes installs the hooks; detect reports the gate, the log and integrity as a fresh install has them', () => {
     const out = ok(runResult(APPLY, d, '--yes'));
-    for (const script of ['session-log.mjs', 'tool-gate.mjs', 'loop-watch.mjs', 'harness-log.mjs', 'harness-seal.mjs', 'harness-gates.mjs']) {
+    for (const script of ['session-log.mjs', 'tool-gate.mjs', 'loop-watch.mjs', 'dispatch-pre-tool.mjs', 'dispatch-tool-failure.mjs', 'harness-dispatch.mjs', 'harness-log.mjs', 'harness-seal.mjs', 'harness-gates.mjs']) {
       assert.match(out, new RegExp(`^wrote {6}\\.claude/scripts/${escapeRegExp(script)}$`, 'm'), script);
     }
     const checks = detect();
     assert.equal(checks['P5.toolgate'].state, 'declared');
-    assert.deepEqual(checks['P5.toolgate'].evidence, ['PreToolUse hook: .claude/scripts/tool-gate.mjs']);
+    assert.deepEqual(checks['P5.toolgate'].evidence, ['PreToolUse hook: .claude/scripts/tool-gate.mjs, run by .claude/scripts/dispatch-pre-tool.mjs']);
     assert.equal(checks['P5.sessionlog'].state, 'declared');
     assert.match(checks['P5.sessionlog'].evidence[0], /is registered on all 16 logged events/);
     assert.equal(checks['P2.loopwatch'].state, 'declared');
@@ -704,7 +695,7 @@ test('the learning loop beyond its first path: a stopped step, a policy, a demot
 
   /** What the installed gate hook decides for a Bash call of `command`. */
   async function gateOn(d, sessionId, command) {
-    const r = await runRegisteredHook(d, 'PreToolUse', 'tool-gate.mjs', {
+    const r = await runRegisteredHook(d, 'PreToolUse', 'dispatch-pre-tool.mjs', {
       session_id: sessionId, cwd: d, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, tool_use_id: `toolu_two_${++uses}`,
     });
     assert.equal(r.status, 0, r.stderr);
