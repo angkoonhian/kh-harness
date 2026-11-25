@@ -6,7 +6,7 @@ Plan: docs/superpowers/plans/2026-11-25-hook-merge.md
 Spec: docs/superpowers/specs/2026-11-25-hook-merge-design.md
 Branch: angkoonhian/stage0-hook-merge, base master at eead407.
 
-The ledger below is copied as it stood when this log was written. Task 8's documentation commit (3ca85c3) was still under review then. Test durations were not recorded per task in the ledger; the one suite run this log records is under "Test suite".
+The ledger below is copied as it stood after the review of this log (Task 9) and before its fix round was recorded; Tasks 1 to 8 are complete in it. Test durations were not recorded per task in the ledger; the suite run this log records is under "Test suite".
 
 Worktree: /home/kinghian/orca/workspaces/kh-harness/stage0-hook-merge (branch angkoonhian/stage0-hook-merge, base master eead407)
 Spec: docs/superpowers/specs/2026-11-25-hook-merge-design.md
@@ -110,8 +110,11 @@ Task 8: minor (deferred — FINAL REVIEW SHOULD FIX, user-facing wording): CHANG
 Task 8: minor (deferred — FINAL REVIEW SHOULD FIX): README.md ~:383 says an older install is moved "by the next `apply`"; it is moved only by `apply --yes`.
 Task 8: minor (deferred): history narration in how-it-works.md ~:186 ("as it did under its own …") and ~:305 ("as before"); ragged wrapping README ~:380, troubleshooting ~:487.
 Task 8: minor (deferred, pre-existing): example counts "12 proposals…" (real: 16 = 11/4/1 at eead407 and HEAD) and "35 actions to close 9 capability gaps" (real: 37/11 at eead407, 38/11 at HEAD) were stale before this branch — separate docs pass.
-
-Task 9: this log, with the latency measurement below.
+Task 9: implemented acc6055 (base 3ca85c3), DONE_WITH_CONCERNS: machine loaded (Blender render, load 11-40) so ms-level differences are noise; test comment numbers not updated; finding: one process saves ~20 ms CPU per event but wall-clock vs parallel separate hooks is within noise (≈ -5/0/+6 ms).
+Task 9: review — Needs fixes (document only): (1) "about 20 ms CPU saved" does not follow from the table (raw 30.9 and 27.3 ms; 20.1/20.0 is the entry script's own cost less bare); (2) CPU "less bare" columns use bare figures the log does not print; (3) "3 to 5 ms more CPU" false for PostToolUseFailure (8.5 ms vs loop-watch); (4) parallel-start claim attributed to the brief, which does not say it — needs the hooks reference citation; (5) Task 8 status contradictory and its four deferred minors missing from the open list; Step 3 deferral must be stated as deferred, not justified by an unrecorded "quieter machine". Fix round 1.
+Ruling: the test comment in harness-dispatch.test.mjs is NOT overwritten with loaded-machine figures; the quiet-machine re-measurement is deferred to the owner (machine was running a render, load 10–40) and stated as deferred in the log — cost if wrong: the dated comment stays at the Task 3 figures a little longer.
+Ruling: the measuring script and all raw run lines go INTO the log as an appendix so a reader can recompute every table — cost: a longer document.
+CORRECTION owed to the owner: controller relayed "about 20 ms CPU saved"; the log's own table gives about 31 and 27 ms raw.
 
 ## Deviations from the plan
 
@@ -130,9 +133,9 @@ Each is taken from the ledger above.
 
 ## Open minor findings
 
-Deferred in the ledger and not fixed. Ledger wording, shortened only where the ledger line was long.
+Deferred in the ledger and not fixed. Ledger wording, shortened only where the ledger line was long. The ledger marks some of these "FINAL REVIEW SHOULD FIX".
 
-- Task 1: lint-touched.mjs comment above `report` says "ONLY place … builds a result's stderr" though two helpers build `stderr: ''`.
+- Task 1 (the ledger sent this one to fix round 1 as a wording fix and says that round addressed 3 findings without naming them; not checked here): lint-touched.mjs comment above `report` says "ONLY place … builds a result's stderr" though two helpers build `stderr: ''`.
 - Task 1: lintHalf hard-codes 'Write'/'Edit'; the test checks one direction against SENSOR_MATCHER.
 - Task 2: core-load check uses `name in core` while half() uses typeof function — a non-function export fails silently.
 - Task 2: core missing/older tested only through dispatch-tool-failure.mjs; loop over ENTRY_SCRIPTS.
@@ -154,15 +157,19 @@ Deferred in the ledger and not fixed. Ledger wording, shortened only where the l
 - Task 7: kept-elements computation in apply-lib.mjs:905 is positional (slice(0,-1)); doubled where the entry's own element changed is untested; owner edits other than timeout untested; two-apply convergence after a re-added half untested; doubled evidence says "some of them".
 - Task 7: `?? SETTINGS_PATH` default exists only for hand-built unit fixtures.
 - Task 7 (pre-existing edge): logging hook only in settings.local.json with no record and an unresolvable script: P5.sessionlog absent while the plan reads mergeable, so logging runs twice.
-- Task 8 (implementer's concerns, review pending): base wording; old example counts '12 proposals' and '35 actions to close 9 capability gaps' left; two skip reasons taken from code, not a live run.
-- Pending, not a finding: the Task 8 review has not returned.
+- Task 8 (FINAL REVIEW SHOULD FIX, user-facing wording): CHANGELOG.md ~:49 and docs/guide/commands.md ~:167 say an event the owner edited or removed "is left alone"/"is not proposed" without saying a hook the owner removed is offered again by its own check on that apply.
+- Task 8 (FINAL REVIEW SHOULD FIX): README.md ~:383 says an older install is moved "by the next `apply`"; it is moved only by `apply --yes`.
+- Task 8: history narration in how-it-works.md ~:186 ("as it did under its own …") and ~:305 ("as before"); ragged wrapping README ~:380, troubleshooting ~:487.
+- Task 8 (pre-existing): example counts "12 proposals…" (real: 16 = 11/4/1 at eead407 and HEAD) and "35 actions to close 9 capability gaps" (real: 37/11 at eead407, 38/11 at HEAD) were stale before this branch; a separate docs pass.
+- Task 9: no measurement on a quiet machine. The dated comment above the latency tests in scripts/lib/harness-dispatch.test.mjs keeps the Task 3 figures; the brief's Step 3 is deferred to the owner (see the latency section).
+
 
 ## Latency, before and after
 
 What was measured: the time to start one hook script as Claude Code would (`node <script>` with the event payload on standard input), less a bare `node -e 0` start, for the layout at `eead407` (before) and at HEAD `3ca85c3` (after).
 
 - Machine: Linux 7.3.5-2-cachyos, 16 logical CPUs, Node v26.13.1, 2026-11-25.
-- The machine was not quiet. A Blender render (about 1100% CPU) and other processes ran throughout; the load average read 11 to 40 during the runs (17:40 to 17:52). The brief asks for a quiet machine; there was none. The fastest-of-40 method discounts load but does not remove it: the fastest bare start differed from run to run between 15.7 and 42.5 ms. Differences of a few milliseconds below are inside that spread.
+- The machine was not quiet. A Blender render (about 1100% CPU) and other processes ran throughout; the 1-minute load average read between 11.8 and 39.8 at the start of each wall-clock run (17:40 to 17:52; headers `## HH:MM:SS load` in the appendix). The brief asks for a quiet machine; there was none. The fastest-of-40 method discounts load but does not remove it: the fastest bare start differed from run to run between 15.7 and 42.5 ms. Differences of a few milliseconds below are inside that spread.
 - Before: a second checkout of `eead407` (`git worktree add --detach <scratch>/before eead407`, removed afterwards). Its scripts are `tool-gate.mjs`, `session-log.mjs`, `loop-watch.mjs`, `lint-touched.mjs`. After: this checkout's `assets/scripts/dispatch-pre-tool.mjs`, `dispatch-post-tool.mjs`, `dispatch-tool-failure.mjs`.
 - Every run used the same payloads, one temporary data directory, one temporary repository with the log enabled (`setEnabled(root, true)`), no gate file, and `addedLatency` from `scripts/lib/latency-fixtures.mjs` (40 pairs, hook and bare run alternating which goes first, fastest of each reported). The payload is a `Bash` call `npm test`; the failure payload carries a different `error` text on each run.
 
@@ -172,9 +179,9 @@ The brief's command spawns `assets/scripts/<script>` relative to the checkout it
 
 1. The command is saved as a script, `measure.mjs <checkout> <before|after>`, that takes the checkout directory. It imports `addedLatency` from this checkout and `harness-log.mjs` (for `setEnabled`) from the checkout under test, so the log format is the one that checkout writes.
 2. `before` runs the five single-script rows of the brief's eight that exist at `eead407` (`tool-gate.mjs` and `session-log.mjs` on PreToolUse; `session-log.mjs` on PostToolUse; `loop-watch.mjs` and `session-log.mjs` on PostToolUseFailure); `after` runs the brief's three `dispatch-*` rows. The brief's command is otherwise unchanged.
-3. The brief measures no lint hook. Because the before layout runs `lint-touched.mjs` on PostToolUse, a sixth `before` row, `lint-touched.mjs` on the same `Bash` payload (which the lint hook does not lint), was run separately with the same method (`measure-lint.mjs`, the same file with the row list reduced to that row).
+3. The brief measures no lint hook. Because the before layout runs `lint-touched.mjs` on PostToolUse, a sixth `before` row, `lint-touched.mjs` on the same `Bash` payload (which the lint hook does not lint), was run separately with the same method (`measure-lint.mjs`, the same file with the row list reduced to that row by `sed`).
 
-The measuring scripts are outside the repository (in the session scratchpad); the command text is the brief's, with `spawnSync(process.execPath, [checkout + '/assets/scripts/' + script], ...)` for its `'assets/scripts/' + script`.
+The measuring scripts were kept outside the repository; they and every raw output line are in the appendix. The command text is the brief's, with `spawnSync(process.execPath, [checkout + '/assets/scripts/' + script], ...)` for its `'assets/scripts/' + script`.
 
 ### The eight lines
 
@@ -191,7 +198,7 @@ after PostToolUse dispatch-post-tool.mjs — fastest hook run 39.2 ms, fastest b
 after PostToolUseFailure dispatch-tool-failure.mjs — fastest hook run 37.5 ms, fastest bare node start 17.6 ms (medians 88.5 and 46.7 ms) over 40 interleaved pairs
 ```
 
-The other nine runs are in the same form. In all, each script was run five times (two in set one, three in set two). For each script, the fastest hook run and the fastest bare start over all five runs of that script (200 pairs):
+The other runs are in the appendix. In all, each single script and each entry script was run five times (two in set one, three in set two), the lint-touched.mjs row three times. For each script, the fastest hook run and the fastest bare start over all five runs of that script (200 pairs):
 
 | Event | Script | Runs (pairs) | Fastest run, ms | Fastest bare start in those runs, ms |
 |---|---|---|---|---|
@@ -207,9 +214,9 @@ The other nine runs are in the same form. In all, each script was run five times
 
 The lint row's three runs are a third set (before-lint then after, three times), run at load 38 to 40, and its own bare floor was 27.4 ms, so it is the least comparable figure here. The `after` PostToolUse lines in that third set read 61.7, 55.3 and 56.4 ms and are not in the table (the table above uses the five runs of the first two sets).
 
-### Wall-clock to start the scripts, fastest of 200 pairs
+### Wall-clock to start the scripts: sums of the two processes
 
-"Less bare" subtracts the fastest bare start seen in the whole measurement, 15.7 ms, once for each process: two for the before layout, one for the after layout. (The brief says "each also less one bare start"; read literally that subtracts one start from the before sum too, which would count one of the two before processes as free. This log subtracts what each layout starts.)
+These tables add the two before processes. They are not what a user waits for when hooks run in parallel (next table). "Less bare" subtracts the fastest bare start seen in the whole measurement, 15.7 ms, once for each process: two for the before layout, one for the after layout. (The brief says "each also less one bare start"; read literally that subtracts one start from the before sum too. This log subtracts what each layout starts.) Each figure is the fastest of 200 pairs, except the lint row (120 pairs).
 
 PreToolUse
 
@@ -225,7 +232,7 @@ PostToolUse (a `Bash` call: the lint hook starts and does not lint)
 | Before: session-log.mjs + lint-touched.mjs (32.3 + 34.9) | 67.2 | 35.8 |
 | After: dispatch-post-tool.mjs | 35.1 | 19.4 |
 
-For an edit (`Write` or `Edit`) the lint hook runs the linter. The table does not measure that, because the lint run dominates it; the before figure for an edit is the log hook plus the lint hook's start plus the lint run, and the after figure is the entry script's start plus the same lint run. The lint run is not changed by this plan, and its duration was not measured.
+For an edit (`Write` or `Edit`) the lint hook runs the linter. The table does not measure that, because the lint run dominates it; the before figure for an edit is the log hook plus the lint hook's start plus the lint run, and the after figure is the entry script's start plus the same lint run. The lint run is not changed by this plan and was not measured.
 
 PostToolUseFailure
 
@@ -234,27 +241,282 @@ PostToolUseFailure
 | Before: loop-watch.mjs + session-log.mjs (26.1 + 31.5) | 57.6 | 26.2 |
 | After: dispatch-tool-failure.mjs | 37.5 | 21.8 |
 
+### Wall-clock a user waits, if the hooks of an event run in parallel
+
+The Claude Code hooks reference, https://code.claude.com/docs/en/hooks, read 2026-11-25, says: "When an event fires, its matching hooks run in parallel." The wait before is then the slower of the two scripts. Taking the larger of two independently chosen minima favours the before layout: the larger of two runs in the same pair is never below it, so the real before wait is at least this figure, and the "after minus before" differences below are upper bounds on the entry script's extra wait (the worst case for the entry script) and lower bounds on its gain.
+
+| Event | Before: larger of the two fastest runs, ms | After: fastest run, ms | After minus before, ms |
+|---|---|---|---|
+| PreToolUse | 36.5 (session-log.mjs) | 31.4 | -5.1 |
+| PostToolUse (Bash call) | 34.9 (lint-touched.mjs) | 35.1 | +0.2 |
+| PostToolUseFailure | 31.5 (session-log.mjs) | 37.5 | +6.0 |
+
+These are single fastest runs under load; the fastest bare start moved between 15.7 and 42.5 ms from run to run, and differences of this size are inside that spread. The measurement shows no wall-clock gain or loss on any event that it can tell apart from noise.
+
 ### CPU time per process
 
-Wall-clock under this load mostly measures the load, so CPU time (user plus system) per process was also measured, with bash's `time` keyword over 200 runs of one script with the payload on standard input, output discarded, one temporary repository with the log enabled (`cpu.sh <checkout> <script|bare> <event>`; three rounds, scripts interleaved within a round). The figure includes the fork and exec by bash, which is why a bare `node -e 0` reads about 19 ms of CPU. Means of three rounds (CPU per process, ms):
+Wall-clock under this load mostly measures the load, so CPU time (user plus system) per process was also measured with bash's `time` keyword over 200 runs of one script with the payload on standard input and output discarded, in one temporary repository with the log enabled (`cpu.sh`, `cpu-all.sh` in the appendix; three rounds, scripts interleaved within a round, the same round numbers pair a before row with an after row). The figure includes bash's fork and exec of the process, which is why a bare `node -e 0` reads about 20 ms.
 
-| Event | Before: first + second | Sum | Less 2 bare | After | Less 1 bare |
-|---|---|---|---|---|---|
-| PreToolUse | tool-gate 34.3 + session-log 35.7 | 70.0 | 32.0 | 39.1 | 20.1 |
-| PostToolUse | session-log 36.1 + lint-touched (not measured) | 36.1 + lint start | not computed | 41.0 | 21.9 |
-| PostToolUseFailure | loop-watch 30.4 + session-log 35.8 | 66.2 | 28.4 | 38.9 | 20.0 |
+Raw values, ms of CPU per process, rounds 1 / 2 / 3:
 
-Bare means: 20.0 (PreToolUse), 19.8 (PostToolUse), 24.2 (PostToolUseFailure, one round read 34.2). The PostToolUse "less 1 bare" uses 19.1, the fastest bare round. The per-round figures vary by 3 to 4 ms for one script (for example dispatch-post-tool.mjs read 37.9, 38.2 and 46.8 in its three rounds); the CPU measurement was also run beside the Blender render and the load average read 10 to 30.
+| Event | Row | Rounds 1 / 2 / 3 | Mean | Median |
+|---|---|---|---|---|
+| PreToolUse | bare `node -e 0` | 21.1 / 19.0 / 20.0 | 20.0 | 20.0 |
+| PreToolUse | before: tool-gate.mjs | 35.6 / 32.1 / 35.2 | 34.3 | 35.2 |
+| PreToolUse | before: session-log.mjs | 36.6 / 34.3 / 36.1 | 35.7 | 36.1 |
+| PreToolUse | after: dispatch-pre-tool.mjs | 40.1 / 37.8 / 39.5 | 39.1 | 39.5 |
+| PostToolUse | bare `node -e 0` | 20.1 / 19.1 / 20.1 | 19.8 | 20.1 |
+| PostToolUse | before: session-log.mjs | 36.3 / 34.7 / 37.4 | 36.1 | 36.3 |
+| PostToolUse | before: lint-touched.mjs | not measured | | |
+| PostToolUse | after: dispatch-post-tool.mjs | 38.2 / 37.9 / 46.8 | 41.0 | 38.2 |
+| PostToolUseFailure | bare `node -e 0` | 18.9 / 19.4 / 34.2 | 24.2 | 19.4 |
+| PostToolUseFailure | before: loop-watch.mjs | 30.2 / 30.7 / 30.3 | 30.4 | 30.3 |
+| PostToolUseFailure | before: session-log.mjs | 35.0 / 37.3 / 35.0 | 35.8 | 35.0 |
+| PostToolUseFailure | after: dispatch-tool-failure.mjs | 37.7 / 40.3 / 38.7 | 38.9 | 38.7 |
+
+Derived, per round, from the rows above (the before sum is the two before rows of the same round):
+
+| Event | Before sum minus after, per round (rounds 1 / 2 / 3), ms | Mean | Less one bare start (bare median of the event: 20.0, 19.4), mean |
+|---|---|---|---|
+| PreToolUse | 32.1 / 28.6 / 31.8 | 30.8 | 10.8 |
+| PostToolUseFailure | 27.5 / 27.7 / 26.6 | 27.3 | 7.9 |
+
+- "Before sum minus after" is the CPU saved per call by running one process in place of two: about 29 to 32 ms on PreToolUse and about 27 to 28 ms on PostToolUseFailure. It contains the start of the second process (about 20 ms, the bare row) and the work the two scripts did twice (loading the shared modules). The same figure less one bare start, about 11 ms and about 8 ms, is the saving other than a process start. The entry script's own cost less one bare start (20.1 ms on PreToolUse, 20.0 on PostToolUseFailure, by the means) is a different quantity and is not a saving.
+- PostToolUse has no comparison: lint-touched.mjs's CPU was not measured, and against session-log.mjs alone the entry script costs more (rounds 1 / 2 / 3: +1.9 / +3.2 / +9.4 ms; the third round is the outlier).
+- The entry script costs more CPU than any one single script it replaces: against each single script, by round, +4.5 / +5.7 / +4.3 and +3.5 / +3.5 / +3.4 (PreToolUse: tool-gate, session-log), +7.5 / +9.6 / +8.4 and +2.7 / +3.0 / +3.7 (PostToolUseFailure: loop-watch, session-log), +1.9 / +3.2 / +9.4 (PostToolUse: session-log). Across every row the difference is between 1.9 and 9.6 ms. One script's own value moved by 3 to 9 ms between rounds (dispatch-post-tool.mjs: 38.2, 37.9, 46.8), so the difference is of the same size as the round-to-round spread and a comparison of one entry script with one single script is not resolved by this measurement.
+- Load: the CPU rounds ran beside the same render; the 1-minute load average read 10.1 after a first attempt that was discarded (it ran a wrong path and measured nothing) and 11.1 after the three rounds; it was not recorded per round. CPU time is less sensitive to load than wall-clock but not independent of it (one bare round read 34.2 ms).
 
 ### What this shows and does not show
 
-- Each entry script starts one Node process where the before layout started two. Per event the CPU of the two scripts together was about 66 to 70 ms and the entry script's was about 39 to 41 ms, so one process start, about 20 ms of CPU, is saved per PreToolUse and PostToolUseFailure call. That follows from the structure and the CPU rows agree with it.
-- An entry script costs more than either single script it replaces: 39.1 against 34.3 and 35.7 ms of CPU on PreToolUse (3 to 5 ms), 41.0 against 36.1 on PostToolUse (the log script alone), 38.9 against 30.4 and 35.8 on PostToolUseFailure. It loads the shared core and both halves' code in one process.
-- Wall-clock for the user is not the sum of two processes. As the task brief states, Claude Code starts separate hooks for an event in parallel, so before the user waited for the slower of the two scripts, not their sum: on the fastest figures above, 36.5 ms for PreToolUse (session-log), about 34.9 for PostToolUse (lint-touched) and 31.5 for PostToolUseFailure (session-log), against 31.4, 35.1 and 37.5 ms for the entry scripts. By those figures the entry script is about 5 ms faster on PreToolUse, equal on PostToolUse, and about 6 ms slower on PostToolUseFailure. These are single fastest runs under load and the differences are within the run-to-run spread; the measurement does not show a wall-clock gain or loss on any event. What it shows is lower CPU and fewer processes per call, on a machine with spare cores. Where the machine is busy (as it was here) fewer processes should matter more, but this was not measured separately.
+- Each entry script starts one Node process where the before layout started two. On the CPU rows, that is about 29 to 32 ms of CPU per PreToolUse call and about 27 to 28 ms per PostToolUseFailure call, each across three rounds, of which about 20 ms is the second process start.
+- Wall-clock a user waits is a different quantity, because the hooks of an event run in parallel. On the fastest runs the entry script is 5.1 ms faster on PreToolUse, 0.2 ms slower on PostToolUse and 6.0 ms slower on PostToolUseFailure; each difference is inside the run-to-run noise, so no wall-clock gain or loss is shown. What is shown is lower CPU and one process instead of two per call, which matters where cores are scarce; that was not measured separately.
 - The PostToolUse figures are for a `Bash` call, where the lint half starts and does not lint. The figures for an edit include a linter run in both layouts, not measured.
-- Not measured: the time Claude Code itself takes to start a hook and read its output, a quiet machine, Windows or macOS, a repository with real gates (the measurement used no gate file), a log with a long history, and the lint run.
-- The dated comment above the latency tests in `scripts/lib/harness-dispatch.test.mjs` (linux, Node 26.13.1, 2026-11-25: the entry scripts add about 17, 15 and 16 ms over a bare start) was left as it is. It was measured on a quieter machine than this log's; the figures here were taken under load and by the same fastest-minus-bare rule, with each script's own fastest bare start, give 14.2, 17.6 and 21.5 ms: one lower and two higher, which is not a better measurement.
+- Not measured: a quiet machine, Windows or macOS, a repository with real gates (no gate file was used), a log with a long history, lint-touched.mjs CPU, the lint run, and the time Claude Code itself takes to start a hook and read its output.
+
+### Re-measurement on a quiet machine: deferred to the owner
+
+A quiet-machine re-measurement (wall-clock sets, the CPU rounds and a lint-touched.mjs CPU row) was to run if the 1-minute load average was below 2 at the start and stayed near 3. It was not run. After the measurement above, the machine read:
+
+```
+ 17:58:24 up 2 days, 16:29,  1 user,  load average: 3.09, 12.91, 16.14
+ 17:58:37 up 2 days, 16:29,  1 user,  load average: 2.88, 12.39, 15.92
+```
+
+then, after waiting several minutes for it to fall further, `cat /proc/loadavg` read `5.26 9.06 13.96`, then `5.39 7.58 12.66` and `6.26 7.55 12.44`, with `ps -eo pcpu,comm --sort=-pcpu` showing blender at 99 to 100% and vyugate-edge at 166% CPU. The load never reached 2. The brief's Step 3, copying quiet-machine figures into the dated comment above the latency tests in `scripts/lib/harness-dispatch.test.mjs`, is therefore deferred as well, and that comment keeps the figures Task 3 recorded (linux, Node 26.13.1, 2026-11-25: 17, 15 and 16 ms added over a bare start). The ledger does not record the machine's load when Task 3 measured them. The figures in this log, by the same fastest-minus-bare rule with each script's own fastest bare start, were 14.2, 17.6 and 21.5 ms under load; they are not offered as a replacement.
 
 ## Test suite
 
-`npm test` at HEAD with this log added, 2026-11-25, same machine, exit 0: first phase 2386 tests, 2382 pass, 0 fail, 4 skipped, duration_ms 50835.2; latency phase (`latency budget: …`, run one file at a time) 5 tests, 5 pass, duration_ms 11434.8.
+`npm test` at HEAD with this log in its revised form, 2026-11-25, same machine, exit 0: first phase 2386 tests, 2382 pass, 0 fail, 4 skipped, duration_ms 50459.6; latency phase (`latency budget: …`, run one file at a time) 5 tests, 5 pass, duration_ms 11870.9.
+
+## Appendix: measuring scripts and raw output
+
+The tables above can be recomputed from this. The runs were made in this order: `out.txt` (set one), `out2.txt` (set two), `out3.txt` (lint-touched runs), then `cpu-out.txt`. A first CPU attempt used a loop that did not split its arguments in zsh, ran nonexistent script paths and printed errors; it was discarded and is not reproduced.
+
+### measure.mjs (as run for sets one and two: `node measure.mjs <checkout> <before|after>`)
+
+```
+// usage: node measure.mjs <checkout> <before|after>
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const [checkout, which] = process.argv.slice(2);
+const HEAD = '/home/kinghian/orca/workspaces/kh-harness/stage0-hook-merge';
+const { addedLatency } = await import(HEAD + '/scripts/lib/latency-fixtures.mjs');
+process.env.KH_DATA_DIR = mkdtempSync(join(tmpdir(), 'hk-measure-data-'));
+process.env.HK_MARKER_DIR = mkdtempSync(join(tmpdir(), 'hk-measure-marks-'));
+const { setEnabled } = await import(checkout + '/assets/scripts/harness-log.mjs');
+const root = mkdtempSync(join(tmpdir(), 'hk-measure-repo-'));
+mkdirSync(join(root, '.git'));
+setEnabled(root, true);
+const env = { ...process.env, CLAUDE_PROJECT_DIR: root };
+const call = { session_id: 'measure', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't1' };
+const rows = which === 'before' ? [
+  ['PreToolUse', 'tool-gate.mjs'], ['PreToolUse', 'session-log.mjs'],
+  ['PostToolUse', 'session-log.mjs'],
+  ['PostToolUseFailure', 'loop-watch.mjs'], ['PostToolUseFailure', 'session-log.mjs'],
+] : [
+  ['PreToolUse', 'dispatch-pre-tool.mjs'], ['PostToolUse', 'dispatch-post-tool.mjs'], ['PostToolUseFailure', 'dispatch-tool-failure.mjs'],
+];
+for (const [event, script] of rows) {
+  const stdin = JSON.stringify({ ...call, hook_event_name: event, error: 'Exit code ' + Math.random() });
+  const { summary } = addedLatency({ runHookOnce: () => spawnSync(process.execPath, [checkout + '/assets/scripts/' + script], { input: stdin, env }), stdin, env, pairs: 40 });
+  console.log(which, event, script, '—', summary);
+}
+```
+
+### measure-lint.mjs (as run for the lint-touched rows: `node measure-lint.mjs <checkout> <before|after>`; it is measure.mjs with its before rows reduced to the lint-touched row and its other rows blanked by sed)
+
+```
+// usage: node measure.mjs <checkout> <before|after>
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const [checkout, which] = process.argv.slice(2);
+const HEAD = '/home/kinghian/orca/workspaces/kh-harness/stage0-hook-merge';
+const { addedLatency } = await import(HEAD + '/scripts/lib/latency-fixtures.mjs');
+process.env.KH_DATA_DIR = mkdtempSync(join(tmpdir(), 'hk-measure-data-'));
+process.env.HK_MARKER_DIR = mkdtempSync(join(tmpdir(), 'hk-measure-marks-'));
+const { setEnabled } = await import(checkout + '/assets/scripts/harness-log.mjs');
+const root = mkdtempSync(join(tmpdir(), 'hk-measure-repo-'));
+mkdirSync(join(root, '.git'));
+setEnabled(root, true);
+const env = { ...process.env, CLAUDE_PROJECT_DIR: root };
+const call = { session_id: 'measure', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 't1' };
+const rows = which === 'before' ? [
+  
+  ['PostToolUse', 'lint-touched.mjs'],
+  
+] : [
+  ['PreToolUse', 'dispatch-pre-tool.mjs'], ['PostToolUse', 'dispatch-post-tool.mjs'], ['PostToolUseFailure', 'dispatch-tool-failure.mjs'],
+];
+for (const [event, script] of rows) {
+  const stdin = JSON.stringify({ ...call, hook_event_name: event, error: 'Exit code ' + Math.random() });
+  const { summary } = addedLatency({ runHookOnce: () => spawnSync(process.execPath, [checkout + '/assets/scripts/' + script], { input: stdin, env }), stdin, env, pairs: 40 });
+  console.log(which, event, script, '—', summary);
+}
+```
+
+### cpu.sh
+
+```
+#!/usr/bin/env bash
+# usage: cpu.sh <checkout> <script|bare> <event>  -> mean user+sys CPU ms per process over N runs
+checkout=$1; script=$2; event=$3; N=200
+export KH_DATA_DIR=$(mktemp -d) HK_MARKER_DIR=$(mktemp -d)
+root=$(mktemp -d); mkdir "$root/.git"
+CHECKOUT=$checkout ROOT=$root node --input-type=module -e "const {setEnabled}=await import(process.env.CHECKOUT+'/assets/scripts/harness-log.mjs'); setEnabled(process.env.ROOT,true)"
+export CLAUDE_PROJECT_DIR=$root
+printf '{"session_id":"cpu","hook_event_name":"%s","tool_name":"Bash","tool_input":{"command":"npm test"},"tool_use_id":"t1","error":"Exit code 1"}' "$event" > "$root/in.json"
+if [ "$script" = bare ]; then cmd=(node -e 0); else cmd=(node "$checkout/assets/scripts/$script"); fi
+TIMEFORMAT='%U %S'
+t=$( { time (for ((i=0;i<N;i++)); do "${cmd[@]}" < "$root/in.json" >/dev/null 2>&1; done) ; } 2>&1 )
+echo "$event $script $t" | awk -v n=$N '{printf "%s %s cpu %.1f ms/process (user %.1f + sys %.1f)\n",$1,$2,($3+$4)/n*1000,$3/n*1000,$4/n*1000}'
+```
+
+### cpu-all.sh (run as `bash cpu-all.sh <scratch> <head-checkout>`)
+
+```
+#!/usr/bin/env bash
+S=$1; H=$2
+for round in 1 2 3; do
+for spec in "H bare PreToolUse" "B tool-gate.mjs PreToolUse" "B session-log.mjs PreToolUse" "A dispatch-pre-tool.mjs PreToolUse" "H bare PostToolUse" "B session-log.mjs PostToolUse" "A dispatch-post-tool.mjs PostToolUse" "H bare PostToolUseFailure" "B loop-watch.mjs PostToolUseFailure" "B session-log.mjs PostToolUseFailure" "A dispatch-tool-failure.mjs PostToolUseFailure"; do
+  read w script ev <<< "$spec"
+  case $w in B) co=$S/before;; *) co=$H;; esac
+  echo "r$round $(bash $S/cpu.sh $co $script $ev)"
+done; done
+```
+
+### Wall-clock set one (out.txt)
+
+```
+## 17:40:05 load 30.48 22.17 14.81 before
+before PreToolUse tool-gate.mjs — fastest hook run 35.9 ms, fastest bare node start 18.0 ms (medians 91.9 and 52.1 ms) over 40 interleaved pairs
+before PreToolUse session-log.mjs — fastest hook run 36.5 ms, fastest bare node start 16.3 ms (medians 85.9 and 42.3 ms) over 40 interleaved pairs
+before PostToolUse session-log.mjs — fastest hook run 32.3 ms, fastest bare node start 19.1 ms (medians 90.9 and 59.2 ms) over 40 interleaved pairs
+before PostToolUseFailure loop-watch.mjs — fastest hook run 31.1 ms, fastest bare node start 19.4 ms (medians 76.3 and 50.4 ms) over 40 interleaved pairs
+before PostToolUseFailure session-log.mjs — fastest hook run 35.0 ms, fastest bare node start 17.2 ms (medians 89.2 and 55.7 ms) over 40 interleaved pairs
+## 17:40:32 load 30.52 23.02 15.33 after
+after PreToolUse dispatch-pre-tool.mjs — fastest hook run 35.3 ms, fastest bare node start 17.9 ms (medians 96.6 and 58.8 ms) over 40 interleaved pairs
+after PostToolUse dispatch-post-tool.mjs — fastest hook run 39.2 ms, fastest bare node start 17.5 ms (medians 98.9 and 60.3 ms) over 40 interleaved pairs
+after PostToolUseFailure dispatch-tool-failure.mjs — fastest hook run 37.5 ms, fastest bare node start 17.6 ms (medians 88.5 and 46.7 ms) over 40 interleaved pairs
+## 17:40:50 load 32.25 23.88 15.78 after
+after PreToolUse dispatch-pre-tool.mjs — fastest hook run 39.4 ms, fastest bare node start 17.2 ms (medians 96.5 and 53.4 ms) over 40 interleaved pairs
+after PostToolUse dispatch-post-tool.mjs — fastest hook run 35.1 ms, fastest bare node start 19.6 ms (medians 90.4 and 52.2 ms) over 40 interleaved pairs
+after PostToolUseFailure dispatch-tool-failure.mjs — fastest hook run 39.5 ms, fastest bare node start 16.0 ms (medians 96.0 and 52.4 ms) over 40 interleaved pairs
+## 17:41:08 load 32.23 24.30 16.04 before
+before PreToolUse tool-gate.mjs — fastest hook run 30.1 ms, fastest bare node start 19.2 ms (medians 89.1 and 58.7 ms) over 40 interleaved pairs
+before PreToolUse session-log.mjs — fastest hook run 38.8 ms, fastest bare node start 18.6 ms (medians 104.4 and 60.7 ms) over 40 interleaved pairs
+before PostToolUse session-log.mjs — fastest hook run 38.1 ms, fastest bare node start 18.9 ms (medians 89.7 and 53.4 ms) over 40 interleaved pairs
+before PostToolUseFailure loop-watch.mjs — fastest hook run 29.6 ms, fastest bare node start 19.2 ms (medians 82.7 and 55.7 ms) over 40 interleaved pairs
+before PostToolUseFailure session-log.mjs — fastest hook run 63.3 ms, fastest bare node start 40.6 ms (medians 95.8 and 66.5 ms) over 40 interleaved pairs
+```
+
+### Wall-clock set two (out2.txt)
+
+```
+## 17:48:28 load 11.78 14.12 14.60 before
+before PreToolUse tool-gate.mjs — fastest hook run 53.4 ms, fastest bare node start 32.3 ms (medians 80.1 and 50.7 ms) over 40 interleaved pairs
+before PreToolUse session-log.mjs — fastest hook run 59.8 ms, fastest bare node start 35.6 ms (medians 107.4 and 58.0 ms) over 40 interleaved pairs
+before PostToolUse session-log.mjs — fastest hook run 35.3 ms, fastest bare node start 17.7 ms (medians 46.8 and 24.6 ms) over 40 interleaved pairs
+before PostToolUseFailure loop-watch.mjs — fastest hook run 26.1 ms, fastest bare node start 16.2 ms (medians 32.8 and 21.0 ms) over 40 interleaved pairs
+before PostToolUseFailure session-log.mjs — fastest hook run 31.5 ms, fastest bare node start 15.7 ms (medians 37.2 and 19.0 ms) over 40 interleaved pairs
+## 17:48:49 load 17.92 15.40 15.01 after
+after PreToolUse dispatch-pre-tool.mjs — fastest hook run 31.4 ms, fastest bare node start 17.3 ms (medians 43.6 and 22.1 ms) over 40 interleaved pairs
+after PostToolUse dispatch-post-tool.mjs — fastest hook run 60.1 ms, fastest bare node start 30.8 ms (medians 107.1 and 58.6 ms) over 40 interleaved pairs
+after PostToolUseFailure dispatch-tool-failure.mjs — fastest hook run 40.4 ms, fastest bare node start 24.2 ms (medians 104.8 and 53.6 ms) over 40 interleaved pairs
+## 17:49:05 load 19.67 15.88 15.17 after
+after PreToolUse dispatch-pre-tool.mjs — fastest hook run 48.8 ms, fastest bare node start 32.9 ms (medians 89.2 and 56.7 ms) over 40 interleaved pairs
+after PostToolUse dispatch-post-tool.mjs — fastest hook run 56.9 ms, fastest bare node start 26.5 ms (medians 100.8 and 61.1 ms) over 40 interleaved pairs
+after PostToolUseFailure dispatch-tool-failure.mjs — fastest hook run 42.1 ms, fastest bare node start 32.3 ms (medians 100.5 and 61.4 ms) over 40 interleaved pairs
+## 17:49:24 load 26.32 17.68 15.78 before
+before PreToolUse tool-gate.mjs — fastest hook run 49.1 ms, fastest bare node start 25.1 ms (medians 95.6 and 56.5 ms) over 40 interleaved pairs
+before PreToolUse session-log.mjs — fastest hook run 57.6 ms, fastest bare node start 21.7 ms (medians 93.2 and 53.3 ms) over 40 interleaved pairs
+before PostToolUse session-log.mjs — fastest hook run 56.5 ms, fastest bare node start 31.7 ms (medians 90.5 and 56.1 ms) over 40 interleaved pairs
+before PostToolUseFailure loop-watch.mjs — fastest hook run 53.4 ms, fastest bare node start 33.5 ms (medians 84.2 and 54.9 ms) over 40 interleaved pairs
+before PostToolUseFailure session-log.mjs — fastest hook run 48.4 ms, fastest bare node start 27.3 ms (medians 91.5 and 57.4 ms) over 40 interleaved pairs
+## 17:49:54 load 32.74 20.13 16.66 before
+before PreToolUse tool-gate.mjs — fastest hook run 59.3 ms, fastest bare node start 33.5 ms (medians 100.5 and 57.8 ms) over 40 interleaved pairs
+before PreToolUse session-log.mjs — fastest hook run 59.0 ms, fastest bare node start 22.6 ms (medians 97.8 and 57.2 ms) over 40 interleaved pairs
+before PostToolUse session-log.mjs — fastest hook run 63.8 ms, fastest bare node start 38.5 ms (medians 98.4 and 63.5 ms) over 40 interleaved pairs
+before PostToolUseFailure loop-watch.mjs — fastest hook run 46.1 ms, fastest bare node start 42.5 ms (medians 82.9 and 60.5 ms) over 40 interleaved pairs
+before PostToolUseFailure session-log.mjs — fastest hook run 64.5 ms, fastest bare node start 33.8 ms (medians 98.2 and 56.1 ms) over 40 interleaved pairs
+## 17:50:25 load 36.56 22.47 17.57 after
+after PreToolUse dispatch-pre-tool.mjs — fastest hook run 68.0 ms, fastest bare node start 31.2 ms (medians 103.6 and 59.0 ms) over 40 interleaved pairs
+after PostToolUse dispatch-post-tool.mjs — fastest hook run 64.2 ms, fastest bare node start 29.9 ms (medians 116.1 and 66.6 ms) over 40 interleaved pairs
+after PostToolUseFailure dispatch-tool-failure.mjs — fastest hook run 88.3 ms, fastest bare node start 36.2 ms (medians 128.2 and 67.1 ms) over 40 interleaved pairs
+```
+
+### lint-touched runs, with the matching after lines (out3.txt)
+
+```
+## 17:51:03 load 38.07 24.45 18.42
+before PostToolUse lint-touched.mjs — fastest hook run 34.9 ms, fastest bare node start 27.4 ms (medians 85.5 and 63.3 ms) over 40 interleaved pairs
+after PostToolUse dispatch-post-tool.mjs — fastest hook run 61.7 ms, fastest bare node start 36.3 ms (medians 104.1 and 64.3 ms) over 40 interleaved pairs
+## 17:51:30 load 39.74 25.94 19.07
+before PostToolUse lint-touched.mjs — fastest hook run 48.0 ms, fastest bare node start 36.2 ms (medians 85.3 and 58.4 ms) over 40 interleaved pairs
+after PostToolUse dispatch-post-tool.mjs — fastest hook run 55.3 ms, fastest bare node start 31.2 ms (medians 103.5 and 57.5 ms) over 40 interleaved pairs
+## 17:51:56 load 39.81 27.25 19.73
+before PostToolUse lint-touched.mjs — fastest hook run 47.3 ms, fastest bare node start 30.3 ms (medians 78.5 and 51.7 ms) over 40 interleaved pairs
+after PostToolUse dispatch-post-tool.mjs — fastest hook run 56.4 ms, fastest bare node start 31.4 ms (medians 90.1 and 52.9 ms) over 40 interleaved pairs
+```
+
+### CPU rounds (cpu-out.txt)
+
+```
+r1 PreToolUse bare cpu 21.1 ms/process (user 14.2 + sys 6.9)
+r1 PreToolUse tool-gate.mjs cpu 35.6 ms/process (user 27.4 + sys 8.2)
+r1 PreToolUse session-log.mjs cpu 36.6 ms/process (user 28.0 + sys 8.7)
+r1 PreToolUse dispatch-pre-tool.mjs cpu 40.1 ms/process (user 30.3 + sys 9.8)
+r1 PostToolUse bare cpu 20.1 ms/process (user 13.7 + sys 6.4)
+r1 PostToolUse session-log.mjs cpu 36.3 ms/process (user 27.8 + sys 8.6)
+r1 PostToolUse dispatch-post-tool.mjs cpu 38.2 ms/process (user 28.8 + sys 9.4)
+r1 PostToolUseFailure bare cpu 18.9 ms/process (user 13.0 + sys 5.9)
+r1 PostToolUseFailure loop-watch.mjs cpu 30.2 ms/process (user 22.3 + sys 7.9)
+r1 PostToolUseFailure session-log.mjs cpu 35.0 ms/process (user 26.8 + sys 8.2)
+r1 PostToolUseFailure dispatch-tool-failure.mjs cpu 37.7 ms/process (user 28.6 + sys 9.1)
+r2 PreToolUse bare cpu 19.0 ms/process (user 12.9 + sys 6.1)
+r2 PreToolUse tool-gate.mjs cpu 32.1 ms/process (user 24.7 + sys 7.4)
+r2 PreToolUse session-log.mjs cpu 34.3 ms/process (user 26.5 + sys 7.9)
+r2 PreToolUse dispatch-pre-tool.mjs cpu 37.8 ms/process (user 28.9 + sys 9.0)
+r2 PostToolUse bare cpu 19.1 ms/process (user 13.0 + sys 6.2)
+r2 PostToolUse session-log.mjs cpu 34.7 ms/process (user 26.5 + sys 8.2)
+r2 PostToolUse dispatch-post-tool.mjs cpu 37.9 ms/process (user 28.3 + sys 9.6)
+r2 PostToolUseFailure bare cpu 19.4 ms/process (user 13.0 + sys 6.4)
+r2 PostToolUseFailure loop-watch.mjs cpu 30.7 ms/process (user 22.8 + sys 7.9)
+r2 PostToolUseFailure session-log.mjs cpu 37.3 ms/process (user 28.8 + sys 8.5)
+r2 PostToolUseFailure dispatch-tool-failure.mjs cpu 40.3 ms/process (user 30.5 + sys 9.8)
+r3 PreToolUse bare cpu 20.0 ms/process (user 13.5 + sys 6.5)
+r3 PreToolUse tool-gate.mjs cpu 35.2 ms/process (user 26.9 + sys 8.2)
+r3 PreToolUse session-log.mjs cpu 36.1 ms/process (user 27.9 + sys 8.2)
+r3 PreToolUse dispatch-pre-tool.mjs cpu 39.5 ms/process (user 29.6 + sys 9.8)
+r3 PostToolUse bare cpu 20.1 ms/process (user 13.5 + sys 6.6)
+r3 PostToolUse session-log.mjs cpu 37.4 ms/process (user 28.8 + sys 8.5)
+r3 PostToolUse dispatch-post-tool.mjs cpu 46.8 ms/process (user 35.9 + sys 10.9)
+r3 PostToolUseFailure bare cpu 34.2 ms/process (user 22.8 + sys 11.4)
+r3 PostToolUseFailure loop-watch.mjs cpu 30.3 ms/process (user 22.5 + sys 7.9)
+r3 PostToolUseFailure session-log.mjs cpu 35.0 ms/process (user 27.2 + sys 7.8)
+r3 PostToolUseFailure dispatch-tool-failure.mjs cpu 38.7 ms/process (user 29.1 + sys 9.6)
+```
+
