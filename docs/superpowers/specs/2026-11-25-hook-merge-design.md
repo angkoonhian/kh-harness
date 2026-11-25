@@ -4,7 +4,7 @@ Date: 2026-11-25. Status: approved in outline by the owner on 2026-11-25; revise
 
 ## Intent
 
-Each tool call in an installed repository starts two Node processes on `PreToolUse`, two on `PostToolUse` for a `Write` or `Edit` where the lint sensor is installed, and two on `PostToolUseFailure`. Measured on this machine, a bare Node start costs about 15 ms and any one kit hook 22 to 27 ms, while both `PreToolUse` hooks loaded in one process cost about 26 ms. Hook time is process start time, so one process per event roughly halves it.
+Each tool call in an installed repository starts two Node processes on `PreToolUse`, two on `PostToolUse` for a `Write` or `Edit` where the lint sensor is installed, and two on `PostToolUseFailure`. Measured on this machine, a bare Node start costs about 15 ms and any one kit hook 22 to 27 ms, while both `PreToolUse` hooks loaded in one process cost about 26 ms. Hook time is process start time, so one process per event was expected to roughly halve it. (Corrected 2026-11-25 by measurement: Claude Code runs an event's hooks in parallel, so the owner waited for the slower of the two, not their sum. The merge saves about 27 to 32 ms of CPU per call on two of the three events and shows no change in wall-clock time; see `docs/plan-10-execution-log.md`. The remaining reason for the merge is the extension point.)
 
 The same change gives a second plugin a place to add gates without adding a process.
 
@@ -92,7 +92,7 @@ An extension runs only where `dispatch-pre-tool.mjs` is registered. A plugin tha
 
 - On a fresh repository `apply` registers the entry scripts instead of the separate hooks, and `session-log.mjs` on the other logged events.
 - On an existing install, the four separate hooks are all present, so today's `apply` proposes nothing. The merge adds a check that reports an event still using separate registrations, and a new kind of proposal that replaces registrations. `apply` only appends today; it gains the ability to remove a registration it recorded and add another in one step.
-- An event is migrated only when every registration the kit made on it is still exactly as the manifest recorded, judged by the recorded hash of each entry. If the owner changed or removed any of them, that event is left as it is and `detect` says so. A half therefore never runs twice, and a half the owner switched off stays off.
+- An event is migrated only when every registration the kit made on it is still exactly as the manifest recorded, judged by the recorded hash of each entry. If the owner changed or removed any of them, that event is left as it is and `detect` says so. A half therefore never runs twice, and the migration never turns a half back on. (As before the merge, `apply` still offers any kit hook that is missing, so a half the owner removed is proposed again by its own check.)
 - The dry run shows the entries to be removed and the entry to be added.
 - `uninstall` removes the entry scripts and their registrations like any other the kit wrote.
 
