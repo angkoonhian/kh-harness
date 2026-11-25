@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { extensionsEvidence } from './extensions-evidence.mjs';
+import { EXTENSION_HOOK_FILES, extensionsEvidence } from './extensions-evidence.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { KIT_VERSION } from './manifest.mjs';
 import { selectProfile } from './profiles/index.mjs';
@@ -42,7 +42,11 @@ function write(d, rel, text) {
 const entry = (id, onFailure, source) => ({ id, version: '1.0.0', module: `.claude/ext/${id}.mjs`, sha256: moduleSha256(Buffer.from(source)), onFailure });
 const ALLOW = 'export const preToolUse = () => ({ decision: \'allow\' });\n';
 const BLOCK = 'export const preToolUse = () => ({ decision: \'block\', message: \'refused by a\' });\n';
-const CURRENT = { entry: 'current', core: 'current', loader: 'current' };
+const HOOK_FILE_PATHS = Object.values(EXTENSION_HOOK_FILES).flat();
+const every = status => Object.fromEntries(HOOK_FILE_PATHS.map(path => [path, status]));
+const CURRENT = every('current');
+const HARNESS_LOG = '.claude/scripts/harness-log.mjs';
+const HARNESS_REDACT = '.claude/scripts/harness-redact.mjs';
 
 /** A repository holding the entry script and every installed script it
  * loads, as this kit writes them today. */
@@ -95,7 +99,7 @@ test('no file is absent, a bad file is malformed with the loader\'s own problem 
   const d = tempDir();
   assert.deepEqual(extensionsEvidence(d), { state: 'absent' });
   write(d, EXTENSIONS_PATH, '[ not json');
-  assert.deepEqual(extensionsEvidence(d), { state: 'malformed', problem: 'it is not JSON', installed: { entry: 'missing', core: 'missing', loader: 'missing' } });
+  assert.deepEqual(extensionsEvidence(d), { state: 'malformed', problem: 'it is not JSON', installed: every('missing') });
 });
 
 test('each extension is listed with its hash state, and its recorded sha256 is not', () => {
@@ -117,7 +121,17 @@ test('an installed kit file is current only while it holds what this kit writes 
   write(d, DISPATCH_PRE_PATH, installedScriptProposal(DISPATCH_PRE_PATH, KIT_VERSION).contents.replace(/\n/g, '\r\n'));
   write(d, HARNESS_DISPATCH_PATH, '// another core\n');
   rmSync(join(d, HARNESS_EXTENSIONS_PATH));
-  assert.deepEqual(extensionsEvidence(d).installed, { entry: 'current', core: 'other', loader: 'missing' });
+  write(d, HARNESS_LOG, installedScriptProposal(HARNESS_LOG, '0.0.1').contents);
+  assert.deepEqual(extensionsEvidence(d).installed, { ...CURRENT, [HARNESS_DISPATCH_PATH]: 'other', [HARNESS_EXTENSIONS_PATH]: 'missing', [HARNESS_LOG]: 'other-version' });
+});
+
+test('the files the hook needs are the entry script, the core, the loader, and every installed script those load', () => {
+  assert.deepEqual(EXTENSION_HOOK_FILES, {
+    entry: [DISPATCH_PRE_PATH],
+    core: [HARNESS_DISPATCH_PATH, ...everyLoadedSibling(HARNESS_DISPATCH_PATH)],
+    loader: [HARNESS_EXTENSIONS_PATH, ...everyLoadedSibling(HARNESS_EXTENSIONS_PATH)],
+  });
+  assert.ok(EXTENSION_HOOK_FILES.loader.includes(HARNESS_LOG) && EXTENSION_HOOK_FILES.loader.includes(HARNESS_REDACT));
 });
 
 test('listing an extension does not load it', () => {
@@ -210,4 +224,44 @@ test('all three current: the consequence each line states is what the hook does'
   write(d, EXTENSIONS_PATH, '[ not json');
   assert.deepEqual(check(d).evidence, ['.claude/kh-harness/extensions.json cannot be used (it is not JSON), so every tool call is blocked']);
   assert.match(hookDenies(d), /^kh-harness: \.claude\/kh-harness\/extensions\.json cannot be used \(it is not JSON\), so every tool call is blocked/);
+});
+
+test('a module the loader imports that is missing blocks every call, whatever the entries say and with none', () => {
+  const cases = [
+    { missing: HARNESS_LOG, file: [entry('a', 'allow', ALLOW)], header: `.claude/kh-harness/extensions.json lists 1 extension, and every tool call is blocked: ${HARNESS_LOG} is missing; ${REMEDY}` },
+    { missing: HARNESS_LOG, file: [], header: `.claude/kh-harness/extensions.json lists no extension, and every tool call is blocked: ${HARNESS_LOG} is missing; ${REMEDY}` },
+    { missing: HARNESS_REDACT, file: [], header: `.claude/kh-harness/extensions.json lists no extension, and every tool call is blocked: ${HARNESS_REDACT} is missing; ${REMEDY}` },
+  ];
+  for (const { missing, file, header } of cases) {
+    const d = installedRepo();
+    rmSync(join(d, missing));
+    write(d, '.claude/ext/a.mjs', ALLOW);
+    write(d, EXTENSIONS_PATH, JSON.stringify(file));
+    const c = check(d);
+    assert.deepEqual([c.state, c.evidence[0]], ['failing', header], missing);
+    assert.equal(hookDenies(d), unusableDeny('harness-extensions.mjs'), missing);
+  }
+});
+
+test('a module the loader imports that this kit did not write: what the hook does was not read', () => {
+  const d = installedRepo();
+  write(d, HARNESS_LOG, `${installedScriptProposal(HARNESS_LOG, KIT_VERSION).contents}// edited\n`);
+  write(d, '.claude/ext/a.mjs', ALLOW);
+  write(d, EXTENSIONS_PATH, JSON.stringify([entry('a', 'block', ALLOW)]));
+  const c = check(d);
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [
+    `.claude/kh-harness/extensions.json lists 1 extension, and what the hook does with the file was not read: ${HARNESS_LOG} is not the file this kit installs; ${REMEDY}`,
+    `a 1.0.0: .claude/ext/a.mjs ${UNCHECKED}; onFailure block`,
+  ]);
+  assert.equal(hookDenies(d), null, 'this edit happens to leave the loader working');
+});
+
+test('a kit file stamped by another kh-harness version is named as such', () => {
+  const d = installedRepo();
+  write(d, DISPATCH_PRE_PATH, installedScriptProposal(DISPATCH_PRE_PATH, '0.0.1').contents);
+  write(d, '.claude/ext/a.mjs', ALLOW);
+  write(d, EXTENSIONS_PATH, JSON.stringify([entry('a', 'block', ALLOW)]));
+  const c = check(d);
+  assert.deepEqual([c.state, c.evidence[0]], ['failing', `.claude/kh-harness/extensions.json lists 1 extension, and what the hook does with the file was not read: ${DISPATCH_PRE_PATH} carries another kh-harness version's stamp; ${REMEDY}`]);
 });

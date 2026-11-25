@@ -1013,5 +1013,5 @@ test('detect --json on a repository with an extensions file reports P5.extension
   assert.deepEqual(written.checks.find(c => c.id === 'P5.extensions').evidence, check.evidence);
   assert.equal(written.harness.extensions.extensions[0].id, 'a');
   assert.deepEqual(Object.keys(written.harness.extensions.extensions[0]).sort(), ['hash', 'id', 'module', 'onFailure', 'version']);
-  assert.deepEqual(written.harness.extensions.installed, { entry: 'current', core: 'current', loader: 'current' });
+  assert.deepEqual(new Set(Object.values(written.harness.extensions.installed)), new Set(['current']));
 });

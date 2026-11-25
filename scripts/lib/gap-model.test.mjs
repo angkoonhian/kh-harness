@@ -17,6 +17,7 @@ import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { hasEquivalentHook, hookEntrySha256 } from './settings-merge.mjs';
 import { ENTRY_SCRIPTS, execEntry, registeredHook } from './hook-evidence.mjs';
 import { UNREADABLE_KIND, splitExposures } from './detect-exposure.mjs';
+import { EXTENSION_HOOK_FILES } from './extensions-evidence.mjs';
 
 /** `byEvent` with `entry` appended on every logged event: the logging hook
  * is registered on all of them in a fully harnessed repository. */
@@ -2061,7 +2062,8 @@ test('P0.hookmerge sits directly before P0.kitskew in the checks and in the gene
 const extensionsCheck = harness => byId(gaps(bareStack, harness), 'P5.extensions');
 const onPreToolUse = (...registrations) => ({ ...bareHarness, claudeDir: { ...bareHarness.claudeDir, hookRegistrations: { PreToolUse: registrations } } });
 const entryRegistered = onPreToolUse({ script: DISPATCH_PRE_PATH, matcher: null });
-const CURRENT = Object.freeze({ entry: 'current', core: 'current', loader: 'current' });
+const HOOK_FILE_PATHS = Object.values(EXTENSION_HOOK_FILES).flat();
+const CURRENT = Object.freeze(Object.fromEntries(HOOK_FILE_PATHS.map(path => [path, 'current'])));
 const listed = (...extensions) => ({ state: 'ok', installed: CURRENT, extensions: extensions.map(([id, hash, onFailure]) => ({ id, version: '1.0.0', module: `.claude/ext/${id}.mjs`, onFailure, hash })) });
 const notJson = (installed = CURRENT) => ({ state: 'malformed', problem: 'it is not JSON', installed });
 const UNCHECKED = 'matches its recorded sha256 (whether it loads and runs is not checked)';
@@ -2073,7 +2075,7 @@ test('P5.extensions sits directly after P5.integrity, and says what it looked fo
   assert.deepEqual([c.step, c.phase], [32, 5]);
   assert.deepEqual(c.lookedFor, [
     '.claude/kh-harness/extensions.json', 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`,
-    `${DISPATCH_PRE_PATH}, .claude/scripts/harness-dispatch.mjs and .claude/scripts/harness-extensions.mjs against what this kit installs`,
+    `${HOOK_FILE_PATHS.join(', ')} against what this kit installs`,
   ]);
 });
 
@@ -2135,7 +2137,7 @@ test('P5.extensions says the entry script is not in the repository, not that it 
   // The scan could not resolve the script, so the registration carries the
   // hash of the entry kh-harness writes for it.
   const orphan = onPreToolUse(Object.defineProperty({ script: null, matcher: null }, 'entrySha256', { value: hookEntrySha256(execEntry(DISPATCH_PRE_PATH)) }));
-  const gone = { ...CURRENT, entry: 'missing' };
+  const gone = { ...CURRENT, [DISPATCH_PRE_PATH]: 'missing' };
   const c = extensionsCheck({ ...orphan, extensions: { ...listed(['a', 'matches', 'block']), installed: gone } });
   assert.equal(c.state, 'failing');
   assert.deepEqual(c.evidence, [
@@ -2165,8 +2167,8 @@ test('P5.extensions never proposes and is never verified', () => {
     { ...entryRegistered, extensions: listed(['a', 'matches', 'block']) },
     { ...entryRegistered, extensions: listed(['a', 'missing', 'block']) },
     { ...entryRegistered, extensions: notJson() },
-    { ...entryRegistered, extensions: notJson({ ...CURRENT, entry: 'other' }) },
-    { ...entryRegistered, extensions: { ...listed(), installed: { ...CURRENT, loader: 'missing' } } },
+    { ...entryRegistered, extensions: notJson({ ...CURRENT, [DISPATCH_PRE_PATH]: 'other' }) },
+    { ...entryRegistered, extensions: { ...listed(), installed: { ...CURRENT, '.claude/scripts/harness-extensions.mjs': 'missing' } } },
     { ...bareHarness, extensions: listed(['a', 'matches', 'block']) },
   ];
   for (const harness of harnesses) {

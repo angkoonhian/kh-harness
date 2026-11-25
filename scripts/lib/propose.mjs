@@ -852,9 +852,11 @@ export function installedScriptProposal(path, kitVersion) {
 }
 
 /** Where the installed script at `path` stands on disk against what this
- * kit writes there today, line endings aside: `current`, `other` (anything
- * else, including what cannot be read or is not a regular file), or
- * `missing`, which is also a path Node could not load a module from.
+ * kit writes there today, line endings aside: `current`; `other-version`
+ * when it is not that but carries another kh-harness version's stamp;
+ * `other` for anything else, including what cannot be read or is not a
+ * regular file; or `missing`, which is also a path Node could not load a
+ * module from.
  * Read whatever the manifest records, since what runs is the file on
  * disk. */
 export function installedScriptStatus(root, path, kitVersion) {
@@ -872,7 +874,10 @@ export function installedScriptStatus(root, path, kitVersion) {
   // LF made CRLF, so it is not read.
   if (!st.isFile() || st.size > 2 * Buffer.byteLength(expected)) return 'other';
   try {
-    return contentMatches(readFileSync(file), sha256(expected)) ? 'current' : 'other';
+    const bytes = readFileSync(file);
+    if (contentMatches(bytes, sha256(expected))) return 'current';
+    const version = stampVersion(bytes.toString('utf8'));
+    return version !== null && version !== kitVersion ? 'other-version' : 'other';
   } catch {
     return 'other';
   }
