@@ -17,6 +17,7 @@ import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
 import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
 import { failuresEvidence } from './failures-evidence.mjs';
+import { extensionsEvidence } from './extensions-evidence.mjs';
 import { normalizeMatcher, hookPathTokens, matcherEntrySha256, SETTINGS_PATH } from './settings-merge.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
@@ -448,5 +449,6 @@ export function detectHarness(root, files, { env } = {}) {
   harness.rulesRegistry = rulesRegistryEvidence(root, harness);
   harness.ruleShapedLines = ruleShapedLines(root, harness);
   harness.failures = failuresEvidence(root);
+  harness.extensions = extensionsEvidence(root);
   return harness;
 }

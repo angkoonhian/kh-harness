@@ -2052,3 +2052,99 @@ test('P0.hookmerge sits directly before P0.kitskew in the checks and in the gene
   assert.deepEqual(Object.keys(GENERATORS).slice(-2), ['P0.hookmerge', 'P0.kitskew']);
   assert.deepEqual(GENERATORS['P0.hookmerge']({ kitVersion: '0.2.0', harness: merged, manifest: null, stack: lintStack, checks: [], files: [] }), []);
 });
+
+// --- P5.extensions -----------------------------------------------------------
+
+const extensionsCheck = harness => byId(gaps(bareStack, harness), 'P5.extensions');
+const onPreToolUse = (...registrations) => ({ ...bareHarness, claudeDir: { ...bareHarness.claudeDir, hookRegistrations: { PreToolUse: registrations } } });
+const entryRegistered = onPreToolUse({ script: DISPATCH_PRE_PATH, matcher: null });
+const listed = (...extensions) => ({ state: 'ok', extensions: extensions.map(([id, hash, onFailure]) => ({ id, version: '1.0.0', module: `.claude/ext/${id}.mjs`, onFailure, hash })) });
+
+test('P5.extensions sits directly after P5.integrity, and says what it looked for', () => {
+  const ids = gaps(bareStack, bareHarness).map(c => c.id);
+  assert.equal(ids[ids.indexOf('P5.integrity') + 1], 'P5.extensions');
+  const c = extensionsCheck(bareHarness);
+  assert.deepEqual([c.step, c.phase], [32, 5]);
+  assert.deepEqual(c.lookedFor, ['.claude/kh-harness/extensions.json', 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`]);
+});
+
+test('P5.extensions is n/a when the harness object carries no extensions reading, and when there is no file', () => {
+  const unread = extensionsCheck(bareHarness);
+  assert.deepEqual([unread.state, unread.evidence], ['n/a', ['the extensions file was not read']]);
+  const none = extensionsCheck({ ...entryRegistered, extensions: { state: 'absent' } });
+  assert.deepEqual([none.state, none.evidence], ['n/a', ['no .claude/kh-harness/extensions.json: no plugin has registered an extension']]);
+  const empty = extensionsCheck({ ...entryRegistered, extensions: listed() });
+  assert.deepEqual([empty.state, empty.evidence], ['n/a', ['.claude/kh-harness/extensions.json lists no extension']]);
+});
+
+test('P5.extensions is declared when every listed module matches, one line per extension', () => {
+  const c = extensionsCheck({ ...entryRegistered, extensions: listed(['a', 'matches', 'block'], ['b', 'matches', 'allow']) });
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 2 extensions, run by .claude/scripts/dispatch-pre-tool.mjs before every tool call',
+    'a 1.0.0: .claude/ext/a.mjs matches its recorded sha256; onFailure block',
+    'b 1.0.0: .claude/ext/b.mjs matches its recorded sha256; onFailure allow',
+  ]);
+});
+
+test('P5.extensions is failing when a module does not match, and says what the hook then does', () => {
+  const c = extensionsCheck({ ...entryRegistered, extensions: listed(['a', 'differs', 'block'], ['b', 'missing', 'allow'], ['c', 'outside', 'block'], ['d', 'unreadable', 'allow'], ['e', 'matches', 'block']) });
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 5 extensions, run by .claude/scripts/dispatch-pre-tool.mjs before every tool call',
+    'a 1.0.0: .claude/ext/a.mjs does not match its recorded sha256; onFailure block, so every tool call is blocked',
+    'b 1.0.0: .claude/ext/b.mjs is missing; onFailure allow, so it checks no call',
+    'c 1.0.0: .claude/ext/c.mjs is not a file under .claude/ in this repository; onFailure block, so every tool call is blocked',
+    'd 1.0.0: .claude/ext/d.mjs could not be read; onFailure allow, so it checks no call',
+    'e 1.0.0: .claude/ext/e.mjs matches its recorded sha256; onFailure block',
+  ]);
+});
+
+test('P5.extensions is failing for a malformed file', () => {
+  const c = extensionsCheck({ ...entryRegistered, extensions: { state: 'malformed', problem: 'it is not JSON' } });
+  assert.deepEqual([c.state, c.evidence], ['failing', ['.claude/kh-harness/extensions.json cannot be used (it is not JSON), so every tool call is blocked']]);
+});
+
+test('P5.extensions is failing when extensions are listed and the entry script is not registered on PreToolUse', () => {
+  const separate = onPreToolUse({ script: TOOL_GATE_PATH, matcher: null }, { script: SESSION_LOG_PATH, matcher: null });
+  const c = extensionsCheck({ ...separate, extensions: listed(['a', 'differs', 'block']) });
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 1 extension, and none runs: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse',
+    'a 1.0.0: .claude/ext/a.mjs does not match its recorded sha256; onFailure block',
+  ], 'with nothing to run it, no entry blocks a call');
+  const malformed = extensionsCheck({ ...separate, extensions: { state: 'malformed', problem: 'it is not JSON' } });
+  assert.deepEqual([malformed.state, malformed.evidence], ['failing', [
+    '.claude/kh-harness/extensions.json cannot be used (it is not JSON), and nothing reads it: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse',
+  ]]);
+  const unregistered = extensionsCheck({ ...bareHarness, extensions: listed(['a', 'matches', 'block']) });
+  assert.equal(unregistered.state, 'failing');
+  assert.equal(unregistered.evidence[0], '.claude/kh-harness/extensions.json lists 1 extension, and none runs: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse');
+});
+
+test('P5.extensions under a PreToolUse matcher that does not select every tool says so', () => {
+  const narrow = onPreToolUse({ script: DISPATCH_PRE_PATH, matcher: 'Bash' });
+  const c = extensionsCheck({ ...narrow, extensions: listed(['a', 'differs', 'block']) });
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 1 extension, run by .claude/scripts/dispatch-pre-tool.mjs before each tool call its PreToolUse matcher selects',
+    'a 1.0.0: .claude/ext/a.mjs does not match its recorded sha256; onFailure block, so every tool call its PreToolUse matcher selects is blocked',
+  ]);
+  const malformed = extensionsCheck({ ...narrow, extensions: { state: 'malformed', problem: 'it is not JSON' } });
+  assert.deepEqual(malformed.evidence, ['.claude/kh-harness/extensions.json cannot be used (it is not JSON), so every tool call its PreToolUse matcher selects is blocked']);
+});
+
+test('P5.extensions never proposes and is never verified', () => {
+  const harnesses = [
+    bareHarness,
+    { ...entryRegistered, extensions: { state: 'absent' } },
+    { ...entryRegistered, extensions: listed(['a', 'matches', 'block']) },
+    { ...entryRegistered, extensions: listed(['a', 'missing', 'block']) },
+    { ...entryRegistered, extensions: { state: 'malformed', problem: 'it is not JSON' } },
+    { ...bareHarness, extensions: listed(['a', 'matches', 'block']) },
+  ];
+  for (const harness of harnesses) {
+    const c = extensionsCheck(harness);
+    assert.equal(c.proposal, null, JSON.stringify(c.evidence));
+    assert.notEqual(c.state, 'verified');
+  }
+});

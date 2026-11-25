@@ -3,7 +3,7 @@ import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates, denyRuleCoverage } from './protected-evidence.mjs';
-import { ENTRY_SCRIPTS, registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, directRegistrations, registeredHook } from './hook-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote, fixtureExposureNote } from './detect-exposure.mjs';
@@ -18,7 +18,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { displayPath, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
@@ -26,8 +26,19 @@ import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mj
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { integrityEvidence } from './integrity-evidence.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
+import { EXTENSIONS_PATH } from '../../assets/scripts/harness-extensions.mjs';
+import { normalizeMatcher } from './settings-merge.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
+
+/** How P5.extensions words each module state `moduleState` returns. */
+const EXTENSION_HASH_WORDS = Object.freeze({
+  matches: 'matches its recorded sha256',
+  differs: 'does not match its recorded sha256',
+  missing: 'is missing',
+  outside: 'is not a file under .claude/ in this repository',
+  unreadable: 'could not be read',
+});
 
 /**
  * Counts CAPABILITY GAPS with a proposal, per `via` (see `buildGaps`): only
@@ -796,6 +807,40 @@ const CHECKS = [
       if (root === undefined) throw new TypeError('buildGaps: P5.integrity needs `root` once there is a manifest — without it no recorded file can be read.');
       const { problems, summary } = integrityEvidence(root, manifest);
       return problems.length ? { state: 'failing', evidence: problems } : { state: 'declared', evidence: summary };
+    },
+  },
+  {
+    id: 'P5.extensions', step: 32, phase: 5,
+    lookedFor: [EXTENSIONS_PATH, 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`],
+    // Read from `harness.extensions`, which hashes each module and never
+    // loads one, so it is never `verified`. Nothing is proposed: an
+    // extension is another plugin's, and so is its repair. What a line says
+    // the hook does is what harness-extensions.mjs's `extensionsHalf` does,
+    // and is said only while the entry script that runs it is registered.
+    check: ({ harness, manifest, root }) => {
+      const file = harness.extensions;
+      if (!file) return { state: 'n/a', evidence: ['the extensions file was not read'] };
+      if (file.state === 'absent') return { state: 'n/a', evidence: [`no ${EXTENSIONS_PATH}: no plugin has registered an extension`] };
+      const registered = registeredHook(harness, 'PreToolUse', DISPATCH_PRE_PATH, null, { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
+      const unrun = `${DISPATCH_PRE_PATH} is not registered on PreToolUse`;
+      const everyTool = directRegistrations(harness, 'PreToolUse', DISPATCH_PRE_PATH).some(r => normalizeMatcher(r.matcher) === null);
+      const blocked = `so every tool call${everyTool ? '' : ' its PreToolUse matcher selects'} is blocked`;
+      if (file.state === 'malformed') {
+        return { state: 'failing', evidence: [`${EXTENSIONS_PATH} cannot be used (${file.problem}), ${registered ? blocked : `and nothing reads it: ${unrun}`}`] };
+      }
+      const n = file.extensions.length;
+      if (n === 0) return { state: 'n/a', evidence: [`${EXTENSIONS_PATH} lists no extension`] };
+      const lists = `${EXTENSIONS_PATH} lists ${n} extension${n === 1 ? '' : 's'}`;
+      const header = registered
+        ? `${lists}, run by ${DISPATCH_PRE_PATH} before ${everyTool ? 'every tool call' : 'each tool call its PreToolUse matcher selects'}`
+        : `${lists}, and none runs: ${unrun}`;
+      const consequence = { block: blocked, allow: 'so it checks no call' };
+      const lines = file.extensions.map(e => {
+        const line = `${e.id} ${e.version}: ${e.module} ${EXTENSION_HASH_WORDS[e.hash]}; onFailure ${e.onFailure}`;
+        return e.hash === 'matches' || !registered ? line : `${line}, ${consequence[e.onFailure]}`;
+      });
+      const failing = !registered || file.extensions.some(e => e.hash !== 'matches');
+      return { state: failing ? 'failing' : 'declared', evidence: [header, ...lines] };
     },
   },
   {

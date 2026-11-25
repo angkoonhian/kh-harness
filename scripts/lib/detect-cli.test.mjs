@@ -991,3 +991,24 @@ test('WORKTREE: detect prints one quiet line for a linked worktree of this repos
   assert.deepEqual(report.nested, []);
   assert.deepEqual(report.worktrees, [{ path: '.claude/worktrees/side', kind: 'worktree' }]);
 });
+
+test('detect --json on a repository with an extensions file reports P5.extensions and writes the same lines to detect.json', async () => {
+  const { moduleSha256 } = await import('../../assets/scripts/harness-extensions.mjs');
+  const d = bare();
+  const source = 'export const preToolUse = () => ({ decision: \'allow\' });\n';
+  write(d, '.claude/ext/a.mjs', source);
+  write(d, '.claude/kh-harness/extensions.json', JSON.stringify([{ id: 'a', version: '1.0.0', module: '.claude/ext/a.mjs', sha256: moduleSha256(Buffer.from(source)), onFailure: 'block' }]));
+  write(d, '.claude/scripts/dispatch-pre-tool.mjs', '//');
+  write(d, '.claude/settings.json', JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-pre-tool.mjs'] }] }] } }));
+  const report = JSON.parse(cli(d, '--json'));
+  const check = report.checks.find(c => c.id === 'P5.extensions');
+  assert.equal(check.state, 'declared');
+  assert.deepEqual(check.evidence, [
+    '.claude/kh-harness/extensions.json lists 1 extension, run by .claude/scripts/dispatch-pre-tool.mjs before every tool call',
+    'a 1.0.0: .claude/ext/a.mjs matches its recorded sha256; onFailure block',
+  ]);
+  const written = JSON.parse(readFileSync(join(d, 'docs', 'harness', 'detect.json'), 'utf8'));
+  assert.deepEqual(written.checks.find(c => c.id === 'P5.extensions').evidence, check.evidence);
+  assert.equal(written.harness.extensions.extensions[0].id, 'a');
+  assert.deepEqual(Object.keys(written.harness.extensions.extensions[0]).sort(), ['hash', 'id', 'module', 'onFailure', 'version']);
+});
