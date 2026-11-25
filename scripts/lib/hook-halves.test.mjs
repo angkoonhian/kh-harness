@@ -84,7 +84,7 @@ function repo(script) {
 }
 const failingRepo = () => repo('node -e "console.error(\'src/a.ts:1 no-unused-vars\'); process.exit(1)"');
 
-const edit = filePath => ({ session_id: 'half-lint', hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: filePath } });
+const edit = (session, filePath) => ({ session_id: session, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: filePath } });
 
 const WARNING = 'The same call has failed with the same error 3 times, with no different failure between them. Stop repeating it and change approach.';
 const WARNING_OUTPUT = JSON.stringify({
@@ -100,14 +100,14 @@ const failure = session => ({
 test('gateHalf returns what tool-gate.mjs prints, and null for another event', () => {
   const rootA = gatedProject();
   const rootB = gatedProject();
-  const half = runHalf(GATE, 'gateHalf', rootA, call('half-1', 'rm -rf build'));
-  const run = direct(GATE, rootB, call('half-1', 'rm -rf build'));
+  const half = runHalf(GATE, 'gateHalf', rootA, call('half-gate-1', 'rm -rf build'));
+  const run = direct(GATE, rootB, call('half-gate-2', 'rm -rf build'));
   assert.equal(run.status, 0);
   assert.equal(run.stderr, '');
   assert.equal(JSON.parse(run.stdout).hookSpecificOutput.permissionDecision, 'deny', 'the gate blocks');
   assert.deepEqual(half, { json: JSON.parse(run.stdout), stderr: '', exitCode: 0 });
   assert.equal(run.stdout, JSON.stringify(half.json) + '\n');
-  assert.equal(runHalf(GATE, 'gateHalf', rootA, { ...call('half-2', 'rm -rf build'), hook_event_name: 'PostToolUse' }), null);
+  assert.equal(runHalf(GATE, 'gateHalf', rootA, { ...call('half-gate-3', 'rm -rf build'), hook_event_name: 'PostToolUse' }), null);
 });
 
 test('logHalf records the event and returns null on a tool-call event', () => {
@@ -139,8 +139,8 @@ test('session-log.mjs run directly still writes its notice with no trailing newl
 test('lintHalf returns the report as stderr with exit code 2, exactly as lint-touched.mjs writes it', () => {
   const repoA = failingRepo();
   const repoB = failingRepo();
-  const half = runHalf(LINT, 'lintHalf', repoA, edit('src/a.ts'));
-  const run = direct(LINT, repoB, edit('src/a.ts'));
+  const half = runHalf(LINT, 'lintHalf', repoA, edit('half-lint-1', 'src/a.ts'));
+  const run = direct(LINT, repoB, edit('half-lint-2', 'src/a.ts'));
   assert.equal(run.status, 2);
   assert.equal(run.stdout, '');
   assert.match(run.stderr, /no-unused-vars/);
@@ -149,21 +149,21 @@ test('lintHalf returns the report as stderr with exit code 2, exactly as lint-to
 
 test('lintHalf runs for each tool SENSOR_MATCHER names and for no other tool or event; run directly the script still tests neither', () => {
   for (const tool of SENSOR_MATCHER.split('|')) {
-    assert.equal(runHalf(LINT, 'lintHalf', failingRepo(), { ...edit('src/a.ts'), tool_name: tool }).exitCode, 2, tool);
+    assert.equal(runHalf(LINT, 'lintHalf', failingRepo(), { ...edit(`half-lint-${tool}`, 'src/a.ts'), tool_name: tool }).exitCode, 2, tool);
   }
-  const read = { ...edit('src/a.ts'), tool_name: 'Read' };
-  assert.equal(runHalf(LINT, 'lintHalf', failingRepo(), read), null);
-  assert.equal(runHalf(LINT, 'lintHalf', failingRepo(), { ...edit('src/a.ts'), hook_event_name: 'PreToolUse' }), null);
-  assert.equal(direct(LINT, failingRepo(), read).status, 2, 'the direct run is as it was');
+  const read = session => ({ ...edit(session, 'src/a.ts'), tool_name: 'Read' });
+  assert.equal(runHalf(LINT, 'lintHalf', failingRepo(), read('half-lint-3')), null);
+  assert.equal(runHalf(LINT, 'lintHalf', failingRepo(), { ...edit('half-lint-4', 'src/a.ts'), hook_event_name: 'PreToolUse' }), null);
+  assert.equal(direct(LINT, failingRepo(), read('half-lint-5')).status, 2, 'the direct run is as it was');
 });
 
 test('lintHalf returns the not-confirmed-clean notice as JSON with exit code 0', () => {
-  const half = runHalf(LINT, 'lintHalf', repo('node -e "process.exit(1)"'), edit('src/a.ts'));
+  const half = runHalf(LINT, 'lintHalf', repo('node -e "process.exit(1)"'), edit('half-lint-6', 'src/a.ts'));
   assert.equal(half.exitCode, 0);
   assert.equal(half.stderr, '');
   assert.deepEqual(Object.keys(half.json), ['systemMessage', 'hookSpecificOutput']);
   assert.equal(half.json.hookSpecificOutput.additionalContext, half.json.systemMessage);
-  const run = direct(LINT, repo('node -e "process.exit(1)"'), edit('src/a.ts'));
+  const run = direct(LINT, repo('node -e "process.exit(1)"'), edit('half-lint-7', 'src/a.ts'));
   assert.equal(run.status, 0);
   assert.equal(run.stderr, '');
   assert.equal(run.stdout, JSON.stringify(half.json) + '\n');

@@ -383,10 +383,11 @@ function hasChanged(before, after) {
  * The single chokepoint every byte reported to Claude passes through —
  * bounded by both line count and byte size (`boundReport`, shared with
  * verify-touched.mjs so neither hook's bound can drift from the other's),
- * and this is the ONLY place in this file that builds a result's `stderr`.
- * Nothing upstream may build report text itself; every path that can report
- * something builds a line list and hands it here, so redaction (above)
- * cannot be bypassed by a future call site that forgets it.
+ * and this is the ONLY place in this file that builds a non-empty `stderr`
+ * for a result. Nothing upstream may build report text itself; every path
+ * that can report something builds a line list and hands it here, so
+ * redaction (above) cannot be bypassed by a future call site that forgets
+ * it.
  *
  * `lines` is never empty: a failure with nothing attributable to the edited
  * file is not a lint report but a not-confirmed-clean notice (see

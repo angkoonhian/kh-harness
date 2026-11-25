@@ -21,11 +21,11 @@ process.stdout.write(JSON.stringify(result ?? null));
 
 /** What `exportName` of `script` returns for `payload`, with the project at
  * `root`: a half result, or null. */
-export function runHalf(script, exportName, root, payload, { env = {} } = {}) {
+export function runHalf(script, exportName, root, payload) {
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', PROGRAM, pathToFileURL(script).href, exportName], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: root, ...env },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
   });
   assert.equal(result.status, 0, `${exportName} exit status; stderr: ${result.stderr}`);
   assert.equal(result.stderr, '', `${exportName} stderr`);
