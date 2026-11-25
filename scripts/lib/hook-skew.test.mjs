@@ -73,6 +73,9 @@ const PAYLOADS = {
   'lint-touched.mjs': s => ({ session_id: s, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/a.js' } }),
   'verify-touched.mjs': s => ({ session_id: s, hook_event_name: 'Stop' }),
 };
+PAYLOADS['dispatch-pre-tool.mjs'] = PAYLOADS['tool-gate.mjs'];
+PAYLOADS['dispatch-post-tool.mjs'] = PAYLOADS['lint-touched.mjs'];
+PAYLOADS['dispatch-tool-failure.mjs'] = PAYLOADS['loop-watch.mjs'];
 const HOOKS = Object.keys(PAYLOADS);
 
 function runHook(dir, hook, root, payload) {

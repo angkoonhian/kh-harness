@@ -15,7 +15,7 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 // the other five.
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
-import { execEntry, registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, execEntry, registeredHook } from './hook-evidence.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 
@@ -37,6 +37,11 @@ const TOOL_GATE_PATH = '.claude/scripts/tool-gate.mjs';
 const HARNESS_GATES_PATH = '.claude/scripts/harness-gates.mjs';
 const HARNESS_LOG_PATH = '.claude/scripts/harness-log.mjs';
 const HARNESS_SEAL_PATH = '.claude/scripts/harness-seal.mjs';
+const HARNESS_DISPATCH_PATH = '.claude/scripts/harness-dispatch.mjs';
+const DISPATCH_PRE_PATH = ENTRY_SCRIPTS.PreToolUse.path;
+const DISPATCH_POST_PATH = ENTRY_SCRIPTS.PostToolUse.path;
+const DISPATCH_FAILURE_PATH = ENTRY_SCRIPTS.PostToolUseFailure.path;
+const ENTRY_SCRIPT_PATHS = Object.freeze([DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH]);
 
 /**
  * A settings-hook proposal's `reason`: the check's own evidence, which is
@@ -629,6 +634,9 @@ const HOOK_SCRIPTS = Object.freeze({
   [LOOP_WATCH_PATH]: { asset: 'scripts/loop-watch.mjs', step: LOOP_WATCH_STEP, reason: 'no PostToolUseFailure loop-warning hook registered' },
   [SESSION_LOG_PATH]: { asset: 'scripts/session-log.mjs', step: SESSION_LOG_STEP, reason: 'no session-log hook registered' },
   [TOOL_GATE_PATH]: { asset: 'scripts/tool-gate.mjs', step: TOOL_GATE_STEP, reason: 'no PreToolUse gate hook registered' },
+  [DISPATCH_PRE_PATH]: { asset: 'scripts/dispatch-pre-tool.mjs', step: TOOL_GATE_STEP, reason: 'no PreToolUse entry script registered' },
+  [DISPATCH_POST_PATH]: { asset: 'scripts/dispatch-post-tool.mjs', step: 9, reason: 'no PostToolUse entry script registered' },
+  [DISPATCH_FAILURE_PATH]: { asset: 'scripts/dispatch-tool-failure.mjs', step: LOOP_WATCH_STEP, reason: 'no PostToolUseFailure entry script registered' },
 });
 const GENERATOR_SCRIPT_PATHS = Object.freeze(Object.keys(HOOK_SCRIPTS));
 
@@ -640,6 +648,7 @@ const GENERATOR_SCRIPT_PATHS = Object.freeze(Object.keys(HOOK_SCRIPTS));
  * `loadedSiblings`).
  */
 const HOOK_MODULES = Object.freeze({
+  [HARNESS_DISPATCH_PATH]: { asset: 'scripts/harness-dispatch.mjs', step: TOOL_GATE_STEP, reason: 'the shared core the three entry scripts run their hooks through' },
   [HARNESS_GATES_PATH]: { asset: 'scripts/harness-gates.mjs', step: TOOL_GATE_STEP, reason: 'the gate language the PreToolUse gate hook interprets' },
   [HARNESS_LOG_PATH]: { asset: 'scripts/harness-log.mjs', step: TOOL_GATE_STEP, reason: 'the session log library the logging hook writes with and the gate hook records firings with' },
   [HARNESS_SEAL_PATH]: { asset: 'scripts/harness-seal.mjs', step: SESSION_LOG_STEP, reason: 'the module the logging hook loads at session start to seal closed sessions and expire old content' },
@@ -1030,4 +1039,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // must produce something when applied. The test membership-tests each real
 // check's id against this table, not a hand-kept list of ids, so a
 // capability added here later is covered with no test edit.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, HARNESS_DISPATCH_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, ENTRY_SCRIPT_PATHS, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };

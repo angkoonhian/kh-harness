@@ -24,6 +24,18 @@ import { hookEntrySha256, matcherCovers, normalizeMatcher } from './settings-mer
  */
 export const execEntry = scriptPath => ({ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${scriptPath}`] });
 
+/**
+ * The entry script the kit registers on each tool-call event, and the
+ * installed hooks it runs there. Each entry script runs its hooks in one
+ * process through harness-dispatch.mjs, so an event it is registered on
+ * carries none of these hooks separately.
+ */
+export const ENTRY_SCRIPTS = Object.freeze({
+  PreToolUse: { path: '.claude/scripts/dispatch-pre-tool.mjs', halves: ['.claude/scripts/tool-gate.mjs', '.claude/scripts/session-log.mjs'] },
+  PostToolUse: { path: '.claude/scripts/dispatch-post-tool.mjs', halves: ['.claude/scripts/session-log.mjs', '.claude/scripts/lint-touched.mjs'] },
+  PostToolUseFailure: { path: '.claude/scripts/dispatch-tool-failure.mjs', halves: ['.claude/scripts/session-log.mjs', '.claude/scripts/loop-watch.mjs'] },
+});
+
 /** The entry the kit wrote before the exec form. */
 const shellEntry = scriptPath => ({ type: 'command', command: `node ${scriptPath}` });
 

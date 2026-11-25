@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addHookEntry, hasEquivalentHook, hookPathTokens, hookScriptOf, normalizeMatcher, matcherCovers, revertPatch, revertPatches, addDenyRules } from './settings-merge.mjs';
 import { sha256 } from './manifest.mjs';
-import { GENERATOR_SCRIPT_PATHS } from './propose.mjs';
+import { DISPATCH_PRE_PATH, GENERATOR_SCRIPT_PATHS } from './propose.mjs';
+import { execEntry } from './hook-evidence.mjs';
 
 // What revertPatch may remove: every generator hook script, and the deny
 // rules these tests' patches add.
@@ -337,6 +338,21 @@ test('an exec-form hook with an extra argument is kept', () => {
   const { settings, kept } = revertPatch(extra.settings, extra.patch, PRODUCIBLE);
   assert.deepEqual(kept, [{ patch: extra.patch, reason: 'not-generator-producible' }]);
   assert.deepEqual(settings, extra.settings);
+});
+
+test('a recorded entry-script registration is reverted, and one carrying a second argument is kept', () => {
+  const settings = { hooks: { PreToolUse: [{ hooks: [execEntry(DISPATCH_PRE_PATH)] }] } };
+  const ours = addHookEntry({}, 'PreToolUse', execEntry(DISPATCH_PRE_PATH));
+  assert.deepEqual(ours.settings, settings, 'fixture sanity: the patch writes exactly that registration');
+  const reverted = revertPatch(settings, ours.patch, PRODUCIBLE);
+  assert.deepEqual(reverted.kept, []);
+  assert.deepEqual(reverted.settings, {});
+  const entry = execEntry(DISPATCH_PRE_PATH);
+  const extra = addHookEntry({}, 'PreToolUse', { ...entry, args: [...entry.args, '--flag'] });
+  assert.equal(extra.settings.hooks.PreToolUse[0].hooks[0].args.length, 2);
+  const { settings: after, kept } = revertPatch(extra.settings, extra.patch, PRODUCIBLE);
+  assert.deepEqual(kept, [{ patch: extra.patch, reason: 'not-generator-producible' }]);
+  assert.deepEqual(after, extra.settings);
 });
 
 test('an exec-form hook run by another command is kept', () => {

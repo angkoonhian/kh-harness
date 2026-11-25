@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, sha256 as sha, readManifest, writeManifest } from './manifest.mjs';
-import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, loadedSiblings } from './propose.mjs';
+import { buildProposals, DISPATCH_PRE_PATH, ENTRY_SCRIPT_PATHS, HARNESS_DISPATCH_PATH, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, loadedSiblings } from './propose.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { selectProfile } from './profiles/index.mjs';
@@ -15,6 +15,7 @@ import { markdownRemainder } from './uninstall-lib.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { applyProposals } from './apply-lib.mjs';
 import { detectHarness } from './detect-harness.mjs';
+import { ENTRY_SCRIPTS } from './hook-evidence.mjs';
 import { machineryStamp, versionStamp } from './render.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
@@ -1825,8 +1826,8 @@ test('P5.toolgate proposes the hook, its three modules, a matcher-less PreToolUs
   for (const p of ps) assert.equal(p.checkId, 'P5.toolgate');
 });
 
-test('the modules the kit installs are the gate language, the session log library, the log sealer and the redaction module', () => {
-  assert.deepEqual(HOOK_MODULE_PATHS, [HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, REDACT_PATH]);
+test('the modules the kit installs are the dispatch core, the gate language, the session log library, the log sealer and the redaction module', () => {
+  assert.deepEqual(HOOK_MODULE_PATHS, [HARNESS_DISPATCH_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, REDACT_PATH]);
 });
 
 // --- Which script loads which is read from the scripts ----------------------
@@ -1853,8 +1854,8 @@ test('every sibling an installed script imports, statically or dynamically, is a
       }
     }
   }
-  assert.deepEqual(INSTALLED_SCRIPT_PATHS.filter(path => !found.has(path)), [SESSION_LOG_PATH, TOOL_GATE_PATH, REDACT_PATH],
-    'fixture sanity: the patterns find an import in every script but the two that name their siblings in a table, which the next test covers, and the module that loads none');
+  assert.deepEqual(INSTALLED_SCRIPT_PATHS.filter(path => !found.has(path)), [SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_DISPATCH_PATH, REDACT_PATH],
+    'fixture sanity: the patterns find an import in every script but the two that name their siblings in a table, which the next test covers, and the two modules that load none');
 });
 
 test('a script is installed with what its modules load in turn, and the gate hook with the table of siblings it imports by name', () => {
@@ -1937,8 +1938,17 @@ test('a file kh-harness did not write at an installed path is said to be movable
   assert.match(sensor.evidence.at(-1), /To install this hook, move each file kh-harness did not write out of \.claude\/scripts\/, then run apply again/);
 });
 
-test('the gate hook is the last hook script the kit knows, so uninstall can revert its registration', () => {
-  assert.equal(GENERATOR_SCRIPT_PATHS.at(-1), TOOL_GATE_PATH);
+test('the gate hook is a hook script the kit knows, so uninstall can revert its registration', () => {
+  assert.ok(GENERATOR_SCRIPT_PATHS.includes(TOOL_GATE_PATH));
+});
+
+test('each entry script is installed with exactly the hooks ENTRY_SCRIPTS says it runs, and the core names no sibling', () => {
+  for (const { path, halves } of Object.values(ENTRY_SCRIPTS)) {
+    assert.deepEqual(loadedSiblings(path).filter(p => p !== HARNESS_DISPATCH_PATH).sort(), [...halves].sort(), path);
+    assert.ok(loadedSiblings(path).includes(HARNESS_DISPATCH_PATH), path);
+  }
+  assert.deepEqual(loadedSiblings(HARNESS_DISPATCH_PATH), []);
+  assert.equal(everyLoadedSibling(DISPATCH_PRE_PATH).includes(LINT_TOUCHED_PATH), false, 'the lint sensor is installed only with the PostToolUse entry script');
 });
 
 test('P5.toolgate is absent and decidable under every profile when no hook of ours is on PreToolUse', () => {

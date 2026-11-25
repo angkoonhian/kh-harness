@@ -18,7 +18,7 @@ import {
   parseArgv, wantsHelp, APPLY_USAGE, DETECT_USAGE, UNINSTALL_USAGE, EXECUTION_DISCLOSURE, EXIT_CODES,
 } from './cli.mjs';
 import { sandboxDataDir } from './lifecycle-fixtures.mjs';
-import { GENERATORS, GENERATOR_SCRIPT_PATHS } from './propose.mjs';
+import { ENTRY_SCRIPT_PATHS, GENERATORS, GENERATOR_SCRIPT_PATHS } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 sandboxDataDir();
@@ -188,8 +188,9 @@ test('the execution disclosure names every event a hook generator registers on, 
   }
   assert.ok(events.size >= LOGGED_EVENTS.length, 'fixture sanity: the generators registered their hooks');
   for (const event of events) assert.ok(disclosed.includes(event), `the disclosure does not name ${event}`);
-  assert.deepEqual([...scripts].map(s => s.split('/').pop()).sort(), GENERATOR_SCRIPT_PATHS.map(s => s.split('/').pop()).sort());
-  assert.equal(GENERATOR_SCRIPT_PATHS.length, 7, 'the disclosure says seven; a hook script added changes that sentence and gets its own entry');
+  const registrable = GENERATOR_SCRIPT_PATHS.filter(s => !ENTRY_SCRIPT_PATHS.includes(s));
+  assert.deepEqual([...scripts].map(s => s.split('/').pop()).sort(), registrable.map(s => s.split('/').pop()).sort());
+  assert.equal(GENERATOR_SCRIPT_PATHS.length - ENTRY_SCRIPT_PATHS.length, 7, 'the disclosure says seven; a hook script added changes that sentence and gets its own entry');
   assert.match(disclosed, /registers up to seven hook scripts/);
   assert.doesNotMatch(disclosed, /the two process hooks/);
 });
