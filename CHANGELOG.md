@@ -38,14 +38,16 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   before a call, the session log and then the lint sensor after one, the
   session log and then the loop warning after a failure. `PostToolUse`
   gets its entry script only where the lint hook is installed.
-- An install made before the entry scripts is moved to them by `apply`.
+- An install made before the entry scripts is moved to them by `apply --yes`.
   The new check `P0.hookmerge` reports each tool-call event, and on one
   whose two kit hooks are registered separately, exactly as the manifest
   recorded them, `apply` proposes a replacement, shown in the dry run as
   `replacing 2 registrations`, that takes out only those recorded
   registrations and registers the entry script in their place, in one
-  settings write. An event whose kit registrations the owner edited or
-  removed is left alone, and `P0.hookmerge` says why.
+  settings write. The move leaves alone an event whose kit registrations
+  the owner edited or removed, and `P0.hookmerge` says why; a hook the
+  owner removed is still offered again by its own check, as before, and
+  its event is moved by the `apply --yes` after the one that registers it.
 
 ## 0.2.0 - 2026-11-19
 

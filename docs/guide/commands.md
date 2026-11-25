@@ -182,9 +182,11 @@ script, as an added one. `--yes` reports it as
 
     patched    .claude/settings.json (PreToolUse; 2 separate registrations removed)
 
-An event whose kit registrations you edited or removed is not proposed;
-`P0.hookmerge` names it with the reason, and the rest of the install is
-moved. When, as `--yes` writes, the settings file no longer holds a
+The move leaves alone an event whose kit registrations you edited or
+removed; `P0.hookmerge` names it with the reason, and the rest of the
+install is moved. A hook you removed is still offered again by its own
+check, as before, and its event is moved by the `apply --yes` after the
+one that registers it. When, as `--yes` writes, the settings file no longer holds a
 recorded registration as it was recorded, the replacement is not made and
 `apply` prints
 `skipped    .claude/settings.json (registration-changed)`; a replacement

@@ -382,8 +382,9 @@ installed, the event's two hooks are registered together as one entry script (`d
 `dispatch-post-tool.mjs`, `dispatch-tool-failure.mjs`) that runs them one
 after the other in a single process, so each of those events starts one
 kit process, not two. An install made before the entry scripts is moved
-to them by the next `apply`, which `detect` reports as `P0.hookmerge`,
-except on an event whose kit registrations you changed.
+to them by the next `apply --yes` (a plain `apply` is a dry run that shows
+the move), which `detect` reports as `P0.hookmerge`, except on an event
+whose kit registrations you changed.
 
 | Hook script | Event | What it does | Can it block? |
 |---|---|---|---|
