@@ -13,10 +13,11 @@
 // lies under the repository's real `.claude/` and outside its
 // `.claude/scripts/`. Installed beside the other hook scripts, so it imports
 // only Node built-ins and sibling files.
+import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { join, sep } from 'node:path';
 
-import { lfNormalised, lfSha256, OVER_LIMIT, readBounded } from './harness-log.mjs';
+import { lfNormalised, lfSha256 } from './harness-log.mjs';
 
 /** SHA-256 hex of a module's bytes with each CRLF made LF, the hash an
  * extension's entry records. */
@@ -91,13 +92,9 @@ export function readExtensions(root) {
     const st = lstatOrNull(path);
     if (st === null) return { state: 'absent' };
     if (!st.isFile()) return malformed('it is not a regular file');
-    let bytes;
-    try {
-      bytes = readBounded(path, EXTENSION_LIMITS.fileMaxBytes);
-    } catch (error) {
-      if (error?.code === OVER_LIMIT) return malformed(`it is larger than ${EXTENSION_LIMITS.fileMaxBytes} bytes`);
-      throw error;
-    }
+    const bytes = readFileWithin(path, EXTENSION_LIMITS.fileMaxBytes);
+    if (bytes === NOT_A_FILE) return malformed('it is not a regular file');
+    if (bytes === TOO_LARGE) return malformed(`it is larger than ${EXTENSION_LIMITS.fileMaxBytes} bytes`);
     let list;
     try {
       list = JSON.parse(bytes.toString('utf8'));
@@ -118,17 +115,21 @@ export function readExtensions(root) {
   }
 }
 
+const NOT_A_FILE = Symbol('not a regular file');
+const TOO_LARGE = Symbol('too large');
+
 /** The bytes of the regular file at `path`, read from one descriptor so the
- * file measured is the file read; null when it is not a regular file or
- * holds more than `maxBytes`. Throws what the file system throws. */
+ * file measured is the file read, and a link at its last component is not
+ * followed where the platform can refuse one; `NOT_A_FILE` or `TOO_LARGE`
+ * (more than `maxBytes`) otherwise. Throws what the file system throws. */
 function readFileWithin(path, maxBytes) {
   const fd = openSync(path, OPEN_FLAGS);
   try {
-    if (!fstatSync(fd).isFile()) return null;
+    if (!fstatSync(fd).isFile()) return NOT_A_FILE;
     const buf = Buffer.allocUnsafe(maxBytes + 1);
     let length = 0;
     for (let n; length < buf.length && (n = readSync(fd, buf, length, buf.length - length, null)) > 0;) length += n;
-    return length > maxBytes ? null : Buffer.from(buf.subarray(0, length));
+    return length > maxBytes ? TOO_LARGE : Buffer.from(buf.subarray(0, length));
   } finally {
     closeSync(fd);
   }
@@ -167,9 +168,11 @@ export function moduleState(root, entry) {
     const scripts = realDir(realRoot, SCRIPTS_DIR);
     if (base === null || !isUnder(base, realRoot) || !isUnder(real, base) || (scripts !== null && isUnder(real, scripts))) return { state: 'outside' };
     const raw = readFileWithin(real, EXTENSION_LIMITS.moduleMaxBytes);
-    if (raw === null) return { state: 'unreadable' };
+    if (!Buffer.isBuffer(raw)) return { state: 'unreadable' };
+    // Normalised once and hashed plain: a second pass would turn CR CR LF
+    // into LF, handing on bytes other than the ones the hash approved.
     const bytes = lfNormalised(raw);
-    return lfSha256(bytes) === entry.sha256 ? { state: 'matches', path: real, bytes } : { state: 'differs' };
+    return createHash('sha256').update(bytes).digest('hex') === entry.sha256 ? { state: 'matches', path: real, bytes } : { state: 'differs' };
   } catch {
     return { state: 'unreadable' };
   }

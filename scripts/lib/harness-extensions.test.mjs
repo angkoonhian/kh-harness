@@ -7,7 +7,9 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import fs, { constants, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -45,6 +47,14 @@ function extension(root, id, source, o = {}) {
   return { id, version: '1.0.0', module, sha256: moduleSha256(Buffer.from(source)), onFailure: 'block', ...o };
 }
 const ALLOW = "export const preToolUse = () => ({ decision: 'allow' });\n";
+
+/** The plain SHA-256 of `bytes`, with no line endings changed. */
+const plainSha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+/** A `matches` state hands on exactly the bytes whose hash the entry records. */
+function assertMatchesWhatWasHashed(state, entry) {
+  assert.equal(state.state, 'matches');
+  assert.equal(plainSha256(state.bytes), entry.sha256, 'the bytes handed on are the bytes the entry approved');
+}
 
 /** Makes a link at `link` to `target`, or skips the test where this platform
  * cannot make one without elevation. Returns whether the link was made. */
@@ -170,6 +180,30 @@ test('a file that cannot be used is malformed, with fixed text that quotes nothi
   });
 });
 
+test('a link swapped in at the file after it was examined is not followed', (t) => {
+  if (constants.O_NOFOLLOW === undefined) {
+    t.skip('this platform has no O_NOFOLLOW; win32 needs elevation to make the link');
+    return;
+  }
+  const root = project();
+  const outside = tempDir('hk-ext-outside-');
+  const e = extension(root, 'a', ALLOW);
+  writeAt(join(outside, 'extensions.json'), JSON.stringify([e]));
+  const path = join(root, EXTENSIONS_PATH);
+  writeAt(path, '[]');
+  // The swap happens between the file's lstat and its read, as a concurrent
+  // writer would make it.
+  const lstat = fs.lstatSync;
+  t.after(() => { fs.lstatSync = lstat; syncBuiltinESMExports(); });
+  fs.lstatSync = (p, ...rest) => {
+    const st = lstat(p, ...rest);
+    if (p === path) { unlinkSync(path); symlinkSync(join(outside, 'extensions.json'), path, 'file'); }
+    return st;
+  };
+  syncBuiltinESMExports();
+  assert.deepEqual(readExtensions(root), { state: 'malformed', problem: 'it could not be read' });
+});
+
 test('no .claude, or no .claude/kh-harness, means no extensions', () => {
   const root = project();
   assert.deepEqual(readExtensions(root), { state: 'absent' });
@@ -184,7 +218,7 @@ test('a repository root reached through a link still reads and judges its extens
   const link = join(tempDir('hk-ext-link-'), 'repo');
   if (!linkOrSkip(t, root, link, 'junction')) return;
   assert.deepEqual(readExtensions(link), { state: 'ok', entries: [e] });
-  assert.equal(moduleState(link, e).state, 'matches');
+  assertMatchesWhatWasHashed(moduleState(link, e), e);
   assert.equal(moduleState(link, e).path, realpathSync.native(join(root, e.module)));
 });
 
@@ -194,15 +228,32 @@ test('a module whose bytes hash to the recorded value matches, and its real path
   const root = project(); const e = extension(root, 'a', ALLOW);
   const state = moduleState(root, e);
   assert.deepEqual(state, { state: 'matches', path: realpathSync.native(join(root, e.module)), bytes: Buffer.from(ALLOW) });
-  assert.equal(moduleSha256(state.bytes), e.sha256);
+  assertMatchesWhatWasHashed(state, e);
 });
 
 test('REVIEW FOCUS 2: the same module with CRLF line endings still matches, and the bytes returned are the LF ones hashed', () => {
   const root = project(); const e = extension(root, 'a', ALLOW);
   writeFileSync(join(root, e.module), ALLOW.replace(/\n/g, '\r\n'));
   const state = moduleState(root, e);
-  assert.equal(state.state, 'matches');
+  assertMatchesWhatWasHashed(state, e);
   assert.deepEqual(state.bytes, Buffer.from(ALLOW));
+});
+
+test('a module holding CR CR LF, recorded by moduleSha256 of its file, matches and hands on the bytes of that hash', () => {
+  const root = project(); const e = extension(root, 'a', 'x\r\r\ny\n');
+  const state = moduleState(root, e);
+  assertMatchesWhatWasHashed(state, e);
+  assert.deepEqual(state.bytes, Buffer.from('x\r\ny\n'));
+});
+
+test('a module approved as LF that holds CR CR LF on disk differs', () => {
+  const root = project(); const e = extension(root, 'a', 'x\ny\n');
+  writeFileSync(join(root, e.module), 'x\r\r\ny\n');
+  assert.deepEqual(moduleState(root, e), { state: 'differs' });
+});
+
+test('moduleSha256 makes each CRLF an LF in one pass', () => {
+  assert.equal(moduleSha256(Buffer.from('x\r\r\ny')), plainSha256(Buffer.from('x\r\ny')));
 });
 
 test('moduleSha256 is the hash harness-log.mjs gives an installed script', () => {
@@ -271,7 +322,9 @@ test('a link inside .claude to another file inside .claude is followed', (t) => 
   const target = extension(root, 'real', ALLOW);
   const e = { ...target, id: 'a', module: '.claude/ext/a.mjs' };
   if (!linkOrSkip(t, join(root, target.module), join(root, e.module), 'file')) return;
-  assert.deepEqual(moduleState(root, e), { state: 'matches', path: realpathSync.native(join(root, target.module)), bytes: Buffer.from(ALLOW) });
+  const state = moduleState(root, e);
+  assert.deepEqual(state, { state: 'matches', path: realpathSync.native(join(root, target.module)), bytes: Buffer.from(ALLOW) });
+  assertMatchesWhatWasHashed(state, e);
 });
 
 test('a module that is a dangling link is missing', (t) => {
