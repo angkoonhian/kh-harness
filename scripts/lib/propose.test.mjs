@@ -13,7 +13,7 @@ import { deriveCouldNotDerive } from './report.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { listFiles } from './scan.mjs';
-import { parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { ENFORCERS, parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { markdownRemainder } from './uninstall-lib.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { applyProposals } from './apply-lib.mjs';
@@ -1371,7 +1371,10 @@ test('the scaffold body is nothing but headings and comments (markdownRemainder 
 
 test('the scaffold names every ENFORCERS value and the "a rule with none is a claim" sentence inside its comment', () => {
   const [p] = buildProposals(args([rulesCheck()]));
-  for (const e of ['deny', 'hook', 'lint', 'test', 'critic', 'ci', 'review', 'none']) assert.ok(p.contents.includes(e), e);
+  for (const e of ENFORCERS) assert.ok(p.contents.includes(e), e);
+  assert.ok(p.contents.includes(`- enforced-by: ${ENFORCERS.join(' | ')}\n`), 'the format line lists every enforcer');
+  assert.ok(p.contents.includes(`(${ENFORCERS.filter(e => e !== 'none').join('/')})\n`), 'the held line lists every enforcer but none');
+  assert.match(p.contents, /approval: owner \| agent/);
   assert.match(p.contents, /enforced-by:\s*none[^.]*claim/i);
 });
 

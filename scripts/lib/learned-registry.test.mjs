@@ -214,7 +214,7 @@ test('an invalid id, hash, enforcer, pointer or evidence summary is refused, nam
     [{ approvedSha256: 'AB'.repeat(32) }, /approved-sha256/], [{ approvedSha256: 'ab'.repeat(31) }, /approved-sha256/],
     [{ approvedAction: 'observe' }, /approved-action/], [{ approvedAction: 'BLOCK' }, /approved-action/], [{ approvedAction: null }, /approved-action/],
     [{ approvedAction: 'warn\n- status: superseded' }, /approved-action/],
-    [{ enforcedBy: 'magic' }, /enforced-by/],
+    [{ enforcedBy: 'magic' }, /enforced-by/], [{ enforcedBy: 'officer' }, /enforced-by/],
     [{ pointer: '' }, /pointer/], [{ pointer: 'a b' }, /pointer/], [{ pointer: 'x\n- status: superseded' }, /pointer/], [{ pointer: 'x<y' }, /pointer/],
     [{ evidenceSummary: null }, /evidence/],
     [{ evidenceSummary: { ...entry().evidenceSummary, signature: 'ABCDEF0123456789' } }, /signature/],

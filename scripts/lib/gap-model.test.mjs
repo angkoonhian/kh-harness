@@ -1748,6 +1748,7 @@ test('TWO-PATH AGREEMENT: the redacted comparison and hasEquivalentHook agree wh
 // filesystem. A fixture that omits the fields is a repository without them.
 import { INTENT_SECTIONS } from './intent-evidence.mjs';
 import { RULES_BRIEF_PATH } from './propose.mjs';
+import { rulesRegistryEvidence } from './rules-evidence.mjs';
 
 const fullIntent = { path: 'docs/INTENT.md', found: [...INTENT_SECTIONS], missing: [], lastReviewed: null };
 const filledRegistry = {
@@ -1836,6 +1837,25 @@ test('P3.rules: declared evidence counts enforcers, names unenforced ids, missin
     'R1: pointer .claude/agents/tenant-scoping.md does not exist',
     'R2: enforced-by names a mechanism but no pointer says where it is',
     'registry: R9: enforced-by "magic" is not one of deny/hook — recorded as none',
+  ]);
+});
+
+test('P3.rules prints an officer rule\'s dead pointer, and says of every officer rule only what was read', () => {
+  const d = mkdtempSync(join(tmpdir(), 'gm-officer-'));
+  mkdirSync(join(d, 'docs', 'harness'), { recursive: true });
+  mkdirSync(join(d, 'tools', 'officers'), { recursive: true });
+  writeFileSync(join(d, 'tools', 'officers', 'v9.mjs'), '');
+  writeFileSync(join(d, 'docs', 'harness', 'RULES.md'), [
+    '## V8 — Screens use the design tokens', '- enforced-by: officer', '- pointer: tools/officers/v8.mjs',
+    '## V9 — Copy is spelled the house way', '- enforced-by: officer', '- pointer: tools/officers/v9.mjs', '- approval: owner',
+    '',
+  ].join('\n'));
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: rulesRegistryEvidence(d, bareHarness) })), 'P3.rules');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [
+    'docs/harness/RULES.md: 2 rules — 2 enforced (officer 2), none with enforced-by: none',
+    'officer rules (2): only whether each pointer names a path that exists in this repository was read; kh-harness runs no officer, so whether one passes was not read',
+    'V8: pointer tools/officers/v8.mjs does not exist',
   ]);
 });
 

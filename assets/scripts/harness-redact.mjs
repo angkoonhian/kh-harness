@@ -567,8 +567,10 @@ export const LEARNED_PATH = 'docs/harness/LEARNED.md';
 
 /** Every value `enforced-by` may take. `none` is a claim, not an enforcer —
  * it is recorded so the registry can say plainly which rules are told and
- * which are held, and `review` means a human reviewer is the mechanism. */
-export const ENFORCERS = Object.freeze(['deny', 'hook', 'lint', 'test', 'critic', 'ci', 'review', 'none']);
+ * which are held, and `review` means a human reviewer is the mechanism.
+ * `officer` means a check another tool runs, whose `pointer` is that
+ * check's repository path. */
+export const ENFORCERS = Object.freeze(['deny', 'hook', 'lint', 'test', 'critic', 'ci', 'review', 'officer', 'none']);
 
 /** Every value a learned entry's `approved-action` line may take: the
  * actions of a gate, as harness-gates.mjs's `GATE_ACTIONS` lists them. */

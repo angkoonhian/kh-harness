@@ -8,7 +8,7 @@
 // into docs/harness/detect.json, which is committed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rulesRegistryEvidence, ruleShapedLines, RULE_SHAPED } from './rules-evidence.mjs';
@@ -144,6 +144,69 @@ test('an absolute or .. pointer is reported as missing, never resolved', () => {
   ].join('\n'));
   const ev = rulesRegistryEvidence(d, bare);
   assert.deepEqual(ev.missingPointers.map(m => m.id), ['A', 'B', 'C']);
+});
+
+const OFFICER = '## V8 — Screens use the design tokens\n- enforced-by: officer\n- pointer: tools/officers/v8.mjs\n';
+
+test('an officer rule whose pointer exists is counted under officer and reported as held', () => {
+  const d = repo();
+  write(d, RULES_PATH, OFFICER);
+  write(d, 'tools/officers/v8.mjs', '');
+  const ev = rulesRegistryEvidence(d, bare);
+  assert.equal(ev.byEnforcer.officer, 1);
+  assert.deepEqual(ev.unenforced, []);
+  assert.deepEqual(ev.missingPointers, []);
+});
+
+test('an officer rule whose pointer does not exist is a missing pointer', () => {
+  const d = repo();
+  write(d, RULES_PATH, OFFICER);
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: 'tools/officers/v8.mjs' }]);
+});
+
+test('an officer rule with no pointer, or a settings: pointer, is a missing pointer', () => {
+  const d = repo();
+  write(d, RULES_PATH, '## V8 — r\n- enforced-by: officer\n');
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: null }]);
+  const pre = { ...bare, claudeDir: { ...bare.claudeDir, hookRegistrations: { PreToolUse: [{ script: DISPATCH_PRE_PATH, matcher: null }] } } };
+  write(d, RULES_PATH, '## R4 — r\n- enforced-by: hook\n- pointer: settings:hooks.PreToolUse\n');
+  assert.deepEqual(rulesRegistryEvidence(d, pre).missingPointers, [], 'the same registration holds a hook rule');
+  write(d, RULES_PATH, '## V8 — r\n- enforced-by: officer\n- pointer: settings:hooks.PreToolUse\n');
+  assert.deepEqual(rulesRegistryEvidence(d, pre).missingPointers, [{ id: 'V8', pointer: 'settings:hooks.PreToolUse' }]);
+});
+
+test('an officer pointer is held to the repository-path rules: absolute, .., over-long or unprintable is missing', () => {
+  const d = repo();
+  const long = `tools/${'a'.repeat(200)}.mjs`;
+  const unprintable = `tools/v8${String.fromCodePoint(0x200b)}.mjs`;
+  write(d, 'README.md', '');
+  write(d, long, '');
+  write(d, unprintable, '');
+  write(d, RULES_PATH, [
+    '## A — r', '- enforced-by: officer', `- pointer: ${join(d, 'README.md')}`,
+    '## B — r', '- enforced-by: officer', '- pointer: ../README.md',
+    '## C — r', '- enforced-by: officer', '- pointer: docs/../README.md',
+    '## D — r', '- enforced-by: officer', `- pointer: ${long}`,
+    '## E — r', '- enforced-by: officer', `- pointer: ${unprintable}`,
+    '## F — r', '- enforced-by: officer', '- pointer: README.md',
+    '',
+  ].join('\n'));
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers.map(m => m.id), ['A', 'B', 'C', 'D', 'E']);
+});
+
+test('an officer pointer through a link that leaves the repository is missing, one through a link inside it exists', () => {
+  const d = repo();
+  const outside = repo();
+  write(outside, 'v8.mjs', '');
+  write(d, 'tools/inside/v8.mjs', '');
+  symlinkSync(outside, join(d, 'tools', 'out'), 'junction');
+  symlinkSync(join(d, 'tools', 'inside'), join(d, 'tools', 'in'), 'junction');
+  write(d, RULES_PATH, [
+    '## V8 — r', '- enforced-by: officer', '- pointer: tools/out/v8.mjs',
+    '## V9 — r', '- enforced-by: officer', '- pointer: tools/in/v8.mjs',
+    '',
+  ].join('\n'));
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: 'tools/out/v8.mjs' }]);
 });
 
 test('a rule with an enforcer but no pointer is reported as missing a pointer; none/review need none', () => {

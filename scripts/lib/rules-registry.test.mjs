@@ -231,3 +231,22 @@ test('a learned rule is held by a blocking gate only when its entry says a hook 
   assert.equal(heldByBlockingGate(rule('## L1 — r\n- enforced-by: hook\n')), false, 'an entry that records no action is not known to block');
   assert.equal(heldByBlockingGate(rule('## L1 — r\n- enforced-by: test\n- approved-action: block\n')), false);
 });
+
+test('enforced-by: officer is an enforcer, not a problem', () => {
+  const { rules, problems } = parseRules('## V8 — Screens use the design tokens\n- enforced-by: officer\n- pointer: tools/officers/v8.mjs\n');
+  assert.deepEqual([rules[0].enforcedBy, rules[0].pointer, problems], ['officer', 'tools/officers/v8.mjs', []]);
+});
+
+test('an approval key is accepted and ignored, whatever its value', () => {
+  for (const value of ['owner', 'agent', 'someone else']) {
+    const { rules, problems } = parseRules(`## R1 — A rule\n- approval: ${value}\n- enforced-by: none\n`);
+    assert.deepEqual(problems, []);
+    assert.equal(Object.hasOwn(rules[0], 'approval'), false);
+    assert.equal(rules[0].enforcedBy, 'none');
+  }
+});
+
+test('the problem for an unknown enforcer names officer among the choices', () => {
+  assert.deepEqual(parseRules('## R1 — A rule\n- enforced-by: robot\n').problems,
+    ['R1: enforced-by "robot" is not one of deny/hook/lint/test/critic/ci/review/officer/none — recorded as none']);
+});

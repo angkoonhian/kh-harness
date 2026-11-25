@@ -704,6 +704,9 @@ const CHECKS = [
         const unenforced = file.unenforced.length ? `${file.unenforced.length} with enforced-by: none (${file.unenforced.join(', ')})` : 'none with enforced-by: none';
         const lines = [`${file.path}: ${file.count} ${noun}${file.count === 1 ? '' : 's'} — ${enforced} enforced${byEnforcer ? ` (${byEnforcer})` : ''}, ${unenforced}`];
         if (file.superseded) lines.push(`${file.superseded} superseded ${noun}${file.superseded === 1 ? '' : 's'} kept as a record, not counted`);
+        // An officer is a check another tool runs, never this kit: what
+        // was read of one is that its pointer exists, and the line says so.
+        if (file.byEnforcer.officer) lines.push(`officer rules (${file.byEnforcer.officer}): only whether each pointer names a path that exists in this repository was read; kh-harness runs no officer, so whether one passes was not read`);
         for (const m of file.missingPointers) {
           lines.push(m.pointer == null
             ? `${m.id}: enforced-by names a mechanism but no pointer says where it is`

@@ -28,7 +28,8 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { OVER_DOCUMENT_LIMIT, readDocument, readIfPresent } from './scan.mjs';
-import { findLearned, findRules, heldByBlockingGate, parseRules } from '../../assets/scripts/harness-redact.mjs';
+import { findLearned, findRules, heldByBlockingGate, parseRules, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
+import { assertContained } from './apply-lib.mjs';
 import { runsKitScript } from './hook-evidence.mjs';
 import { SESSION_LOG_PATH, toolGateDenyRules } from './propose.mjs';
 
@@ -36,6 +37,10 @@ import { SESSION_LOG_PATH, toolGateDenyRules } from './propose.mjs';
 const POINTERLESS = new Set(['none', 'review']);
 
 const SETTINGS_POINTER = /^settings:(permissions\.deny|hooks\.([A-Za-z]+))$/;
+// An officer's pointer is one token of at most 200 characters with nothing
+// a key line or a delimited block could be split by: the bound the kit
+// holds a learned entry's pointer to.
+const OFFICER_POINTER = /^[^\s<>]{1,200}$/;
 
 /**
  * Does `pointer` name something that exists? Three shapes:
@@ -54,9 +59,16 @@ const SETTINGS_POINTER = /^settings:(permissions\.deny|hooks\.([A-Za-z]+))$/;
  * missing, never resolved): a pointer is meant to name something INSIDE
  * this repository, and the containment rule apply-lib.mjs applies to
  * writes applies to what this report will vouch for too.
+ *
+ * `pathOnly` marks an officer rule's pointer, the repository path of a check
+ * another tool runs, so a `settings:` pointer names nothing, and the path
+ * must also be one printable token of at most 200 characters whose real
+ * path, through any link, stays inside the repository. Only its existence
+ * is read; nothing here runs the check.
  */
-function pointerResolves(root, harness, pointer) {
+function pointerResolves(root, harness, pointer, { pathOnly = false } = {}) {
   const m = pointer.match(SETTINGS_POINTER);
+  if (m && pathOnly) return false;
   if (m) {
     if (m[1] === 'permissions.deny') {
       const kitRules = new Set(toolGateDenyRules());
@@ -68,7 +80,15 @@ function pointerResolves(root, harness, pointer) {
   const p = pointer.split('\\').join('/');
   if (p.startsWith('/') || /^[A-Za-z]:/.test(p)) return false;
   if (p.split('/').includes('..')) return false;
-  return existsSync(join(root, p));
+  if (!existsSync(join(root, p))) return false;
+  if (!pathOnly) return true;
+  if (!OFFICER_POINTER.test(pointer) || stripUnsafe(pointer) !== pointer) return false;
+  try {
+    assertContained(root, p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -93,7 +113,7 @@ function fileEvidence(root, harness, rel) {
     if (r.enforcedBy === 'none') unenforced.push(r.id);
     if (POINTERLESS.has(r.enforcedBy)) continue;
     if (r.pointer == null) missingPointers.push({ id: r.id, pointer: null });
-    else if (!pointerResolves(root, harness, r.pointer)) missingPointers.push({ id: r.id, pointer: r.pointer });
+    else if (!pointerResolves(root, harness, r.pointer, { pathOnly: r.enforcedBy === 'officer' })) missingPointers.push({ id: r.id, pointer: r.pointer });
   }
   return {
     active,
