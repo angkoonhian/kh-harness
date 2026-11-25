@@ -134,3 +134,17 @@ Every place that asks "is this hook registered" accepts the entry script for its
 - Whether the four scripts' exported functions share a small helper.
 - The exact fixed messages.
 - Internal names in the shared core.
+
+## Corrections after implementation (2026-11-26)
+
+The code and `docs/CONTRACT.md` are the authority where this section and the text above differ. Each line says what the design said and what was built.
+
+- **Who loads an extension.** The design said the core hashes and loads the module. A separate loader, `harness-extensions.mjs`, reads the module once, hashes those bytes (each CRLF made LF, one pass) and imports the same bytes as a `data:` URL. An extension is therefore one self-contained file that imports `node:` built-ins only.
+- **The extensions file is bounded.** At most 8 entries and 65,536 bytes; fixed character sets for every field; ids and modules unique without regard to case; no module under `.claude/scripts/`; no path segment ending in `.` or a space; the module's real path under the real `.claude/`. A link at the file or at `.claude/kh-harness` is refused; a link at `.claude` is refused only when an extensions file is reached through it.
+- **Time limits exist.** The design said there is no in-process limit. Loading a module is bounded at 1 s, and the whole run at 120 s. While an extensions file is in play, a run cut short (the deadline, an idle process, a payload not read in full) blocks the call; without one it behaves as before.
+- **Containment is wider than a try/catch.** Each extension gets its own copy of the payload; `process.exit` throws inside it; standard output and standard error are silenced for the rest of the process once an extension has loaded, and the hook writes through references captured at load; leftover exceptions and rejections are ignored so later halves run.
+- **The block message is the extension's own**, at most 300 characters after cleaning (line breaks to spaces, `<` and `>` escaped). The model sees `kh-harness extension <id>: <message>`.
+- **Mismatched files block.** The design said a missing or older loader blocks when `extensions.json` exists. The entry script, the core and the loader each carry a level compared by value; a missing or mismatched core or loader blocks when an extensions file is in play and gives the existing notice otherwise. "In play" also covers `.claude` being a file and `.claude/kh-harness` being a link or not a directory.
+- **The contract file is not "like any other kit file".** It holds the contract number and a hash of each installed file it speaks for (always the entry script, the core and the loader among them). `apply` writes it last and only beside current files, never while a script is held back, never through a linked `.claude`, and adopts an unrecorded exact copy; `uninstall` removes it first.
+- **`detect` is a diagnostic for people.** Its output is not part of the contract. A plugin verifies by the five steps in `docs/CONTRACT.md` (`checkContract1` and `probeContract1`).
+- **What the extension point does not give.** It detects accident (a stale, damaged or half-updated install), not an agent with a shell: deleting the extensions file, removing the registration or editing settings turns a gate off and the hook says nothing. A pull can add or change an extension; the recorded hash is integrity, not approval.

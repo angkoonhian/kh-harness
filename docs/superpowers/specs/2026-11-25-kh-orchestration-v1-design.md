@@ -162,7 +162,11 @@ Some files decide what "passing" means. An agent that could change them could ma
 - `.claude/kh-orchestration/officers.json`;
 - every officer script that `officers.json` names inside the repository;
 - everything under `.claude/kh-orchestration/scripts/`;
-- `.claude/kh-harness/extensions.json`.
+- everything under `.claude/kh-harness/` (`extensions.json`, `contract.json`);
+- everything under `.claude/scripts/`, the kh-harness hook scripts that run the extension;
+- `.claude/settings.json`.
+
+(Corrected 2026-11-26: the list first named only `extensions.json`. The stage 0 review showed that the kit's scripts, its contract file and the project settings are exactly what switches the extension off, and kh-harness does not protect them from an agent with a shell. `.claude/settings.local.json` is not committed, so the digest cannot cover it; the commit gate re-checks it instead, below.)
 
 The **digest** is one hash over the contents of those files in a tree, with one exception for minor rules.
 
@@ -245,3 +249,15 @@ The owner can switch kh-orchestration off for a repository with one command, run
 - The exact wording of messages, within kh-harness's rule that messages are fixed text.
 - File names inside `.claude/kh-orchestration/scripts/`.
 - How `verify-branch` reports, and whether it re-runs officers by default or on a flag.
+
+## Corrections after stage 0 was built (2026-11-26)
+
+`docs/CONTRACT.md` in kh-harness is the authority for what kh-orchestration may rely on. Where the text above differs:
+
+- **Verifying the contract.** kh-orchestration does not ask `detect`. Its installer, its session-start brief and its commit gate each run the two functions the contract document provides: `checkContract1` (the contract file and its hashes, the exact `PreToolUse` registration, hooks not turned off, no project `env` that reaches the hook, its own entry listed and matching) and `probeContract1` (the installed hook, run on a call the extension must block, does block). The gate is relied on only when both return no problems and no warnings. The commit gate re-running them is what catches a registration or settings change made during a session, including one in `.claude/settings.local.json`.
+- **The extension is one self-contained file** importing `node:` built-ins only, loaded from the bytes that were hashed. kh-orchestration's extension is bundled into one file at build time.
+- **Its entry uses `onFailure: "block"`.**
+- **Sharing `extensions.json`.** The installer changes only its own entry, keeps the others' fields and order, writes by temporary file and rename, and on removal deletes only its own entry.
+- **`recordExternalEvent`** returns `{ recorded: false, reason }` with one of nine fixed reasons, accepts any safe session id, masks secrets rather than removing fields, and its `data` expires under retention like other content. `files` in the contract file must list `harness-log.mjs` and `harness-seal.mjs` before it is called.
+- **A repository whose `.claude` is a link** has no contract 1 and cannot install kh-orchestration.
+- **What stage 0 does not give.** kh-harness detects accident, not an agent with a shell, and a pull can add or change an extension with no approval step. The approval lock above and the commit gate are what make a change to those files need the owner; a worker started with permission prompts off can still switch the hook off for its own session, which the commit gate then refuses to accept work from.
