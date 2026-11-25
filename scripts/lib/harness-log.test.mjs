@@ -959,6 +959,7 @@ const REASONS = Object.freeze({
   type: 'type must be letters, digits, dot, underscore and hyphen, starting with a letter, at most 64 characters',
   data: 'data must be a JSON object',
   size: 'data is larger than 16384 bytes',
+  depth: 'data must be nested at most 32 levels deep',
   unwritten: 'the event could not be written',
 });
 
@@ -1011,6 +1012,12 @@ test('a root that is not an absolute path is refused, so no log is chosen by the
   for (const root of [undefined, null, '', '.', 'repo', 5, {}]) {
     assert.deepEqual(recordExternalEvent(root, 's1', EVENT), refused(REASONS.root), String(root));
   }
+  const relative = 'repo';
+  setEnabled(relative, true);
+  const before = readdirSync(repoDataDir(relative));
+  assert.deepEqual(recordExternalEvent(relative, 's1', EVENT), refused(REASONS.root), 'even a relative root whose log is enabled');
+  assert.deepEqual(readdirSync(repoDataDir(relative)), before, 'nothing is created under the data directory');
+  assert.equal(existsSync(join(repoDataDir(relative), 'sessions')), false);
 });
 
 test('a source, type or data of the wrong shape is refused with fixed text and nothing is written', () => {
@@ -1094,13 +1101,37 @@ test('data over the bound is refused, and data at the bound is recorded with no 
   assert.equal(existsSync(join(repoDataDir(root), 'blobs')), false);
 });
 
-test('data nested deeper than the mask can walk is not written, and nothing is thrown', () => {
+/** An object `levels` deep, the object itself the first level: objects and
+ * arrays alternate below it, and the innermost holds a credential-named key
+ * so the mask has to walk every level. */
+function nestedData(levels) {
+  let inner = { [PASSWORD]: secretValue('deep') };
+  for (let level = levels - 1; level >= 1; level--) inner = level % 2 === 0 ? [inner] : { a: inner };
+  return inner;
+}
+const depthOf = value => (value !== null && typeof value === 'object' ? 1 + Math.max(0, ...Object.values(value).map(depthOf)) : 0);
+
+test('data nested 32 levels deep is recorded and stored at that depth, with its secret masked', () => {
   const root = enabledRepo();
-  const nested = depth => JSON.parse(`{"a":${'['.repeat(depth)}${']'.repeat(depth)}}`);
-  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: nested(100) }), { recorded: true });
-  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: nested(8000) }), refused(REASONS.unwritten), 'as deep as the bound allows');
+  assert.equal(depthOf(nestedData(32)), 32, 'fixture sanity');
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: nestedData(32) }), { recorded: true });
+  const [e] = readEvents(root, 's1').events;
+  assert.equal(depthOf(e.data), 32);
+  assert.ok(!rawSession(root, 's1').includes(secretValue('deep')));
+  assert.ok(rawSession(root, 's1').includes(`"${PASSWORD}":"${SCRUB_MARK}"`));
+});
+
+test('data nested deeper than 32 levels is refused with its own reason and nothing is written', () => {
+  const root = enabledRepo();
+  const deepArrays = depth => JSON.parse(`{"a":${'['.repeat(depth)}${']'.repeat(depth)}}`);
+  assert.equal(depthOf(nestedData(33)), 33, 'fixture sanity');
+  for (const data of [nestedData(33), deepArrays(32), deepArrays(8000)]) {
+    assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data }), refused(REASONS.depth));
+  }
+  assert.ok(Buffer.byteLength(JSON.stringify(deepArrays(8000))) <= 16384, 'fixture sanity: as deep as the size bound allows');
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, data: deepArrays(31) }), { recorded: true }, 'an object and 31 arrays are 32 levels');
   const { events, unparseable } = readEvents(root, 's1');
-  assert.deepEqual([events.length, unparseable], [1, 0], 'no part of the deep event reaches the file');
+  assert.deepEqual([events.length, unparseable], [1, 0], 'no part of a refused event reaches the file');
 });
 
 test('a credential in data is masked at every depth and in keys, and a value under a credential-named key is hidden whole', () => {
@@ -1114,6 +1145,15 @@ test('a credential in data is masked at every depth and in keys, and a value und
   const [e] = readEvents(root, 's2').events;
   assert.deepEqual(e.data, { note: `pushed with ${SCRUB_MARK}`, [PASSWORD]: SCRUB_MARK, deep: [{ [SCRUB_MARK]: 'v', args: ['--' + PASSWORD, SCRUB_MARK] }] });
   assert.equal(data.note, `pushed with ${token}`, 'the caller\'s data is left alone');
+});
+
+test('a credential-shaped source is masked in the line, as every string is', () => {
+  const root = enabledRepo();
+  const source = 'sk' + '-' + 'abcdefghij'.repeat(3);
+  assert.ok(source.length <= 64 && /^[a-z][a-z0-9-]*$/.test(source), 'fixture sanity: the source character set admits it');
+  assert.deepEqual(recordExternalEvent(root, 's1', { ...EVENT, source }), { recorded: true });
+  assert.ok(!rawSession(root, 's1').includes(source));
+  assert.equal(readEvents(root, 's1').events[0].source, SCRUB_MARK);
 });
 
 test('a credential-shaped type is masked in the line, as every string is', () => {
@@ -1178,7 +1218,7 @@ function appendBothFromChildren(root, sessionId, count, perChild) {
       const pad = 'x'.repeat(2000 + Number(child) * 37 + i);
       const kit = appendEvent(root, sessionId, { type: 'Stop', child: Number(child), i, pad });
       if (!kit.written) { console.error(kit.reason); process.exit(1); }
-      const ext = recordExternalEvent(root, sessionId, { source: 'kh-orchestration', type: 'officers.run', data: { child: Number(child), i, pad } });
+      const ext = recordExternalEvent(root, sessionId, { source: 'kh-orchestration', type: 'officers.run', data: { child: Number(child), i, pad: 'y'.repeat(16300 - Number(child) * 2 - i) } });
       if (!ext.recorded) { console.error(ext.reason); process.exit(1); }
     }`;
   return Promise.all(Array.from({ length: count }, (_, child) => new Promise(resolve => {
@@ -1200,8 +1240,11 @@ test('external and kit events appended at once by many processes interleave as w
   const seen = new Set();
   for (const e of events) {
     const body = e.type === 'plugin_event' ? e.data : e;
-    assert.equal(body.pad, 'x'.repeat(2000 + body.child * 37 + body.i), 'the line arrived whole');
+    const pad = e.type === 'plugin_event' ? 'y'.repeat(16300 - body.child * 2 - body.i) : 'x'.repeat(2000 + body.child * 37 + body.i);
+    assert.equal(body.pad, pad, 'the line arrived whole');
     seen.add(`${e.type}:${body.child}:${body.i}`);
   }
   assert.equal(seen.size, 600, 'no event is duplicated or missing');
+  const longest = Math.max(...events.filter(e => e.type === 'plugin_event').map(e => Buffer.byteLength(JSON.stringify(e.data))));
+  assert.ok(longest > 16300 && longest <= 16384, `external lines carry data near the bound: ${longest} bytes`);
 });

@@ -594,8 +594,15 @@ export function appendEvent(root, sessionId, event) {
  * default `inlineCapBytes`, so no blob is written for it. */
 export const EXTERNAL_DATA_MAX_BYTES = 16384;
 
-// `source` and `type` are kept by retention and shown in reports, so each
-// is drawn from a fixed set of characters with a fixed length.
+/** The most levels an external event's `data` may be nested, the object
+ * itself the first; an object and an array each count as one. The mask
+ * walks every level by recursion, so a deeper value would end it by the
+ * caller's own stack, at a depth no caller can know. */
+export const EXTERNAL_DATA_MAX_DEPTH = 32;
+
+// `source` and `type` are kept after retention removes `data`, so neither
+// may carry content: each is drawn from a fixed set of characters with a
+// fixed length.
 const EXTERNAL_SOURCE = /^[a-z][a-z0-9-]{0,63}$/;
 const EXTERNAL_TYPE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
 
@@ -607,26 +614,39 @@ const EXTERNAL_REFUSALS = Object.freeze({
   type: 'type must be letters, digits, dot, underscore and hyphen, starting with a letter, at most 64 characters',
   data: 'data must be a JSON object',
   size: `data is larger than ${EXTERNAL_DATA_MAX_BYTES} bytes`,
+  depth: `data must be nested at most ${EXTERNAL_DATA_MAX_DEPTH} levels deep`,
   unwritten: 'the event could not be written',
 });
 
 const refusal = reason => ({ recorded: false, reason: EXTERNAL_REFUSALS[reason] });
 
-/** `{ body }`, the JSON object `data` stands for; `{ over: true }` when its
- * JSON is longer than `EXTERNAL_DATA_MAX_BYTES`; null when it has no JSON or
- * its JSON is not an object. `data` is read once, so a `toJSON` or a getter
- * cannot answer one way when checked and another when written. */
+/** Whether the parsed JSON `value`, at nesting level `level`, goes deeper
+ * than `EXTERNAL_DATA_MAX_DEPTH`. The recursion stops one level past the
+ * bound, so it is never more than that deep whatever the value. */
+function tooDeep(value, level) {
+  if (value === null || typeof value !== 'object') return false;
+  if (level > EXTERNAL_DATA_MAX_DEPTH) return true;
+  return Object.values(value).some(v => tooDeep(v, level + 1));
+}
+
+/** `{ body }`, the JSON object `data` stands for; `{ refused }`, the reason
+ * named in `EXTERNAL_REFUSALS`, when its JSON is not an object, is longer
+ * than `EXTERNAL_DATA_MAX_BYTES` or is nested deeper than
+ * `EXTERNAL_DATA_MAX_DEPTH`. `data` is read once, so a `toJSON` or a getter
+ * cannot answer one way when checked and another when written; the depth
+ * is checked on that parsed copy, before the mask walks it. */
 function externalData(data) {
   let json;
   try {
     json = JSON.stringify(data);
   } catch {
-    return null;
+    return { refused: 'data' };
   }
-  if (typeof json !== 'string') return null;
+  if (typeof json !== 'string') return { refused: 'data' };
   const body = JSON.parse(json);
-  if (!isPlainObject(body)) return null;
-  return Buffer.byteLength(json, 'utf8') > EXTERNAL_DATA_MAX_BYTES ? { over: true } : { body };
+  if (!isPlainObject(body)) return { refused: 'data' };
+  if (Buffer.byteLength(json, 'utf8') > EXTERNAL_DATA_MAX_BYTES) return { refused: 'size' };
+  return tooDeep(body, 1) ? { refused: 'depth' } : { body };
 }
 
 /**
@@ -638,7 +658,8 @@ function externalData(data) {
  * The line is `{ schema, ts, pid, type: 'plugin_event', session_id, source,
  * kind, data }`, `kind` being the caller's `type`, written by `appendEvent`
  * and so masked as every event is. `data` must be an object whose JSON is
- * at most `EXTERNAL_DATA_MAX_BYTES` bytes.
+ * at most `EXTERNAL_DATA_MAX_BYTES` bytes, nested at most
+ * `EXTERNAL_DATA_MAX_DEPTH` levels.
  *
  * Returns `{ recorded: true }` or `{ recorded: false, reason }`, `reason`
  * one of `EXTERNAL_REFUSALS`; never throws. Nothing is written, not even a
@@ -657,8 +678,7 @@ export function recordExternalEvent(root, sessionId, event) {
     if (typeof source !== 'string' || !EXTERNAL_SOURCE.test(source)) return refusal('source');
     if (typeof type !== 'string' || !EXTERNAL_TYPE.test(type)) return refusal('type');
     const checked = externalData(data);
-    if (checked === null) return refusal('data');
-    if (checked.over) return refusal('size');
+    if (checked.refused !== undefined) return refusal(checked.refused);
     const { written } = appendEvent(root, id, { type: 'plugin_event', session_id: id, source, kind: type, data: checked.body });
     return written ? { recorded: true } : refusal('unwritten');
   } catch {

@@ -949,6 +949,8 @@ test('REVIEW FOCUS 5: a session holding a plugin event is sealed and verified, a
   setEnabled(root, true);
   appendEvent(root, 'p', { type: 'Stop', stopHookActive: false });
   assert.equal(recordExternalEvent(root, 'p', { source: 'kh-orchestration', type: 'officers.run', data: { failed: ['V8'] } }).recorded, true);
+  const deepest = JSON.parse(`{"a":${'['.repeat(31)}${']'.repeat(31)}}`);
+  assert.equal(recordExternalEvent(root, 'p', { source: 'kh-orchestration', type: 'officers.deep', data: deepest }).recorded, true, 'data at the depth bound');
   seal(root);
   assert.deepEqual(verifyIndex(root), INTACT);
   assert.equal(indexLines(root)[0].external, false, 'a plugin event is not outside content');
@@ -956,7 +958,8 @@ test('REVIEW FOCUS 5: a session holding a plugin event is sealed and verified, a
   assert.deepEqual(eventsOf(root, 'p')[1].data, { failed: ['V8'] });
   assert.equal(applyRetention(root, { now: Date.now() + 91 * DAY_MS }).contentRemoved, 1);
   assert.deepEqual(verifyIndex(root), INTACT);
-  const [stop, plugin] = eventsOf(root, 'p');
+  const [stop, plugin, deep] = eventsOf(root, 'p');
+  assert.deepEqual([deep.kind, deep.contentExpired, Object.hasOwn(deep, 'data')], ['officers.deep', true, false]);
   assert.equal(Object.hasOwn(stop, 'contentExpired'), false, 'the kit\'s own event held no content');
   assert.deepEqual([plugin.type, plugin.source, plugin.kind, plugin.contentExpired, Object.hasOwn(plugin, 'data')], ['plugin_event', 'kh-orchestration', 'officers.run', true, false]);
 });
