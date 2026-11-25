@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { render, versionStamp, machineryStamp, stampVersion, carriesStamp } from './render.mjs';
 import { classify, contentMatches, MANIFEST_PATH, sha256 } from './manifest.mjs';
@@ -843,12 +843,39 @@ export function everyLoadedSibling(path) {
 /** What the kit writes at the installed path `path`: its asset under the
  * machinery stamp, after the shebang for a hook script and first for a
  * module. */
-function installedScriptProposal(path, kitVersion) {
+export function installedScriptProposal(path, kitVersion) {
   const { asset, step, reason } = INSTALLED_SCRIPTS[path];
   const contents = Object.hasOwn(HOOK_SCRIPTS, path)
     ? read(asset).replace('#!/usr/bin/env node\n', `#!/usr/bin/env node\n${machineryStamp(kitVersion, `runbook step ${step}`, '//')}\n`)
     : `${machineryStamp(kitVersion, "shared module loaded by the kit's hook scripts", '//')}\n${read(asset)}`;
   return { kind: 'file', path, step, contents, assetSource: asset, reason };
+}
+
+/** Where the installed script at `path` stands on disk against what this
+ * kit writes there today, line endings aside: `current`, `other` (anything
+ * else, including what cannot be read or is not a regular file), or
+ * `missing`, which is also a path Node could not load a module from.
+ * Read whatever the manifest records, since what runs is the file on
+ * disk. */
+export function installedScriptStatus(root, path, kitVersion) {
+  const expected = installedScriptProposal(path, kitVersion).contents;
+  const file = join(root, path);
+  let st;
+  try {
+    st = statSync(file, { throwIfNoEntry: false });
+  } catch (error) {
+    // Node cannot load a path through a non-directory or a link loop either.
+    return error?.code === 'ENOTDIR' || error?.code === 'ELOOP' ? 'missing' : 'other';
+  }
+  if (st === undefined) return 'missing';
+  // A file larger than twice what is expected cannot be it even with every
+  // LF made CRLF, so it is not read.
+  if (!st.isFile() || st.size > 2 * Buffer.byteLength(expected)) return 'other';
+  try {
+    return contentMatches(readFileSync(file), sha256(expected)) ? 'current' : 'other';
+  } catch {
+    return 'other';
+  }
 }
 
 /**

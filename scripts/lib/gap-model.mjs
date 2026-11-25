@@ -18,7 +18,7 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { displayPath, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
@@ -31,14 +31,52 @@ import { normalizeMatcher } from './settings-merge.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
 
-/** How P5.extensions words each module state `moduleState` returns. */
+/** How P5.extensions words each module state `moduleState` returns. A
+ * module whose hash matches is still loaded and called only by the hook,
+ * which applies its `onFailure` when that fails. */
 const EXTENSION_HASH_WORDS = Object.freeze({
-  matches: 'matches its recorded sha256',
+  matches: 'matches its recorded sha256 (whether it loads and runs is not checked)',
   differs: 'does not match its recorded sha256',
   missing: 'is missing',
   outside: 'is not a file under .claude/ in this repository',
   unreadable: 'could not be read',
 });
+
+const KIT_FILES_REMEDY = 'run kh-harness apply --yes; P0.kitskew says whether it can update each file';
+
+/**
+ * What the PreToolUse hook does with the extensions file, as far as the
+ * registration and the three installed files it depends on (`installed`,
+ * from extensions-evidence.mjs) tell, decided as dispatch-pre-tool.mjs
+ * decides it: `none` (nothing runs it), `unresolved` (whether anything
+ * does is not known), `unread` (an installed file is not the one this kit
+ * installs, so its behaviour was not read), `blocked` (the current entry
+ * script blocks every call it runs on whatever the file says, because the
+ * core is missing, or the core is current and the loader missing), or
+ * `runs` (each entry is applied as harness-extensions.mjs applies it).
+ * `why` is fixed text naming kit paths only; `everyTool` is whether a
+ * registration of the entry script fires for every tool.
+ */
+function extensionsRun(harness, installed, { manifest, root }) {
+  const declared = registeredHook(harness, 'PreToolUse', DISPATCH_PRE_PATH, null, { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
+  const direct = directRegistrations(harness, 'PreToolUse', DISPATCH_PRE_PATH);
+  const everyTool = direct.some(r => normalizeMatcher(r.matcher) === null);
+  const result = (kind, why = null) => ({ kind, why, everyTool });
+  const registeredAs = declared ? 'it is registered on PreToolUse' : direct.length ? 'PreToolUse holds the registration kh-harness writes for it' : null;
+  if (installed.entry === 'missing' && registeredAs !== null) return result('none', `${DISPATCH_PRE_PATH} is not in the repository, though ${registeredAs}`);
+  if (!declared) {
+    if ((harness.claudeDir.hookRegistrations?.PreToolUse ?? []).some(r => r.script === null)) {
+      return result('unresolved', `PreToolUse holds a hook whose script could not be resolved, so whether ${DISPATCH_PRE_PATH} is registered is not known`);
+    }
+    return result('none', `${DISPATCH_PRE_PATH} is not registered on PreToolUse`);
+  }
+  if (installed.entry !== 'current') return result('unread', `${DISPATCH_PRE_PATH} is not the file this kit installs`);
+  const off = [[HARNESS_DISPATCH_PATH, installed.core], [HARNESS_EXTENSIONS_PATH, installed.loader]].filter(([, status]) => status !== 'current');
+  if (off.length === 0) return result('runs');
+  const why = off.map(([path, status]) => `${path} ${status === 'missing' ? 'is missing' : 'is not the file this kit installs'}`).join(', and ');
+  const blocks = installed.core === 'missing' || (installed.core === 'current' && installed.loader === 'missing');
+  return result(blocks ? 'blocked' : 'unread', why);
+}
 
 /**
  * Counts CAPABILITY GAPS with a proposal, per `via` (see `buildGaps`): only
@@ -811,36 +849,49 @@ const CHECKS = [
   },
   {
     id: 'P5.extensions', step: 32, phase: 5,
-    lookedFor: [EXTENSIONS_PATH, 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`],
+    lookedFor: [
+      EXTENSIONS_PATH, 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`,
+      `${DISPATCH_PRE_PATH}, ${HARNESS_DISPATCH_PATH} and ${HARNESS_EXTENSIONS_PATH} against what this kit installs`,
+    ],
     // Read from `harness.extensions`, which hashes each module and never
     // loads one, so it is never `verified`. Nothing is proposed: an
-    // extension is another plugin's, and so is its repair. What a line says
-    // the hook does is what harness-extensions.mjs's `extensionsHalf` does,
-    // and is said only while the entry script that runs it is registered.
+    // extension is another plugin's, and so is its repair, and P0.kitskew
+    // proposes the kit's own files. What a line says the hook does is what
+    // `extensionsRun` read it would do; a consequence is said only when the
+    // installed files are the ones whose behaviour that is.
     check: ({ harness, manifest, root }) => {
       const file = harness.extensions;
       if (!file) return { state: 'n/a', evidence: ['the extensions file was not read'] };
       if (file.state === 'absent') return { state: 'n/a', evidence: [`no ${EXTENSIONS_PATH}: no plugin has registered an extension`] };
-      const registered = registeredHook(harness, 'PreToolUse', DISPATCH_PRE_PATH, null, { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
-      const unrun = `${DISPATCH_PRE_PATH} is not registered on PreToolUse`;
-      const everyTool = directRegistrations(harness, 'PreToolUse', DISPATCH_PRE_PATH).some(r => normalizeMatcher(r.matcher) === null);
-      const blocked = `so every tool call${everyTool ? '' : ' its PreToolUse matcher selects'} is blocked`;
+      const run = extensionsRun(harness, file.installed, { manifest, root });
+      const blocked = `every tool call${run.everyTool ? '' : ' its PreToolUse matcher selects'} is blocked`;
+      const tail = {
+        blocked: `, and ${blocked}: ${run.why}; ${KIT_FILES_REMEDY}`,
+        unread: `, and what the hook does with the file was not read: ${run.why}; ${KIT_FILES_REMEDY}`,
+      }[run.kind];
       if (file.state === 'malformed') {
-        return { state: 'failing', evidence: [`${EXTENSIONS_PATH} cannot be used (${file.problem}), ${registered ? blocked : `and nothing reads it: ${unrun}`}`] };
+        const end = tail ?? {
+          runs: `, so ${blocked}`,
+          none: `, and nothing reads it: ${run.why}`,
+          unresolved: `, and whether anything reads it was not read: ${run.why}`,
+        }[run.kind];
+        return { state: 'failing', evidence: [`${EXTENSIONS_PATH} cannot be used (${file.problem})${end}`] };
       }
       const n = file.extensions.length;
-      if (n === 0) return { state: 'n/a', evidence: [`${EXTENSIONS_PATH} lists no extension`] };
-      const lists = `${EXTENSIONS_PATH} lists ${n} extension${n === 1 ? '' : 's'}`;
-      const header = registered
-        ? `${lists}, run by ${DISPATCH_PRE_PATH} before ${everyTool ? 'every tool call' : 'each tool call its PreToolUse matcher selects'}`
-        : `${lists}, and none runs: ${unrun}`;
-      const consequence = { block: blocked, allow: 'so it checks no call' };
+      if (n === 0 && (run.kind === 'runs' || run.kind === 'none')) return { state: 'n/a', evidence: [`${EXTENSIONS_PATH} lists no extension`] };
+      const lists = `${EXTENSIONS_PATH} lists ${n === 0 ? 'no extension' : `${n} extension${n === 1 ? '' : 's'}`}`;
+      const header = lists + (tail ?? {
+        runs: `, run by ${DISPATCH_PRE_PATH} before ${run.everyTool ? 'every tool call' : 'each tool call its PreToolUse matcher selects'}`,
+        none: `, and none runs: ${run.why}`,
+        unresolved: `, and whether any runs was not read: ${run.why}`,
+      }[run.kind]);
+      const consequence = { block: `so ${blocked}`, allow: 'so it checks no call' };
       const lines = file.extensions.map(e => {
         const line = `${e.id} ${e.version}: ${e.module} ${EXTENSION_HASH_WORDS[e.hash]}; onFailure ${e.onFailure}`;
-        return e.hash === 'matches' || !registered ? line : `${line}, ${consequence[e.onFailure]}`;
+        return e.hash === 'matches' || run.kind !== 'runs' ? line : `${line}, ${consequence[e.onFailure]}`;
       });
-      const failing = !registered || file.extensions.some(e => e.hash !== 'matches');
-      return { state: failing ? 'failing' : 'declared', evidence: [header, ...lines] };
+      const declared = run.kind === 'runs' && file.extensions.every(e => e.hash === 'matches');
+      return { state: declared ? 'declared' : 'failing', evidence: [header, ...lines] };
     },
   },
   {

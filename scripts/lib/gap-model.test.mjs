@@ -2054,18 +2054,27 @@ test('P0.hookmerge sits directly before P0.kitskew in the checks and in the gene
 });
 
 // --- P5.extensions -----------------------------------------------------------
+// The sentences that depend on the installed kit files are pinned together
+// with the hook's own behaviour in extensions-evidence.test.mjs, which runs
+// the installed entry script.
 
 const extensionsCheck = harness => byId(gaps(bareStack, harness), 'P5.extensions');
 const onPreToolUse = (...registrations) => ({ ...bareHarness, claudeDir: { ...bareHarness.claudeDir, hookRegistrations: { PreToolUse: registrations } } });
 const entryRegistered = onPreToolUse({ script: DISPATCH_PRE_PATH, matcher: null });
-const listed = (...extensions) => ({ state: 'ok', extensions: extensions.map(([id, hash, onFailure]) => ({ id, version: '1.0.0', module: `.claude/ext/${id}.mjs`, onFailure, hash })) });
+const CURRENT = Object.freeze({ entry: 'current', core: 'current', loader: 'current' });
+const listed = (...extensions) => ({ state: 'ok', installed: CURRENT, extensions: extensions.map(([id, hash, onFailure]) => ({ id, version: '1.0.0', module: `.claude/ext/${id}.mjs`, onFailure, hash })) });
+const notJson = (installed = CURRENT) => ({ state: 'malformed', problem: 'it is not JSON', installed });
+const UNCHECKED = 'matches its recorded sha256 (whether it loads and runs is not checked)';
 
 test('P5.extensions sits directly after P5.integrity, and says what it looked for', () => {
   const ids = gaps(bareStack, bareHarness).map(c => c.id);
   assert.equal(ids[ids.indexOf('P5.integrity') + 1], 'P5.extensions');
   const c = extensionsCheck(bareHarness);
   assert.deepEqual([c.step, c.phase], [32, 5]);
-  assert.deepEqual(c.lookedFor, ['.claude/kh-harness/extensions.json', 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`]);
+  assert.deepEqual(c.lookedFor, [
+    '.claude/kh-harness/extensions.json', 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`,
+    `${DISPATCH_PRE_PATH}, .claude/scripts/harness-dispatch.mjs and .claude/scripts/harness-extensions.mjs against what this kit installs`,
+  ]);
 });
 
 test('P5.extensions is n/a when the harness object carries no extensions reading, and when there is no file', () => {
@@ -2082,8 +2091,8 @@ test('P5.extensions is declared when every listed module matches, one line per e
   assert.equal(c.state, 'declared');
   assert.deepEqual(c.evidence, [
     '.claude/kh-harness/extensions.json lists 2 extensions, run by .claude/scripts/dispatch-pre-tool.mjs before every tool call',
-    'a 1.0.0: .claude/ext/a.mjs matches its recorded sha256; onFailure block',
-    'b 1.0.0: .claude/ext/b.mjs matches its recorded sha256; onFailure allow',
+    `a 1.0.0: .claude/ext/a.mjs ${UNCHECKED}; onFailure block`,
+    `b 1.0.0: .claude/ext/b.mjs ${UNCHECKED}; onFailure allow`,
   ]);
 });
 
@@ -2096,12 +2105,12 @@ test('P5.extensions is failing when a module does not match, and says what the h
     'b 1.0.0: .claude/ext/b.mjs is missing; onFailure allow, so it checks no call',
     'c 1.0.0: .claude/ext/c.mjs is not a file under .claude/ in this repository; onFailure block, so every tool call is blocked',
     'd 1.0.0: .claude/ext/d.mjs could not be read; onFailure allow, so it checks no call',
-    'e 1.0.0: .claude/ext/e.mjs matches its recorded sha256; onFailure block',
+    `e 1.0.0: .claude/ext/e.mjs ${UNCHECKED}; onFailure block`,
   ]);
 });
 
 test('P5.extensions is failing for a malformed file', () => {
-  const c = extensionsCheck({ ...entryRegistered, extensions: { state: 'malformed', problem: 'it is not JSON' } });
+  const c = extensionsCheck({ ...entryRegistered, extensions: notJson() });
   assert.deepEqual([c.state, c.evidence], ['failing', ['.claude/kh-harness/extensions.json cannot be used (it is not JSON), so every tool call is blocked']]);
 });
 
@@ -2113,13 +2122,29 @@ test('P5.extensions is failing when extensions are listed and the entry script i
     '.claude/kh-harness/extensions.json lists 1 extension, and none runs: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse',
     'a 1.0.0: .claude/ext/a.mjs does not match its recorded sha256; onFailure block',
   ], 'with nothing to run it, no entry blocks a call');
-  const malformed = extensionsCheck({ ...separate, extensions: { state: 'malformed', problem: 'it is not JSON' } });
+  const malformed = extensionsCheck({ ...separate, extensions: notJson() });
   assert.deepEqual([malformed.state, malformed.evidence], ['failing', [
     '.claude/kh-harness/extensions.json cannot be used (it is not JSON), and nothing reads it: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse',
   ]]);
   const unregistered = extensionsCheck({ ...bareHarness, extensions: listed(['a', 'matches', 'block']) });
   assert.equal(unregistered.state, 'failing');
   assert.equal(unregistered.evidence[0], '.claude/kh-harness/extensions.json lists 1 extension, and none runs: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse');
+});
+
+test('P5.extensions says the entry script is not in the repository, not that it is unregistered, when its registration outlives its file', () => {
+  // The scan could not resolve the script, so the registration carries the
+  // hash of the entry kh-harness writes for it.
+  const orphan = onPreToolUse(Object.defineProperty({ script: null, matcher: null }, 'entrySha256', { value: hookEntrySha256(execEntry(DISPATCH_PRE_PATH)) }));
+  const gone = { ...CURRENT, entry: 'missing' };
+  const c = extensionsCheck({ ...orphan, extensions: { ...listed(['a', 'matches', 'block']), installed: gone } });
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 1 extension, and none runs: .claude/scripts/dispatch-pre-tool.mjs is not in the repository, though PreToolUse holds the registration kh-harness writes for it',
+    `a 1.0.0: .claude/ext/a.mjs ${UNCHECKED}; onFailure block`,
+  ]);
+  const unresolved = extensionsCheck({ ...onPreToolUse({ script: null, matcher: null }), extensions: listed(['a', 'matches', 'block']) });
+  assert.equal(unresolved.state, 'failing');
+  assert.equal(unresolved.evidence[0], '.claude/kh-harness/extensions.json lists 1 extension, and whether any runs was not read: PreToolUse holds a hook whose script could not be resolved, so whether .claude/scripts/dispatch-pre-tool.mjs is registered is not known');
 });
 
 test('P5.extensions under a PreToolUse matcher that does not select every tool says so', () => {
@@ -2129,7 +2154,7 @@ test('P5.extensions under a PreToolUse matcher that does not select every tool s
     '.claude/kh-harness/extensions.json lists 1 extension, run by .claude/scripts/dispatch-pre-tool.mjs before each tool call its PreToolUse matcher selects',
     'a 1.0.0: .claude/ext/a.mjs does not match its recorded sha256; onFailure block, so every tool call its PreToolUse matcher selects is blocked',
   ]);
-  const malformed = extensionsCheck({ ...narrow, extensions: { state: 'malformed', problem: 'it is not JSON' } });
+  const malformed = extensionsCheck({ ...narrow, extensions: notJson() });
   assert.deepEqual(malformed.evidence, ['.claude/kh-harness/extensions.json cannot be used (it is not JSON), so every tool call its PreToolUse matcher selects is blocked']);
 });
 
@@ -2139,7 +2164,9 @@ test('P5.extensions never proposes and is never verified', () => {
     { ...entryRegistered, extensions: { state: 'absent' } },
     { ...entryRegistered, extensions: listed(['a', 'matches', 'block']) },
     { ...entryRegistered, extensions: listed(['a', 'missing', 'block']) },
-    { ...entryRegistered, extensions: { state: 'malformed', problem: 'it is not JSON' } },
+    { ...entryRegistered, extensions: notJson() },
+    { ...entryRegistered, extensions: notJson({ ...CURRENT, entry: 'other' }) },
+    { ...entryRegistered, extensions: { ...listed(), installed: { ...CURRENT, loader: 'missing' } } },
     { ...bareHarness, extensions: listed(['a', 'matches', 'block']) },
   ];
   for (const harness of harnesses) {
