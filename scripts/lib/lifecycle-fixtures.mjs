@@ -9,9 +9,11 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { after } from 'node:test';
-import { SESSION_LOG_PATH } from './propose.mjs';
+import { ENTRY_SCRIPTS, entryScriptFor, execEntry } from './hook-evidence.mjs';
+import { LINT_TOUCHED_PATH, LOOP_WATCH_PATH, SENSOR_MATCHER, SESSION_LOG_PATH, TOOL_GATE_PATH } from './propose.mjs';
+import { buildMatcherEntry, hookEntrySha256 } from './settings-merge.mjs';
 
 export const DETECT = resolve(import.meta.dirname, '..', 'detect.mjs');
 export const APPLY = resolve(import.meta.dirname, '..', 'apply.mjs');
@@ -66,7 +68,59 @@ export function runRegisteredHook(d, event, script, payload) {
   });
 }
 export const settings = d => JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8'));
+
+/** The basename of the script that runs the logging hook on `event` in
+ * `d`'s settings: the event's entry script when they register it there,
+ * else `session-log.mjs`. */
+export function loggingScript(d, event) {
+  const entry = entryScriptFor(event, SESSION_LOG_PATH);
+  const arg = `\${CLAUDE_PROJECT_DIR}/${entry}`;
+  const registered = entry !== null && (settings(d).hooks?.[event] ?? []).flatMap(m => m.hooks ?? []).some(h => h.command === 'node' && h.args?.[0] === arg);
+  return registered ? basename(entry) : 'session-log.mjs';
+}
 export const manifestOf = d => JSON.parse(readFileSync(join(d, '.claude/kh-harness.manifest.json'), 'utf8'));
+
+/** The check that registers each hook of an entry script by itself, with
+ * that check's step, and the matcher it registers the hook under. */
+const SEPARATE_HALVES = Object.freeze({
+  [SESSION_LOG_PATH]: { checkId: 'P5.sessionlog', step: 31, matcher: undefined },
+  [TOOL_GATE_PATH]: { checkId: 'P5.toolgate', step: 30, matcher: undefined },
+  [LINT_TOUCHED_PATH]: { checkId: 'P2.sensor', step: 9, matcher: SENSOR_MATCHER },
+  [LOOP_WATCH_PATH]: { checkId: 'P2.loopwatch', step: 13, matcher: undefined },
+});
+
+/**
+ * Puts the installed repository `d` into the layout the kit wrote before
+ * the entry scripts: on each event of `ENTRY_SCRIPTS` whose entry script is
+ * registered, that element of `.claude/settings.json` becomes one element
+ * per hook it runs, and the manifest's record of it one record per hook,
+ * each under the check that registers the hook by itself. The logging
+ * hook's element comes first, as that `apply` wrote it. Every file is left
+ * as installed.
+ */
+export function separateRegistrations(d) {
+  const s = settings(d);
+  const m = manifestOf(d);
+  for (const [event, { path, halves: running }] of Object.entries(ENTRY_SCRIPTS)) {
+    const halves = [SESSION_LOG_PATH, ...running.filter(half => half !== SESSION_LOG_PATH)];
+    const arg = `\${CLAUDE_PROJECT_DIR}/${path}`;
+    const at = (s.hooks?.[event] ?? []).findIndex(e => e.hooks?.some(h => h.command === 'node' && h.args?.[0] === arg));
+    if (at === -1) continue;
+    s.hooks[event].splice(at, 1, ...halves.map(half => buildMatcherEntry(execEntry(half), SEPARATE_HALVES[half].matcher)));
+    const entrySha256 = hookEntrySha256(execEntry(path));
+    const record = m.settingsPatches.findIndex(p => p.event === event && p.entrySha256 === entrySha256);
+    assert.notEqual(record, -1, `fixture sanity: ${path} is recorded on ${event}`);
+    const { appliedAt, container } = m.settingsPatches[record];
+    m.settingsPatches.splice(record, 1, ...halves.map(half => {
+      const { checkId, step, matcher } = SEPARATE_HALVES[half];
+      return { event, container, entrySha256: hookEntrySha256(execEntry(half), matcher), step, checkId, appliedAt };
+    }));
+  }
+  // Written as apply writes it, keeping whether the file ended in a newline.
+  const ending = readFileSync(join(d, '.claude/settings.json'), 'utf8').endsWith('\n') ? '\n' : '';
+  writeFileSync(join(d, '.claude/settings.json'), JSON.stringify(s, null, 2) + ending);
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+}
 
 const LOGGING_HOOK_ARG = `\${CLAUDE_PROJECT_DIR}/${SESSION_LOG_PATH}`;
 /** The matcher entries on `event` in the settings object `s`, leaving out
@@ -114,6 +168,14 @@ export function fixture() {
   git(d, 'remote', 'add', 'origin', 'https://example.invalid/kh-harness-fixture.git');
   git(d, 'add', '-A');
   git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+  return d;
+}
+
+/** `fixture()` with a `lint` script in its package, committed. */
+export function fixtureWithLint() {
+  const d = fixture();
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest', lint: 'eslint .' } }));
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-a', '-q', '-m', 'lint');
   return d;
 }
 

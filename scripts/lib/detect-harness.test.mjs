@@ -276,6 +276,38 @@ test('hookRegistrations resolves an exec-form entry\'s script from args, with ${
   assert.deepEqual(regs.Stop, [{ script: null, matcher: null }], 'a path the scan cannot see is never named');
 });
 
+test('each registration says, out of sight of the report, whether it runs its script on every call in exactly the form apply writes', () => {
+  const d = repo();
+  write(d, '.claude/scripts/x.mjs', '//');
+  const exact = { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/x.mjs'] };
+  write(d, '.claude/settings.json', JSON.stringify({ hooks: { PreToolUse: [
+    { hooks: [exact] },
+    { matcher: '*', hooks: [exact] },
+    { matcher: '', hooks: [exact] },
+    { matcher: 'Bash', hooks: [exact] },
+    { hooks: [{ ...exact, async: true }] },
+    { hooks: [{ ...exact, timeout: 5 }] },
+    { hooks: [exact], extra: 1 },
+    { hooks: [{ type: 'command', command: 'node .claude/scripts/x.mjs' }] },
+  ] } }));
+  write(d, '.claude/settings.local.json', JSON.stringify({ hooks: { PreToolUse: [{ hooks: [exact] }] } }));
+  const regs = run(d).claudeDir.hookRegistrations.PreToolUse;
+  assert.deepEqual(regs.map(r => r.everyCall), [true, true, true, false, false, false, false, false, false]);
+  assert.equal(Object.keys(regs[0]).includes('everyCall'), false, 'not in the committed report');
+});
+
+test('the settings files that set disableAllHooks to anything but false are named', () => {
+  const d = repo();
+  write(d, 'README.md', '# x');
+  assert.deepEqual(run(d).claudeDir.disableAllHooksIn, []);
+  for (const [value, named] of [[false, []], [true, ['.claude/settings.json']], ['true', ['.claude/settings.json']], [0, ['.claude/settings.json']], [null, ['.claude/settings.json']]]) {
+    write(d, '.claude/settings.json', JSON.stringify({ disableAllHooks: value }));
+    assert.deepEqual(run(d).claudeDir.disableAllHooksIn, named, JSON.stringify(value));
+  }
+  write(d, '.claude/settings.local.json', JSON.stringify({ disableAllHooks: true }));
+  assert.deepEqual(run(d).claudeDir.disableAllHooksIn, ['.claude/settings.json', '.claude/settings.local.json']);
+});
+
 test('the registry also reads .claude/settings.local.json', () => {
   const d = repo();
   write(d, 'a.mjs', '//');

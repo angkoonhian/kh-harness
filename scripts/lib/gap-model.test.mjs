@@ -1,19 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildGaps, countProposals, STATES } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { buildReport, deriveCouldNotDerive, renderSummary } from './report.mjs';
-import { MANIFEST_PATH } from './manifest.mjs';
+import { emptyManifest, MANIFEST_PATH } from './manifest.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, GENERATORS, toolGateDenyRules } from './propose.mjs';
+import {
+  LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH,
+  SENSOR_MATCHER, GENERATOR_SCRIPT_PATHS, GENERATORS, toolGateDenyRules, CONTRACT_FILES, HARNESS_EXTENSIONS_PATH,
+} from './propose.mjs';
+import { CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { hasEquivalentHook, hookEntrySha256 } from './settings-merge.mjs';
-import { execEntry, registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, execEntry, registeredHook } from './hook-evidence.mjs';
 import { UNREADABLE_KIND, splitExposures } from './detect-exposure.mjs';
+import { EXTENSION_HOOK_FILES } from './extensions-evidence.mjs';
 
 /** `byEvent` with `entry` appended on every logged event: the logging hook
  * is registered on all of them in a fully harnessed repository. */
@@ -1338,6 +1343,54 @@ test('registeredHook refuses to judge without the kit\'s hook scripts', () => {
   assert.throws(() => registeredHook(withHooks({}), 'Stop', VERIFY_TOUCHED_PATH, null, { manifest: null, root: tmpRepo() }), /kitScripts/);
 });
 
+// --- A hook run by its event's entry script ----------------------------------
+//
+// On the three tool-call events one entry script runs the kit's hooks there
+// in one process, and the hooks it runs are not registered separately.
+
+/** A harness whose hook registry is `hookRegistrations`, beside every deny
+ * rule the gate hook is installed with. */
+const withRegistrations = hookRegistrations => ({ ...bareHarness,
+  claudeDir: { ...bareHarness.claudeDir, denyRules: toolGateDenyRules().length, denyRuleList: toolGateDenyRules(), hookRegistrations } });
+const lintStack = { ...bareStack, packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint'] }] };
+// Each entry script on its own event, the logging hook on every other.
+const merged = withRegistrations(Object.fromEntries(LOGGED_EVENTS.map(event => [event, [{ script: ENTRY_SCRIPTS[event]?.path ?? SESSION_LOG_PATH, matcher: null }]])));
+
+test('each of the four hook checks is declared when its event holds the entry script in place of the single script', () => {
+  const checks = gaps(lintStack, merged);
+  for (const id of ['P5.toolgate', 'P2.sensor', 'P2.loopwatch', 'P5.sessionlog']) assert.equal(byId(checks, id).state, 'declared', id);
+  assert.deepEqual(byId(checks, 'P5.toolgate').evidence, [`PreToolUse hook: ${TOOL_GATE_PATH}, run by ${DISPATCH_PRE_PATH}`]);
+  assert.deepEqual(byId(checks, 'P2.sensor').evidence, [`PostToolUse hook: ${LINT_TOUCHED_PATH}, run by ${DISPATCH_POST_PATH}`]);
+  assert.deepEqual(byId(checks, 'P5.sessionlog').evidence, [
+    `${SESSION_LOG_PATH} is registered on all ${LOGGED_EVENTS.length} logged events: ${LOGGED_EVENTS.join(', ')}`,
+    `PreToolUse hook: ${SESSION_LOG_PATH}, run by ${DISPATCH_PRE_PATH}`,
+    `PostToolUse hook: ${SESSION_LOG_PATH}, run by ${DISPATCH_POST_PATH}`,
+    `PostToolUseFailure hook: ${SESSION_LOG_PATH}, run by ${DISPATCH_FAILURE_PATH}`,
+  ]);
+});
+
+test('an entry script on an event it is not for credits nothing there', () => {
+  const c = byId(gaps(lintStack, withRegistrations({ PostToolUse: [{ script: DISPATCH_PRE_PATH, matcher: null }] })), 'P2.sensor');
+  assert.equal(c.state, 'absent');
+  assert.deepEqual(c.evidence, [`PostToolUse already holds another kh-harness hook: ${DISPATCH_PRE_PATH}`]);
+});
+
+test('the PostToolUse entry script under a matcher that does not fire for edits credits the log and not the lint sensor', () => {
+  const h = withRegistrations({ PostToolUse: [{ script: DISPATCH_POST_PATH, matcher: 'Bash' }] });
+  assert.equal(registeredHook(h, 'PostToolUse', LINT_TOUCHED_PATH, 'p', { matcher: SENSOR_MATCHER, kitScripts: GENERATOR_SCRIPT_PATHS }).state, 'absent');
+  assert.equal(registeredHook(h, 'PostToolUse', SESSION_LOG_PATH, null, { kitScripts: GENERATOR_SCRIPT_PATHS }).state, 'declared');
+});
+
+test('an entry script the file scan cannot resolve is credited from the install record and the file on disk', () => {
+  const sha = hookEntrySha256(execEntry(DISPATCH_PRE_PATH));
+  const unresolved = Object.defineProperty({ script: null, matcher: null }, 'entrySha256', { value: sha });
+  const d = repoWith({ [DISPATCH_PRE_PATH]: '//' });
+  const manifest = { schema: 1, files: [], settingsPatches: [{ event: 'PreToolUse', container: '/hooks/PreToolUse', entrySha256: sha }] };
+  const r = registeredHook(withRegistrations({ PreToolUse: [unresolved] }), 'PreToolUse', TOOL_GATE_PATH, 'p', { manifest, root: d, kitScripts: GENERATOR_SCRIPT_PATHS });
+  assert.deepEqual(r, { state: 'declared', evidence: [`PreToolUse hook: ${TOOL_GATE_PATH}, run by ${DISPATCH_PRE_PATH} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] });
+  assert.equal(registeredHook(withRegistrations({ PreToolUse: [unresolved] }), 'PreToolUse', TOOL_GATE_PATH, 'p', { manifest: { ...manifest, settingsPatches: [] }, root: d, kitScripts: GENERATOR_SCRIPT_PATHS }).state, 'absent');
+});
+
 test('P4.sessionbrief is not declared via its install record once its entry is gone from the event', () => {
   const d = tmpRepo();
   writeFile(d, '.claude/scripts/session-brief.mjs', '//');
@@ -1695,6 +1748,7 @@ test('TWO-PATH AGREEMENT: the redacted comparison and hasEquivalentHook agree wh
 // filesystem. A fixture that omits the fields is a repository without them.
 import { INTENT_SECTIONS } from './intent-evidence.mjs';
 import { RULES_BRIEF_PATH } from './propose.mjs';
+import { rulesRegistryEvidence } from './rules-evidence.mjs';
 
 const fullIntent = { path: 'docs/INTENT.md', found: [...INTENT_SECTIONS], missing: [], lastReviewed: null };
 const filledRegistry = {
@@ -1706,7 +1760,7 @@ const emptyRegistry = { path: 'docs/harness/RULES.md', count: 0, superseded: 0, 
 const learnedRegistry = {
   path: 'docs/harness/LEARNED.md', count: 2, superseded: 1,
   byEnforcer: { hook: 1, test: 1 }, unenforced: [],
-  missingPointers: [{ id: 'L2', pointer: 'tests/gone.test.mjs' }], problems: ['L9: no enforced-by line — recorded as none'],
+  missingPointers: [{ id: 'L2', pointer: 'tests/gone.test.mjs', reason: 'not-found' }], problems: ['L9: no enforced-by line — recorded as none'],
 };
 const noOwner = { ...emptyRegistry, path: null };
 const p3Harness = (extra = {}) => ({ ...bareHarness, intent: null, rulesRegistry: null, ruleShapedLines: [], ...extra });
@@ -1775,7 +1829,7 @@ test('P3.rules and P3.reinject: a registry that was not read is said to be unrea
 });
 
 test('P3.rules: declared evidence counts enforcers, names unenforced ids, missing pointers and problems', () => {
-  const reg = { ...filledRegistry, missingPointers: [{ id: 'R1', pointer: '.claude/agents/tenant-scoping.md' }, { id: 'R2', pointer: null }], problems: ['R9: enforced-by "magic" is not one of deny/hook — recorded as none'] };
+  const reg = { ...filledRegistry, missingPointers: [{ id: 'R1', pointer: '.claude/agents/tenant-scoping.md', reason: 'not-found' }, { id: 'R2', pointer: null, reason: 'no-pointer' }], problems: ['R9: enforced-by "magic" is not one of deny/hook — recorded as none'] };
   const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: reg })), 'P3.rules');
   assert.equal(c.state, 'declared');
   assert.deepEqual(c.evidence, [
@@ -1783,6 +1837,51 @@ test('P3.rules: declared evidence counts enforcers, names unenforced ids, missin
     'R1: pointer .claude/agents/tenant-scoping.md does not exist',
     'R2: enforced-by names a mechanism but no pointer says where it is',
     'registry: R9: enforced-by "magic" is not one of deny/hook — recorded as none',
+  ]);
+});
+
+test('P3.rules prints an officer rule\'s dead pointer, and says of every officer rule only what was read', () => {
+  const d = mkdtempSync(join(tmpdir(), 'gm-officer-'));
+  mkdirSync(join(d, 'docs', 'harness'), { recursive: true });
+  mkdirSync(join(d, 'tools', 'officers'), { recursive: true });
+  writeFileSync(join(d, 'tools', 'officers', 'v9.mjs'), '');
+  writeFileSync(join(d, 'docs', 'harness', 'RULES.md'), [
+    '## V8 — Screens use the design tokens', '- enforced-by: officer', '- pointer: tools/officers/v8.mjs',
+    '## V9 — Copy is spelled the house way', '- enforced-by: officer', '- pointer: tools/officers/v9.mjs', '- approval: owner',
+    '',
+  ].join('\n'));
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: rulesRegistryEvidence(d, bareHarness) })), 'P3.rules');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [
+    'docs/harness/RULES.md: 2 rules — 2 enforced (officer 2), none with enforced-by: none',
+    'officer rules (2): only whether each pointer names a path that exists in this repository was read; kh-harness runs no officer, so whether one passes was not read',
+    'V8: pointer tools/officers/v8.mjs does not exist',
+  ]);
+});
+
+test('P3.rules says why a pointer was not counted: not in the repository, or out of it through a link', () => {
+  const d = mkdtempSync(join(tmpdir(), 'gm-officer-'));
+  const outside = mkdtempSync(join(tmpdir(), 'gm-outside-'));
+  writeFileSync(join(outside, 'v8.mjs'), '');
+  mkdirSync(join(d, 'docs', 'harness'), { recursive: true });
+  mkdirSync(join(d, 'tools'), { recursive: true });
+  writeFileSync(join(d, 'README.md'), '');
+  symlinkSync(outside, join(d, 'tools', 'out'), 'junction');
+  writeFileSync(join(d, 'docs', 'harness', 'RULES.md'), [
+    '## V1 — r', '- enforced-by: officer', '- pointer: settings:hooks.PreToolUse',
+    '## V2 — r', '- enforced-by: officer', '- pointer: ../README.md',
+    '## V3 — r', '- enforced-by: officer', '- pointer: tools/out/v8.mjs',
+    '## T1 — r', '- enforced-by: test', `- pointer: ${join(d, 'README.md')}`,
+    '',
+  ].join('\n'));
+  const pre = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, hookRegistrations: { PreToolUse: [{ script: '.claude/scripts/dispatch-pre-tool.mjs', matcher: null }] } } };
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: rulesRegistryEvidence(d, pre) })), 'P3.rules');
+  const notInRepository = pointer => `pointer ${pointer} is not a path inside this repository, so it was not looked up; an officer's pointer, and any pointer that is not a settings: pointer, must name a path inside this repository`;
+  assert.deepEqual(c.evidence.slice(2), [
+    `V1: ${notInRepository('settings:hooks.PreToolUse')}`,
+    `V2: ${notInRepository('../README.md')}`,
+    'V3: pointer tools/out/v8.mjs leads outside this repository through a link, so it was not counted as existing',
+    `T1: ${notInRepository(join(d, 'README.md'))}`,
   ]);
 });
 
@@ -1964,4 +2063,306 @@ test('P5.integrity with no manifest fails when kit hooks are registered, since t
 test('P5.toolgate says it looked at the deny rules as well as the hook', () => {
   const c = byId(gaps(bareStack, bareHarness), 'P5.toolgate');
   assert.deepEqual(c.lookedFor, ['a PreToolUse hook in .claude/settings.json', 'the deny rules the gate hook is installed with, in the settings in effect']);
+});
+
+// --- P0.hookmerge ------------------------------------------------------------
+
+test('P0.hookmerge is n/a on a repository with no kit hook, declared once merged, and proposes nothing while a script is held', () => {
+  const none = byId(gaps(lintStack, withRegistrations({})), 'P0.hookmerge');
+  assert.deepEqual([none.state, none.evidence, none.proposal], ['n/a', ['no tool-call event holds two kh-harness hooks'], null]);
+  assert.deepEqual(none.lookedFor, ['the kh-harness hooks registered on PreToolUse, PostToolUse and PostToolUseFailure in .claude/settings.json, against the registrations .claude/kh-harness.manifest.json records']);
+  assert.deepEqual([none.step, none.phase], [2, 0]);
+
+  const one = byId(gaps(lintStack, merged), 'P0.hookmerge');
+  assert.equal(one.state, 'declared');
+  assert.deepEqual(one.evidence, Object.entries(ENTRY_SCRIPTS).map(([event, { path }]) => `${event}: one process — ${path} runs its hooks`));
+
+  // Both hooks on PreToolUse as recorded, beside a copy of the gate hook the
+  // kit did not write, which holds every script it loads.
+  const hashOf = script => hookEntrySha256(execEntry(script));
+  const registration = script => Object.defineProperty({ script, matcher: null }, 'entrySha256', { value: hashOf(script) });
+  const settingsPatches = [SESSION_LOG_PATH, TOOL_GATE_PATH].map(script => ({ event: 'PreToolUse', container: '/hooks/PreToolUse', entrySha256: hashOf(script) }));
+  const d = repoWith({ [TOOL_GATE_PATH]: '// mine\n' });
+  const held = byId(buildGaps({
+    stack: lintStack, harness: withRegistrations({ PreToolUse: [registration(SESSION_LOG_PATH), registration(TOOL_GATE_PATH)] }), exposures: [], profile: selectProfile(lintStack),
+    git: { branch: 'main', isRepo: true }, files: [], root: d, manifest: { schema: 1, files: [], settingsPatches }, kitVersion: '0.2.0',
+  }), 'P0.hookmerge');
+  assert.equal(held.state, 'absent');
+  assert.equal(held.decidable, false);
+  assert.equal(held.proposal, null);
+  assert.equal(held.evidence[0], 'PreToolUse: 2 kh-harness hooks are registered separately, one process each');
+  assert.match(held.evidence[1], new RegExp(`^${DISPATCH_PRE_PATH.replace(/[.]/g, '\\.')} is not written or registered while kh-harness keeps ${TOOL_GATE_PATH.replace(/[.]/g, '\\.')} \\(not recorded`));
+});
+
+test('P0.hookmerge sits directly before P0.kitskew in the checks and in the generators', () => {
+  const ids = gaps(bareStack, bareHarness).map(c => c.id);
+  assert.deepEqual(ids.slice(-2), ['P0.hookmerge', 'P0.kitskew']);
+  assert.deepEqual(Object.keys(GENERATORS).slice(-2), ['P0.hookmerge', 'P0.kitskew']);
+  assert.deepEqual(GENERATORS['P0.hookmerge']({ kitVersion: '0.2.0', harness: merged, manifest: null, stack: lintStack, checks: [], files: [] }), []);
+});
+
+// --- P5.extensions -----------------------------------------------------------
+// The sentences that depend on the installed kit files are pinned together
+// with the hook's own behaviour in extensions-evidence.test.mjs, which runs
+// the installed entry script.
+
+const extensionsCheck = harness => byId(gaps(bareStack, harness), 'P5.extensions');
+/** A registration as detect-harness.mjs reads one: `everyCall`, out of
+ * sight of the report, says whether it is exactly the form apply writes on
+ * every call. */
+const registration = (script, matcher, everyCall = script === DISPATCH_PRE_PATH && matcher === null) => Object.defineProperty({ script, matcher }, 'everyCall', { value: everyCall });
+const onPreToolUse = (...registrations) => ({ ...bareHarness, claudeDir: { ...bareHarness.claudeDir, disableAllHooksIn: [], hookRegistrations: { PreToolUse: registrations } } });
+const entryRegistered = onPreToolUse(registration(DISPATCH_PRE_PATH, null));
+const HOOK_FILE_PATHS = Object.values(EXTENSION_HOOK_FILES).flat();
+const CURRENT = Object.freeze(Object.fromEntries(HOOK_FILE_PATHS.map(path => [path, 'current'])));
+const listed = (...extensions) => ({ state: 'ok', installed: CURRENT, extensions: extensions.map(([id, hash, onFailure]) => ({ id, version: '1.0.0', module: `.claude/ext/${id}.mjs`, onFailure, hash })) });
+const notJson = (installed = CURRENT) => ({ state: 'malformed', problem: 'it is not JSON', installed });
+const UNCHECKED = 'matches its recorded sha256 (whether it loads and runs is not checked)';
+
+test('P5.extensions sits directly after P5.integrity, and says what it looked for', () => {
+  const ids = gaps(bareStack, bareHarness).map(c => c.id);
+  assert.equal(ids[ids.indexOf('P5.integrity') + 1], 'P5.extensions');
+  const c = extensionsCheck(bareHarness);
+  assert.deepEqual([c.step, c.phase], [32, 5]);
+  assert.deepEqual(c.lookedFor, [
+    '.claude/kh-harness/extensions.json', 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`,
+    `${HOOK_FILE_PATHS.join(', ')} against what this kit installs`,
+  ]);
+});
+
+test('P5.extensions is n/a when the harness object carries no extensions reading, and when there is no file', () => {
+  const unread = extensionsCheck(bareHarness);
+  assert.deepEqual([unread.state, unread.evidence], ['n/a', ['the extensions file was not read']]);
+  const none = extensionsCheck({ ...entryRegistered, extensions: { state: 'absent' } });
+  assert.deepEqual([none.state, none.evidence], ['n/a', ['no .claude/kh-harness/extensions.json: no plugin has registered an extension']]);
+  const empty = extensionsCheck({ ...entryRegistered, extensions: listed() });
+  assert.deepEqual([empty.state, empty.evidence], ['n/a', ['.claude/kh-harness/extensions.json lists no extension']]);
+});
+
+test('P5.extensions is declared when every listed module matches, one line per extension', () => {
+  const c = extensionsCheck({ ...entryRegistered, extensions: listed(['a', 'matches', 'block'], ['b', 'matches', 'allow']) });
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 2 extensions, run by .claude/scripts/dispatch-pre-tool.mjs before every tool call',
+    `a 1.0.0: .claude/ext/a.mjs ${UNCHECKED}; onFailure block`,
+    `b 1.0.0: .claude/ext/b.mjs ${UNCHECKED}; onFailure allow`,
+  ]);
+});
+
+test('P5.extensions is failing when a module does not match, and says what the hook then does', () => {
+  const c = extensionsCheck({ ...entryRegistered, extensions: listed(['a', 'differs', 'block'], ['b', 'missing', 'allow'], ['c', 'outside', 'block'], ['d', 'unreadable', 'allow'], ['e', 'matches', 'block']) });
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 5 extensions, run by .claude/scripts/dispatch-pre-tool.mjs before every tool call',
+    'a 1.0.0: .claude/ext/a.mjs does not match its recorded sha256; onFailure block, so every tool call is blocked',
+    'b 1.0.0: .claude/ext/b.mjs is missing; onFailure allow, so it checks no call',
+    'c 1.0.0: .claude/ext/c.mjs is not a file under .claude/ in this repository; onFailure block, so every tool call is blocked',
+    'd 1.0.0: .claude/ext/d.mjs could not be read; onFailure allow, so it checks no call',
+    `e 1.0.0: .claude/ext/e.mjs ${UNCHECKED}; onFailure block`,
+  ]);
+});
+
+test('P5.extensions is failing for a malformed file', () => {
+  const c = extensionsCheck({ ...entryRegistered, extensions: notJson() });
+  assert.deepEqual([c.state, c.evidence], ['failing', ['.claude/kh-harness/extensions.json cannot be used (it is not JSON), so every tool call is blocked']]);
+});
+
+test('P5.extensions is failing when extensions are listed and the entry script is not registered on PreToolUse', () => {
+  const separate = onPreToolUse(registration(TOOL_GATE_PATH, null), registration(SESSION_LOG_PATH, null));
+  const c = extensionsCheck({ ...separate, extensions: listed(['a', 'differs', 'block']) });
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 1 extension, and none runs: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse',
+    'a 1.0.0: .claude/ext/a.mjs does not match its recorded sha256; onFailure block',
+  ], 'with nothing to run it, no entry blocks a call');
+  const malformed = extensionsCheck({ ...separate, extensions: notJson() });
+  assert.deepEqual([malformed.state, malformed.evidence], ['failing', [
+    '.claude/kh-harness/extensions.json cannot be used (it is not JSON), and nothing reads it: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse',
+  ]]);
+  const unregistered = extensionsCheck({ ...bareHarness, extensions: listed(['a', 'matches', 'block']) });
+  assert.equal(unregistered.state, 'failing');
+  assert.equal(unregistered.evidence[0], '.claude/kh-harness/extensions.json lists 1 extension, and none runs: .claude/scripts/dispatch-pre-tool.mjs is not registered on PreToolUse');
+});
+
+test('P5.extensions says the entry script is not in the repository, not that it is unregistered, when its registration outlives its file', () => {
+  // The scan could not resolve the script, so the registration carries the
+  // hash of the entry kh-harness writes for it.
+  const orphan = onPreToolUse(Object.defineProperty({ script: null, matcher: null }, 'entrySha256', { value: hookEntrySha256(execEntry(DISPATCH_PRE_PATH)) }));
+  const gone = { ...CURRENT, [DISPATCH_PRE_PATH]: 'missing' };
+  const c = extensionsCheck({ ...orphan, extensions: { ...listed(['a', 'matches', 'block']), installed: gone } });
+  assert.equal(c.state, 'failing');
+  assert.deepEqual(c.evidence, [
+    '.claude/kh-harness/extensions.json lists 1 extension, and none runs: .claude/scripts/dispatch-pre-tool.mjs is not in the repository, though PreToolUse holds the registration kh-harness writes for it',
+    `a 1.0.0: .claude/ext/a.mjs ${UNCHECKED}; onFailure block`,
+  ]);
+  const unresolved = extensionsCheck({ ...onPreToolUse({ script: null, matcher: null }), extensions: listed(['a', 'matches', 'block']) });
+  assert.equal(unresolved.state, 'failing');
+  assert.equal(unresolved.evidence[0], '.claude/kh-harness/extensions.json lists 1 extension, and whether any runs was not read: PreToolUse holds a hook whose script could not be resolved, so whether .claude/scripts/dispatch-pre-tool.mjs is registered is not known');
+});
+
+const NOT_AS_APPLY_WRITES = '.claude/scripts/dispatch-pre-tool.mjs is registered on PreToolUse, but not as apply writes it (no matcher, or "" or "*", and a hook of exactly type, command and args), so it may not run, or may not block, on every call';
+
+test('P5.extensions is failing, and says why, when the entry script is registered in any form but the one apply writes on every call', () => {
+  for (const narrow of [onPreToolUse(registration(DISPATCH_PRE_PATH, 'Bash')), onPreToolUse(registration(DISPATCH_PRE_PATH, null, false))]) {
+    const c = extensionsCheck({ ...narrow, extensions: listed(['a', 'matches', 'block']) });
+    assert.equal(c.state, 'failing');
+    assert.deepEqual(c.evidence, [
+      `.claude/kh-harness/extensions.json lists 1 extension, and whether they run before every tool call is not known: ${NOT_AS_APPLY_WRITES}`,
+      `a 1.0.0: .claude/ext/a.mjs ${UNCHECKED}; onFailure block`,
+    ]);
+    const malformed = extensionsCheck({ ...narrow, extensions: notJson() });
+    assert.deepEqual([malformed.state, malformed.evidence], ['failing', [`.claude/kh-harness/extensions.json cannot be used (it is not JSON), and whether the hook reads it on every call is not known: ${NOT_AS_APPLY_WRITES}`]]);
+  }
+});
+
+test('P5.extensions is failing, and says why, when a project settings file sets disableAllHooks to anything but false', () => {
+  const off = { ...entryRegistered, claudeDir: { ...entryRegistered.claudeDir, disableAllHooksIn: ['.claude/settings.json', '.claude/settings.local.json'] } };
+  const c = extensionsCheck({ ...off, extensions: listed(['a', 'matches', 'block']) });
+  assert.deepEqual([c.state, c.evidence], ['failing', [
+    '.claude/kh-harness/extensions.json lists 1 extension, and whether they run before every tool call is not known: .claude/settings.json and .claude/settings.local.json set disableAllHooks to a value other than false, which turns every hook off for true and for "true"',
+    `a 1.0.0: .claude/ext/a.mjs ${UNCHECKED}; onFailure block`,
+  ]]);
+});
+
+test('P5.extensions never proposes and is never verified', () => {
+  const harnesses = [
+    bareHarness,
+    { ...entryRegistered, extensions: { state: 'absent' } },
+    { ...entryRegistered, extensions: listed(['a', 'matches', 'block']) },
+    { ...entryRegistered, extensions: listed(['a', 'missing', 'block']) },
+    { ...entryRegistered, extensions: notJson() },
+    { ...entryRegistered, extensions: notJson({ ...CURRENT, [DISPATCH_PRE_PATH]: 'other' }) },
+    { ...entryRegistered, extensions: { ...listed(), installed: { ...CURRENT, '.claude/scripts/harness-extensions.mjs': 'missing' } } },
+    { ...bareHarness, extensions: listed(['a', 'matches', 'block']) },
+  ];
+  for (const harness of harnesses) {
+    const c = extensionsCheck(harness);
+    assert.equal(c.proposal, null, JSON.stringify(c.evidence));
+    assert.notEqual(c.state, 'verified');
+  }
+});
+
+// --- P5.contract -------------------------------------------------------------
+
+const CONTRACT_FILES_CURRENT = Object.freeze(Object.fromEntries(CONTRACT_FILES.map(path => [path, 'current'])));
+const contractRoot = mkdtempSync(join(tmpdir(), 'hk-contract-gap-'));
+const RECORDS_CONTRACT = Object.freeze({ ...emptyManifest('0.2.0'), files: [{ path: CONTRACT_PATH, sha256: '0'.repeat(64), step: 30, writtenAt: '2026-11-25T00:00:00.000Z' }] });
+/** P5.contract for `harness`, against a manifest that records the contract
+ * file unless another is given. */
+const contractCheck = (harness, manifest = RECORDS_CONTRACT) => byId(buildGaps({ stack: bareStack, harness, exposures: [], profile: selectProfile(bareStack),
+  git: { branch: 'main', isRepo: true }, files: [], root: contractRoot, manifest, kitVersion: '0.2.0' }), 'P5.contract');
+const kitContract = (installed = CONTRACT_FILES_CURRENT) => ({ state: 'ok', contract: 1, kitWritten: true, installed });
+const NOT_KIT = 'the contract file says 1, but 2 of the ' + CONTRACT_FILES.length + ' files it speaks for are not what this kit installs: ' +
+  `${DISPATCH_PRE_PATH} (is not the file this kit installs), ${HARNESS_EXTENSIONS_PATH} (is missing); whether the installed files honour it was not read. ` +
+  'apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them';
+const NOT_WRITTEN = n => `${CONTRACT_PATH} says contract ${n}, but it is not the file this kit writes there: its bytes differ from what this kit writes, line endings aside, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`;
+
+test('P5.contract sits directly after P5.extensions, at the gate hook\'s step, and says what it looked for', () => {
+  const ids = gaps(bareStack, bareHarness).map(c => c.id);
+  assert.equal(ids[ids.indexOf('P5.extensions') + 1], 'P5.contract');
+  const c = contractCheck(bareHarness);
+  assert.deepEqual([c.step, c.phase], [30, 5]);
+  assert.deepEqual(c.lookedFor, [CONTRACT_PATH, `${CONTRACT_FILES.join(', ')} against what this kit installs`]);
+  assert.equal(CONTRACT_FILES[0], DISPATCH_PRE_PATH);
+});
+
+test('P5.contract: n/a unread, absent with a proposal, declared only for the file this kit writes, failing when unreadable', () => {
+  const unread = contractCheck(bareHarness);
+  assert.deepEqual([unread.state, unread.evidence, unread.proposal], ['n/a', ['the contract file was not read'], null]);
+  const absent = contractCheck({ ...bareHarness, contract: { state: 'absent' } });
+  assert.deepEqual([absent.state, absent.evidence, absent.proposal, absent.via],
+    ['absent', [`no ${CONTRACT_PATH}`], 'write .claude/kh-harness/contract.json, which tells another plugin which kh-harness contract this install honours', 'apply']);
+  const one = contractCheck({ ...bareHarness, contract: kitContract() });
+  assert.deepEqual([one.state, one.evidence, one.proposal], ['declared', ['.claude/kh-harness/contract.json: contract 1'], null]);
+  const unreadable = contractCheck({ ...bareHarness, contract: { state: 'unreadable' } });
+  assert.deepEqual([unreadable.state, unreadable.evidence, unreadable.proposal], ['failing', ['.claude/kh-harness/contract.json exists and holds no contract number'], null]);
+});
+
+test('P5.contract is failing for a contract file this kit did not write as it is, whatever its number', () => {
+  const two = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 2, kitWritten: false, installed: CONTRACT_FILES_CURRENT } });
+  assert.deepEqual([two.state, two.proposal], ['failing', null]);
+  assert.deepEqual(two.evidence, ['.claude/kh-harness/contract.json: contract 2 (this kit honours contract 1)', NOT_WRITTEN(2)]);
+  const one = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, kitWritten: false, installed: CONTRACT_FILES_CURRENT } });
+  assert.deepEqual([one.state, one.evidence], ['failing', ['.claude/kh-harness/contract.json: contract 1', NOT_WRITTEN(1)]]);
+  const unrecorded = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, kitWritten: false, installed: CONTRACT_FILES_CURRENT } }, null);
+  assert.deepEqual([unrecorded.state, unrecorded.proposal], ['failing', null], 'a file this kit did not write is not adopted');
+});
+
+test('P5.contract asks, rather than proposes recording, while the manifest cannot be read, since apply refuses to run then', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hk-contract-corrupt-'));
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, MANIFEST_PATH), '{ not a manifest');
+  const c = byId(buildGaps({ stack: bareStack, harness: { ...bareHarness, contract: kitContract() }, exposures: [], profile: selectProfile(bareStack),
+    git: { branch: 'main', isRepo: true }, files: [], root, manifest: null, kitVersion: '0.2.0' }), 'P5.contract');
+  assert.deepEqual([c.state, c.decidable, c.proposal], ['absent', false, null]);
+  assert.deepEqual(c.evidence, ['.claude/kh-harness/contract.json: contract 1',
+    '.claude/kh-harness/contract.json holds what this kit writes there, but .claude/kh-harness.manifest.json could not be read as a manifest, so it is not recorded, and apply refuses to run until the manifest is restored']);
+  assert.equal(c.question, 'Restore .claude/kh-harness.manifest.json from git, then run apply again, which records .claude/kh-harness/contract.json; or leave the manifest as it is, and uninstall cannot remove the contract file. Which?');
+});
+
+test('P5.contract proposes recording a contract file that holds what this kit writes beside the files it speaks for, when the manifest does not record it', () => {
+  for (const manifest of [null, emptyManifest('0.2.0')]) {
+    const c = contractCheck({ ...bareHarness, contract: kitContract() }, manifest);
+    assert.deepEqual([c.state, c.via], ['absent', 'apply']);
+    assert.deepEqual(c.evidence, ['.claude/kh-harness/contract.json: contract 1',
+      '.claude/kh-harness/contract.json holds what this kit writes there, but .claude/kh-harness.manifest.json does not record it, so uninstall would leave it behind']);
+    assert.equal(c.proposal, 'record .claude/kh-harness/contract.json in .claude/kh-harness.manifest.json, as the file this kit writes there');
+  }
+  const stale = contractCheck({ ...bareHarness, contract: kitContract({ ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'missing' }) }, null);
+  assert.deepEqual([stale.state, stale.proposal], ['failing', null], 'not adopted beside a file it speaks for that is not this kit\'s');
+});
+
+test('P5.contract words a .claude or .claude/kh-harness that is not a directory, and says which link a contract file is reached through', () => {
+  for (const path of ['.claude', '.claude/kh-harness']) {
+    const c = contractCheck({ ...bareHarness, contract: { state: 'unreadable', notDirectory: path } });
+    assert.deepEqual([c.state, c.proposal, c.evidence], ['failing', null, [`${path} is not a directory, so there is no ${CONTRACT_PATH} and no contract number was read`]]);
+  }
+  for (const link of ['.claude', '.claude/kh-harness', CONTRACT_PATH]) {
+    const c = contractCheck({ ...bareHarness, contract: { state: 'unreadable', link } });
+    assert.deepEqual([c.state, c.proposal], ['failing', null]);
+    const remedy = link === '.claude' ? '. Contract 1 is not available to a repository whose .claude is a link, so no plugin can rely on this file: delete it, or make .claude a directory of the repository and run apply again' : '';
+    assert.deepEqual(c.evidence, [`${CONTRACT_PATH} is reached through a link (${link} is one), so it was not read: a contract file must be a file of the repository itself${remedy}`]);
+  }
+});
+
+test('P5.contract proposes no contract file where .claude is a link, and asks the owner instead', () => {
+  const c = contractCheck({ ...bareHarness, contract: { state: 'absent', link: '.claude', installed: CONTRACT_FILES_CURRENT } });
+  assert.deepEqual([c.state, c.decidable, c.proposal], ['absent', false, null]);
+  assert.deepEqual(c.evidence, [`no ${CONTRACT_PATH}`, 'contract 1 is not available to a repository whose .claude is a link: another plugin must refuse a contract file reached through one, so kh-harness does not write it']);
+  assert.match(c.question, /Make \.claude a directory of the repository and run apply again, or leave it a link and go without the contract\. Which\?$/);
+});
+
+test('P5.contract is failing when the contract file is there and the files it speaks for are not all this kit\'s, and names them', () => {
+  const installed = { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other', [HARNESS_EXTENSIONS_PATH]: 'missing' };
+  const c = contractCheck({ ...bareHarness, contract: kitContract(installed) });
+  assert.deepEqual([c.state, c.proposal], ['failing', null]);
+  assert.deepEqual(c.evidence, ['.claude/kh-harness/contract.json: contract 1', NOT_KIT]);
+  const otherVersion = contractCheck({ ...bareHarness, contract: kitContract({ ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other-version' }) });
+  assert.equal(otherVersion.state, 'failing');
+  assert.match(otherVersion.evidence[1], /^the contract file says 1, but 1 of the \d+ files it speaks for is not what this kit installs: \.claude\/scripts\/dispatch-pre-tool\.mjs \(carries another kh-harness version's stamp\);/);
+});
+
+test('P5.contract proposes nothing, and asks, when apply would not install a file the contract speaks for', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hk-contract-gap-'));
+  const kitVersion = '0.2.0';
+  const run = (manifest, installed) => byId(buildGaps({ stack: bareStack, harness: { ...bareHarness, contract: { state: 'absent', installed } },
+    exposures: [], profile: selectProfile(bareStack), git: { branch: 'main', isRepo: true }, files: [], root, manifest, kitVersion }), 'P5.contract');
+
+  // Deleted since kh-harness wrote it: never written again.
+  const recorded = { ...emptyManifest(kitVersion), files: [{ path: DISPATCH_PRE_PATH, sha256: '0'.repeat(64), step: 30, writtenAt: '2026-11-25T00:00:00.000Z' }] };
+  const deleted = run(recorded, { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'missing' });
+  assert.deepEqual([deleted.state, deleted.decidable, deleted.proposal], ['absent', false, null]);
+  assert.deepEqual(deleted.evidence, [`no ${CONTRACT_PATH}`,
+    `${CONTRACT_PATH} is not written: ${DISPATCH_PRE_PATH} was deleted since kh-harness wrote it, apply does not write again a file the owner deleted, and the contract number speaks for the PreToolUse entry script and every file it loads`]);
+  assert.equal(deleted.question, `${DISPATCH_PRE_PATH} was deleted since kh-harness wrote it, so kh-harness does not write ${CONTRACT_PATH}. Restore it from git and run apply again; or leave it deleted, and no contract file is written. Which?`);
+
+  // A file kh-harness did not write holds the entry script's unit.
+  mkdirSync(join(root, '.claude/scripts'), { recursive: true });
+  writeFileSync(join(root, DISPATCH_PRE_PATH), 'export {};\n');
+  const held = run(null, { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other' });
+  assert.deepEqual([held.state, held.decidable, held.proposal], ['absent', false, null]);
+  assert.deepEqual(held.evidence, [`no ${CONTRACT_PATH}`,
+    `${CONTRACT_PATH} is not written while kh-harness keeps ${DISPATCH_PRE_PATH} (not recorded in the manifest as written by kh-harness) as it is: the contract number speaks for the PreToolUse entry script and every file it loads, so it is written only beside the ones this kit installs`]);
+  assert.equal(held.question, `kh-harness keeps ${DISPATCH_PRE_PATH} (not recorded in the manifest as written by kh-harness) as it is, and so does not write ${CONTRACT_PATH}. ` +
+    'Move each file kh-harness did not write out of .claude/scripts/, then run apply again; or leave it, and no contract file is written. Which?');
 });

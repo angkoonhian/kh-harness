@@ -48,6 +48,10 @@ const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 // One token with nothing a key line or a delimited block could be split by.
 const POINTER = /^[^\s<>]{1,200}$/;
 
+// A learned entry approves a gate this kit wrote; an officer is a check
+// another tool runs, so no learned entry is enforced by one.
+const LEARNED_ENFORCERS = ENFORCERS.filter(e => e !== 'officer');
+
 /** The most characters a title and a why may take in the registry, counted
  * as `registryLine` writes them. A draft is held to the same count, so no
  * text a learning stores is cut when it lands. */
@@ -105,14 +109,14 @@ const tooLong = (field, max) => ({ error: `learned entry: ${field} is longer tha
 /**
  * One learned entry as a registry section: the `## <id> — <title>` heading
  * and its key lines, ending in a newline. `id` is `L` and a number;
- * `enforcedBy` one of `ENFORCERS`; `pointer` one token; `evidenceSummary`
- * `{ signature, sessions, firstTs, lastTs, external }`, required, with ISO
- * timestamps or null, in order; `approvedSha256` 64 lowercase hex
- * characters; `approvedAction` one of `ABOVE_OBSERVE`, written as the
- * last key line, or undefined for an entry with no such line, as the kit
- * wrote them before it recorded the action. `title` and `why` are cleaned
- * (see `registryLine`); either with nothing left, or longer than its limit,
- * is refused, never cut.
+ * `enforcedBy` one of `ENFORCERS` but `officer`; `pointer` one token;
+ * `evidenceSummary` `{ signature, sessions, firstTs, lastTs, external }`,
+ * required, with ISO timestamps or null, in order; `approvedSha256` 64
+ * lowercase hex characters; `approvedAction` one of `ABOVE_OBSERVE`,
+ * written as the last key line, or undefined for an entry with no such
+ * line, as the kit wrote them before it recorded the action. `title` and
+ * `why` are cleaned (see `registryLine`); either with nothing left, or
+ * longer than its limit, is refused, never cut.
  */
 export function renderLearnedEntry(entry) {
   if (entry === null || typeof entry !== 'object') return refuse('the entry');
@@ -124,7 +128,7 @@ export function renderLearnedEntry(entry) {
   const cleanWhy = typeof why === 'string' ? registryLine(why) : '';
   if (cleanWhy === '') return refuse('why');
   if (cleanWhy.length > WHY_MAX) return tooLong('why', WHY_MAX);
-  if (!ENFORCERS.includes(enforcedBy)) return refuse('enforced-by');
+  if (!LEARNED_ENFORCERS.includes(enforcedBy)) return refuse('enforced-by');
   if (typeof pointer !== 'string' || !POINTER.test(pointer) || stripUnsafe(pointer) !== pointer) return refuse('pointer');
   const evidence = evidenceLine(evidenceSummary);
   if (evidence.field) return refuse(evidence.field);

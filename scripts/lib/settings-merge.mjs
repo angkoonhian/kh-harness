@@ -49,6 +49,33 @@ export function addHookEntry(settings, event, entry, matcher) {
 }
 
 /**
+ * `settings` with the elements of `hooks[event]` whose hashes are `remove`
+ * (`matcherEntrySha256`, one element for each hash) taken out and
+ * `buildMatcherEntry(entry)` appended, as one change; `null` unless every
+ * hash names an element still there, so an element the owner edited since
+ * it was recorded is never taken out. `removed` holds the elements taken
+ * out, in file order.
+ */
+export function replaceHookEntries(settings, event, remove, entry) {
+  if (!Array.isArray(settings?.hooks?.[event])) return null;
+  const next = clone(settings);
+  const list = next.hooks[event];
+  const hashes = list.map(matcherEntrySha256);
+  const taken = new Set();
+  for (const hash of remove) {
+    const at = hashes.findIndex((h, i) => h === hash && !taken.has(i));
+    if (at === -1) return null;
+    taken.add(at);
+  }
+  next.hooks[event] = [...list.filter((_, i) => !taken.has(i)), buildMatcherEntry(entry)];
+  return {
+    settings: next,
+    patch: { container: `/hooks/${event}`, entrySha256: hookEntrySha256(entry) },
+    removed: list.filter((_, i) => taken.has(i)),
+  };
+}
+
+/**
  * A matcher, normalised. Claude Code treats an omitted matcher, `""` and
  * `"*"` alike — every tool (or every source) — so those become `null`. A
  * plain alternation of names (`Write|Edit`, `Edit, Write`) is a SET: it is
@@ -210,6 +237,15 @@ function scriptRunBy(entry) {
   return tokens.length === 2 && tokens[0] === 'node' ? normalizeHookPath(tokens[1]) : null;
 }
 
+/** True when the `hooks.<event>` element `matcherEntry` holds at least one
+ * hook and every hook in it is exactly what a generator writes for a script
+ * in `producibleHookScripts` (see scriptRunBy): the only element the kit
+ * ever takes out of a settings file. */
+export function runsOnlyKitScripts(matcherEntry, producibleHookScripts) {
+  const hooks = matcherEntry?.hooks;
+  return Array.isArray(hooks) && hooks.length > 0 && hooks.every(h => producibleHookScripts.has(scriptRunBy(h)));
+}
+
 /**
  * Remove what `patch` records, but only when one of our generators could
  * have written it. The manifest is a file in the repository and can be
@@ -288,10 +324,7 @@ export function revertPatch(settings, patch, { producibleHookScripts, producible
       && m.hooks.some(h => hookPathTokens(h).some(token => producibleHookScripts.has(token))));
     return kitHookRemains ? keep('patch-modified') : alreadyGone;
   }
-  const hooks = list[idx]?.hooks;
-  if (!Array.isArray(hooks) || hooks.length === 0 || !hooks.every(h => producibleHookScripts.has(scriptRunBy(h)))) {
-    return keep('not-generator-producible');
-  }
+  if (!runsOnlyKitScripts(list[idx], producibleHookScripts)) return keep('not-generator-producible');
   list.splice(idx, 1);
   if (list.length === 0) delete next.hooks[event];
   if (next.hooks && Object.keys(next.hooks).length === 0) delete next.hooks;

@@ -4,6 +4,9 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { displayPath, readManifestResult, MANIFEST_PATH } from './lib/manifest.mjs';
 import { planUninstall, runUninstall } from './lib/uninstall-lib.mjs';
+import { CONTRACT_PATH } from './lib/contract.mjs';
+import { EXTENSIONS_PATH, readExtensions } from '../assets/scripts/harness-extensions.mjs';
+import { CONTRACT_FILES } from './lib/propose.mjs';
 import { settingsReformattedNote } from './lib/apply-lib.mjs';
 import { parseArgv, refuseExtraArguments, warnUnknown, wantsHelp, UNINSTALL_USAGE } from './lib/cli.mjs';
 
@@ -87,6 +90,17 @@ function patchWhy(p) {
 // A forged or malformed record can lack a container; it is still listed.
 const patchLabel = p => (p.container === undefined ? '(no container)' : displayPath(p.container));
 
+/** One line about another plugin's extensions file, or null when there is
+ * none: removing the PreToolUse hook stops every extension it lists, and
+ * the file and its modules are not the kit's to remove. */
+function extensionsLine() {
+  const file = readExtensions(root);
+  if (file.state === 'absent') return null;
+  const LEFT = 'The file and its modules are left in place: kh-harness did not write them.';
+  if (file.state !== 'ok') return `${EXTENSIONS_PATH} could not be read as an extensions file, and nothing it lists runs once the PreToolUse hook is removed. ${LEFT}`;
+  const n = file.entries.length;
+  return `${EXTENSIONS_PATH} lists ${n} extension${n === 1 ? '' : 's'} another plugin registered, and ${n === 1 ? 'it does not run' : 'none of them runs'} once the PreToolUse hook is removed. ${LEFT}`;
+}
 // Print the plan
 if (plan.remove.length) {
   console.log('Will remove:');
@@ -169,6 +183,10 @@ if (plan.sessionLog) {
   console.log("Will keep this machine's session log for this repository (data, outside the repository — uninstall never removes it):");
   console.log(`  ${location} (${bytes} byte${bytes === 1 ? '' : 's'}${notRead})`);
 }
+
+// Printed with the plan, so the dry run and --yes both say it.
+const extensions = extensionsLine();
+if (extensions !== null) console.log(extensions);
 
 if (!doYes) {
   console.log('');
@@ -272,8 +290,13 @@ if (result.patchesNotReverted.length > 0) {
 // with its reason, and never a failure.
 if (plan.keep.length > 0 || result.patchesKept.length > 0) {
   console.log('Kept:');
+  // A kept contract file still tells another plugin a contract holds here,
+  // beside none, or only some, of the scripts it speaks for.
+  const gone = CONTRACT_FILES.filter(path => !existsSync(join(root, path))).length;
+  const removedScripts = gone === CONTRACT_FILES.length ? 'the scripts it speaks for were' : `${gone} of the ${CONTRACT_FILES.length} scripts it speaks for were`;
   for (const k of plan.keep) {
-    console.log(`  ${displayPath(k.path)} (${keptWhy(k)})`);
+    const orphan = k.path === CONTRACT_PATH && gone > 0 ? `: it still declares a kh-harness contract, and ${removedScripts} removed; delete it by hand` : '';
+    console.log(`  ${displayPath(k.path)} (${keptWhy(k)}${orphan})`);
   }
   for (const p of result.patchesKept) {
     console.log(`  ${patchLabel(p)} (${patchWhy(p)})`);

@@ -14,6 +14,7 @@ import {
 } from '../../assets/scripts/harness-log.mjs';
 import { contentFieldsOf, SEALED_SUFFIX, untrustedBecause, verifyIndex } from '../../assets/scripts/harness-seal.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
+import { entryScriptFor } from './hook-evidence.mjs';
 import { readLedgerView } from './ledger.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { listSessions } from './recurrence.mjs';
@@ -95,7 +96,8 @@ export function recordEnabled(root, enabled) {
 /**
  * On how many of the events the logging hook records
  * `.claude/settings.json` registers a hook that runs `SESSION_LOG_SCRIPT`,
- * in exec or shell form: `{ registered, events, problem }`. `events` is
+ * itself or through the event's entry script, in exec or shell form:
+ * `{ registered, events, problem }`. `events` is
  * `{ registered, logged }`, the count and the number of `LOGGED_EVENTS`;
  * `registered` is true only when they are equal, since an event the hook is
  * not registered on is not recorded. Both are null when the file is present
@@ -109,9 +111,12 @@ export function hookRegistration(root) {
   if (read.state === 'unreadable') return { registered: null, events: null, problem: `${SETTINGS_PATH} ${read.reason}` };
   const hooks = isPlainObject(read.value) ? read.value.hooks : undefined;
   if (!isPlainObject(hooks)) return none;
-  const runsScript = entry => hookPathTokens(entry).includes(SESSION_LOG_SCRIPT);
+  const runsLog = event => {
+    const scripts = [SESSION_LOG_SCRIPT, entryScriptFor(event, SESSION_LOG_SCRIPT)].filter(Boolean);
+    return entry => hookPathTokens(entry).some(token => scripts.includes(token));
+  };
   const count = LOGGED_EVENTS.filter(event => Array.isArray(hooks[event])
-    && hooks[event].some(m => Array.isArray(m?.hooks) && m.hooks.some(runsScript))).length;
+    && hooks[event].some(m => Array.isArray(m?.hooks) && m.hooks.some(runsLog(event)))).length;
   return { registered: count === LOGGED_EVENTS.length, events: { registered: count, logged: LOGGED_EVENTS.length }, problem: null };
 }
 

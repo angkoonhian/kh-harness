@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "type": "plugin_event",
+  "session_id": "fixture",
+  "source": "kh-orchestration",
+  "kind": "officers.run",
+  "data": { "failed": ["V8"] }
+}

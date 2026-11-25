@@ -4,17 +4,22 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, sha256 as sha, readManifest, writeManifest } from './manifest.mjs';
-import { buildProposals, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, loadedSiblings } from './propose.mjs';
+import { buildProposals, mergePlan, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, SENSOR_MATCHER, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, kitSkew, loadedSiblings, CONTRACT_FILES, installedScriptProposal, kitContractText } from './propose.mjs';
+import { CONTRACT_PATH } from './contract.mjs';
+import { EXTENSIONS_PATH } from '../../assets/scripts/harness-extensions.mjs';
+import { lfSha256 } from '../../assets/scripts/harness-log.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { listFiles } from './scan.mjs';
-import { parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
+import { ENFORCERS, parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { markdownRemainder } from './uninstall-lib.mjs';
 import { FAILURES_PATH, parseFailures } from './failures-evidence.mjs';
 import { applyProposals } from './apply-lib.mjs';
 import { detectHarness } from './detect-harness.mjs';
+import { ENTRY_SCRIPTS, execEntry } from './hook-evidence.mjs';
+import { hookEntrySha256, normalizeMatcher } from './settings-merge.mjs';
 import { machineryStamp, versionStamp } from './render.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
@@ -53,7 +58,7 @@ test('every shipped-script proposal names its assetSource, and its contents are 
       seen.add(p.assetSource);
     }
   }
-  assert.deepEqual([...seen].sort(), ['scripts/harness-gates.mjs', 'scripts/harness-log.mjs', 'scripts/harness-redact.mjs', 'scripts/harness-seal.mjs', 'scripts/lint-touched.mjs', 'scripts/loop-watch.mjs', 'scripts/rules-brief.mjs', 'scripts/session-brief.mjs', 'scripts/session-log.mjs', 'scripts/tool-gate.mjs', 'scripts/verify-touched.mjs']);
+  assert.deepEqual([...seen].sort(), ['scripts/dispatch-post-tool.mjs', 'scripts/dispatch-pre-tool.mjs', 'scripts/dispatch-tool-failure.mjs', 'scripts/harness-dispatch.mjs', 'scripts/harness-extensions.mjs', 'scripts/harness-gates.mjs', 'scripts/harness-log.mjs', 'scripts/harness-redact.mjs', 'scripts/harness-seal.mjs', 'scripts/lint-touched.mjs', 'scripts/loop-watch.mjs', 'scripts/rules-brief.mjs', 'scripts/session-brief.mjs', 'scripts/session-log.mjs', 'scripts/tool-gate.mjs', 'scripts/verify-touched.mjs']);
 });
 
 test('a template-rendered proposal (HANDOFF.md) names no assetSource — it is not a verbatim copy', () => {
@@ -155,17 +160,18 @@ const lintStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.j
 const noLintStack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['test'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
 const sensorCheck = () => check({ id: 'P2.sensor', step: 9, proposal: 'install scripts/lint-touched.mjs and register a PostToolUse hook' });
 
-test('P2.sensor proposes the script, the shared redaction asset, and a PostToolUse settings hook when a package declares a lint script', () => {
+test('P2.sensor proposes the PostToolUse entry script, everything it loads, and its settings hook when a package declares a lint script', () => {
   const ps = buildProposals(args([sensorCheck()], { stack: lintStack }));
-  const kinds = ps.map(p => p.kind).sort();
-  assert.deepEqual(kinds, ['file', 'file', 'settings-hook']);
-  const files = ps.filter(p => p.kind === 'file').map(p => p.path).sort();
-  assert.deepEqual(files, ['.claude/scripts/harness-redact.mjs', '.claude/scripts/lint-touched.mjs']);
-  const hook = ps.find(p => p.kind === 'settings-hook');
+  const files = ps.filter(p => p.kind === 'file').map(p => p.path);
+  assert.deepEqual(files, [DISPATCH_POST_PATH, ...everyLoadedSibling(DISPATCH_POST_PATH)]);
+  assert.ok(files.includes(LINT_TOUCHED_PATH) && files.includes(REDACT_PATH), 'the lint hook and the shared redaction asset come with it');
+  const hooks = ps.filter(p => p.kind === 'settings-hook');
+  assert.equal(hooks.length, 1);
+  const [hook] = hooks;
   assert.equal(hook.event, 'PostToolUse');
-  assert.equal(hook.matcher, 'Write|Edit');
+  assert.equal('matcher' in hook, false, 'the entry script runs the lint hook only for Write and Edit itself');
   assert.equal(hook.entry.command, 'node');
-  assert.deepEqual(hook.entry.args, ['${CLAUDE_PROJECT_DIR}/.claude/scripts/lint-touched.mjs'], 'exec form, rooted at the project');
+  assert.deepEqual(hook.entry.args, ['${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-post-tool.mjs'], 'exec form, rooted at the project');
 });
 
 test('P2.sensor proposes nothing when no package declares a lint script — a sensor with nothing to run is noise', () => {
@@ -1246,10 +1252,12 @@ test('STAMP INVARIANT: every file a generator can produce carries the Generated 
   // lint-touched.mjs, verify-touched.mjs, loop-watch.mjs, session-log.mjs,
   // tool-gate.mjs, harness-gates.mjs, harness-log.mjs, harness-seal.mjs,
   // harness-redact.mjs, bootstrap.sh, one path-rule file, and — Phase 3 —
-  // the RULES.md scaffold, and the FAILURES.md scaffold) — 15 distinct
-  // files — or a missing stamp on a generator this fixture never reaches
-  // would pass silently.
-  assert.equal(fileProposals.length, 15, `fixture sanity: expected every file-producing generator to fire; got ${JSON.stringify(fileProposals.map(p => p.path))}`);
+  // the RULES.md scaffold, and the FAILURES.md scaffold — and the three
+  // entry scripts with harness-dispatch.mjs, and the extension loader the
+  // PreToolUse entry script loads) — 20 distinct files — or a
+  // missing stamp on a generator this fixture never reaches would pass
+  // silently.
+  assert.equal(fileProposals.length, 20, `fixture sanity: expected every file-producing generator to fire; got ${JSON.stringify(fileProposals.map(p => p.path))}`);
   for (const p of fileProposals) {
     assert.match(p.contents, /Generated by kh-harness/, `${p.path} (from ${p.checkId}) must carry the stamp, or uninstall can never remove it`);
   }
@@ -1307,7 +1315,7 @@ test('SECURITY: no generated file contains a package.json script BODY (real dete
     { id: 'P4.handoff', step: 16, state: 'absent', decidable: true, proposal: 'p', evidence: [] },
     { id: 'P4.sessionbrief', step: 16, state: 'absent', decidable: true, proposal: 'p', evidence: [] },
   ];
-  const proposals = buildProposals({ checks, manifest: null, kitVersion: '0.1.0', harness: {}, root: d, stack, files });
+  const proposals = buildProposals({ checks, manifest: null, kitVersion: '0.1.0', harness: { claudeDir: {} }, root: d, stack, files });
   const written = proposals.filter(p => p.kind === 'file');
   assert.ok(written.length >= 6, `fixture sanity: expected most generators to fire, got ${JSON.stringify(written.map(p => p.path))}`);
 
@@ -1363,7 +1371,10 @@ test('the scaffold body is nothing but headings and comments (markdownRemainder 
 
 test('the scaffold names every ENFORCERS value and the "a rule with none is a claim" sentence inside its comment', () => {
   const [p] = buildProposals(args([rulesCheck()]));
-  for (const e of ['deny', 'hook', 'lint', 'test', 'critic', 'ci', 'review', 'none']) assert.ok(p.contents.includes(e), e);
+  for (const e of ENFORCERS) assert.ok(p.contents.includes(e), e);
+  assert.ok(p.contents.includes(`- enforced-by: ${ENFORCERS.join(' | ')}\n`), 'the format line lists every enforcer');
+  assert.ok(p.contents.includes(`(${ENFORCERS.filter(e => e !== 'none').join('/')})\n`), 'the held line lists every enforcer but none');
+  assert.match(p.contents, /approval: owner \| agent/);
   assert.match(p.contents, /enforced-by:\s*none[^.]*claim/i);
 });
 
@@ -1601,7 +1612,7 @@ test('a file the user edited is reported as kept and never updated', () => {
   const skew = kitskew(ctx.checks);
   assert.equal(skew.state, 'declared', 'an edited file alone does not make the check absent');
   assert.ok(skew.evidence.some(e => e.startsWith('kept at kit 0.1.9: ') && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
-  assert.equal(skew.evidence[0], 'current kit 0.2.0; of 11 installed files that carry a stamp, 1 from kit 0.1.9', 'the versions on disk are counted, not the manifest\'s one');
+  assert.equal(skew.evidence[0], 'current kit 0.2.0; of 16 installed files that carry a stamp, 1 from kit 0.1.9', 'the versions on disk are counted, not the manifest\'s one');
   assert.equal(skew.proposal, null);
   assert.equal(buildProposals(ctx).find(p => p.path === BRIEF_PATH), undefined);
 });
@@ -1733,21 +1744,23 @@ const PROFILE_STACKS = {
 const loopwatchGaps = (stack, harness) => buildGaps({ stack, harness, exposures: [], profile: selectProfile(stack), git: { branch: 'main', isRepo: true }, files: [] });
 const loopwatchGap = (stack, harness) => loopwatchGaps(stack, harness).find(c => c.id === 'P2.loopwatch');
 
-test('P2.loopwatch proposes the script, the shared module and a matcher-less PostToolUseFailure hook that requires both', () => {
+test('P2.loopwatch proposes the PostToolUseFailure entry script, everything it loads, and a matcher-less hook that requires all of it', () => {
   const ps = buildProposals(args([loopwatchCheck()]));
-  assert.deepEqual(ps.map(p => p.kind), ['file', 'file', 'settings-hook']);
-  const [script, redact, hook] = ps;
+  const files = ps.filter(p => p.kind === 'file');
+  const hook = ps.at(-1);
+  assert.deepEqual(ps.map(p => p.kind), [...files.map(() => 'file'), 'settings-hook']);
+  assert.deepEqual(files.map(f => f.path), [DISPATCH_FAILURE_PATH, ...everyLoadedSibling(DISPATCH_FAILURE_PATH)]);
+  const script = files.find(f => f.path === LOOP_WATCH_PATH);
   assert.equal(script.path, '.claude/scripts/loop-watch.mjs');
-  assert.equal(script.path, LOOP_WATCH_PATH);
   assert.equal(script.step, 13);
   assert.equal(script.assetSource, 'scripts/loop-watch.mjs');
   assert.match(script.contents, /^#!\/usr\/bin\/env node\n\/\/ Generated by kh-harness 0\.2\.0 \(runbook step 13\)/);
-  assert.equal(redact.path, REDACT_PATH);
+  assert.ok(files.some(f => f.path === REDACT_PATH));
   assert.equal(hook.event, 'PostToolUseFailure');
   assert.equal(hook.step, 13);
   assert.equal('matcher' in hook, false, 'a failure of any tool counts');
-  assert.deepEqual(hook.entry, { type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${LOOP_WATCH_PATH}`] });
-  assert.deepEqual(hook.requiresFiles.map(f => f.path), [LOOP_WATCH_PATH, REDACT_PATH]);
+  assert.deepEqual(hook.entry, { type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${DISPATCH_FAILURE_PATH}`] });
+  assert.deepEqual(hook.requiresFiles.map(f => f.path), files.map(f => f.path));
   assert.equal(hook.reason, 'no PostToolUseFailure hook registered in .claude/settings.json');
   for (const p of ps) assert.equal(p.checkId, 'P2.loopwatch');
 });
@@ -1803,30 +1816,33 @@ test('P2.loopwatch sits directly after P2.stopgate in the checks and in the gene
 const toolgateCheck = (o = {}) => check({ id: 'P5.toolgate', step: 30, phase: 5, proposal: 'register the hook', ...o });
 const toolgateGap = (stack, harness) => loopwatchGaps(stack, harness).find(c => c.id === 'P5.toolgate');
 
-test('P5.toolgate proposes the hook, its three modules, a matcher-less PreToolUse hook that requires all four, and the protected-surface deny rules', () => {
+test('P5.toolgate proposes the PreToolUse entry script, everything it loads, a matcher-less hook that requires all of it, and the protected-surface deny rules', () => {
   const ps = buildProposals(args([toolgateCheck()]));
-  assert.deepEqual(ps.map(p => p.kind), ['file', 'file', 'file', 'file', 'settings-hook', 'settings-deny']);
-  const [script, gates, log, redact, hook, deny] = ps;
-  assert.deepEqual([script.path, gates.path, log.path, redact.path], [TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH]);
+  const files = ps.filter(p => p.kind === 'file');
+  assert.deepEqual(ps.map(p => p.kind), [...files.map(() => 'file'), 'settings-hook', 'settings-deny']);
+  const [hook, deny] = ps.slice(-2);
+  assert.deepEqual(files.map(f => f.path), [DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]);
+  for (const path of [TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH]) assert.ok(files.some(f => f.path === path), path);
+  const script = files.find(f => f.path === TOOL_GATE_PATH);
   assert.equal(script.path, '.claude/scripts/tool-gate.mjs');
   assert.equal(script.step, 30);
   assert.match(script.contents, /^#!\/usr\/bin\/env node\n\/\/ Generated by kh-harness 0\.2\.0 \(runbook step 30\)/);
-  for (const m of [gates, log]) {
+  for (const m of files.filter(f => [HARNESS_GATES_PATH, HARNESS_LOG_PATH].includes(f.path))) {
     assert.match(m.contents, /^\/\/ Generated by kh-harness 0\.2\.0 \(shared module loaded by the kit's hook scripts\)\. /, `${m.path} names no step`);
   }
   assert.equal(hook.event, 'PreToolUse');
   assert.equal(hook.step, 30);
   assert.equal('matcher' in hook, false, 'a gate may name any tool');
-  assert.deepEqual(hook.entry, { type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${TOOL_GATE_PATH}`] });
-  assert.deepEqual(hook.requiresFiles.map(f => f.path), [TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, REDACT_PATH]);
+  assert.deepEqual(hook.entry, { type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${DISPATCH_PRE_PATH}`] });
+  assert.deepEqual(hook.requiresFiles.map(f => f.path), files.map(f => f.path));
   assert.equal(hook.reason, 'no PreToolUse hook registered in .claude/settings.json');
   assert.deepEqual(deny.globs, toolGateDenyRules());
   assert.equal(deny.step, 30);
   for (const p of ps) assert.equal(p.checkId, 'P5.toolgate');
 });
 
-test('the modules the kit installs are the gate language, the session log library, the log sealer and the redaction module', () => {
-  assert.deepEqual(HOOK_MODULE_PATHS, [HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, REDACT_PATH]);
+test('the modules the kit installs are the dispatch core, the gate language, the session log library, the log sealer, the redaction module and the extensions loader', () => {
+  assert.deepEqual(HOOK_MODULE_PATHS, [HARNESS_DISPATCH_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, REDACT_PATH, HARNESS_EXTENSIONS_PATH]);
 });
 
 // --- Which script loads which is read from the scripts ----------------------
@@ -1853,8 +1869,8 @@ test('every sibling an installed script imports, statically or dynamically, is a
       }
     }
   }
-  assert.deepEqual(INSTALLED_SCRIPT_PATHS.filter(path => !found.has(path)), [SESSION_LOG_PATH, TOOL_GATE_PATH, REDACT_PATH],
-    'fixture sanity: the patterns find an import in every script but the two that name their siblings in a table, which the next test covers, and the module that loads none');
+  assert.deepEqual(INSTALLED_SCRIPT_PATHS.filter(path => !found.has(path)), [SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_DISPATCH_PATH, REDACT_PATH],
+    'fixture sanity: the patterns find an import in every script but the two that name their siblings in a table, which the next test covers, and the two modules that load none');
 });
 
 test('a script is installed with what its modules load in turn, and the gate hook with the table of siblings it imports by name', () => {
@@ -1894,7 +1910,7 @@ test('a script the kit has never written is held by an edited sibling, with ever
 
   rmSync(join(d, BRIEF_PATH));
   assert.deepEqual([...heldScripts(d, readManifest(d), '0.2.0').keys()], []);
-  assert.deepEqual(forced().map(p => p.path ?? p.event), [LINT_TOUCHED_PATH, REDACT_PATH, 'PostToolUse'], 'with nothing held, the same check is proposed in full');
+  assert.deepEqual(forced().map(p => p.path ?? p.event), [DISPATCH_POST_PATH, ...everyLoadedSibling(DISPATCH_POST_PATH), 'PostToolUse'], 'with nothing held, the same check is proposed in full');
 });
 
 test('a file at an installed path that already holds what this kit writes there holds nothing, recorded or not', () => {
@@ -1937,8 +1953,18 @@ test('a file kh-harness did not write at an installed path is said to be movable
   assert.match(sensor.evidence.at(-1), /To install this hook, move each file kh-harness did not write out of \.claude\/scripts\/, then run apply again/);
 });
 
-test('the gate hook is the last hook script the kit knows, so uninstall can revert its registration', () => {
-  assert.equal(GENERATOR_SCRIPT_PATHS.at(-1), TOOL_GATE_PATH);
+test('the gate hook is a hook script the kit knows, so uninstall can revert its registration', () => {
+  assert.ok(GENERATOR_SCRIPT_PATHS.includes(TOOL_GATE_PATH));
+});
+
+test('each entry script is installed with exactly the hooks ENTRY_SCRIPTS says it runs, and the core names no sibling', () => {
+  for (const { path, halves } of Object.values(ENTRY_SCRIPTS)) {
+    // The extension loader runs no hook with a registration of its own.
+    assert.deepEqual(loadedSiblings(path).filter(p => p !== HARNESS_DISPATCH_PATH && p !== HARNESS_EXTENSIONS_PATH).sort(), [...halves].sort(), path);
+    assert.ok(loadedSiblings(path).includes(HARNESS_DISPATCH_PATH), path);
+  }
+  assert.deepEqual(loadedSiblings(HARNESS_DISPATCH_PATH), []);
+  assert.equal(everyLoadedSibling(DISPATCH_PRE_PATH).includes(LINT_TOUCHED_PATH), false, 'the lint sensor is installed only with the PostToolUse entry script');
 });
 
 test('P5.toolgate is absent and decidable under every profile when no hook of ours is on PreToolUse', () => {
@@ -2108,6 +2134,213 @@ test('the logging hook and its three modules are updated together or not at all'
   assert.ok(kitskew(ctx2.checks).evidence.includes(`held back at kit 0.1.9: ${SESSION_LOG_PATH} (out of date, but kh-harness keeps ${HARNESS_SEAL_PATH} as it is, and its hook scripts are updated together or not at all)`), JSON.stringify(kitskew(ctx2.checks).evidence));
 });
 
+// --- A fresh install registers one entry script per tool-call event ---------
+
+const bareHarness = loopwatchHarness({});
+const withRegistrations = byEvent => loopwatchHarness(byEvent);
+const loggedEverywhere = loopwatchHarness(loggedOn(LOGGED_EVENTS));
+/** `buildProposals`' arguments for a repository holding none of the kit's
+ * hooks unless `overrides.harness` says so, with `checks` from a real
+ * `buildGaps` over that harness and stack. */
+function freshArgs(overrides = {}) {
+  const { stack = lintStack, harness = bareHarness } = overrides;
+  const d = root();
+  const checks = buildGaps({ stack, harness, exposures: [], profile: selectProfile(stack), git: { branch: 'main', isRepo: true }, files: [], root: d });
+  return { checks, manifest: emptyManifest('0.2.0'), kitVersion: '0.2.0', harness, root: d, stack, files: [], ...overrides };
+}
+
+test('on a repository with none of the kit\'s hooks, each tool-call event gets one registration: its entry script', () => {
+  const hooks = buildProposals(freshArgs({ stack: lintStack })).filter(p => p.kind === 'settings-hook');
+  const on = event => hooks.filter(p => p.event === event);
+  for (const [event, path, checkId] of [['PreToolUse', DISPATCH_PRE_PATH, 'P5.toolgate'], ['PostToolUse', DISPATCH_POST_PATH, 'P2.sensor'], ['PostToolUseFailure', DISPATCH_FAILURE_PATH, 'P2.loopwatch']]) {
+    assert.equal(on(event).length, 1, event);
+    assert.deepEqual(on(event)[0].entry, execEntry(path));
+    assert.equal(on(event)[0].checkId, checkId);
+    assert.equal('matcher' in on(event)[0], false);
+    assert.deepEqual(on(event)[0].requiresFiles.map(f => f.path), [path, ...everyLoadedSibling(path)]);
+  }
+  const direct = hooks.filter(p => p.entry.args[0].endsWith(SESSION_LOG_PATH)).map(p => p.event);
+  assert.deepEqual(direct, LOGGED_EVENTS.filter(e => !Object.hasOwn(ENTRY_SCRIPTS, e)));
+});
+
+test('without a lint script PostToolUse gets session-log.mjs alone, and neither dispatch-post-tool.mjs nor lint-touched.mjs is written', () => {
+  const ps = buildProposals(freshArgs({ stack: noLintStack }));
+  assert.deepEqual(ps.filter(p => p.kind === 'settings-hook' && p.event === 'PostToolUse').map(p => p.entry), [execEntry(SESSION_LOG_PATH)]);
+  for (const path of [DISPATCH_POST_PATH, LINT_TOUCHED_PATH]) assert.equal(ps.some(p => p.path === path), false, path);
+});
+
+test('an event that already holds one of its hooks separately gets the other separately, as before', () => {
+  const ps = buildProposals(freshArgs({ stack: lintStack, harness: loggedEverywhere })).filter(p => p.kind === 'settings-hook' && Object.hasOwn(ENTRY_SCRIPTS, p.event));
+  assert.deepEqual(ps.map(p => `${p.event} ${p.entry.args[0].split('/').pop()} ${p.matcher}`).sort(), [
+    `PostToolUse lint-touched.mjs ${SENSOR_MATCHER}`, 'PostToolUseFailure loop-watch.mjs undefined', 'PreToolUse tool-gate.mjs undefined',
+  ]);
+});
+
+test('mergePlan: merged, single, separate and mergeable', () => {
+  const ctx = h => ({ harness: h, manifest: null, root: undefined, stack: lintStack });
+  assert.equal(mergePlan('PreToolUse', ctx(withRegistrations({ PreToolUse: [{ script: DISPATCH_PRE_PATH, matcher: null }] }))).state, 'merged');
+  assert.equal(mergePlan('PostToolUse', { ...ctx(bareHarness), stack: noLintStack }).state, 'single');
+  assert.deepEqual(mergePlan('PreToolUse', ctx(withRegistrations({ PreToolUse: [{ script: TOOL_GATE_PATH, matcher: null }] }))),
+    { entry: DISPATCH_PRE_PATH, state: 'separate', missing: [], remove: [], why: 'a registration of .claude/scripts/tool-gate.mjs is not as kh-harness recorded it' });
+  assert.deepEqual(mergePlan('PostToolUseFailure', ctx(bareHarness)),
+    { entry: DISPATCH_FAILURE_PATH, state: 'mergeable', missing: [SESSION_LOG_PATH, LOOP_WATCH_PATH], remove: [], why: null });
+});
+
+// --- An install with two kit hooks on a tool-call event (P0.hookmerge) -----
+
+/** A registration of the kit's `script` on `event` under `matcher`, as
+ * detect reads the element the kit writes for it, and the manifest's record
+ * of that element. */
+function recorded(script, matcher, event = 'PreToolUse') {
+  const entrySha256 = hookEntrySha256(execEntry(script), matcher);
+  const registration = Object.defineProperty({ script, matcher: normalizeMatcher(matcher) }, 'entrySha256', { value: entrySha256 });
+  return { registration, patch: { event, container: `/hooks/${event}`, entrySha256, step: 31, checkId: 'P5.sessionlog', appliedAt: '2026-11-01T00:00:00.000Z' } };
+}
+/** A registration of `script` on PreToolUse whose element the kit did not
+ * write: the kit's entry with a `timeout` the owner added. */
+function changed(script) {
+  const entrySha256 = hookEntrySha256({ ...execEntry(script), timeout: 5 });
+  return Object.defineProperty({ script, matcher: null }, 'entrySha256', { value: entrySha256 });
+}
+const manifestRecording = patches => ({ ...emptyManifest('0.2.0'), settingsPatches: patches });
+/** The context `detect` and `apply` work from: a repository holding nothing
+ * but `harness` says, recorded in `manifest`. */
+function hookCtx(byEvent, patches) {
+  return { harness: withRegistrations(byEvent), manifest: manifestRecording(patches), root: root(), stack: lintStack };
+}
+const gapsFor = ctx => buildGaps({ ...ctx, exposures: [], profile: selectProfile(ctx.stack), git: { branch: 'main', isRepo: true }, files: [], kitVersion: '0.2.0' });
+const argsFor = ctx => ({ ...ctx, checks: gapsFor(ctx), kitVersion: '0.2.0', files: [] });
+const byId = (cs, id) => cs.find(c => c.id === id);
+const replacements = ctx => buildProposals(argsFor(ctx)).filter(p => p.kind === 'settings-hook-replace');
+
+test('an event whose two hooks are both as recorded is replaceable, and P0.hookmerge proposes it', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH);
+  const ctx = hookCtx({ PreToolUse: [l.registration, g.registration] }, [l.patch, g.patch]);
+  assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'mergeable', missing: [], remove: [l.patch.entrySha256, g.patch.entrySha256], why: null });
+  const c = byId(gapsFor(ctx), 'P0.hookmerge');
+  assert.equal(c.state, 'absent');
+  assert.equal(c.via, 'apply');
+  assert.deepEqual(c.evidence, ['PreToolUse: 2 kh-harness hooks are registered separately, one process each']);
+  assert.equal(c.proposal, 'replace the separate kh-harness registrations on PreToolUse with one entry script each, so each of those events starts one process');
+  const [replace, ...others] = replacements(ctx);
+  assert.deepEqual(others, []);
+  assert.deepEqual([replace.event, replace.checkId, replace.remove, replace.entry], ['PreToolUse', 'P0.hookmerge', [l.patch.entrySha256, g.patch.entrySha256], execEntry(DISPATCH_PRE_PATH)]);
+  assert.equal(replace.reason, `PreToolUse holds 2 separate kh-harness registrations; ${DISPATCH_PRE_PATH} runs the same hooks in one process`);
+  assert.deepEqual(replace.requiresFiles.map(f => f.path), [DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]);
+});
+
+test('a registration that is not the recorded one, or a recorded one that is gone, leaves the event separate, and the check says which', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH);
+  for (const [ctx, why] of [
+    [hookCtx({ PreToolUse: [l.registration, changed(TOOL_GATE_PATH)] }, [l.patch, g.patch]), `a registration of ${TOOL_GATE_PATH} is not as kh-harness recorded it`],
+    [hookCtx({ PreToolUse: [g.registration] }, [l.patch, g.patch]), 'a registration kh-harness recorded on PreToolUse is no longer there'],
+  ]) {
+    assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'separate', missing: [], remove: [], why });
+    const c = byId(gapsFor(ctx), 'P0.hookmerge');
+    assert.equal(c.state, 'declared', why);
+    assert.deepEqual(c.evidence, [`PreToolUse: left on separate registrations — ${why}`]);
+    assert.deepEqual(replacements(ctx), [], why);
+  }
+});
+
+test('a stale record of the entry script itself does not make an event separate', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH), entry = recorded(DISPATCH_PRE_PATH);
+  const ctx = hookCtx({ PreToolUse: [l.registration, g.registration] }, [l.patch, g.patch, entry.patch]);
+  assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'mergeable', missing: [], remove: [l.patch.entrySha256, g.patch.entrySha256], why: null });
+});
+
+test('when one hook of an event is missing and the other is as recorded, the missing hook\'s check replaces the recorded one with the entry script', () => {
+  const lint = recorded(LINT_TOUCHED_PATH, SENSOR_MATCHER, 'PostToolUse');
+  const onPost = hookCtx({ PostToolUse: [lint.registration] }, [lint.patch]);
+  assert.deepEqual(mergePlan('PostToolUse', onPost), { entry: DISPATCH_POST_PATH, state: 'mergeable', missing: [SESSION_LOG_PATH], remove: [lint.patch.entrySha256], why: null });
+  assert.deepEqual(replacements(onPost).map(p => [p.event, p.checkId, p.remove, p.entry]), [['PostToolUse', 'P5.sessionlog', [lint.patch.entrySha256], execEntry(DISPATCH_POST_PATH)]]);
+  assert.equal(byId(gapsFor(onPost), 'P0.hookmerge').evidence.some(e => e.startsWith('PostToolUse')), false);
+
+  const log = recorded(SESSION_LOG_PATH);
+  const onPre = hookCtx({ PreToolUse: [log.registration] }, [log.patch]);
+  assert.deepEqual(replacements(onPre).map(p => [p.event, p.checkId, p.remove, p.entry]), [['PreToolUse', 'P5.toolgate', [log.patch.entrySha256], execEntry(DISPATCH_PRE_PATH)]]);
+  assert.equal(byId(gapsFor(onPre), 'P0.hookmerge').evidence.some(e => e.startsWith('PreToolUse')), false);
+  const settingsOnPre = buildProposals(argsFor(onPre)).filter(p => p.kind !== 'file' && p.event === 'PreToolUse');
+  assert.deepEqual(settingsOnPre.map(p => p.kind), ['settings-hook-replace'], 'the event is proposed once');
+});
+
+test('an event whose two hooks are both as recorded but credited by neither check is proposed once, by P0.hookmerge', () => {
+  // `.claude/` gitignored, so no script resolves, and the scripts gone from
+  // disk, so neither hook's own check can confirm its registration.
+  const unresolved = ({ registration }) => Object.defineProperty({ script: null, matcher: registration.matcher }, 'entrySha256', { value: registration.entrySha256 });
+  const l = recorded(SESSION_LOG_PATH, undefined, 'PostToolUse'), lint = recorded(LINT_TOUCHED_PATH, SENSOR_MATCHER, 'PostToolUse');
+  const ctx = hookCtx({ PostToolUse: [unresolved(l), unresolved(lint)] }, [l.patch, lint.patch]);
+  const checks = gapsFor(ctx);
+  assert.deepEqual(['P2.sensor', 'P5.sessionlog', 'P0.hookmerge'].map(id => byId(checks, id).state), ['absent', 'absent', 'absent'], 'fixture sanity: every one of the three generators runs');
+  assert.deepEqual(mergePlan('PostToolUse', ctx), { entry: DISPATCH_POST_PATH, state: 'mergeable', missing: [], remove: [l.patch.entrySha256, lint.patch.entrySha256], why: null });
+  const onPost = buildProposals(argsFor(ctx)).filter(p => p.kind !== 'file' && p.event === 'PostToolUse');
+  assert.deepEqual(onPost.map(p => [p.kind, p.checkId]), [['settings-hook-replace', 'P0.hookmerge']]);
+});
+
+test('a kit registration that is only in .claude/settings.local.json, which apply never writes, is not judged mergeable', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH);
+  const local = Object.defineProperty(l.registration, 'settingsFile', { value: '.claude/settings.local.json' });
+  const ctx = hookCtx({ PreToolUse: [local, g.registration] }, [l.patch, g.patch]);
+  assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'separate', missing: [], remove: [], why: 'a registration kh-harness recorded on PreToolUse is no longer there' });
+  assert.deepEqual(replacements(ctx), []);
+});
+
+test('an install killed after its settings write, whose records of the removed registrations remain, reads as merged', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH), entry = recorded(DISPATCH_PRE_PATH);
+  const ctx = hookCtx({ PreToolUse: [entry.registration] }, [l.patch, g.patch, entry.patch]);
+  assert.equal(mergePlan('PreToolUse', ctx).state, 'merged');
+  const c = byId(gapsFor(ctx), 'P0.hookmerge');
+  assert.equal(c.state, 'declared');
+  assert.deepEqual(c.evidence, [`PreToolUse: one process — ${DISPATCH_PRE_PATH} runs its hooks`]);
+  assert.deepEqual(replacements(ctx), []);
+});
+
+test('an event holding the entry script and its hooks separately as well is doubled, and P0.hookmerge takes the separate ones out', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH), entry = recorded(DISPATCH_PRE_PATH);
+  const ctx = hookCtx({ PreToolUse: [l.registration, g.registration, entry.registration] }, [l.patch, g.patch, entry.patch]);
+  const remove = [l.patch.entrySha256, g.patch.entrySha256, entry.patch.entrySha256];
+  assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'doubled', missing: [], remove, why: null });
+  const c = byId(gapsFor(ctx), 'P0.hookmerge');
+  assert.equal(c.state, 'absent');
+  assert.deepEqual(c.evidence, [`PreToolUse: ${DISPATCH_PRE_PATH} runs its hooks, and some of them are also registered by themselves, so those run twice`]);
+  assert.equal(c.proposal, 'take out the separate kh-harness registrations on PreToolUse beside the entry script already registered there, so each hook runs once');
+  assert.deepEqual(replacements(ctx).map(p => [p.event, p.checkId, p.remove, p.entry, p.reason]), [['PreToolUse', 'P0.hookmerge', remove, execEntry(DISPATCH_PRE_PATH),
+    `PreToolUse runs kh-harness hooks through ${DISPATCH_PRE_PATH} and by themselves as well; the separate registrations are taken out, so each runs once`]]);
+
+  const owners = hookCtx({ PreToolUse: [l.registration, changed(TOOL_GATE_PATH), entry.registration] }, [l.patch, g.patch, entry.patch]);
+  const why = `a registration of ${TOOL_GATE_PATH} is not as kh-harness recorded it`;
+  assert.deepEqual(mergePlan('PreToolUse', owners), { entry: DISPATCH_PRE_PATH, state: 'doubled', missing: [], remove: [], why });
+  const left = byId(gapsFor(owners), 'P0.hookmerge');
+  assert.equal(left.state, 'declared');
+  assert.deepEqual(left.evidence, [`PreToolUse: ${DISPATCH_PRE_PATH} runs its hooks, and some of them are also registered by themselves, so those run twice; left as it is — ${why}`]);
+  assert.deepEqual(replacements(owners), []);
+});
+
+test('a replacement that requires a held script is not proposed, as a registration is not', () => {
+  const d = root();
+  mkdirSync(join(d, '.claude/scripts'), { recursive: true });
+  writeFileSync(join(d, TOOL_GATE_PATH), '// mine\n');
+  const replace = { kind: 'settings-hook-replace', event: 'PreToolUse', step: 30, entry: execEntry(DISPATCH_PRE_PATH), remove: ['a'], requiresFiles: [{ path: DISPATCH_PRE_PATH, sha256: 'b' }], reason: 'r' };
+  const ps = buildProposals(args([check({ id: 'X.probe' })], { root: d, generators: { 'X.probe': () => [replace] } }));
+  assert.deepEqual(ps, []);
+  const unheld = buildProposals(args([check({ id: 'X.probe' })], { generators: { 'X.probe': () => [replace] } }));
+  assert.deepEqual(unheld.map(p => p.kind), ['settings-hook-replace'], 'fixture sanity: proposed when nothing is held');
+});
+
+test('the logging hook is registered by itself on a tool-call event whose other hook\'s generator will not run', () => {
+  // `P2.loopwatch` is not among the checks, and `P5.toolgate` is not
+  // decidable, so neither generator registers its event's entry script.
+  const checks = [toolgateCheck({ decidable: false }), sessionlogCheck()];
+  const hooks = buildProposals(args(checks, { harness: bareHarness, stack: lintStack })).filter(p => p.kind === 'settings-hook');
+  assert.deepEqual(hooks.map(h => h.event), [...LOGGED_EVENTS]);
+  for (const h of hooks) assert.deepEqual(h.entry, execEntry(SESSION_LOG_PATH), h.event);
+});
+
+test('P5.sessionlog\'s full-install proposal says the hook goes through the entry script where an event has one', () => {
+  const { proposal } = sessionlogGap(PROFILE_STACKS.generic, bareHarness);
+  assert.ok(proposal.endsWith(`and register it on the ${LOGGED_EVENTS.length} logged events, through the entry script on an event that has one — it records nothing until the log is enabled for this repository on this machine`), proposal);
+});
+
 // --- `log purge --yes` is denied beside the learn subcommands ---------------
 
 const PURGE_RULES = [
@@ -2155,4 +2388,133 @@ test('an install made before log purge --yes was denied is proposed exactly its 
   const ps = buildProposals({ checks: [gap], manifest: null, kitVersion: '0.2.0', harness, stack: PROFILE_STACKS.generic, files: [] });
   assert.deepEqual(ps.map(p => [p.kind, p.globs]), [['settings-deny', PURGE_RULES]]);
   assert.match(ps[0].reason, /and \`log purge --yes\`, which removes this machine's ledger, learnings, policy and local gates/);
+});
+
+// --- A sibling an updated script newly loads ----------------------------------
+
+test('the PreToolUse entry script is installed with the extension loader', () => {
+  assert.ok(everyLoadedSibling(DISPATCH_PRE_PATH).includes(HARNESS_EXTENSIONS_PATH));
+});
+
+/** An install written at kit 0.1.9 from which the extension loader is gone,
+ * from disk and from the manifest, as an install made before any script
+ * loaded it would be. */
+function installedWithoutLoader() {
+  const d = installedAt('0.1.9');
+  const m = readManifest(d);
+  assert.ok(m.files.some(f => f.path === DISPATCH_PRE_PATH), 'fixture sanity: the PreToolUse entry script is recorded');
+  m.files = m.files.filter(f => f.path !== HARNESS_EXTENSIONS_PATH);
+  writeManifest(d, m);
+  rmSync(join(d, HARNESS_EXTENSIONS_PATH), { force: true });
+  return d;
+}
+
+test('REVIEW FOCUS 3: an update to a recorded script proposes a sibling it loads that is neither recorded nor on disk', () => {
+  const ctx = detectedAt(installedWithoutLoader(), '0.2.0');
+  const skew = kitSkew(ctx);
+  assert.ok(skew.updates.some(p => p.path === DISPATCH_PRE_PATH), 'fixture sanity: the entry script is updated');
+  assert.deepEqual(skew.added.map(p => p.path), [HARNESS_EXTENSIONS_PATH]);
+  assert.equal(skew.added[0].reason, `${HARNESS_EXTENSIONS_PATH} is loaded by an installed script this kit updates`);
+  assert.match(skew.added[0].contents, /kh-harness 0\.2\.0/);
+  const check = kitskew(ctx.checks);
+  assert.ok(check.evidence.includes(`missing: ${HARNESS_EXTENSIONS_PATH} (an updated script loads it)`), JSON.stringify(check.evidence));
+  assert.equal(check.state, 'absent');
+  const proposed = buildProposals(ctx).filter(p => p.path === HARNESS_EXTENSIONS_PATH);
+  assert.equal(proposed.length, 1);
+  assert.equal(proposed[0].checkId, 'P0.kitskew');
+});
+
+test('a sibling that is on disk and not recorded holds the unit instead of being added', () => {
+  const d = installedWithoutLoader();
+  writeFileSync(join(d, HARNESS_EXTENSIONS_PATH), '// my own module\nexport {};\n');
+  const skew = kitSkew(detectedAt(d, '0.2.0'));
+  assert.deepEqual(skew.added, []);
+  assert.ok(skew.heldBack.some(h => h.path === DISPATCH_PRE_PATH), JSON.stringify(skew.heldBack.map(h => h.path)));
+  assert.equal(skew.updates.some(p => p.path === DISPATCH_PRE_PATH), false);
+});
+
+test('an update with every loaded sibling recorded adds nothing', () => {
+  const skew = kitSkew(detectedAt(installedAt('0.1.9'), '0.2.0'));
+  assert.ok(skew.updates.length > 0, 'fixture sanity: there are updates');
+  assert.deepEqual(skew.added, []);
+});
+
+// --- The contract file ------------------------------------------------------
+
+const contractCheck = () => check({ id: 'P5.contract', step: 30, phase: 5, proposal: `write ${CONTRACT_PATH}` });
+
+test('the gate hook\'s deny rules cover the contract file and the extensions file', () => {
+  assert.ok(toolGateDenyRules().includes('Edit(/.claude/kh-harness/**)'));
+  assert.ok(CONTRACT_PATH.startsWith('.claude/kh-harness/'));
+  assert.ok(EXTENSIONS_PATH.startsWith('.claude/kh-harness/'));
+});
+
+test('the contract speaks for the PreToolUse entry script and every installed file it loads', () => {
+  assert.deepEqual(CONTRACT_FILES, [DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]);
+  assert.ok(CONTRACT_FILES.includes(HARNESS_EXTENSIONS_PATH), 'the extension point is among them');
+});
+
+test('the contract generator writes one stamped file at step 30, requiring the files it speaks for', () => {
+  assert.deepEqual(GENERATORS['P5.contract']({ kitVersion: '0.2.0' }), [{
+    kind: 'file', path: CONTRACT_PATH, step: 30, contents: kitContractText('0.2.0'), reason: 'no contract file found',
+    requiresFiles: CONTRACT_FILES.map(path => ({ path, sha256: sha(installedScriptProposal(path, '0.2.0').contents) })),
+  }]);
+});
+
+test('the contract file is not proposed, as a new file or an update, while a file it speaks for is held', () => {
+  const d = installedAt('0.1.9');
+  assert.ok(readManifest(d).files.some(f => f.path === CONTRACT_PATH), 'fixture sanity: the install wrote the contract file');
+  writeFileSync(join(d, DISPATCH_PRE_PATH), readF(join(d, DISPATCH_PRE_PATH), 'utf8') + '// my own tweak\n');
+  const ctx = detectedAt(d, '0.2.0');
+  assert.deepEqual(buildProposals(ctx).filter(p => p.path === CONTRACT_PATH), [], 'no update of the contract file');
+  const skew = kitSkew(ctx);
+  assert.deepEqual(skew.heldBack.find(h => h.path === CONTRACT_PATH)?.causes, [{ path: DISPATCH_PRE_PATH, why: 'edited' }]);
+  assert.equal(skew.updates.some(p => p.path === CONTRACT_PATH), false);
+  assert.ok(kitskew(ctx.checks).evidence.includes(`held back at kit 0.1.9: ${CONTRACT_PATH} (out of date, but kh-harness keeps ${DISPATCH_PRE_PATH} as it is, and the contract file is written only beside the files this kit installs for it to speak for)`),
+    JSON.stringify(kitskew(ctx.checks).evidence));
+  // Forced open, as a fresh check would be.
+  assert.deepEqual(buildProposals({ ...ctx, checks: [contractCheck()] }), []);
+});
+
+test('an upgrade writes the contract file after every file it speaks for', () => {
+  const d = installedAt('0.1.9');
+  const ctx = detectedAt(d, '0.2.0');
+  const proposals = buildProposals(ctx);
+  const update = proposals.find(p => p.path === CONTRACT_PATH);
+  assert.equal(update.checkId, 'P0.kitskew');
+  assert.deepEqual(update.requiresFiles.map(f => f.path), CONTRACT_FILES);
+  const result = applyProposals({ root: d, proposals, manifest: ctx.manifest, kitVersion: '0.2.0' });
+  assert.deepEqual(result.failed, []);
+  assert.equal(result.written.at(-1).path, CONTRACT_PATH);
+  for (const path of CONTRACT_FILES) assert.ok(result.written.some(w => w.path === path), path);
+  assert.equal(readF(join(d, CONTRACT_PATH), 'utf8'), kitContractText('0.2.0'));
+});
+
+test('the contract file lists each file it speaks for with the LF sha256 of what this kit installs there, in CONTRACT_FILES order', () => {
+  const file = JSON.parse(kitContractText('0.2.0'));
+  assert.deepEqual(Object.keys(file), ['contract', 'generatedBy', 'files']);
+  assert.deepEqual(Object.keys(file.files), CONTRACT_FILES);
+  for (const path of CONTRACT_FILES) assert.equal(file.files[path], lfSha256(Buffer.from(installedScriptProposal(path, '0.2.0').contents)), path);
+  assert.notEqual(kitContractText('0.2.0'), kitContractText('0.2.1'), 'a kit update changes the listed hashes with the stamps');
+});
+
+test('after an upgrade the contract file lists the hashes of the files on disk', () => {
+  const d = installedAt('0.1.9');
+  const ctx = detectedAt(d, '0.2.0');
+  applyProposals({ root: d, proposals: buildProposals(ctx), manifest: ctx.manifest, kitVersion: '0.2.0' });
+  const { files } = JSON.parse(readF(join(d, CONTRACT_PATH), 'utf8'));
+  for (const [path, hash] of Object.entries(files)) assert.equal(lfSha256(readF(join(d, path))), hash, path);
+});
+
+test('an upgrade that adds a missing sibling the entry script loads still proposes the contract file', () => {
+  const d = installedWithoutLoader();
+  rmSync(join(d, CONTRACT_PATH));
+  const m = readManifest(d);
+  m.files = m.files.filter(f => f.path !== CONTRACT_PATH);
+  writeManifest(d, m);
+  const ctx = detectedAt(d, '0.2.0');
+  const gap = ctx.checks.find(c => c.id === 'P5.contract');
+  assert.deepEqual([gap.state, gap.decidable], ['absent', true], JSON.stringify(gap));
+  const paths = buildProposals(ctx).map(p => p.path);
+  assert.ok(paths.includes(HARNESS_EXTENSIONS_PATH) && paths.includes(CONTRACT_PATH), JSON.stringify(paths));
 });

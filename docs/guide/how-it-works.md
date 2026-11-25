@@ -109,13 +109,17 @@ The kit is built so that code decides and the model drafts:
 
 A **hook** is a command Claude Code runs by itself when an event happens in
 a session, such as a prompt being sent or a tool being called. `apply`
-copies up to seven hook scripts, and the four modules they load, from this
-repository's `assets/scripts/` into your repository's `.claude/scripts/`,
-and registers each in `.claude/settings.json`. Each copy is the asset plus
-one stamp line. The plugin installs none of them; only `apply --yes` does.
+copies up to seven hook scripts, three entry scripts and the six modules
+they load, from this repository's `assets/scripts/` into your repository's
+`.claude/scripts/`, and registers them in `.claude/settings.json`. Each
+copy is the asset plus one stamp line. The plugin installs none of them;
+only `apply --yes` does.
 
 Each is registered as `node` plus the script's path under
-`${CLAUDE_PROJECT_DIR}`, so Claude Code starts it without a shell.
+`${CLAUDE_PROJECT_DIR}`, so Claude Code starts it without a shell. On the
+three tool-call events, the two hooks of the event are registered once,
+together, as that event's entry script; see
+[the entry scripts](#the-entry-scripts).
 
 ## What runs when
 
@@ -125,11 +129,11 @@ Each is registered as `node` plus the script's path under
 |---|---|---|---|---|---|
 | `session-brief.mjs` | `SessionStart` | always | `HANDOFF.md`, or `docs/HANDOFF.md` | prints the top of that file into the session, after the credential mask, bounded in lines and bytes; writes nothing | no |
 | `rules-brief.mjs` | `UserPromptSubmit` | once `docs/harness/RULES.md` and `docs/harness/LEARNED.md` hold at least one rule to add | those two files | adds up to 1,500 bytes of their rules to the prompt's context | no |
-| `tool-gate.mjs` | `PreToolUse`, for every tool | always | the committed `.claude/kh-harness/gates.json` and this machine's `gates.local.json` | a denial or a message when a gate matches; a `gate_firing` line in the session log while the log is enabled | **yes**: a matching gate with action `block` denies the call |
-| `lint-touched.mjs` | `PostToolUse`, for `Write` and `Edit` only | a package declares a `lint` script | the edited file's path, and the `package.json` of the package that owns it (for a `.py` file, `pyproject.toml`) | **runs the owning package's `lint` script**, bounded at 30 s; gives Claude the findings that name the edited file | no: the edit has already happened |
-| `loop-watch.mjs` | `PostToolUseFailure` | always | the failed call's tool name, input and first error line | keeps a hash of them per session; adds one fixed sentence at the third identical failure with no different failure between | no |
+| `tool-gate.mjs` | `PreToolUse`, for every tool, through `dispatch-pre-tool.mjs` | always | the committed `.claude/kh-harness/gates.json` and this machine's `gates.local.json` | a denial or a message when a gate matches; a `gate_firing` line in the session log while the log is enabled | **yes**: a matching gate with action `block` denies the call |
+| `lint-touched.mjs` | `PostToolUse`, through `dispatch-post-tool.mjs`; it acts after `Write` and `Edit` only | a package declares a `lint` script | the edited file's path, and the `package.json` of the package that owns it (for a `.py` file, `pyproject.toml`) | **runs the owning package's `lint` script**, bounded at 30 s; gives Claude the findings that name the edited file | no: the edit has already happened |
+| `loop-watch.mjs` | `PostToolUseFailure`, through `dispatch-tool-failure.mjs` | always | the failed call's tool name, input and first error line | keeps a hash of them per session; adds one fixed sentence at the third identical failure with no different failure between | no |
 | `verify-touched.mjs` | `Stop` | the root package declares a `typecheck` or `test` script | the root `package.json`, and `git status` | **runs the root `typecheck` script, or `test` when there is none**, bounded at 120 s; on a failure, gives Claude the output, after the credential mask and bounded | **yes**: a failure different from the last one it reported stops the turn from ending, at most 3 times between passing runs |
-| `session-log.mjs` | 16 events, listed below | always | the event Claude Code hands it | nothing until you run `log enable`; then one line per event in the data directory | no: it always exits 0 |
+| `session-log.mjs` | 16 events, listed below; on a tool-call event, through its entry script where there is one | always | the event Claude Code hands it | nothing until you run `log enable`; then one line per event in the data directory | no: it always exits 0 |
 
 The 16 events `session-log.mjs` is registered on are `SessionStart`,
 `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PermissionDenied`,
@@ -139,15 +143,33 @@ The 16 events `session-log.mjs` is registered on are `SessionStart`,
 
 Notes on the table:
 
-- Two scripts run your repository's own commands: `lint-touched.mjs` and
-  `verify-touched.mjs`. The other five run nothing of the repository's.
-- Where two of the kit's hooks are registered on one event, this page
-  states no order between them.
-- The four modules are loaded by the hook scripts and registered on no
+- Three things run your repository's own code: `lint-touched.mjs` and
+  `verify-touched.mjs` run its commands, and the `PreToolUse` entry script
+  `dispatch-pre-tool.mjs`, which is not in the table (see
+  [the entry scripts](#the-entry-scripts)), runs each module
+  `.claude/kh-harness/extensions.json` lists, one self-contained file under
+  `.claude/` each, which can block the call. The other five hook scripts in
+  the table run nothing of the repository's. The extensions
+  file and its modules are files in the repository, so a `git pull` that
+  adds or changes them changes what runs before every tool call by itself;
+  the sha256 recorded for a module proves only that its bytes are the ones
+  named, which is not an approval. kh-harness never writes that file.
+- On the three tool-call events the kit's two hooks run one after the
+  other, always in the same order: before a call, the gate hook and then
+  the session log; after a call, the session log and then the lint
+  sensor; after a failed call, the session log and then the loop warning.
+  On `SessionStart`, `UserPromptSubmit` and `Stop`, where the session log
+  sits beside another kit hook, each is its own registration and its own
+  process, and no order between the two is promised.
+- The six modules are loaded by the scripts above and registered on no
   event: `harness-redact.mjs` (the credential mask, shared paths, bounded
   runner), `harness-log.mjs` (where the data directory is, appending an
-  event), `harness-seal.mjs` (sealing and retention) and
-  `harness-gates.mjs` (validating and matching a gate).
+  event), `harness-seal.mjs` (sealing and retention),
+  `harness-gates.mjs` (validating and matching a gate),
+  `harness-dispatch.mjs` (the shared core the three entry scripts run
+  their hooks through) and `harness-extensions.mjs` (reading the
+  extensions file and running each module it lists, loaded by the
+  `PreToolUse` entry script only when that file is there).
 - Every hook exits 0 when something inside it fails, or when a module it
   loads is missing or older than it. The work that hook does is then not
   done. What each says when that happens is under
@@ -156,6 +178,79 @@ Notes on the table:
 
 `apply`'s dry run prints its own account of what each hook reads and runs,
 under `WHAT THE HOOKS EXECUTE`, before anything is installed.
+
+On `PreToolUse`, the entry script first runs the extensions listed in
+`.claude/kh-harness/extensions.json`, a file another plugin's installer
+writes, each module in file order, before the gate hook and the session
+log. An extension can block the call.
+One that cannot decide applies its own `onFailure`: the call is blocked, or
+you are told once per session that it checks no call. An extensions file
+that cannot be read blocks every call, and so do a core or a loader from
+another kit version than the entry script, and a run that ends before the
+extensions were applied, for whatever reason. Without the file, nothing of
+this runs and the loader is never loaded. What another plugin may rely on, and
+what an extension can and cannot do, is in [the contract](../CONTRACT.md).
+
+### The entry scripts
+
+Each tool-call event starts one process for the kit, not two. The two
+hooks of the event are registered together as one **entry script**, which
+reads the event once, loads each hook and runs it in turn. A fresh install
+is registered this way; an older one is moved to it as described under
+[how apply and uninstall stay safe](#how-apply-and-uninstall-stay-safe).
+
+| Entry script | Registered on | Runs, in this order | Installed |
+|---|---|---|---|
+| `dispatch-pre-tool.mjs` | `PreToolUse` | the extensions `.claude/kh-harness/extensions.json` lists, when there is that file; then `tool-gate.mjs`, then `session-log.mjs` | with the gate hook |
+| `dispatch-post-tool.mjs` | `PostToolUse` | `session-log.mjs`, then `lint-touched.mjs` | only where the lint hook is installed |
+| `dispatch-tool-failure.mjs` | `PostToolUseFailure` | `session-log.mjs`, then `loop-watch.mjs` | with the loop warning |
+
+- Each is registered with no matcher, so it starts on every call of its
+  event. `lint-touched.mjs` still lints only after a `Write` or an `Edit`,
+  as it did under its own `Write|Edit` registration.
+- Where only one of an event's hooks is installed, that hook is registered
+  on its own. In a repository with no `lint` script, `PostToolUse` carries
+  the session log alone.
+- A hook that fails, or returns something the entry script cannot read,
+  adds nothing, and the other hook still runs.
+- A fault a hook leaves behind it, such as an error thrown later from a
+  callback or a rejected promise nobody handles, changes nothing: the
+  hooks after it still run, and nothing is printed for it. A hook whose
+  work never finishes ends the run: the entry script writes what the hooks
+  before it returned, so a gate's denial still stands, and exits with their
+  code, as soon as nothing else is left to run, or at 120 seconds when
+  something keeps the process busy. On `PreToolUse`, while an extensions
+  file is in play, a run that ends this way before the extensions were
+  applied blocks the call instead. A hook that hangs without ever
+  yielding is ended by Claude Code's own hook timeout, and then nothing
+  from that event's entry script is delivered.
+- The entry script writes one combined output: the notices of both hooks,
+  the context of both, and the gate hook's denial when a gate blocks. Its
+  exit code is the highest either hook returned. Only the lint sensor ever
+  returns 2, when it reports findings.
+- When the lint sensor reports (exit 2), the entry script still writes the
+  other hook's notice, if it has one, as JSON on standard output, and the
+  lint report on standard error. Claude Code reads valid JSON from a hook
+  that exits 2 and shows standard error to Claude, so the notice reaches
+  you as before and the lint report reaches Claude.
+- The hooks run one after the other, so after an edit the process stays
+  until the lint run ends, at most 30 s, after the session log has written
+  its line.
+- When `harness-dispatch.mjs` is missing or older than the entry script,
+  no hook runs on that event, and every call says so in one fixed notice.
+  The `PreToolUse` entry script judges the core and `harness-extensions.mjs`
+  by the level each exports, so a file from any other kit version counts
+  as one it cannot use. On `PreToolUse` while an extensions file is there,
+  every call is blocked instead, and so it is when `harness-extensions.mjs`
+  is missing or from another kit version;
+  see
+  [every tool call is blocked by the extensions file](troubleshooting.md#every-tool-call-is-blocked-by-the-extensions-file).
+  When one hook's file is missing or older, the entry script does not run
+  that hook, runs the other, and every call says so. See
+  [an entry script says a file is missing or older](troubleshooting.md#an-entry-script-says-a-file-is-missing-or-older).
+- The registration is the switch: to run only one of the two hooks on an
+  event, see
+  [running only one hook of a tool-call event](troubleshooting.md#running-only-one-hook-of-a-tool-call-event).
 
 ### One session, in time order
 
@@ -267,8 +362,10 @@ The kit keeps state in three places.
   .claude/
     settings.json               hook entries and deny rules
     kh-harness.manifest.json    the record of what the kit wrote
-    scripts/                    7 hook scripts and 4 modules
+    scripts/                    7 hook scripts, 3 entry scripts and 6 modules
     kh-harness/gates.json       gates landed for everyone
+    kh-harness/contract.json    the contract number other plugins read
+    kh-harness/extensions.json  written by another plugin, never by the kit
     rules/<package>.md          one rule scaffold per workspace package
   docs/harness/
     detect.json                 the last detect report
@@ -289,6 +386,8 @@ The kit keeps state in three places.
 | `.claude/kh-harness.manifest.json` | `apply`, `uninstall`, `learn land`, `learn revert` | Each file with a hash of its content, each settings patch with a hash of what was added. |
 | `.claude/scripts/*.mjs` | `apply` | Copies of `assets/scripts/` with a stamp line that says "Do not edit". |
 | `.claude/kh-harness/gates.json` | `learn land`, `learn revert` | Read by the gate hook before every tool call. |
+| `.claude/kh-harness/contract.json` | `apply`; removed by `uninstall` | The contract number another plugin reads, with the hash of each installed file it speaks for. Written last, only beside this kit's files. See [the contract](../CONTRACT.md). |
+| `.claude/kh-harness/extensions.json` | another plugin's installer, never the kit | Read by the `PreToolUse` entry script before every tool call and by `detect`. Not in the manifest, so `uninstall` leaves it and the modules it lists. |
 | `.claude/rules/<package>.md` | `apply`, in a workspace | A scaffold for you to fill. |
 | `docs/harness/detect.json` | `detect` | Replaced whole on every run. Not in the manifest, so `uninstall` leaves it. |
 | `docs/harness/RULES.md`, `docs/harness/FAILURES.md`, `HANDOFF.md` | `apply`, as empty scaffolds; then you | The stamp says "Edit freely". The kit writes no rule and no failure kind. |
@@ -374,12 +473,12 @@ records holds script names, not script bodies.
 
 | Phase | Checks | What they look at |
 |---|---|---|
-| Phase 0 — Reconnaissance | `P0.inventory`, `P0.security`, `P0.recon`, `P0.kitskew` | the file inventory, a credential sweep, the recon document, installed kit files against this kit's version |
+| Phase 0 — Reconnaissance | `P0.inventory`, `P0.security`, `P0.recon`, `P0.hookmerge`, `P0.kitskew` | the file inventory, a credential sweep, the recon document, kit hooks on a tool-call event against the manifest's records, installed kit files against this kit's version |
 | Phase 1 — Legible | `P1.bootstrap`, `P1.instructions`, `P1.architecture`, `P1.pathrules` | a bootstrap script, `CLAUDE.md`, an architecture document, path-scoped rule files |
 | Phase 2 — Senses | `P2.scripts`, `P2.sensor`, `P2.stopgate`, `P2.loopwatch`, `P2.protected`, `P2.langserver` | declared `test`, `lint` and `typecheck` scripts, the lint sensor, the stop gate, the loop warning, deny rules for protected paths, a language server (always `n/a`: the repository cannot show one) |
 | Phase 3 — Intent | `P3.intent`, `P3.rules`, `P3.reinject` | `docs/INTENT.md`, the rules registry, the rules brief |
 | Phase 4 — Continuity | `P4.remote`, `P4.handoff`, `P4.sessionbrief` | a git remote, the handoff file, the session brief |
-| Phase 5 — Learning | `P5.failures`, `P5.sessionlog`, `P5.toolgate`, `P5.integrity` | the failure taxonomy, the logging hook, the gate hook and its deny rules, kit files and committed gates against their records |
+| Phase 5 — Learning | `P5.failures`, `P5.sessionlog`, `P5.toolgate`, `P5.integrity`, `P5.extensions`, `P5.contract` | the failure taxonomy, the logging hook, the gate hook and its deny rules, kit files and committed gates against their records, registered extensions against their hashes, the contract file |
 
 **States.** Each check reports one of five states.
 
@@ -475,6 +574,38 @@ patches in memory, writes the manifest, replaces `.claude/settings.json`
 through a temporary file and a rename, then writes the manifest again. It
 adds only its own entries, but it re-serialises the whole file, so key
 order and inline spacing are normalised.
+
+**Moving an install to the entry scripts.** An install made before the
+entry scripts has the two hooks of each tool-call event registered
+separately, one process each. `detect`'s `P0.hookmerge` reports each such
+event, and `apply` proposes replacing its two registrations with the
+event's entry script only when every kit registration on that event is in
+`.claude/settings.json` exactly as the manifest recorded it, and every
+registration the manifest records there is still in the file.
+
+- The dry run shows the replacement as one settings proposal,
+  `.claude/settings.json (hook: PreToolUse, replacing 2 registrations)`,
+  with the registrations it takes out as removed lines and the entry
+  script as an added one. `--yes` prints
+  `patched    .claude/settings.json (PreToolUse; 2 separate registrations removed)`.
+- It takes out only registrations the manifest records and that run
+  nothing but kit scripts.
+- The manifest keeps the records of the registrations taken out until the
+  settings file has been written, and drops them after. A run killed in
+  between leaves records of entries that are already gone; the next
+  `apply` finishes the move or reports nothing to do, and `uninstall`
+  treats those records as gone.
+- An event you changed, by editing or removing a kit registration on it,
+  is left alone, and `P0.hookmerge` names the event and the reason. The
+  move never turns a hook back on: a hook you removed is proposed again by
+  its own check, on its own, as before, and its event is moved on a later
+  `apply`.
+- A kit hook registered only in `.claude/settings.local.json` is not
+  moved: `apply` writes `.claude/settings.json` alone.
+- Where an entry script and a separate registration of one of its hooks
+  are both registered, as recorded, `apply` proposes taking the separate
+  one out, so each hook runs once. If anything involved was changed, the
+  event is left as it is and `P0.hookmerge` says why.
 
 **What uninstall removes, and keeps.** `uninstall` acts only on what the
 manifest records, and exits 3 without one.

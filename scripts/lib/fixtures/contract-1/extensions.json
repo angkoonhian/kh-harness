@@ -1,0 +1,9 @@
+[
+  {
+    "id": "acme-lockfile",
+    "version": "1.0.0",
+    "module": ".claude/acme-lockfile/guard.mjs",
+    "sha256": "02a911c8dfd658c85a27d66b6d5e535807a45bbabc0fb0904cd7eddee59fc281",
+    "onFailure": "block"
+  }
+]

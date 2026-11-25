@@ -59,6 +59,20 @@ test('emits one JSON object with hookEventName UserPromptSubmit and the rules as
   assert.match(text, /^- R2: Money is integer cents \[enforced-by: test\]$/m);
 });
 
+test('an officer rule is re-told with its enforcer, and an approval line is neither shown nor noticed', () => {
+  const d = repo();
+  registry(d, '## V8 — Screens use the design tokens\n- enforced-by: officer\n- pointer: tools/officers/v8.mjs\n- approval: owner\n## V9 — Copy is spelled the house way\n- approval: whoever\n- enforced-by: none\n');
+  const out = JSON.parse(run(d));
+  assert.deepEqual(Object.keys(out), ['hookSpecificOutput'], 'no systemMessage: nothing in the registry is a notice');
+  assert.equal(out.hookSpecificOutput.additionalContext, [
+    '<project-rules source="docs/harness/RULES.md">',
+    'Project rules (docs/harness/RULES.md):',
+    '- V8: Screens use the design tokens [enforced-by: officer]',
+    '- V9: Copy is spelled the house way [enforced-by: none]',
+    '</project-rules>',
+  ].join('\n'));
+});
+
 test('high-priority rules come first, in stable order within a priority', () => {
   const d = repo();
   registry(d, [

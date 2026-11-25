@@ -43,10 +43,13 @@ The 16 events are `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
 | Content | the prompt; a tool's input and output, stored with its result; a permission denial's reason; a stop failure's error |
 | Harness | a hash of the kit's installed hook scripts and their settings patches (`base`), a hash of the learned gates in force (`learned`), the kit version and the model |
 | Flags | `external_content` when a session used `WebFetch`, `WebSearch` or an MCP tool (a download made through Bash is not seen); `gate_firing` for each learned gate that matched, with its action and the agent that made the call |
+| Plugin events | `plugin_event`, written by another plugin through `recordExternalEvent` (see [the contract](../CONTRACT.md#appending-to-the-session-log)), never by the kit: the plugin's name (`source`) and what happened (`kind`), kept as structure, and its `data`, at most 16,384 bytes, masked like every event and counted as content |
 
 The harness line is written at session start, on a model switch, and on a
 prompt whose identity or model has moved since the last one. A change to a
 file the kit did not write, such as your own rules, changes neither hash.
+`base` changes when an install is moved to the entry scripts, as it does
+with any kit update, and not on an `apply` that has nothing to do.
 
 The `root` on a failure is what lets a reader in another worktree make the
 error line's paths relative to the root they were printed under, so a
@@ -134,7 +137,7 @@ The scrub is **best-effort**:
 ## Retention
 
 Content — prompts, tool input and output, denial reasons, stop-failure
-errors — is removed from a **sealed** session once its last event is older
+errors, a plugin event's `data` — is removed from a **sealed** session once its last event is older
 than 90 days, or `contentRetentionDays`. Structure is kept until you purge:
 ids, tools, hashes, sizes, statuses, first error lines, times and harness
 lines. That is what recurrence detection needs.

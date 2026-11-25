@@ -1,0 +1,11 @@
+[
+  "no safe session id",
+  "root must be an absolute path",
+  "the session log is not enabled for this repository",
+  "data must be a JSON object",
+  "source must be lower-case letters, digits and hyphens, starting with a letter, at most 64 characters",
+  "type must be letters, digits, dot, underscore and hyphen, starting with a letter, at most 64 characters",
+  "data is larger than 16384 bytes",
+  "data must be nested at most 32 levels deep",
+  "the event could not be written"
+]

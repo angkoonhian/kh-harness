@@ -3,7 +3,9 @@ import { join, relative } from 'node:path';
 import { readIfPresent, existsAny } from './scan.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { git, isNotRepository } from './git-info.mjs';
-import { toolGateDenyRules } from './propose.mjs';
+import { CONTRACT_FILES, installedScriptStatus, kitContractText, toolGateDenyRules } from './propose.mjs';
+import { contractEvidence } from './contract.mjs';
+import { KIT_VERSION } from './manifest.mjs';
 // `findHandoff` is imported from the installed asset, and must not be
 // copied into scripts/lib/. It answers "where is this repository's handoff
 // file", and two things must answer it identically: this module, which
@@ -17,7 +19,9 @@ import { findHandoff } from '../../assets/scripts/harness-redact.mjs';
 import { intentEvidence, INTENT_PATH } from './intent-evidence.mjs';
 import { rulesRegistryEvidence, ruleShapedLines } from './rules-evidence.mjs';
 import { failuresEvidence } from './failures-evidence.mjs';
+import { extensionsEvidence } from './extensions-evidence.mjs';
 import { normalizeMatcher, hookPathTokens, matcherEntrySha256, SETTINGS_PATH } from './settings-merge.mjs';
+import { disablesAllHooks, runsOnEveryCall } from './hook-evidence.mjs';
 
 const BOOTSTRAP_CANDIDATES = [
   'scripts/bootstrap.sh', 'scripts/bootstrap.ps1', 'scripts/setup.sh', 'scripts/setup.ps1',
@@ -200,6 +204,10 @@ function commandScript(entry, files) {
  * hash is the one the install record holds. It is NON-ENUMERABLE, so it
  * never reaches docs/harness/detect.json, which is committed: a hash of a
  * command that embeds a short credential can be tested against guesses.
+ * `settingsFile`, also non-enumerable, names the settings file the entry is
+ * in, since `apply` patches only `.claude/settings.json`; `everyCall`, also
+ * non-enumerable, is whether the entry is in that file and in the form
+ * apply writes on every call (hook-evidence.mjs's `runsOnEveryCall`).
  *
  * Never throws: a missing file, bad JSON or any malformed shape yields `{}`.
  */
@@ -221,6 +229,9 @@ function hookRegistrations(root, files) {
           if (!command) continue;
           const registration = { script: commandScript(entry, files), matcher: m };
           Object.defineProperty(registration, 'entrySha256', { value: entrySha256, enumerable: false });
+          // Only .claude/settings.json holds the registration apply writes.
+          Object.defineProperty(registration, 'everyCall', { value: rel === SETTINGS_PATH && runsOnEveryCall(matcher, entry), enumerable: false });
+          Object.defineProperty(registration, 'settingsFile', { value: rel, enumerable: false });
           (out[event] ??= []).push(registration);
         }
       }
@@ -374,6 +385,15 @@ function remotes(root, env) {
   return { list: [...seen.values()], error: null };
 }
 
+/** `contractEvidence` against the contract file this kit writes, with
+ * `installed` mapping each of `CONTRACT_FILES` to its
+ * `installedScriptStatus` unless the file was unreadable. */
+function contractWithInstalled(root) {
+  const contract = contractEvidence(root, kitContractText(KIT_VERSION));
+  if (contract.state === 'unreadable') return contract;
+  return { ...contract, installed: Object.fromEntries(CONTRACT_FILES.map(path => [path, installedScriptStatus(root, path, KIT_VERSION)])) };
+}
+
 /** `env` is overridable only so a test can take git away; production
  * callers never pass it. */
 export function detectHarness(root, files, { env } = {}) {
@@ -397,6 +417,8 @@ export function detectHarness(root, files, { env } = {}) {
       // file that is not there.
       settings: readSettings(root, SETTINGS_PATH).state,
       localSettings: readSettings(root, LOCAL_SETTINGS_PATH).state,
+      // The settings files whose `disableAllHooks` may turn every hook off.
+      disableAllHooksIn: SETTINGS_FILES.filter(rel => disablesAllHooks(parseSettings(root, rel))),
       // One read of both settings files (`denyRulesInEffect`): the length
       // and the contents of one list.
       denyRules: denyInEffect.length,
@@ -445,5 +467,7 @@ export function detectHarness(root, files, { env } = {}) {
   harness.rulesRegistry = rulesRegistryEvidence(root, harness);
   harness.ruleShapedLines = ruleShapedLines(root, harness);
   harness.failures = failuresEvidence(root);
+  harness.extensions = extensionsEvidence(root);
+  harness.contract = contractWithInstalled(root);
   return harness;
 }

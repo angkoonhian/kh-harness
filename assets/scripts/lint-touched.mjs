@@ -23,8 +23,9 @@
 // uncovered file, an out-of-root file or a project with no lint script all
 // end the same way — silently, exit 0, since there was nothing to check.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, isAbsolute, basename, delimiter, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // The shared module beside this hook can be older than the hook: `apply`
 // leaves a hand-edited copy in place, and a static import of a name that copy
@@ -54,9 +55,10 @@ const {
   projectRoot, readJSONMarker, runBounded, safeSessionId, signatureOf, stripUnsafe, writeJSONMarker,
 } = asset;
 
-/** The exit code after telling the person, at most once in the session
+/** The result that tells the person, at most once in the session
  * `rawSessionId` names, that this hook did nothing because of the shared
- * module. A marker that cannot be made means the sentence is given anyway. */
+ * module, or null when they were told already. A marker that cannot be made
+ * means the sentence is given anyway. */
 function assetNotice(rawSessionId) {
   const sentence = `kh-harness lint-touched: .claude/scripts/harness-redact.mjs ${assetProblem}, so edited files are not linted — ${REMEDY}`;
   if (MARKING.every(name => name in asset)) {
@@ -67,12 +69,11 @@ function assetNotice(rawSessionId) {
       try {
         writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
       } catch (error) {
-        if (error?.code === 'EEXIST') return 0;
+        if (error?.code === 'EEXIST') return null;
       }
     }
   }
-  process.stdout.write(JSON.stringify({ systemMessage: sentence }) + '\n');
-  return 0;
+  return { json: { systemMessage: sentence }, stderr: '', exitCode: 0 };
 }
 
 // Overridable so a test can exercise the timeout path in milliseconds, not
@@ -382,18 +383,18 @@ function hasChanged(before, after) {
  * The single chokepoint every byte reported to Claude passes through —
  * bounded by both line count and byte size (`boundReport`, shared with
  * verify-touched.mjs so neither hook's bound can drift from the other's),
- * and this is the ONLY `process.stderr.write` in this file. Nothing
- * upstream may write to stderr directly; every path that can report
- * something builds a line list and hands it here, so redaction (above)
- * cannot be bypassed by a future call site that forgets it.
+ * and this is the ONLY place in this file that builds a non-empty `stderr`
+ * for a result. Nothing upstream may build report text itself; every path
+ * that can report something builds a line list and hands it here, so
+ * redaction (above) cannot be bypassed by a future call site that forgets
+ * it.
  *
  * `lines` is never empty: a failure with nothing attributable to the edited
  * file is not a lint report but a not-confirmed-clean notice (see
  * notConfirmedClean).
  */
-function writeReport(lines) {
-  process.stderr.write(boundReport(lines) + '\n');
-  return 2;
+function report(lines) {
+  return { json: null, stderr: boundReport(lines) + '\n', exitCode: 2 };
 }
 
 /**
@@ -495,8 +496,9 @@ function forgetFile(root, sessionId, filePath) {
 }
 
 /**
- * Says, once per session, that `shownPath` (the edited file, through
- * displayPath) was not confirmed clean — never a lint failure, so exit 0,
+ * The result that says, once per session, that `shownPath` (the edited file,
+ * through displayPath) was not confirmed clean, or null when it was said
+ * already — never a lint failure, so exit 0,
  * where Claude Code reads stdout as JSON and shows nothing from stderr. The one sentence goes to the person as
  * `systemMessage` and to the model as PostToolUse `additionalContext`, so
  * neither mistakes "never checked" for "clean". `outcome` carries the exit
@@ -510,15 +512,18 @@ function forgetFile(root, sessionId, filePath) {
 function notConfirmedClean(root, sessionId, shownPath, outcome) {
   const path = sessionId === null ? null : markerPath(root, sessionId, 'sensor-unchecked');
   if (path !== null) {
-    if (readJSONMarker(path, {}).noticed === true) return 0;
+    if (readJSONMarker(path, {}).noticed === true) return null;
     writeJSONMarker(path, { noticed: true });
   }
   const sentence = `lint-touched: the lint script ${outcome}, so ${shownPath} was not confirmed clean. Files not confirmed later this session are not reported again.`;
-  process.stdout.write(JSON.stringify({
-    systemMessage: sentence,
-    hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: sentence },
-  }) + '\n');
-  return 0;
+  return {
+    json: {
+      systemMessage: sentence,
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: sentence },
+    },
+    stderr: '',
+    exitCode: 0,
+  };
 }
 
 async function main() {
@@ -528,16 +533,35 @@ async function main() {
   } catch {
     return 0;
   }
-  if (!payload || typeof payload !== 'object') return 0;
+  const result = await lintEdit(payload);
+  if (result === null) return 0;
+  if (result.json !== null) process.stdout.write(JSON.stringify(result.json) + '\n');
+  if (result.stderr !== '') process.stderr.write(result.stderr);
+  return result.exitCode;
+}
+
+/** What this hook says for a `PostToolUse` payload of a `Write` or `Edit`
+ * call, as `{ json, stderr, exitCode }`, or null for any other event or tool
+ * or when it says nothing. Writes nothing to standard output or standard
+ * error and never exits. */
+export async function lintHalf(payload) {
+  const sensed = payload?.hook_event_name === 'PostToolUse' && (payload.tool_name === 'Write' || payload.tool_name === 'Edit');
+  return sensed ? lintEdit(payload) : null;
+}
+
+/** Lints the file `payload` names and returns what this hook says about it,
+ * as `{ json, stderr, exitCode }`, or null when there is nothing to say. */
+async function lintEdit(payload) {
+  if (!payload || typeof payload !== 'object') return null;
 
   const filePath = payload?.tool_input?.file_path;
-  if (typeof filePath !== 'string' || filePath === '') return 0;
-  if (hasDotDotSegment(filePath)) return 0;
+  if (typeof filePath !== 'string' || filePath === '') return null;
+  if (hasDotDotSegment(filePath)) return null;
 
   const ext = extensionOf(filePath);
   const isJs = JS_EXTENSIONS.has(ext);
   const isPy = PY_EXTENSIONS.has(ext);
-  if (!isJs && !isPy) return 0;
+  if (!isJs && !isPy) return null;
   if (assetProblem !== null) return assetNotice(payload.session_id);
 
   const root = projectRoot();
@@ -545,7 +569,7 @@ async function main() {
   // Containment BEFORE anything else touches the filesystem on this path's
   // behalf: an out-of-root file must never cause an out-of-tree
   // package.json to be found, read, or run — see isContained's comment.
-  if (!isContained(root, absPath)) return 0;
+  if (!isContained(root, absPath)) return null;
   const startDir = dirname(absPath);
 
   // A pyproject.toml owner covers `.py` for the purpose of DECIDING whether
@@ -571,7 +595,7 @@ async function main() {
   const owner = isJs
     ? findLintOwner(startDir, root, 'package.json', readLintScript)
     : findLintOwner(startDir, root, 'pyproject.toml', readPyOwnerScript);
-  if (!owner) return 0;
+  if (!owner) return null;
   const { ownerDir, lintScript } = owner;
 
   // Resolved relative to ownerDir — which is runBounded's own `cwd` below —
@@ -593,7 +617,7 @@ async function main() {
   // logged, or included in any error message below — only its own
   // captured output ever reaches stderr, masked (see maskText), filtered
   // for attribution, then stripped of command fragments (see
-  // dropCommandFragments) before writeReport is ever called.
+  // dropCommandFragments) before report is ever called.
   const fullCommand = SAFE_RELATIVE_PATH.test(relToOwner)
     ? appendTarget(lintScript, quoteArg(relToOwner))
     : lintScript;
@@ -616,9 +640,9 @@ async function main() {
       env: { ...process.env, PATH },
     });
   } catch {
-    return 0;
+    return null;
   }
-  if (!result) return 0;
+  if (!result) return null;
 
   // A timeout (our own kill), a spawn failure or any other signal is never
   // reported as a lint failure: whatever the run printed is incomplete.
@@ -636,14 +660,14 @@ async function main() {
   // it is more urgent: whatever lint result exists may describe content
   // that no longer exists.
   if (hasChanged(before, statSnapshot(absPath))) {
-    return writeReport([
+    return report([
       `lint-touched: ${shownPath} was modified by the lint script while it was being checked — Claude's edit may no longer match what is on disk.`,
     ]);
   }
 
   if (result.status === 0) { // clean — on overflow too: the linter's own exit code decides, with what was captured reported below
     forgetFile(root, sessionId, filePath);
-    return 0;
+    return null;
   }
 
   const base = basename(filePath);
@@ -669,12 +693,23 @@ async function main() {
   if (reported.length === 0) return notConfirmedClean(root, sessionId, shownPath, `exited with code ${result.status} without reporting on ${shownPath}`);
 
   const decision = dedupeDecision(root, sessionId, filePath, signatureOf(reported));
-  if (decision.action === 'terse') return writeReport([decision.message]);
+  if (decision.action === 'terse') return report([decision.message]);
 
-  return writeReport(reported);
+  return report(reported);
 }
 
-(async () => {
+/** True when this file is the process's entry point rather than an import.
+ * Both sides are resolved to their real spelling, since the command line may
+ * name the script through a link or a win32 short name. */
+function isEntryPoint() {
+  try {
+    return realpathSync.native(process.argv[1]) === realpathSync.native(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   let code = 0;
   try {
     code = await main();
@@ -682,4 +717,4 @@ async function main() {
     code = 0; // never throw — a hook that breaks a session is worse than none
   }
   process.exit(code);
-})();
+}

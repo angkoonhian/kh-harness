@@ -18,6 +18,7 @@ import {
   parseArgv, wantsHelp, APPLY_USAGE, DETECT_USAGE, UNINSTALL_USAGE, EXECUTION_DISCLOSURE, EXIT_CODES,
 } from './cli.mjs';
 import { sandboxDataDir } from './lifecycle-fixtures.mjs';
+import { ENTRY_SCRIPTS } from './hook-evidence.mjs';
 import { GENERATORS, GENERATOR_SCRIPT_PATHS } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
@@ -154,6 +155,14 @@ test('F5: the README discloses that installing the hooks executes this repositor
   assert.ok(readme.includes('.claude/kh-harness.manifest.json'), 'the manifest is part of the contract a user must know');
 });
 
+test('the guide names the three entry scripts, the core and the merge check wherever it counts the kit\'s scripts or lists its checks', () => {
+  const how = readFileSync(resolve(import.meta.dirname, '..', '..', 'docs/guide/how-it-works.md'), 'utf8');
+  for (const name of ['dispatch-pre-tool.mjs', 'dispatch-post-tool.mjs', 'dispatch-tool-failure.mjs', 'harness-dispatch.mjs', 'P0.hookmerge']) assert.ok(how.includes(name), name);
+  assert.match(how, /7 hook scripts, 3 entry scripts and 6 modules/);
+  assert.doesNotMatch(how, /states no order between them/);
+  assert.match(readFileSync(README, 'utf8'), /dispatch-pre-tool\.mjs/);
+});
+
 test('the execution disclosure names the UserPromptSubmit re-injection hook and says it executes nothing', () => {
   assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit/);
   // The disclosure wraps at ~75 columns, so "executes" and "nothing" may sit
@@ -175,22 +184,29 @@ const disclosed = EXECUTION_DISCLOSURE.replace(/\s+/g, ' ');
 
 test('the execution disclosure names every event a hook generator registers on, and how many hook scripts there are', () => {
   const stack = { packages: [{ name: 'app', dir: '.', manifestPath: 'package.json', scripts: ['lint', 'typecheck'] }], languages: ['typescript'], isWorkspace: false, packageManager: null, ci: [] };
-  const harness = { claudeDir: {}, rulesRegistry: { count: 1, injectable: 1 } };
+  const fresh = { claudeDir: {}, rulesRegistry: { count: 1, injectable: 1 } };
+  // An install whose logging hook is on every event gets the other hooks of
+  // the tool-call events by themselves, so between them the two harnesses
+  // reach every script a generator can register.
+  const loggedEverywhere = { ...fresh, claudeDir: { hookRegistrations: Object.fromEntries(LOGGED_EVENTS.map(e => [e, [{ script: '.claude/scripts/session-log.mjs', matcher: null }]])) } };
   const events = new Set();
   const scripts = new Set();
-  for (const [id, generate] of Object.entries(GENERATORS)) {
-    if (id === 'P0.kitskew') continue;
-    for (const p of generate({ kitVersion: '0.2.0', stack, harness, files: [], checks: [], check: { evidence: [] }, manifest: null })) {
-      if (p.kind !== 'settings-hook') continue;
-      events.add(p.event);
-      scripts.add(p.entry.args[0]);
+  for (const harness of [fresh, loggedEverywhere]) {
+    for (const [id, generate] of Object.entries(GENERATORS)) {
+      if (id === 'P0.kitskew') continue;
+      for (const p of generate({ kitVersion: '0.2.0', stack, harness, files: [], checks: [], check: { evidence: [] }, manifest: null })) {
+        if (p.kind !== 'settings-hook') continue;
+        events.add(p.event);
+        scripts.add(p.entry.args[0]);
+      }
     }
   }
   assert.ok(events.size >= LOGGED_EVENTS.length, 'fixture sanity: the generators registered their hooks');
   for (const event of events) assert.ok(disclosed.includes(event), `the disclosure does not name ${event}`);
   assert.deepEqual([...scripts].map(s => s.split('/').pop()).sort(), GENERATOR_SCRIPT_PATHS.map(s => s.split('/').pop()).sort());
-  assert.equal(GENERATOR_SCRIPT_PATHS.length, 7, 'the disclosure says seven; a hook script added changes that sentence and gets its own entry');
+  assert.equal(GENERATOR_SCRIPT_PATHS.length - Object.keys(ENTRY_SCRIPTS).length, 7, 'the disclosure says seven; a hook script added changes that sentence and gets its own entry');
   assert.match(disclosed, /registers up to seven hook scripts/);
+  assert.match(disclosed, /three entry scripts/);
   assert.doesNotMatch(disclosed, /the two process hooks/);
 });
 
@@ -209,9 +225,48 @@ test('the execution disclosure says what the loop-warning hook reads, keeps and 
 });
 
 test('the execution disclosure says which hooks run this repository\'s scripts and that the others run none', () => {
-  assert.match(disclosed, /Two of them run THIS REPOSITORY'S OWN SCRIPTS AUTOMATICALLY/);
-  assert.match(disclosed, /The other five run nothing of this repository's/);
+  assert.match(disclosed, /Three of them can run THIS REPOSITORY'S OWN CODE AUTOMATICALLY/);
+  assert.match(disclosed, /PreToolUse \(per call\) each module \.claude\/kh-harness\/extensions\.json lists, before every tool call/);
+  assert.match(disclosed, /The other four run nothing of this repository's\. Each reads what is said below and executes no command\./);
+  assert.doesNotMatch(disclosed, /Two of them run|The other five/);
   assert.match(disclosed, /SessionStart \(per session\) reads HANDOFF\.md \(or docs\/HANDOFF\.md\)/);
+});
+
+test('the execution disclosure says the PreToolUse hook loads the modules an extensions file lists', () => {
+  const entry = /PreToolUse \(per tool call\) (.*?) (?=Session log \(per event\))/.exec(disclosed)?.[1] ?? '';
+  assert.match(entry, /\.claude\/kh-harness\/extensions\.json/);
+  assert.match(entry, /loads and runs each module that file lists/);
+  assert.match(entry, /one self-contained file under \.claude\//);
+  assert.match(entry, /the sha256 the file records for it, a check that the bytes are the ones named and not an approval/);
+  assert.match(entry, /such a module can BLOCK a call/i);
+  assert.match(entry, /a `git pull` that adds or changes them changes what runs before every tool call/);
+  assert.match(entry, /kh-harness never writes that file/);
+  assert.doesNotMatch(entry, /It executes nothing, and no gate exists/);
+  assert.doesNotMatch(disclosed, /another plugin/);
+});
+
+test('the execution disclosure warns that a pull which adds or changes the extensions file or a module changes what runs by itself', () => {
+  assert.match(disclosed, /so does a `git pull` that adds or changes \.claude\/kh-harness\/extensions\.json or a module it lists/);
+  assert.match(disclosed, /the extensions file and its modules are files in this repository/);
+  assert.match(disclosed, /proves only that the module holds the bytes the file names — it is not an approval/);
+  assert.match(disclosed, /None of the three is installed unless its check reported `absent` and you ran `apply --yes`/);
+});
+
+test('the README and the guide say the same of the extensions as the disclosure', () => {
+  const readme = readFileSync(README, 'utf8').replace(/\s+/g, ' ');
+  const how = readFileSync(resolve(import.meta.dirname, '..', '..', 'docs/guide/how-it-works.md'), 'utf8').replace(/\s+/g, ' ');
+  for (const [name, text] of [['README.md', readme], ['how-it-works.md', how]]) {
+    assert.doesNotMatch(text, /another plugin lists/, name);
+    assert.match(text, /a `git pull` that adds or changes (them|that file or a module it lists) changes what runs before every tool call/, name);
+    assert.match(text, /not an approval/, name);
+  }
+  assert.match(readme, /Three of them can run THIS REPOSITORY'S OWN CODE AUTOMATICALLY/, 'the README\'s excerpt of the disclosure');
+  assert.doesNotMatch(readme, /Two of them run THIS REPOSITORY'S OWN SCRIPTS/);
+  // The guide's table lists seven hook scripts, two of which run the
+  // repository's code; the third that does is the entry script, outside it.
+  assert.match(how, /the `PreToolUse` entry script `dispatch-pre-tool\.mjs`, which is not in the table/);
+  assert.match(how, /The other five hook scripts in the table run nothing of the repository's/);
+  assert.doesNotMatch(how, /The other four/);
 });
 
 test('the execution disclosure names the terminal check for what it checks', () => {

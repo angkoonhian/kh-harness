@@ -68,6 +68,21 @@ Exit codes: 0; 2 for a path that does not exist, a second path, or a
 `detect.json` that could not be written. `detect` refuses nothing, so it
 never exits 3.
 
+Two checks concern other plugins. `P5.extensions` lists each extension in
+`.claude/kh-harness/extensions.json` with its version, whether its module
+matches the sha256 recorded for it, and its `onFailure`, and says whether
+the `PreToolUse` entry script that runs them is registered, as `apply`
+writes it on every call with hooks not turned off, and is this kit's; it
+never loads a module and never proposes anything, and is `n/a` without the
+file. `P5.contract` reads `.claude/kh-harness/contract.json`: `absent` with
+a proposal on an install without it, and without one, with a question,
+where `.claude` is a link; `declared` when it is
+the file this kit writes, the manifest records it, and every file it
+speaks for is this kit's; `failing` otherwise, for example when it is
+reached through a link or a file it speaks for has changed since, with a
+line naming the cause. See
+[the contract](../CONTRACT.md).
+
 In `detect.json`, `harness.claudeDir.hookRegistrations` lists the hooks
 registered in `.claude/settings.json` (the earlier `hookEvents` field is
 gone), and `harness.remotesError` holds the reason when git could not list
@@ -92,6 +107,8 @@ Phase 0 — Reconnaissance
         no credential patterns matched in any file this sweep could read (binary, build-output and over-512 KB files are skipped by design; a file that could not be READ is reported, not skipped silently)
   [ ] P0.recon           absent
       → run the recon prompt to write docs/harness/recon.md (the skill drafts this; apply does not write it)
+  [-] P0.hookmerge       n/a
+        no tool-call event holds two kh-harness hooks
   [-] P0.kitskew         n/a
         no .claude/kh-harness.manifest.json: no file is recorded as installed
 …
@@ -109,15 +126,20 @@ Phase 5 — Learning
   [ ] P5.failures        absent
       → scaffold docs/harness/FAILURES.md — generated EMPTY; each failure kind is named by hand, with the recurrence signatures it covers
   [ ] P5.sessionlog      absent
-      → install scripts/session-log.mjs with the three modules it imports (harness-log.mjs, harness-seal.mjs and harness-redact.mjs), and register it on the 16 logged events — it records nothing until the log is enabled for this repository on this machine
+      → install scripts/session-log.mjs with the three modules it imports (harness-log.mjs, harness-seal.mjs and harness-redact.mjs), and register it on the 16 logged events, through the entry script on an event that has one — it records nothing until the log is enabled for this repository on this machine
   [ ] P5.toolgate        absent
       → install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine's kh-harness data directory, and deny running the learn subcommands that approve or weaken a gate and `log purge --yes`, which removes them
   [-] P5.integrity       n/a
         no .claude/kh-harness.manifest.json: no installed file is recorded, so none was checked
         no kh-harness hook is registered in .claude/settings.json
         .claude/kh-harness/gates.json: no committed gate file
+  [-] P5.extensions      n/a
+        no .claude/kh-harness/extensions.json: no plugin has registered an extension
+  [ ] P5.contract        absent
+        no .claude/kh-harness/contract.json
+      → write .claude/kh-harness/contract.json, which tells another plugin which kh-harness contract this install honours
 
-12 proposals: 9 apply can write, 2 for the skill to draft, 1 for a human. Nothing has been written except docs/harness/detect.json.
+13 proposals: 10 apply can write, 2 for the skill to draft, 1 for a human. Nothing has been written except docs/harness/detect.json.
 …
 ```
 
@@ -166,6 +188,33 @@ What that looks like, and what ends it, is under
 The stamp on a hook script says "Do not edit"; scaffolds such as
 `RULES.md` keep "Edit freely".
 
+**An older install is moved to the entry scripts.** Where an install made
+before the entry scripts has the two kit hooks of `PreToolUse`,
+`PostToolUse` or `PostToolUseFailure` registered separately, each as the
+manifest recorded it, `detect`'s `P0.hookmerge` is `absent` and `apply`
+proposes replacing them with the event's entry script. The dry run shows
+each as
+
+    --- .claude/settings.json (hook: PreToolUse, replacing 2 registrations)  [P0.hookmerge]
+
+followed by the registrations it takes out, as removed lines, and the entry
+script, as an added one. `--yes` reports it as
+
+    patched    .claude/settings.json (PreToolUse; 2 separate registrations removed)
+
+The move leaves alone an event whose kit registrations you edited or
+removed; `P0.hookmerge` names it with the reason, and the rest of the
+install is moved. A hook you removed is still offered again by its own
+check, as before, and its event is moved by the `apply --yes` after the
+one that registers it. When, as `--yes` writes, the settings file no longer holds a
+recorded registration as it was recorded, the replacement is not made and
+`apply` prints
+`skipped    .claude/settings.json (registration-changed)`; a replacement
+that would take out a registration the manifest does not record, or one
+that runs anything but kit scripts, prints `(not-recorded)` instead.
+Nothing of that event is changed either way. What the entry scripts do is
+under [the entry scripts](how-it-works.md#the-entry-scripts).
+
 | Flag | What it does |
 |---|---|
 | `--yes` | Actually write. |
@@ -190,7 +239,7 @@ which, and for a manifest that cannot be read.
 ```
 $ node scripts/apply.mjs <repo>
 …
-kh-harness: 35 actions to close 9 capability gaps for <repo>
+kh-harness: 36 actions to close 10 capability gaps for <repo>
 
 --- docs/harness/RULES.md  [P3.rules]
     no rules registry found
@@ -220,6 +269,12 @@ kh-harness: 35 actions to close 9 capability gaps for <repo>
 WHAT THE HOOKS EXECUTE — read this before running `apply`
   `apply` registers up to seven hook scripts, each on the events named below.
 …
+  On PreToolUse and PostToolUseFailure, and on PostToolUse where the lint
+  hook is installed, the two hooks of the event are started by one of three
+  entry scripts (dispatch-pre-tool.mjs, dispatch-post-tool.mjs,
+  dispatch-tool-failure.mjs), so the event starts one process, not two.
+  Each hook does what is said for it here, in the same order every time.
+…
 Dry run — nothing written. Re-run with --yes to apply.
 
 $ node scripts/apply.mjs <repo> --yes
@@ -231,6 +286,11 @@ wrote      .claude/scripts/session-log.mjs
 patched    .claude/settings.json (permissions.deny)
 …
 ```
+
+The contract file is written after every other file, and only when each
+file it speaks for holds this kit's bytes: its line,
+`wrote      .claude/kh-harness/contract.json`, comes after the other
+`wrote` lines.
 
 `--yes` prints the proposals again, with the settings diffs, before the
 `wrote` and `patched` lines.
@@ -249,8 +309,14 @@ kit generator could have written them; as with `apply`, the whole
 `.claude/settings.json` is re-serialised, keeping its content, indentation
 and trailing newline and normalising key order and inline spacing, and it
 is written once, by a temporary file and a rename. The settings are
-reverted before any file is removed. Without `--yes` it is a dry run. The
-repository path is required: there is no default.
+reverted before any file is removed, and of the files,
+`.claude/kh-harness/contract.json` is removed first, so a stopped run never
+leaves the contract number beside missing scripts. Without `--yes` it is a
+dry run. The repository path is required: there is no default.
+`.claude/kh-harness/extensions.json` and the modules it lists were written
+by another plugin and are not in the manifest, so `uninstall` leaves them;
+with the entry script removed, nothing runs them. It says so in one line,
+dry run or not, with the number of extensions the file lists.
 
 - **A hook entry left registered**: Claude Code runs every registered hook
   entry on its event, and a script that is gone fails there. So a kit hook

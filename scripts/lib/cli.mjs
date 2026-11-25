@@ -87,8 +87,8 @@ function indentedList(items) {
  */
 export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before running \`apply\`
   \`apply\` registers up to seven hook scripts, each on the events named below.
-  Two of them run THIS REPOSITORY'S OWN SCRIPTS AUTOMATICALLY, by Claude Code,
-  without being asked each time:
+  Three of them can run THIS REPOSITORY'S OWN CODE AUTOMATICALLY, by Claude
+  Code, without being asked each time:
 
     PostToolUse (per edit)  the owning package's \`lint\` script, on the one file
                             Claude just edited, bounded at 30s.
@@ -97,14 +97,22 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                             bounded at 120s. Cost scales with the size of the
                             repository, not the size of the edit — a large
                             codebase may see 10-30s added per turn.
+    PreToolUse (per call)   each module .claude/kh-harness/extensions.json
+                            lists, before every tool call, once that file is
+                            in the repository; a module's run is not bounded
+                            in time.
 
   A repository's own lint/test script is arbitrary code in every project; what
   changes here is that you stop typing it. A \`git pull\` that edits
-  \`scripts.lint\` therefore changes what runs by itself. \`uninstall\` reverses
-  the hooks it installed. Neither is installed unless its check reported
-  \`absent\` and you ran \`apply --yes\`.
+  \`scripts.lint\` therefore changes what runs by itself, and so does a \`git
+  pull\` that adds or changes .claude/kh-harness/extensions.json or a module
+  it lists: the extensions file and its modules are files in this
+  repository, and the sha256 the file records for a module proves only that
+  the module holds the bytes the file names — it is not an approval.
+  \`uninstall\` reverses the hooks it installed. None of the three is
+  installed unless its check reported \`absent\` and you ran \`apply --yes\`.
 
-  The other five run nothing of this repository's. Each reads what is said
+  The other four run nothing of this repository's. Each reads what is said
   below and executes no command.
 
   Each hook is registered in Claude Code's exec form — \`node\` plus the
@@ -112,6 +120,12 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
   and from any working directory. A registration you already have in shell
   form (\`node .claude/scripts/…\`) is recognised as the same hook and left
   alone.
+
+  On PreToolUse and PostToolUseFailure, and on PostToolUse where the lint
+  hook is installed, the two hooks of the event are started by one of three
+  entry scripts (dispatch-pre-tool.mjs, dispatch-post-tool.mjs,
+  dispatch-tool-failure.mjs), so the event starts one process, not two.
+  Each hook does what is said for it here, in the same order every time.
 
   SessionStart (per session)     reads HANDOFF.md (or docs/HANDOFF.md) and
                                  prints the top of it into the session. It
@@ -143,9 +157,21 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  call when a gate with action \`block\`
                                  matches; a \`warn\` gate's message reaches
                                  the model alongside the tool's result, after
-                                 the call has run. It executes nothing, and no
-                                 gate exists until one is learned and
-                                 promoted, so until then it does nothing.
+                                 the call has run; no gate exists until one
+                                 is learned and promoted. It also reads
+                                 .claude/kh-harness/extensions.json whenever
+                                 the repository holds one, and loads and
+                                 runs each module that file lists: one
+                                 self-contained file under .claude/, run
+                                 only when its bytes match the sha256 the
+                                 file records for it, a check that the bytes
+                                 are the ones named and not an approval.
+                                 Such a module can BLOCK a call. The file
+                                 and its modules are repository files, so a
+                                 \`git pull\` that adds or changes them
+                                 changes what runs before every tool call.
+                                 kh-harness never writes that file, and
+                                 without it the hook executes nothing.
                                  Installed with it: deny rules for edits to
                                  the WHOLE .claude/scripts/ directory,
                                  including any script of yours kept there,

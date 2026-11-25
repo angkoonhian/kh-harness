@@ -7,9 +7,11 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DETECT, APPLY, UNINSTALL, git, kitAt, run, runEveryRegisteredHook, sandboxDataDir, settings } from './lifecycle-fixtures.mjs';
-import { LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
+import { DETECT, APPLY, UNINSTALL, git, kitAt, loggingScript, manifestOf, run, runEveryRegisteredHook, sandboxDataDir, settings } from './lifecycle-fixtures.mjs';
+import { CONTRACT_FILES, HARNESS_EXTENSIONS_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, kitContractText, LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
+import { CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
+import { EXECUTION_DISCLOSURE } from './cli.mjs';
 
 sandboxDataDir();
 
@@ -97,7 +99,7 @@ test('UPGRADE A: a 0.1.0 install with one edited script gets no 0.2.0 hook scrip
   run(APPLY, d, '--yes');
   for (const name of scriptsOnDisk(d)) assert.equal(stampOf(d, `.claude/scripts/${name}`), CURRENT, name);
   for (const event of LOGGED_EVENTS) {
-    assert.ok((settings(d).hooks[event] ?? []).some(m => m.hooks.some(h => h.args?.[0]?.endsWith(SESSION_LOG_PATH))), `the logging hook is on ${event}`);
+    assert.ok((settings(d).hooks[event] ?? []).some(m => m.hooks.some(h => h.args?.[0]?.endsWith(`/${loggingScript(d, event)}`))), `the logging hook is on ${event}`);
   }
   assertNoHookCrashes(d);
   for (const id of ['P5.sessionlog', 'P5.toolgate', 'P2.loopwatch', 'P2.sensor', 'P0.kitskew']) assert.equal(checkOf(d, id).state, 'declared', id);
@@ -122,4 +124,111 @@ test('UPGRADE B: uninstall then apply puts no 0.2.0 module beside the edited 0.1
   assert.ok(scriptsOnDisk(d).includes('session-log.mjs'));
   assertNoHookCrashes(d);
   for (const id of ['P2.sensor', 'P5.sessionlog', 'P5.toolgate', 'P2.loopwatch', 'P4.sessionbrief']) assert.equal(checkOf(d, id).state, 'declared', id);
+});
+
+// Task 1's last commit of the contract-and-extension-point plan: the last
+// kit whose PreToolUse entry script does not load the extension loader.
+const KIT_BEFORE_LOADER = '71e45f3';
+const beforeLoader = kitAt(KIT_BEFORE_LOADER);
+const skipBeforeLoader = beforeLoader === null ? `commit ${KIT_BEFORE_LOADER} is not in this checkout (a shallow clone); fetch the full history to run this` : false;
+
+test('REVIEW FOCUS 3: an install made before the extension loader existed gets it with the entry script that loads it', { skip: skipBeforeLoader }, () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-upgrade-loader-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node -e 0' } }));
+  writeFileSync(join(d, 'index.js'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  commit(d, 'init');
+  run(beforeLoader.apply, d, '--yes');
+  assert.ok(existsSync(join(d, '.claude/scripts/dispatch-pre-tool.mjs')), 'fixture sanity: the older kit installed the entry script');
+  assert.equal(existsSync(join(d, HARNESS_EXTENSIONS_PATH)), false, 'fixture sanity: the older kit did not install the loader');
+  commit(d, 'install the older kit');
+  run(APPLY, d, '--yes');
+  assert.equal(stampOf(d, '.claude/scripts/dispatch-pre-tool.mjs'), CURRENT, 'the entry script was updated by the same apply');
+  assert.match(readFileSync(join(d, '.claude/scripts/dispatch-pre-tool.mjs'), 'utf8'), /'\.\/harness-extensions\.mjs'/);
+  assert.ok(existsSync(join(d, HARNESS_EXTENSIONS_PATH)));
+  assert.ok(manifestOf(d).files.some(f => f.path === HARNESS_EXTENSIONS_PATH));
+  for (const r of runEveryRegisteredHook(d)) assert.equal(r.status, 0, `${r.script}: ${r.stderr}`);
+  commit(d, 'update kh-harness');
+  assert.match(run(APPLY, d), /no actions for/);
+});
+
+test('the dry run of an update that makes the registered PreToolUse hook run repository code says what the hooks execute, before its first proposal', { skip: skipBeforeLoader }, () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-upgrade-disclose-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node -e 0' } }));
+  writeFileSync(join(d, 'index.js'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  commit(d, 'init');
+  run(beforeLoader.apply, d, '--yes');
+  commit(d, 'install the older kit');
+  const dry = run(APPLY, d);
+  assert.match(dry, /^--- \.claude\/scripts\/dispatch-pre-tool\.mjs {2}\[P0\.kitskew\]$/m, 'fixture sanity: a file update of the entry script');
+  assert.doesNotMatch(dry, /^--- \.claude\/settings\.json/m, 'fixture sanity: no hook is registered by this run');
+  const at = dry.indexOf(EXECUTION_DISCLOSURE);
+  assert.ok(at !== -1, 'the disclosure is printed');
+  assert.ok(at < dry.indexOf('\n--- '), 'before the first proposal');
+});
+
+// The last commit before the registry took `enforced-by: officer`: its
+// harness-redact.mjs has other bytes, so the hash its contract file records
+// for that file is not this kit's.
+const KIT_BEFORE_OFFICER = '7a29268';
+const beforeOfficer = kitAt(KIT_BEFORE_OFFICER);
+const skipBeforeOfficer = beforeOfficer === null ? `commit ${KIT_BEFORE_OFFICER} is not in this checkout (a shallow clone); fetch the full history to run this` : false;
+
+test('an install whose harness-redact.mjs predates officer is offered, by one apply, the script and then the contract file, and P5.contract is declared after', { skip: skipBeforeOfficer }, () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-upgrade-officer-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node -e 0' } }));
+  writeFileSync(join(d, 'index.js'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  commit(d, 'init');
+  run(beforeOfficer.apply, d, '--yes');
+  const recorded = JSON.parse(readFileSync(join(d, CONTRACT_PATH), 'utf8')).files[REDACT_PATH];
+  assert.notEqual(recorded, JSON.parse(kitContractText(CURRENT)).files[REDACT_PATH], 'fixture sanity: the older contract file records another hash for harness-redact.mjs');
+  assert.doesNotMatch(readFileSync(join(d, REDACT_PATH), 'utf8'), /'officer'/, 'fixture sanity: the older harness-redact.mjs has no officer');
+  commit(d, 'install the older kit');
+  const wrote = run(APPLY, d, '--yes').split('\n').filter(l => l.startsWith('wrote ')).map(l => l.slice('wrote '.length).trim());
+  assert.ok(wrote.includes(REDACT_PATH), wrote.join(', '));
+  assert.equal(wrote.at(-1), CONTRACT_PATH, `the contract file is written last: ${wrote.join(', ')}`);
+  assert.match(readFileSync(join(d, REDACT_PATH), 'utf8'), /'officer'/);
+  assert.equal(readFileSync(join(d, CONTRACT_PATH), 'utf8'), kitContractText(CURRENT));
+  assert.equal(checkOf(d, 'P5.contract').state, 'declared');
+  commit(d, 'update kh-harness');
+  assert.match(run(APPLY, d), /no actions for/);
+});
+
+// The last commit before another plugin could record an event in a
+// session's log: its harness-log.mjs has no recordExternalEvent and its
+// harness-seal.mjs does not classify the event, so the hashes its contract
+// file records for both are not this kit's.
+const KIT_BEFORE_EXTERNAL = 'baeb946';
+const beforeExternal = kitAt(KIT_BEFORE_EXTERNAL);
+const skipBeforeExternal = beforeExternal === null ? `commit ${KIT_BEFORE_EXTERNAL} is not in this checkout (a shallow clone); fetch the full history to run this` : false;
+
+test('an install from before recordExternalEvent is offered, by one apply, the log and sealing modules and then the contract file, and P5.contract is declared after', { skip: skipBeforeExternal }, () => {
+  assert.ok(CONTRACT_FILES.includes(HARNESS_LOG_PATH) && CONTRACT_FILES.includes(HARNESS_SEAL_PATH), 'contract 1 speaks for both files');
+  const d = mkdtempSync(join(tmpdir(), 'hk-upgrade-external-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node -e 0' } }));
+  writeFileSync(join(d, 'index.js'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  commit(d, 'init');
+  run(beforeExternal.apply, d, '--yes');
+  const recorded = JSON.parse(readFileSync(join(d, CONTRACT_PATH), 'utf8')).files;
+  const current = JSON.parse(kitContractText(CURRENT)).files;
+  for (const path of [HARNESS_LOG_PATH, HARNESS_SEAL_PATH]) assert.notEqual(recorded[path], current[path], `fixture sanity: the older contract file records another hash for ${path}`);
+  assert.doesNotMatch(readFileSync(join(d, HARNESS_LOG_PATH), 'utf8'), /recordExternalEvent/, 'fixture sanity: the older harness-log.mjs has no recordExternalEvent');
+  commit(d, 'install the older kit');
+  const wrote = run(APPLY, d, '--yes').split('\n').filter(l => l.startsWith('wrote ')).map(l => l.slice('wrote '.length).trim());
+  for (const path of [HARNESS_LOG_PATH, HARNESS_SEAL_PATH]) assert.ok(wrote.includes(path), `${path}: ${wrote.join(', ')}`);
+  assert.equal(wrote.at(-1), CONTRACT_PATH, `the contract file is written last: ${wrote.join(', ')}`);
+  assert.match(readFileSync(join(d, HARNESS_LOG_PATH), 'utf8'), /export function recordExternalEvent/);
+  assert.match(readFileSync(join(d, HARNESS_SEAL_PATH), 'utf8'), /plugin_event/);
+  assert.equal(readFileSync(join(d, CONTRACT_PATH), 'utf8'), kitContractText(CURRENT));
+  assert.equal(checkOf(d, 'P5.contract').state, 'declared');
+  for (const r of runEveryRegisteredHook(d)) assert.equal(r.status, 0, `${r.script}: ${r.stderr}`);
+  commit(d, 'update kh-harness');
+  assert.match(run(APPLY, d), /no actions for/);
 });

@@ -26,6 +26,72 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The outcome is recorded in the checkout's git directory, and the next
   session is told it once. Git is never allowed to prompt.
   `KH_HARNESS_AUTO_UPDATE=off` turns it off.
+- Contract 1: what another plugin may rely on, in `docs/CONTRACT.md`, each
+  promise pinned by a fixture under `scripts/lib/fixtures/contract-1/` and
+  a `contract 1: …` test.
+  - The contract file `.claude/kh-harness/contract.json`, written by `apply`
+    last and only beside this kit's files, removed first by `uninstall`. It
+    holds the contract number and the LF SHA-256 of each installed file it
+    speaks for: the `PreToolUse` entry script and every file it loads. The
+    check `P5.contract` reports it.
+  - The `PreToolUse` extension point. The entry script runs each module
+    listed in `.claude/kh-harness/extensions.json`, a repository file
+    another plugin's installer writes, before the gate hook, loaded from the bytes whose sha256 the file records, and
+    applies the entry's `onFailure` when it cannot. A malformed file blocks
+    every call, and so, beside one, do a core or a loader that is missing
+    or from another kit version (the entry script, the core and the loader
+    each carry a level, compared by value), and a run that ends before the
+    extensions were applied: at either time limit, which
+    `HK_RUN_DEADLINE_MS` and `HK_STDIN_TIMEOUT_MS` can only shorten into a
+    block, or on a hook input not read in full.
+    kh-harness never writes the file. The check `P5.extensions` lists each
+    extension, whether its module matches, and its `onFailure`, and loads
+    none. The new installed module is `harness-extensions.mjs`.
+  - `enforced-by: officer` in `docs/harness/RULES.md`, whose `pointer` is
+    the repository path of a check another tool runs, reported by `detect`
+    when that path does not exist, is not in the repository, or leaves it
+    through a link; and an `approval` key (`owner` or `agent`), accepted and
+    ignored.
+  - `recordExternalEvent` in the installed `harness-log.mjs`: another
+    plugin appends one bounded, masked `plugin_event` to a session's log,
+    whose `data` is content and expires with it.
+
+### Changed
+
+- Each tool-call event starts one kit process, not two. On `PreToolUse`,
+  `PostToolUse` and `PostToolUseFailure`, `apply` registers one entry
+  script (`dispatch-pre-tool.mjs`, `dispatch-post-tool.mjs`,
+  `dispatch-tool-failure.mjs`), with no matcher, that runs the event's two
+  hooks one after the other through the shared core `harness-dispatch.mjs`
+  and writes their combined output: the gate hook and then the session log
+  before a call, the session log and then the lint sensor after one, the
+  session log and then the loop warning after a failure. `PostToolUse`
+  gets its entry script only where the lint hook is installed.
+- An install made before the entry scripts is moved to them by `apply --yes`.
+  The new check `P0.hookmerge` reports each tool-call event, and on one
+  whose two kit hooks are registered separately, exactly as the manifest
+  recorded them, `apply` proposes a replacement, shown in the dry run as
+  `replacing 2 registrations`, that takes out only those recorded
+  registrations and registers the entry script in their place, in one
+  settings write. The move leaves alone an event whose kit registrations
+  the owner edited or removed, and `P0.hookmerge` says why; a hook the
+  owner removed is still offered again by its own check, as before, and
+  its event is moved by the `apply --yes` after the one that registers it.
+- Existing installs are offered the contract's files by `apply`. The
+  installed `dispatch-pre-tool.mjs`, `harness-dispatch.mjs`,
+  `harness-log.mjs`, `harness-seal.mjs` and `harness-redact.mjs` changed,
+  so `P0.kitskew` proposes an update of each that is installed, and of an unmodified
+  `docs/harness/RULES.md` scaffold, whose template now names `officer` and
+  `approval`. `P5.contract` proposes `.claude/kh-harness/contract.json`.
+- `P0.kitskew` now also adds an installed script that an updated script
+  newly loads and the install lacks, here `harness-extensions.mjs`, loaded by
+  the updated `dispatch-pre-tool.mjs`.
+- The shared core no longer ends a run at an exception or rejection a hook
+  leaves behind; the hooks after it still run. A run that does not finish
+  is written with what was gathered when nothing is left to run, or at 120
+  seconds.
+- The kit version is not changed by these additions; that is a release
+  decision.
 
 ## 0.2.0 - 2026-11-19
 

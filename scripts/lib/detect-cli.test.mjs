@@ -673,10 +673,10 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
     assert.ok(logCheck.evidence.some(e => e.includes(cmd)), `P5.sessionlog evidence must name ${cmd}; got ${JSON.stringify(logCheck.evidence)}`);
   }
 
-  // Eight proposals now (seven hooks + protected paths), where there used to
-  // be none — the defect, inverted.
+  // Nine proposals now (seven hooks, protected paths and the contract
+  // file), where there used to be none — the defect, inverted.
   assert.doesNotMatch(cli(d), /no proposals/i);
-  assert.match(cli(d), /8 proposals/i);
+  assert.match(cli(d), /9 proposals/i);
 });
 
 // D1: a real repository keeps 456 lines under docs/wiki/ and names it in
@@ -990,4 +990,43 @@ test('WORKTREE: detect prints one quiet line for a linked worktree of this repos
   const report = JSON.parse(readFileSync(join(d, 'docs/harness/detect.json'), 'utf8'));
   assert.deepEqual(report.nested, []);
   assert.deepEqual(report.worktrees, [{ path: '.claude/worktrees/side', kind: 'worktree' }]);
+});
+
+test('detect --json on a repository with an extensions file reports P5.extensions and writes the same lines to detect.json', async () => {
+  const { moduleSha256 } = await import('../../assets/scripts/harness-extensions.mjs');
+  const { DISPATCH_PRE_PATH, everyLoadedSibling, installedScriptProposal } = await import('./propose.mjs');
+  const { KIT_VERSION } = await import('./manifest.mjs');
+  const d = bare();
+  for (const path of [DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]) write(d, path, installedScriptProposal(path, KIT_VERSION).contents);
+  const source = 'export const preToolUse = () => ({ decision: \'allow\' });\n';
+  write(d, '.claude/ext/a.mjs', source);
+  write(d, '.claude/kh-harness/extensions.json', JSON.stringify([{ id: 'a', version: '1.0.0', module: '.claude/ext/a.mjs', sha256: moduleSha256(Buffer.from(source)), onFailure: 'block' }]));
+  write(d, '.claude/settings.json', JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-pre-tool.mjs'] }] }] } }));
+  const report = JSON.parse(cli(d, '--json'));
+  const check = report.checks.find(c => c.id === 'P5.extensions');
+  assert.equal(check.state, 'declared');
+  assert.deepEqual(check.evidence, [
+    '.claude/kh-harness/extensions.json lists 1 extension, run by .claude/scripts/dispatch-pre-tool.mjs before every tool call',
+    'a 1.0.0: .claude/ext/a.mjs matches its recorded sha256 (whether it loads and runs is not checked); onFailure block',
+  ]);
+  const written = JSON.parse(readFileSync(join(d, 'docs', 'harness', 'detect.json'), 'utf8'));
+  assert.deepEqual(written.checks.find(c => c.id === 'P5.extensions').evidence, check.evidence);
+  assert.equal(written.harness.extensions.extensions[0].id, 'a');
+  assert.deepEqual(Object.keys(written.harness.extensions.extensions[0]).sort(), ['hash', 'id', 'module', 'onFailure', 'version']);
+  assert.deepEqual(new Set(Object.values(written.harness.extensions.installed)), new Set(['current']));
+
+  // A registration that cannot block every call, and hooks turned off, are
+  // each failing, with the reason.
+  const exact = { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-pre-tool.mjs'] };
+  for (const [settings, why] of [
+    [{ hooks: { PreToolUse: [{ hooks: [{ ...exact, async: true }] }] } }, /registered on PreToolUse, but not as apply writes it/],
+    [{ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [exact] }] } }, /registered on PreToolUse, but not as apply writes it/],
+    [{ disableAllHooks: 'true', hooks: { PreToolUse: [{ hooks: [exact] }] } }, /\.claude\/settings\.json sets disableAllHooks to a value other than false/],
+  ]) {
+    write(d, '.claude/settings.json', JSON.stringify(settings));
+    const weak = JSON.parse(cli(d, '--json')).checks.find(c => c.id === 'P5.extensions');
+    assert.equal(weak.state, 'failing', JSON.stringify(settings));
+    assert.match(weak.evidence[0], /^\.claude\/kh-harness\/extensions\.json lists 1 extension, and whether they run before every tool call is not known: /);
+    assert.match(weak.evidence[0], why);
+  }
 });

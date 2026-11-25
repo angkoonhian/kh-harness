@@ -12,7 +12,7 @@ import { detectExposures } from './lib/detect-exposure.mjs';
 import { selectProfile } from './lib/profiles/index.mjs';
 import { buildGaps } from './lib/gap-model.mjs';
 import { gitInfo } from './lib/git-info.mjs';
-import { buildProposals } from './lib/propose.mjs';
+import { buildProposals, DISPATCH_PRE_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH } from './lib/propose.mjs';
 import { deriveCouldNotDerive, exposureSectionLines, stillOpen, worktreeLine } from './lib/report.mjs';
 import { readManifestResult, emptyManifest, writeManifest, classify, displayPath, KIT_VERSION, MANIFEST_PATH } from './lib/manifest.mjs';
 import { applyProposals, diffRenderer, SETTINGS_PATH, settingsReformattedNote, isCanonicalJson, unusableSettingsReason, writeGateRefusals } from './lib/apply-lib.mjs';
@@ -167,6 +167,15 @@ process.stdout.write(
   `kh-harness: ${proposals.length} action${proposals.length === 1 ? '' : 's'} to close ` +
   `${gapCount} capability gap${gapCount === 1 ? '' : 's'} for ${root}\n\n`,
 );
+
+// A hook runs by itself once registered, so what each one does is said in
+// a dry run that registers one, and in one that writes a script that runs
+// the repository's code, which changes what a hook already registered
+// does. Said before the proposals, whose diffs can run to thousands of
+// lines.
+const REPOSITORY_CODE_SCRIPTS = new Set([DISPATCH_PRE_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH]);
+const changesWhatHooksRun = proposals.some(p => p.kind === 'settings-hook' || p.kind === 'settings-hook-replace' || (p.kind === 'file' && REPOSITORY_CODE_SCRIPTS.has(p.path)));
+if (!flags.has('--yes') && changesWhatHooksRun) process.stdout.write(EXECUTION_DISCLOSURE + '\n\n');
 // The preview is read-only, but it is wrapped like `applyProposals` below:
 // it is the default path, the one a cautious user reaches for first, and it
 // must never escape as a stack trace and exit 1. The CLI's contract is exit
@@ -177,11 +186,12 @@ process.stdout.write(
 // settings patch — a hook entry or deny rules — is a few lines and the most
 // security-relevant thing this tool writes, so it is still shown.
 const showFileDiffs = !flags.has('--yes');
-const preview = diffRenderer(root);
+const preview = diffRenderer(root, manifest);
 try {
   for (const p of proposals) {
     const label = p.kind === 'file' ? p.path
       : p.kind === 'settings-deny' ? '.claude/settings.json (deny rules)'
+      : p.kind === 'settings-hook-replace' ? `.claude/settings.json (hook: ${p.event}, replacing ${p.remove.length} registration${p.remove.length === 1 ? '' : 's'})`
       : `.claude/settings.json (hook: ${p.event})`;
     process.stdout.write(`--- ${label}  [${p.checkId}]\n`);
     process.stdout.write(`    ${p.reason}\n`);
@@ -194,9 +204,6 @@ try {
 }
 
 if (!flags.has('--yes')) {
-  // A hook runs by itself once registered, so what each one does is said
-  // beside the dry run that would register it, not only under --help.
-  if (proposals.some(p => p.kind === 'settings-hook')) process.stdout.write(EXECUTION_DISCLOSURE + '\n\n');
   reportDrift();
   // What `--yes` would refuse, said now rather than after the diffs have
   // been read and acted on — see writeGateRefusals.
@@ -273,7 +280,15 @@ for (const w of result.written) {
     process.stdout.write(`note: Windows cannot record the execute bit — run \`git update-index --chmod=+x ${w.path}\` before committing\n`);
   }
 }
-for (const p of result.patched) process.stdout.write(`patched    .claude/settings.json (${p.event})\n`);
+for (const a of result.adopted) {
+  process.stdout.write(manifestError
+    ? `not recorded ${a.path} (on disk as this kit writes it, but the manifest could not be written)\n`
+    : `recorded   ${a.path} (already on disk as this kit writes it)\n`);
+}
+for (const p of result.patched) {
+  const removed = p.replaced ? `; ${p.replaced} separate registration${p.replaced === 1 ? '' : 's'} removed` : '';
+  process.stdout.write(`patched    .claude/settings.json (${p.event}${removed})\n`);
+}
 if (result.patched.length > 0 && !settingsWasCanonical) {
   process.stdout.write(settingsReformattedNote('applying the patch above') + '\n');
 }

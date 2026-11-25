@@ -393,12 +393,20 @@ async function main() {
   } catch {
     return;
   }
-  if (!isPlainObject(payload) || !isLoggedEvent(payload.hook_event_name)) return;
+  const result = await logHalf(payload);
+  if (result !== null) process.stdout.write(JSON.stringify(result.json));
+}
+
+/** Records `payload` and returns what this hook says about it, as
+ * `{ json, stderr, exitCode }`, or null when it says nothing. Writes nothing
+ * to standard output or standard error and never exits. */
+export async function logHalf(payload) {
+  if (!isPlainObject(payload) || !isLoggedEvent(payload.hook_event_name)) return null;
   const { context, notice } = siblings.problem === null ? await record(payload) : { context: null, notice: siblingNotice(payload) };
   const output = {};
   if (notice !== null) output.systemMessage = notice;
   if (context !== null) output.hookSpecificOutput = { hookEventName: 'SessionStart', additionalContext: context };
-  if (Object.keys(output).length > 0) process.stdout.write(JSON.stringify(output));
+  return Object.keys(output).length === 0 ? null : { json: output, stderr: '', exitCode: 0 };
 }
 
 /** True when this file is the process's entry point rather than an import.

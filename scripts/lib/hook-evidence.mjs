@@ -24,13 +24,53 @@ import { hookEntrySha256, matcherCovers, normalizeMatcher } from './settings-mer
  */
 export const execEntry = scriptPath => ({ type: 'command', command: 'node', args: [`\${CLAUDE_PROJECT_DIR}/${scriptPath}`] });
 
+/**
+ * The entry script the kit registers on each tool-call event, and the
+ * installed hooks it runs there. Each entry script runs its hooks in one
+ * process through harness-dispatch.mjs, so an event it is registered on
+ * carries none of these hooks separately.
+ */
+export const ENTRY_SCRIPTS = Object.freeze({
+  PreToolUse: { path: '.claude/scripts/dispatch-pre-tool.mjs', halves: ['.claude/scripts/tool-gate.mjs', '.claude/scripts/session-log.mjs'] },
+  PostToolUse: { path: '.claude/scripts/dispatch-post-tool.mjs', halves: ['.claude/scripts/session-log.mjs', '.claude/scripts/lint-touched.mjs'] },
+  PostToolUseFailure: { path: '.claude/scripts/dispatch-tool-failure.mjs', halves: ['.claude/scripts/session-log.mjs', '.claude/scripts/loop-watch.mjs'] },
+});
+
+const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * True when `hook`, one hook of `element`, an element of a settings file's
+ * `hooks.<event>`, runs on every call of its event and can block it, in the
+ * one form `apply` writes: an element with no key but `matcher` and
+ * `hooks`, a matcher that is absent, `""` or `"*"`, and a hook of exactly
+ * `type`, `command` and `args`, as `execEntry` builds it. Any other key on
+ * the hook (`async`, `timeout`, `if`, `onFailure`, …) can stop it running,
+ * or blocking, on some call. The rule docs/CONTRACT.md tells another plugin
+ * to check, and the only copy of it in the kit.
+ */
+export function runsOnEveryCall(element, hook) {
+  if (!isObject(element) || !Object.keys(element).every(k => k === 'matcher' || k === 'hooks')) return false;
+  if (!(element.matcher === undefined || element.matcher === '' || element.matcher === '*')) return false;
+  if (!isObject(hook) || Object.keys(hook).length !== 3 || !Array.isArray(hook.args) || hook.args.length !== 1 || typeof hook.args[0] !== 'string') return false;
+  const prefix = '${CLAUDE_PROJECT_DIR}/';
+  if (!hook.args[0].startsWith(prefix)) return false;
+  const expected = execEntry(hook.args[0].slice(prefix.length));
+  return Object.keys(expected).every(k => Object.hasOwn(hook, k)) && hook.type === expected.type && hook.command === expected.command;
+}
+
+/** True when `settings`, a settings file's object, sets `disableAllHooks`
+ * to anything but `false`. Claude Code was seen to turn every hook off for
+ * `true` and for the string `"true"`; how it reads any other value was not
+ * seen. */
+export const disablesAllHooks = settings => isObject(settings) && Object.hasOwn(settings, 'disableAllHooks') && settings.disableAllHooks !== false;
+
 /** The entry the kit wrote before the exec form. */
 const shellEntry = scriptPath => ({ type: 'command', command: `node ${scriptPath}` });
 
 /** The `entrySha256` of every entry this kit has ever recorded for a hook
  * running `scriptPath` under `matcher`: each patch's hash names the one
  * script it registered. */
-function recordedHashes(scriptPath, matcher) {
+export function kitEntryHashes(scriptPath, matcher) {
   return new Set([execEntry, shellEntry].map(form => hookEntrySha256(form(scriptPath), matcher)));
 }
 
@@ -40,7 +80,20 @@ function recordedHashes(scriptPath, matcher) {
  * `matcher`. */
 export function runsKitScript(registration, scriptPath, matcher) {
   if (registration.script !== null) return registration.script === scriptPath;
-  return recordedHashes(scriptPath, matcher).has(registration.entrySha256);
+  return kitEntryHashes(scriptPath, matcher).has(registration.entrySha256);
+}
+
+/** The entry script that runs `scriptPath` on `event`, or null when no
+ * entry script runs it there. */
+export function entryScriptFor(event, scriptPath) {
+  const entry = ENTRY_SCRIPTS[event];
+  return entry?.halves.includes(scriptPath) ? entry.path : null;
+}
+
+/** The registrations on `event` that run `scriptPath` itself, rather than
+ * through an entry script. */
+export function directRegistrations(harness, event, scriptPath, matcher) {
+  return (harness.claudeDir.hookRegistrations?.[event] ?? []).filter(r => runsKitScript(r, scriptPath, matcher));
 }
 
 /**
@@ -51,7 +104,8 @@ export function runsKitScript(registration, scriptPath, matcher) {
  *
  * `declared` means OUR script (`ourPath`, the path the generator in
  * propose.mjs registers for this event) is among what is registered, under
- * a matcher that fires whenever ours would (`matcherCovers`): not merely
+ * a matcher that fires whenever ours would (`matcherCovers`), itself or as
+ * a hook its event's entry script runs (`entryScriptFor`): not merely
  * that the event is occupied, since a user's own unrelated hook on the
  * event is not the capability, and not our script under a matcher that
  * does not fire for ours. This is the identification `apply-lib.mjs`'s
@@ -69,22 +123,29 @@ export function runsKitScript(registration, scriptPath, matcher) {
  * kit when its script is one of `kitScripts` (propose.mjs's
  * `GENERATOR_SCRIPT_PATHS`), as not this kit's when it resolves to any other
  * script, and as unknown when it does not resolve. A user's hook is never
- * listed as part of what is credited as ours.
+ * listed as part of what is credited as ours. The entry script that runs
+ * ours is ours too, so it is never listed as an occupant.
  */
 export function registeredHook(harness, event, ourPath, proposal, { manifest, root, matcher, kitScripts }) {
   if (!Array.isArray(kitScripts)) throw new TypeError('registeredHook: `kitScripts` is required, or another kit hook on the event would be named as not this kit\'s.');
   const registrations = harness.claudeDir.hookRegistrations?.[event] ?? [];
-  const scripts = registrations.map(r => r.script);
+  const entry = entryScriptFor(event, ourPath);
   const ours = registrations.filter(r => r.script === ourPath);
-  if (ours.length && !ours.some(r => matcherCovers(r.matcher, matcher))) {
+  const viaEntry = entry === null ? [] : registrations.filter(r => r.script === entry);
+  if (ours.some(r => matcherCovers(r.matcher, matcher))) return { state: 'declared', evidence: [`${event} hook: ${ourPath}`] };
+  if (viaEntry.some(r => matcherCovers(r.matcher, matcher))) return { state: 'declared', evidence: [`${event} hook: ${ourPath}, run by ${entry}`] };
+  if (ours.length || viaEntry.length) {
     // Registered, but under a matcher that does not fire when ours would:
     // not the capability, and the user is told exactly why.
+    const under = r => `under matcher "${r.matcher}", which does not fire for ${normalizeMatcher(matcher)} — a registration that does is still needed`;
     return {
       state: 'absent', proposal,
-      evidence: ours.map(r => `${event} hook: ${ourPath} is registered, but under matcher "${r.matcher}", which does not fire for ${normalizeMatcher(matcher)} — a registration that does is still needed`),
+      evidence: [
+        ...ours.map(r => `${event} hook: ${ourPath} is registered, but ${under(r)}`),
+        ...viaEntry.map(r => `${event} hook: ${ourPath} is run by ${entry}, but ${under(r)}`),
+      ],
     };
   }
-  if (ours.length) return { state: 'declared', evidence: [`${event} hook: ${ourPath}`] };
   // `commandScript` (detect-harness.mjs) resolves a hook's script only
   // against the scan list, which holds tracked files or what the fallback
   // walk sees, so a repository that gitignores `.claude/` makes our own
@@ -107,16 +168,23 @@ export function registeredHook(harness, event, ourPath, proposal, { manifest, ro
   // script: a patch names its script only through that hash, matched
   // against each form the kit has registered the script in, and the entry
   // must still be on the event, or a hook deleted by hand would be credited
-  // from its leftover record.
-  const hashes = recordedHashes(ourPath, matcher);
-  const recorded = new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && hashes.has(p.entrySha256)).map(p => p.entrySha256));
-  if (root && registrations.some(r => r.script === null && recorded.has(r.entrySha256)) && existsSync(join(root, ourPath))) {
-    return { state: 'declared', evidence: [`${event} hook: ${ourPath} (not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)`] };
+  // from its leftover record. The entry script that runs ours is credited
+  // the same way, from the patch the kit records for it, which carries no
+  // matcher.
+  const unseen = '(not visible to the file scan — .claude/ may be gitignored; confirmed via the install record and the file on disk)';
+  const confirmed = (script, hashes) => {
+    if (!root) return false;
+    const recorded = new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && hashes.has(p.entrySha256)).map(p => p.entrySha256));
+    return registrations.some(r => r.script === null && recorded.has(r.entrySha256)) && existsSync(join(root, script));
+  };
+  if (confirmed(ourPath, kitEntryHashes(ourPath, matcher))) return { state: 'declared', evidence: [`${event} hook: ${ourPath} ${unseen}`] };
+  if (entry !== null && confirmed(entry, new Set([hookEntrySha256(execEntry(entry))]))) {
+    return { state: 'declared', evidence: [`${event} hook: ${ourPath}, run by ${entry} ${unseen}`] };
   }
-  if (scripts.length === 0) return { state: 'absent', proposal, evidence: [] };
+  if (registrations.length === 0) return { state: 'absent', proposal, evidence: [] };
   return {
     state: 'absent', proposal,
-    evidence: scripts.map(s => {
+    evidence: registrations.map(({ script: s }) => {
       if (s === null) return `${event} already holds a hook whose script could not be resolved, so it is not known whose it is`;
       if (kitScripts.includes(s)) return `${event} already holds another kh-harness hook: ${s}`;
       return `${event} already holds a hook that is not this kit's: ${s}`;

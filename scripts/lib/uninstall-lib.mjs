@@ -18,6 +18,7 @@ import {
   BOOTSTRAP_PATH, everyLoadedSibling, RULES_PATH, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS, protectedDenyRules, toolGateDenyRules,
 } from './propose.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
+import { CONTRACT_PATH } from './contract.mjs';
 import { listFiles } from './scan.mjs';
 import { detectStack } from './detect-stack.mjs';
 import { GATES_PATH, repoDataDir } from '../../assets/scripts/harness-log.mjs';
@@ -162,6 +163,8 @@ const GENERATOR_PRODUCIBLE_EXACT = new Set([
   // removable only while they hold no learning (see `ownContentRefusal`).
   LEARNED_PATH,
   GATES_PATH,
+  // The contract number another plugin reads; stamped through its generatedBy key.
+  CONTRACT_PATH,
 ]);
 // `.claude/rules/<slug>.md` — one per non-root workspace package, a path
 // pathrules-evidence.mjs derives dynamically from the repository's own
@@ -669,7 +672,9 @@ export function runUninstall({ root, manifest, plan }) {
   //    entry added since the plan, still keeps its script.
   const settingsNow = validateSettings(join(root, SETTINGS_PATH));
   const registered = scriptsStillRegistered(settingsNow, settingsNow.object);
-  for (const r of plan.remove) {
+  // The contract file first: it speaks for the scripts, so a run stopped
+  // midway must never leave it beside a script already removed.
+  for (const r of [...plan.remove].sort((a, b) => (b.path === CONTRACT_PATH) - (a.path === CONTRACT_PATH))) {
     const refusal = guardRemoval(root, r.path);
     if (refusal === ALREADY_GONE) {
       alreadyGone.push(r.path);

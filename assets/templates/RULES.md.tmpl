@@ -9,7 +9,7 @@
   this file to report two things apart that otherwise look the same:
 
     a rule Claude is merely TOLD      (enforced-by: none)   — a claim
-    a rule something actually HOLDS   (deny/hook/lint/test/critic/ci/review)
+    a rule something actually HOLDS   (deny/hook/lint/test/critic/ci/review/officer)
 
   A rule with `enforced-by: none` is a claim; it is the automation backlog.
   kh-harness does not write an enforcer for it. Its learning loop drafts
@@ -21,12 +21,14 @@
 
     ## <id> — <the rule, one sentence, imperative>
     - why: <one line: what goes wrong without it>
-    - enforced-by: deny | hook | lint | test | critic | ci | review | none
+    - enforced-by: deny | hook | lint | test | critic | ci | review | officer | none
     - pointer: <repository path, or settings:permissions.deny, or settings:hooks.<Event>>
+                                      (for officer: the repository path of the check)
     - verify: <a command a human can run to confirm the enforcer works>
     - priority: high | normal        (optional; `high` rules are re-injected first)
     - status: active | superseded     (optional; superseded rules are kept as a record, not counted)
     - last-verified: YYYY-MM-DD       (optional; when the pointer was last confirmed to work)
+    - approval: owner | agent         (optional; read by other plugins, ignored by kh-harness)
 
   `id` is one token (letters, digits, `.`, `_`, `-`), stable, never reused.
   `pointer` is required for every enforcer except `none` and `review`; a

@@ -259,9 +259,14 @@ const sha256Hex = data => createHash('sha256').update(data).digest('hex');
 
 /** CRLF to LF on the raw bytes; latin1 maps each byte to one code unit, so
  * nothing else changes and a lone CR stays. */
-function lfNormalised(buf) {
+export function lfNormalised(buf) {
   return buf.includes(0x0d) ? Buffer.from(buf.toString('latin1').replace(/\r\n/g, '\n'), 'latin1') : buf;
 }
+
+/** SHA-256 hex of `bytes` with each CRLF made LF: how an installed script,
+ * and an extension module, is compared with the hash recorded for it, so a
+ * checkout that turned line endings to CRLF still matches. */
+export const lfSha256 = bytes => sha256Hex(lfNormalised(bytes));
 
 /** A relative path that resolves inside `root`; on win32 a drive-relative
  * `C:x` resolves elsewhere and `relative` then returns an absolute path. */
@@ -289,7 +294,7 @@ const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray
 
 function fileDigest(path) {
   try {
-    return sha256Hex(lfNormalised(readBounded(path, MAX_SMALL_FILE_BYTES)));
+    return lfSha256(readBounded(path, MAX_SMALL_FILE_BYTES));
   } catch (error) {
     return error?.code === 'ENOENT' ? 'missing' : UNREADABLE;
   }
@@ -582,6 +587,102 @@ export function appendEvent(root, sessionId, event) {
     return { written: true };
   } catch (error) {
     return { written: false, reason: `write failed: ${error?.code ?? 'unknown'}` };
+  }
+}
+
+/** The most bytes of JSON an external event's `data` may take. Under the
+ * default `inlineCapBytes`, so no blob is written for it. */
+export const EXTERNAL_DATA_MAX_BYTES = 16384;
+
+/** The most levels an external event's `data` may be nested, the object
+ * itself the first; an object and an array each count as one. The mask
+ * walks every level by recursion, so a deeper value would end it by the
+ * caller's own stack, at a depth no caller can know. */
+export const EXTERNAL_DATA_MAX_DEPTH = 32;
+
+// `source` and `type` are kept after retention removes `data`, so neither
+// may carry content: each is drawn from a fixed set of characters with a
+// fixed length.
+const EXTERNAL_SOURCE = /^[a-z][a-z0-9-]{0,63}$/;
+const EXTERNAL_TYPE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+
+const EXTERNAL_REFUSALS = Object.freeze({
+  session: 'no safe session id',
+  root: 'root must be an absolute path',
+  disabled: 'the session log is not enabled for this repository',
+  source: 'source must be lower-case letters, digits and hyphens, starting with a letter, at most 64 characters',
+  type: 'type must be letters, digits, dot, underscore and hyphen, starting with a letter, at most 64 characters',
+  data: 'data must be a JSON object',
+  size: `data is larger than ${EXTERNAL_DATA_MAX_BYTES} bytes`,
+  depth: `data must be nested at most ${EXTERNAL_DATA_MAX_DEPTH} levels deep`,
+  unwritten: 'the event could not be written',
+});
+
+const refusal = reason => ({ recorded: false, reason: EXTERNAL_REFUSALS[reason] });
+
+/** Whether the parsed JSON `value`, at nesting level `level`, goes deeper
+ * than `EXTERNAL_DATA_MAX_DEPTH`. The recursion stops one level past the
+ * bound, so it is never more than that deep whatever the value. */
+function tooDeep(value, level) {
+  if (value === null || typeof value !== 'object') return false;
+  if (level > EXTERNAL_DATA_MAX_DEPTH) return true;
+  return Object.values(value).some(v => tooDeep(v, level + 1));
+}
+
+/** `{ body }`, the JSON object `data` stands for; `{ refused }`, the reason
+ * named in `EXTERNAL_REFUSALS`, when its JSON is not an object, is longer
+ * than `EXTERNAL_DATA_MAX_BYTES` or is nested deeper than
+ * `EXTERNAL_DATA_MAX_DEPTH`. `data` is read once, so a `toJSON` or a getter
+ * cannot answer one way when checked and another when written; the depth
+ * is checked on that parsed copy, before the mask walks it. */
+function externalData(data) {
+  let json;
+  try {
+    json = JSON.stringify(data);
+  } catch {
+    return { refused: 'data' };
+  }
+  if (typeof json !== 'string') return { refused: 'data' };
+  const body = JSON.parse(json);
+  if (!isPlainObject(body)) return { refused: 'data' };
+  if (Buffer.byteLength(json, 'utf8') > EXTERNAL_DATA_MAX_BYTES) return { refused: 'size' };
+  return tooDeep(body, 1) ? { refused: 'depth' } : { body };
+}
+
+/**
+ * Appends one event another plugin records to session `sessionId`'s log of
+ * the repository at `root`: the function `docs/CONTRACT.md` promises. Its
+ * signature, its `reason` texts and the fields of the line it writes change
+ * only with the contract number.
+ *
+ * The line is `{ schema, ts, pid, type: 'plugin_event', session_id, source,
+ * kind, data }`, `kind` being the caller's `type`, written by `appendEvent`
+ * and so masked as every event is. `data` must be an object whose JSON is
+ * at most `EXTERNAL_DATA_MAX_BYTES` bytes, nested at most
+ * `EXTERNAL_DATA_MAX_DEPTH` levels.
+ *
+ * Returns `{ recorded: true }` or `{ recorded: false, reason }`, `reason`
+ * one of `EXTERNAL_REFUSALS`; never throws. Nothing is written, not even a
+ * directory, when the id is not one `safeSessionId` accepts, `root` is not
+ * absolute, or this machine's owner has not enabled the log for the
+ * repository.
+ */
+export function recordExternalEvent(root, sessionId, event) {
+  try {
+    const id = safeSessionId(sessionId);
+    if (id === null) return refusal('session');
+    if (typeof root !== 'string' || !isAbsolute(root)) return refusal('root');
+    if (!isEnabled(root)) return refusal('disabled');
+    if (!isPlainObject(event)) return refusal('data');
+    const { source, type, data } = event;
+    if (typeof source !== 'string' || !EXTERNAL_SOURCE.test(source)) return refusal('source');
+    if (typeof type !== 'string' || !EXTERNAL_TYPE.test(type)) return refusal('type');
+    const checked = externalData(data);
+    if (checked.refused !== undefined) return refusal(checked.refused);
+    const { written } = appendEvent(root, id, { type: 'plugin_event', session_id: id, source, kind: type, data: checked.body });
+    return written ? { recorded: true } : refusal('unwritten');
+  } catch {
+    return refusal('unwritten');
   }
 }
 

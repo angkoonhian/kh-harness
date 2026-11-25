@@ -3,7 +3,7 @@ import { installCommand } from './bootstrap-install.mjs';
 import { hasLintScript } from './sensor-evidence.mjs';
 import { rootVerifyScript } from './stopgate-evidence.mjs';
 import { protectedPathCandidates, denyRuleCoverage } from './protected-evidence.mjs';
-import { registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, directRegistrations, registeredHook } from './hook-evidence.mjs';
 import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { setupTargetEvidence } from './bootstrap-target-evidence.mjs';
 import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedExposureNote, prominentExposureNote, fixtureExposureNote } from './detect-exposure.mjs';
@@ -18,16 +18,83 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { buildProposals, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, CONTRACT_FILES, heldContractEvidence, heldContractQuestion, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { CONTRACT, CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { displayPath, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { integrityEvidence } from './integrity-evidence.mjs';
+import { EXTENSION_HOOK_FILES } from './extensions-evidence.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
+import { EXTENSIONS_PATH } from '../../assets/scripts/harness-extensions.mjs';
 
 export const STATES = ['absent', 'declared', 'verified', 'failing', 'n/a'];
+
+/** How P5.extensions words each module state `moduleState` returns. A
+ * module whose hash matches is still loaded and called only by the hook,
+ * which applies its `onFailure` when that fails. */
+const EXTENSION_HASH_WORDS = Object.freeze({
+  matches: 'matches its recorded sha256 (whether it loads and runs is not checked)',
+  differs: 'does not match its recorded sha256',
+  missing: 'is missing',
+  outside: 'is not a file under .claude/ in this repository',
+  unreadable: 'could not be read',
+});
+
+/** How P5.extensions words each status `installedScriptStatus` returns
+ * other than `current`. */
+const INSTALLED_STATUS_WORDS = Object.freeze({
+  missing: 'is missing',
+  other: 'is not the file this kit installs',
+  'other-version': "carries another kh-harness version's stamp",
+});
+
+const KIT_FILES_REMEDY = 'run kh-harness apply --yes; P0.kitskew says whether it can update each file';
+
+/**
+ * What the PreToolUse hook does with the extensions file, as far as the
+ * registration, the project settings and the installed files it depends on
+ * (`installed`, keyed by `EXTENSION_HOOK_FILES`) tell, decided as
+ * dispatch-pre-tool.mjs decides it: `none` (nothing runs it), `unresolved`
+ * (whether anything does is not known), `unsure` (it is registered, but
+ * whether it runs, and can block, on every call is not known: a settings
+ * file may turn every hook off, or the registration is not the form apply
+ * writes on every call), `unread` (an installed file is not the one this
+ * kit installs, so its behaviour was not read), `blocked` (the current
+ * entry script blocks every call whatever the file says, because the core
+ * cannot be imported for a missing file, or the core is current and the
+ * loader cannot be imported for one), or `runs` (each entry is applied as
+ * harness-extensions.mjs applies it, before every tool call).
+ * `why` is fixed text naming kit paths and settings files only.
+ */
+function extensionsRun(harness, installed, { manifest, root }) {
+  const declared = registeredHook(harness, 'PreToolUse', DISPATCH_PRE_PATH, null, { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
+  const direct = directRegistrations(harness, 'PreToolUse', DISPATCH_PRE_PATH);
+  const result = (kind, why = null) => ({ kind, why });
+  const registeredAs = declared ? 'it is registered on PreToolUse' : direct.length ? 'PreToolUse holds the registration kh-harness writes for it' : null;
+  if (installed[DISPATCH_PRE_PATH] === 'missing' && registeredAs !== null) return result('none', `${DISPATCH_PRE_PATH} is not in the repository, though ${registeredAs}`);
+  if (!declared) {
+    if ((harness.claudeDir.hookRegistrations?.PreToolUse ?? []).some(r => r.script === null)) {
+      return result('unresolved', `PreToolUse holds a hook whose script could not be resolved, so whether ${DISPATCH_PRE_PATH} is registered is not known`);
+    }
+    return result('none', `${DISPATCH_PRE_PATH} is not registered on PreToolUse`);
+  }
+  const hooksOff = harness.claudeDir.disableAllHooksIn ?? [];
+  if (hooksOff.length) return result('unsure', `${hooksOff.join(' and ')} set${hooksOff.length === 1 ? 's' : ''} disableAllHooks to a value other than false, which turns every hook off for true and for "true"`);
+  if (!direct.some(r => r.everyCall)) {
+    return result('unsure', `${DISPATCH_PRE_PATH} is registered on PreToolUse, but not as apply writes it (no matcher, or "" or "*", and a hook of exactly type, command and args), so it may not run, or may not block, on every call`);
+  }
+  const named = path => `${path} ${INSTALLED_STATUS_WORDS[installed[path]]}`;
+  if (installed[DISPATCH_PRE_PATH] !== 'current') return result('unread', named(DISPATCH_PRE_PATH));
+  const { core, loader } = EXTENSION_HOOK_FILES;
+  const off = [...core, ...loader].filter(path => installed[path] !== 'current');
+  if (off.length === 0) return result('runs');
+  const missing = paths => paths.some(path => installed[path] === 'missing');
+  const blocks = missing(core) || (core.every(path => installed[path] === 'current') && missing(loader));
+  return result(blocks ? 'blocked' : 'unread', off.map(named).join(', and '));
+}
 
 /**
  * Counts CAPABILITY GAPS with a proposal, per `via` (see `buildGaps`): only
@@ -71,6 +138,20 @@ const MAX_INSTRUCTION_LINES = 150;
 function manifestAbsence(root) {
   if (root === undefined) return 'unread';
   return readManifestResult(root).state === 'corrupt' ? 'corrupt' : 'missing';
+}
+
+/**
+ * The entries of `notCurrent`, `[path, status]` pairs, that no proposal of
+ * this run writes: the proposals `buildProposals` makes from every check of
+ * the run but the one asking, `checks` (those before it) followed by
+ * `checksAfter()` (those after it). Without `root` and `kitVersion` none is
+ * judged.
+ */
+function notWrittenByRun(notCurrent, { checks, checksAfter, manifest, kitVersion, harness, root, stack, files }) {
+  if (notCurrent.length === 0 || root === undefined || kitVersion === undefined) return [];
+  const written = new Set(buildProposals({ checks: [...checks, ...checksAfter()], manifest, kitVersion, harness, root, stack, files })
+    .filter(p => p.kind === 'file').map(p => p.path));
+  return notCurrent.filter(([path]) => !written.has(path));
 }
 
 /**
@@ -617,6 +698,13 @@ const CHECKS = [
       const listed = lines => lines.length > 10 ? `${lines.slice(0, 10).join(', ')} … and ${lines.length - 10} more` : lines.join(', ');
       const advice = (harness.ruleShapedLines ?? []).map(({ file, lines }) =>
         `${file} holds ${lines.length} rule-shaped line${lines.length === 1 ? '' : 's'} (line${lines.length === 1 ? '' : 's'} ${listed(lines)}) not in ${RULES_PATH} — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart`);
+      // Why each pointer was not counted, by rules-evidence.mjs's `reason`.
+      const missing = {
+        'no-pointer': m => `${m.id}: enforced-by names a mechanism but no pointer says where it is`,
+        'not-found': m => `${m.id}: pointer ${m.pointer} does not exist`,
+        'not-in-repository': m => `${m.id}: pointer ${m.pointer} is not a path inside this repository, so it was not looked up; an officer's pointer, and any pointer that is not a settings: pointer, must name a path inside this repository`,
+        'leaves-repository': m => `${m.id}: pointer ${m.pointer} leads outside this repository through a link, so it was not counted as existing`,
+      };
       // One registry file's counts, superseded rules, dead pointers and
       // parser problems. The owner's rules and the learned rules are
       // reported apart, each in this shape. A file that was not read has
@@ -628,11 +716,10 @@ const CHECKS = [
         const unenforced = file.unenforced.length ? `${file.unenforced.length} with enforced-by: none (${file.unenforced.join(', ')})` : 'none with enforced-by: none';
         const lines = [`${file.path}: ${file.count} ${noun}${file.count === 1 ? '' : 's'} — ${enforced} enforced${byEnforcer ? ` (${byEnforcer})` : ''}, ${unenforced}`];
         if (file.superseded) lines.push(`${file.superseded} superseded ${noun}${file.superseded === 1 ? '' : 's'} kept as a record, not counted`);
-        for (const m of file.missingPointers) {
-          lines.push(m.pointer == null
-            ? `${m.id}: enforced-by names a mechanism but no pointer says where it is`
-            : `${m.id}: pointer ${m.pointer} does not exist`);
-        }
+        // An officer is a check another tool runs, never this kit: what
+        // was read of one is that its pointer exists, and the line says so.
+        if (file.byEnforcer.officer) lines.push(`officer rules (${file.byEnforcer.officer}): only whether each pointer names a path that exists in this repository was read; kh-harness runs no officer, so whether one passes was not read`);
+        for (const m of file.missingPointers) lines.push(missing[m.reason](m));
         for (const p of file.problems) lines.push(`${problemPrefix}: ${p}`);
         return lines;
       };
@@ -728,7 +815,7 @@ const CHECKS = [
       if (missing.length === total) {
         return {
           state: 'absent', evidence: occupants,
-          proposal: `install scripts/session-log.mjs with the three modules it imports (harness-log.mjs, harness-seal.mjs and harness-redact.mjs), and register it on the ${total} logged events — it records nothing until the log is enabled for this repository on this machine`,
+          proposal: `install scripts/session-log.mjs with the three modules it imports (harness-log.mjs, harness-seal.mjs and harness-redact.mjs), and register it on the ${total} logged events, through the entry script on an event that has one — it records nothing until the log is enabled for this repository on this machine`,
         };
       }
       const n = missing.length;
@@ -796,6 +883,137 @@ const CHECKS = [
       if (root === undefined) throw new TypeError('buildGaps: P5.integrity needs `root` once there is a manifest — without it no recorded file can be read.');
       const { problems, summary } = integrityEvidence(root, manifest);
       return problems.length ? { state: 'failing', evidence: problems } : { state: 'declared', evidence: summary };
+    },
+  },
+  {
+    id: 'P5.extensions', step: 32, phase: 5,
+    lookedFor: [
+      EXTENSIONS_PATH, 'each listed module against the sha256 recorded for it', `a PreToolUse hook running ${DISPATCH_PRE_PATH}`,
+      `${Object.values(EXTENSION_HOOK_FILES).flat().join(', ')} against what this kit installs`,
+    ],
+    // Read from `harness.extensions`, which hashes each module and never
+    // loads one, so it is never `verified`. Nothing is proposed: an
+    // extension is another plugin's, and so is its repair, and P0.kitskew
+    // proposes the kit's own files. What a line says the hook does is what
+    // `extensionsRun` read it would do; a consequence is said only when the
+    // installed files are the ones whose behaviour that is.
+    check: ({ harness, manifest, root }) => {
+      const file = harness.extensions;
+      if (!file) return { state: 'n/a', evidence: ['the extensions file was not read'] };
+      if (file.state === 'absent') return { state: 'n/a', evidence: [`no ${EXTENSIONS_PATH}: no plugin has registered an extension`] };
+      const run = extensionsRun(harness, file.installed, { manifest, root });
+      const blocked = 'every tool call is blocked';
+      const tail = {
+        blocked: `, and ${blocked}: ${run.why}; ${KIT_FILES_REMEDY}`,
+        unread: `, and what the hook does with the file was not read: ${run.why}; ${KIT_FILES_REMEDY}`,
+      }[run.kind];
+      if (file.state === 'malformed') {
+        const end = tail ?? {
+          runs: `, so ${blocked}`,
+          none: `, and nothing reads it: ${run.why}`,
+          unresolved: `, and whether anything reads it was not read: ${run.why}`,
+          unsure: `, and whether the hook reads it on every call is not known: ${run.why}`,
+        }[run.kind];
+        return { state: 'failing', evidence: [`${EXTENSIONS_PATH} cannot be used (${file.problem})${end}`] };
+      }
+      const n = file.extensions.length;
+      if (n === 0 && ['runs', 'none', 'unsure'].includes(run.kind)) return { state: 'n/a', evidence: [`${EXTENSIONS_PATH} lists no extension`] };
+      const lists = `${EXTENSIONS_PATH} lists ${n === 0 ? 'no extension' : `${n} extension${n === 1 ? '' : 's'}`}`;
+      const header = lists + (tail ?? {
+        runs: `, run by ${DISPATCH_PRE_PATH} before every tool call`,
+        none: `, and none runs: ${run.why}`,
+        unresolved: `, and whether any runs was not read: ${run.why}`,
+        unsure: `, and whether they run before every tool call is not known: ${run.why}`,
+      }[run.kind]);
+      const consequence = { block: `so ${blocked}`, allow: 'so it checks no call' };
+      const lines = file.extensions.map(e => {
+        const line = `${e.id} ${e.version}: ${e.module} ${EXTENSION_HASH_WORDS[e.hash]}; onFailure ${e.onFailure}`;
+        return e.hash === 'matches' || run.kind !== 'runs' ? line : `${line}, ${consequence[e.onFailure]}`;
+      });
+      const declared = run.kind === 'runs' && file.extensions.every(e => e.hash === 'matches');
+      return { state: declared ? 'declared' : 'failing', evidence: [header, ...lines] };
+    },
+  },
+  {
+    id: 'P5.contract', step: 30, phase: 5,
+    lookedFor: [CONTRACT_PATH, `${CONTRACT_FILES.join(', ')} against what this kit installs`],
+    // Read from `harness.contract`: what the file says, whether it is the
+    // file this kit writes, and each file it speaks for against what this
+    // kit installs there. Nothing executes, so it is never `verified`, and
+    // the number is reported as read, not as honoured. Whether anything
+    // registers the entry script is P5.toolgate's and P5.extensions' to say:
+    // the number speaks for the installed files. Absent, it is proposed only
+    // when this run leaves every file it speaks for as this kit installs it;
+    // present and unrecorded, it is proposed for `apply` to record.
+    check: ({ harness, manifest, heldScript, checks, checksAfter, kitVersion, root, stack, files }) => {
+      const file = harness.contract;
+      if (!file) return { state: 'n/a', evidence: ['the contract file was not read'] };
+      if (file.state === 'unreadable') {
+        const why = file.link ? `${CONTRACT_PATH} is reached through a link (${file.link} is one), so it was not read: a contract file must be a file of the repository itself${file.link === '.claude' ? '. Contract 1 is not available to a repository whose .claude is a link, so no plugin can rely on this file: delete it, or make .claude a directory of the repository and run apply again' : ''}`
+          : file.notDirectory ? `${file.notDirectory} is not a directory, so there is no ${CONTRACT_PATH} and no contract number was read`
+            : `${CONTRACT_PATH} exists and holds no contract number`;
+        return { state: 'failing', evidence: [why] };
+      }
+      const installed = Object.entries(file.installed ?? {});
+      if (file.state === 'ok') {
+        const says = `${CONTRACT_PATH}: contract ${file.contract}${file.contract === CONTRACT ? '' : ` (this kit honours contract ${CONTRACT})`}`;
+        const notKit = installed.filter(([, status]) => status !== 'current');
+        const problems = [
+          ...(file.kitWritten ? [] : [`${CONTRACT_PATH} says contract ${file.contract}, but it is not the file this kit writes there: its bytes differ from what this kit writes, line endings aside, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`]),
+          ...(notKit.length === 0 ? [] : [
+            `the contract file says ${file.contract}, but ${notKit.length} of the ${CONTRACT_FILES.length} files it speaks for ${notKit.length === 1 ? 'is' : 'are'} not what this kit installs: ` +
+            `${notKit.map(([path, status]) => `${path} (${INSTALLED_STATUS_WORDS[status]})`).join(', ')}; whether the installed files honour it was not read. ` +
+            'apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them']),
+        ];
+        if (problems.length) return { state: 'failing', evidence: [says, ...problems] };
+        if (!manifest && manifestAbsence(root) === 'corrupt') {
+          return {
+            state: 'absent', decidable: false,
+            evidence: [says, `${CONTRACT_PATH} holds what this kit writes there, but ${MANIFEST_PATH} could not be read as a manifest, so it is not recorded, and apply refuses to run until the manifest is restored`],
+            question: `Restore ${MANIFEST_PATH} from git, then run apply again, which records ${CONTRACT_PATH}; or leave the manifest as it is, and uninstall cannot remove the contract file. Which?`,
+          };
+        }
+        if (!(manifest?.files ?? []).some(f => f.path === CONTRACT_PATH)) {
+          return {
+            state: 'absent',
+            evidence: [says, `${CONTRACT_PATH} holds what this kit writes there, but ${MANIFEST_PATH} does not record it, so uninstall would leave it behind`],
+            proposal: `record ${CONTRACT_PATH} in ${MANIFEST_PATH}, as the file this kit writes there`,
+          };
+        }
+        return { state: 'declared', evidence: [says] };
+      }
+      const none = `no ${CONTRACT_PATH}`;
+      if (file.link === '.claude') {
+        return {
+          state: 'absent', decidable: false,
+          evidence: [none, 'contract 1 is not available to a repository whose .claude is a link: another plugin must refuse a contract file reached through one, so kh-harness does not write it'],
+          question: `.claude is a link, and another plugin must refuse a contract file reached through one, so contract 1 is not available to this repository and kh-harness does not write ${CONTRACT_PATH}. Make .claude a directory of the repository and run apply again, or leave it a link and go without the contract. Which?`,
+        };
+      }
+      const causes = [...new Map(CONTRACT_FILES.flatMap(path => heldScript(path) ?? []).map(c => [c.path, c])).values()];
+      if (causes.length) return { state: 'absent', decidable: false, evidence: [none, heldContractEvidence(causes)], question: heldContractQuestion(causes) };
+      const recorded = new Set((manifest?.files ?? []).map(f => f.path));
+      const deleted = installed.filter(([path, status]) => status === 'missing' && recorded.has(path)).map(([path]) => path);
+      if (deleted.length) {
+        const [list, was, it] = [deleted.join(', '), deleted.length === 1 ? 'was' : 'were', deleted.length === 1 ? 'it' : 'them'];
+        return {
+          state: 'absent', decidable: false,
+          evidence: [none, `${CONTRACT_PATH} is not written: ${list} ${was} deleted since kh-harness wrote ${it}, apply does not write again a file the owner deleted, and the contract number speaks for the PreToolUse entry script and every file it loads`],
+          question: `${list} ${was} deleted since kh-harness wrote ${it}, so kh-harness does not write ${CONTRACT_PATH}. Restore ${it} from git and run apply again; or leave ${it} deleted, and no contract file is written. Which?`,
+        };
+      }
+      const unwritten = notWrittenByRun(installed.filter(([, status]) => status !== 'current'), { checks, checksAfter, manifest, kitVersion, harness, root, stack, files });
+      if (unwritten.length) {
+        const paths = unwritten.map(([path]) => path);
+        const [list, is, it] = [paths.join(', '), paths.length === 1 ? 'is' : 'are', paths.length === 1 ? 'it' : 'them'];
+        const what = unwritten.every(([, status]) => status === 'missing') ? `${is} missing` : `${is} not what this kit installs`;
+        return {
+          state: 'absent', decidable: false,
+          evidence: [none, `${CONTRACT_PATH} is not written: ${list} ${what} and nothing in this run writes ${it}, and the contract number speaks for the PreToolUse entry script and every file it loads`],
+          question: `${list} ${what}, not recorded in ${MANIFEST_PATH}, and written by nothing in this run, so kh-harness does not write ${CONTRACT_PATH}. Restore ${it} from git and run apply again; or leave ${it} ${unwritten.every(([, status]) => status === 'missing') ? 'missing' : 'as it is'}, and no contract file is written. Which?`,
+        };
+      }
+      return { state: 'absent', evidence: [none], proposal: `write ${CONTRACT_PATH}, which tells another plugin which kh-harness contract this install honours` };
     },
   },
   {
@@ -1024,6 +1242,48 @@ const CHECKS = [
     check: ({ harness, manifest, root, heldScript }) => unlessHeld(registeredHook(harness, 'SessionStart', BRIEF_PATH,
       'install scripts/session-brief.mjs and register a SessionStart hook', { manifest, root, kitScripts: GENERATOR_SCRIPT_PATHS }), BRIEF_PATH, heldScript),
   },
+  {
+    id: 'P0.hookmerge', step: 2, phase: 0,
+    lookedFor: [`the kh-harness hooks registered on PreToolUse, PostToolUse and PostToolUseFailure in .claude/settings.json, against the registrations ${MANIFEST_PATH} records`],
+    // Decided from the hook registry and the manifest's records, one line
+    // per event (`mergePlan`); nothing executes, so it is never `verified`.
+    // An event whose plan is `single`, or `mergeable` with a hook missing,
+    // has no line: that hook's own check speaks for it, and its generator
+    // registers the entry script.
+    check: ({ harness, manifest, root, stack, heldScript }) => {
+      const evidence = [];
+      // The events `apply` can fix, in event order: `merge` to move to the
+      // entry script, `undouble` to take the separate registrations out.
+      const fixable = [];
+      for (const event of Object.keys(ENTRY_SCRIPTS)) {
+        const plan = mergePlan(event, { harness, manifest, root, stack });
+        if (plan.state === 'merged') evidence.push(`${event}: one process — ${plan.entry} runs its hooks`);
+        else if (plan.state === 'separate') evidence.push(`${event}: left on separate registrations — ${plan.why}`);
+        else if (plan.state === 'mergeable' && plan.missing.length === 0) {
+          evidence.push(`${event}: ${plan.remove.length} kh-harness hooks are registered separately, one process each`);
+          fixable.push({ event, entry: plan.entry, fix: 'merge' });
+        } else if (plan.state === 'doubled') {
+          const line = `${event}: ${plan.entry} runs its hooks, and some of them are also registered by themselves, so those run twice`;
+          if (plan.why !== null) {
+            evidence.push(`${line}; left as it is — ${plan.why}`);
+          } else {
+            evidence.push(line);
+            fixable.push({ event, entry: plan.entry, fix: 'undouble' });
+          }
+        }
+      }
+      if (fixable.length) {
+        const events = fix => fixable.filter(e => e.fix === fix).map(e => e.event).join(', ');
+        const proposal = [
+          ...(events('merge') ? [`replace the separate kh-harness registrations on ${events('merge')} with one entry script each, so each of those events starts one process`] : []),
+          ...(events('undouble') ? [`take out the separate kh-harness registrations on ${events('undouble')} beside the entry script already registered there, so each hook runs once`] : []),
+        ].join('; and ');
+        return unlessHeld({ state: 'absent', evidence, proposal }, fixable[0].entry, heldScript);
+      }
+      if (evidence.length) return { state: 'declared', evidence };
+      return { state: 'n/a', evidence: ['no tool-call event holds two kh-harness hooks'] };
+    },
+  },
   // Last, so the generators it runs are given every other check, as
   // `buildProposals` gives them.
   {
@@ -1046,7 +1306,8 @@ const CHECKS = [
       const evidence = [
         skew.versions,
         ...skew.updates.map(p => `out of date: ${displayPath(p.path)}`),
-        ...skew.heldBack.map(h => `held back${atKit(h.version)}: ${displayPath(h.path)} (out of date, but kh-harness keeps ${h.causes.map(c => c.path).join(', ')} as ${h.causes.length === 1 ? 'it is' : 'they are'}, and its hook scripts are updated together or not at all)`),
+        ...skew.added.map(p => `missing: ${displayPath(p.path)} (an updated script loads it)`),
+        ...skew.heldBack.map(h => `held back${atKit(h.version)}: ${displayPath(h.path)} (out of date, but kh-harness keeps ${h.causes.map(c => c.path).join(', ')} as ${h.causes.length === 1 ? 'it is' : 'they are'}, and ${h.path === CONTRACT_PATH ? 'the contract file is written only beside the files this kit installs for it to speak for' : 'its hook scripts are updated together or not at all'})`),
         ...skew.kept.map(k => `kept${atKit(k.version)}: ${displayPath(k.path)} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
         ...skew.unproduced.map(path => `left alone: ${displayPath(path)} (this kit no longer generates it for this repository)`),
         ...(skew.current.length ? [`${skew.current.length} kit-owned file${skew.current.length === 1 ? '' : 's'} match what this kit generates`] : []),
@@ -1076,7 +1337,6 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
     throw new TypeError('buildGaps: `files` is required — P1.bootstrap and P2.protected both decide a capability\'s reported state from it, and a defaulted `[]` would report P2.protected as `n/a` for a caller that merely forgot to pass it.');
   }
   const applicable = new Set(profile.appliesToSteps());
-  // Each check is given the checks evaluated before it.
   const checks = [];
   // Which installed scripts are held, read once and only when a hook check
   // asks. Without `root` or `kitVersion` it cannot be read, and no check
@@ -1087,7 +1347,15 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
     held ??= heldScripts(root, manifest, kitVersion);
     return held.get(path) ?? null;
   };
-  const gapFor = def => {
+  // Each check is given `checks`, those before it, and `checksAfter`, which
+  // evaluates those after it on the checks before it, for a check that asks
+  // what the whole run writes.
+  const gapFor = (def, seen) => {
+    const checksAfter = () => {
+      const after = [];
+      for (const later of checkDefs.slice(checkDefs.indexOf(def) + 1)) after.push(gapFor(later, [...seen, ...after]));
+      return after;
+    };
     if (!applicable.has(def.step)) {
       // The three-way split for P1.bootstrap (and, in principle, any future
       // check with the same shape):
@@ -1125,7 +1393,7 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
         decidable: true, question: null, proposal: null, via: null, advice: [] };
     }
-    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion, checks, heldScript });
+    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion, checks: seen, checksAfter, heldScript });
     // The second axis, enforced in the same place and for the same reason.
     // `absent` means two incompatible things: "I enumerated the complete space
     // and it is not there" (decidable — the bootstrap script, the deny rules,
@@ -1152,6 +1420,6 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
       via: proposal ? proposalVia(def) : null,
     };
   };
-  for (const def of checkDefs) checks.push(gapFor(def));
+  for (const def of checkDefs) checks.push(gapFor(def, checks));
   return checks;
 }

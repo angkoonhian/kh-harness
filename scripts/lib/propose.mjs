@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { render, versionStamp, machineryStamp, stampVersion, carriesStamp } from './render.mjs';
 import { classify, contentMatches, MANIFEST_PATH, sha256 } from './manifest.mjs';
@@ -15,9 +15,11 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 // the other five.
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
-import { execEntry, registeredHook } from './hook-evidence.mjs';
+import { ENTRY_SCRIPTS, directRegistrations, execEntry, kitEntryHashes, registeredHook } from './hook-evidence.mjs';
+import { SETTINGS_PATH } from './settings-merge.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
-import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
+import { GATES_PATH, lfSha256 } from '../../assets/scripts/harness-log.mjs';
+import { CONTRACT_PATH, claudeIsLink, contractFileText } from './contract.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -37,6 +39,11 @@ const TOOL_GATE_PATH = '.claude/scripts/tool-gate.mjs';
 const HARNESS_GATES_PATH = '.claude/scripts/harness-gates.mjs';
 const HARNESS_LOG_PATH = '.claude/scripts/harness-log.mjs';
 const HARNESS_SEAL_PATH = '.claude/scripts/harness-seal.mjs';
+const HARNESS_DISPATCH_PATH = '.claude/scripts/harness-dispatch.mjs';
+const HARNESS_EXTENSIONS_PATH = '.claude/scripts/harness-extensions.mjs';
+const DISPATCH_PRE_PATH = ENTRY_SCRIPTS.PreToolUse.path;
+const DISPATCH_POST_PATH = ENTRY_SCRIPTS.PostToolUse.path;
+const DISPATCH_FAILURE_PATH = ENTRY_SCRIPTS.PostToolUseFailure.path;
 
 /**
  * A settings-hook proposal's `reason`: the check's own evidence, which is
@@ -112,8 +119,11 @@ function protectedPathProposal({ stack, files }) {
  * this generator writes. */
 const SENSOR_MATCHER = 'Write|Edit';
 
-function sensorProposal({ kitVersion, stack, check }) {
+function sensorProposal({ kitVersion, stack, check, harness, manifest, root }) {
   if (!hasLintScript(stack)) return [];
+  const reason = hookRegistrationReason('PostToolUse', check);
+  const plan = mergePlan('PostToolUse', { harness, manifest, root, stack });
+  if (plan.state === 'mergeable') return plan.missing.includes(LINT_TOUCHED_PATH) ? entryProposals('PostToolUse', plan, { kitVersion, reason }) : [];
   const files = hookFiles(LINT_TOUCHED_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PostToolUse', step: 9,
@@ -123,7 +133,7 @@ function sensorProposal({ kitVersion, stack, check }) {
     // script loads are on disk holding this kit's bytes: apply-lib.mjs's
     // `unmetDependencies` reads the files themselves, after the write phase.
     requiresFiles: requiredFiles(files),
-    reason: hookRegistrationReason('PostToolUse', check),
+    reason,
   }];
 }
 
@@ -189,13 +199,16 @@ const LOOP_WATCH_STEP = 13;
  * session can loop on a failing call, and no `matcher`, since a failure of
  * any tool counts.
  */
-function loopWatchProposal({ kitVersion, check }) {
+function loopWatchProposal({ kitVersion, check, harness, manifest, root, stack }) {
+  const reason = hookRegistrationReason('PostToolUseFailure', check);
+  const plan = mergePlan('PostToolUseFailure', { harness, manifest, root, stack });
+  if (plan.state === 'mergeable') return plan.missing.includes(LOOP_WATCH_PATH) ? entryProposals('PostToolUseFailure', plan, { kitVersion, reason }) : [];
   const files = hookFiles(LOOP_WATCH_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PostToolUseFailure', step: LOOP_WATCH_STEP,
     entry: execEntry(LOOP_WATCH_PATH),
     requiresFiles: requiredFiles(files),
-    reason: hookRegistrationReason('PostToolUseFailure', check),
+    reason,
   }];
 }
 
@@ -217,17 +230,36 @@ export function sessionLogRegistrations(harness, { manifest, root } = {}) {
  * `matcher`, so the tool events fire for every tool. No evidence gate: the
  * hook records nothing until the log is enabled for the repository on this
  * machine, which no file in the repository can say. An install that
- * predates an event is given only the events it lacks.
+ * predates an event is given only the events it lacks. On a missing event
+ * whose entry script can be registered (`mergePlan`'s `mergeable`), this
+ * generator registers the entry script in place of the other hook's
+ * registration when only the logging hook is missing there; when the other
+ * hook is missing too, the event is left to that hook's generator if it
+ * runs in this proposal (its check is among `checks`, absent and
+ * decidable); when the logging hook is not among the hooks missing there,
+ * another generator owns the event and this one proposes nothing for it.
+ * On every other missing event the logging hook is registered by itself,
+ * so no event goes without it.
  */
-function sessionLogProposal({ kitVersion, harness, manifest, root }) {
+function sessionLogProposal({ kitVersion, harness, manifest, root, stack, checks }) {
   const files = hookFiles(SESSION_LOG_PATH, kitVersion);
+  const proposing = id => checks.some(c => c.id === id && c.state === 'absent' && c.decidable !== false);
   const missing = sessionLogRegistrations(harness, { manifest, root }).filter(r => r.state !== 'declared');
-  return [...files, ...missing.map(r => ({
-    kind: 'settings-hook', event: r.event, step: SESSION_LOG_STEP,
-    entry: execEntry(SESSION_LOG_PATH),
-    requiresFiles: requiredFiles(files),
-    reason: hookRegistrationReason(r.event, r),
-  }))];
+  return [...files, ...missing.flatMap(r => {
+    const reason = hookRegistrationReason(r.event, r);
+    const plan = Object.hasOwn(ENTRY_SCRIPTS, r.event) ? mergePlan(r.event, { harness, manifest, root, stack }) : null;
+    if (plan?.state === 'mergeable') {
+      if (!plan.missing.includes(SESSION_LOG_PATH)) return [];
+      if (plan.missing.length === 1) return entryProposals(r.event, plan, { kitVersion, reason });
+      if (proposing(ENTRY_CHECKS[r.event])) return [];
+    }
+    return [{
+      kind: 'settings-hook', event: r.event, step: SESSION_LOG_STEP,
+      entry: execEntry(SESSION_LOG_PATH),
+      requiresFiles: requiredFiles(files),
+      reason,
+    }];
+  })];
 }
 
 export const TOOL_GATE_STEP = 30;
@@ -318,7 +350,7 @@ export const toolGateHookRegistered = ({ harness, manifest, root }) =>
  * the deny rules it lacks are proposed, as for an install made before a rule
  * existed.
  */
-function toolGateProposal({ kitVersion, check, harness, manifest, root }) {
+function toolGateProposal({ kitVersion, check, harness, manifest, root, stack }) {
   const missing = missingToolGateDenyRules(harness);
   const deny = missing.length === 0 ? [] : [{
     kind: 'settings-deny', step: TOOL_GATE_STEP,
@@ -326,12 +358,15 @@ function toolGateProposal({ kitVersion, check, harness, manifest, root }) {
     reason: "deny edits to the whole .claude/scripts/ directory (the kit's hooks and any script of yours kept there), the gate file, the manifest, the learned registry and this machine's kh-harness data directory under ~/.claude/kh-harness/, and deny running the learn subcommands that approve or weaken a gate and \`log purge --yes\`, which removes this machine's ledger, learnings, policy and local gates: a second barrier behind their own terminal check",
   }];
   if (toolGateHookRegistered({ harness, manifest, root })) return deny;
+  const reason = hookRegistrationReason('PreToolUse', check);
+  const plan = mergePlan('PreToolUse', { harness, manifest, root, stack });
+  if (plan.state === 'mergeable') return [...(plan.missing.includes(TOOL_GATE_PATH) ? entryProposals('PreToolUse', plan, { kitVersion, reason }) : []), ...deny];
   const files = hookFiles(TOOL_GATE_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PreToolUse', step: TOOL_GATE_STEP,
     entry: execEntry(TOOL_GATE_PATH),
     requiresFiles: requiredFiles(files),
-    reason: hookRegistrationReason('PreToolUse', check),
+    reason,
   }, ...deny];
 }
 
@@ -613,6 +648,116 @@ function reinjectProposal({ kitVersion, harness, check }) {
   }];
 }
 
+/** The check whose generator registers each event's entry script, as the
+ * generator of the event's hook that is not the logging hook. */
+const ENTRY_CHECKS = Object.freeze({ PreToolUse: 'P5.toolgate', PostToolUse: 'P2.sensor', PostToolUseFailure: 'P2.loopwatch' });
+
+/** The matcher the kit registers each hook of an entry script under when
+ * it registers the hook by itself. */
+const halfMatcher = scriptPath => (scriptPath === LINT_TOUCHED_PATH ? SENSOR_MATCHER : undefined);
+
+/**
+ * How the kit's hooks on `event`, an event of `ENTRY_SCRIPTS`, stand against
+ * its entry script. The hooks wanted there are the event's own, leaving out
+ * the lint hook unless it is already registered or a package declares a
+ * `lint` script, as its generator decides. The hashes recorded here are
+ * those of the manifest's patches on the event that the kit writes for one
+ * of the event's hooks (`kitEntryHashes`), once each, in the manifest's
+ * order:
+ * - `merged`: the entry script is registered on the event, and none of its
+ *   hooks is registered by itself;
+ * - `doubled`: the entry script is registered, and so is one of its hooks
+ *   by itself, which then runs twice. `remove` is the recorded hashes of
+ *   those registrations and of the entry script's, all of which the
+ *   replacement takes out before registering the entry script once; when
+ *   one of them is not as recorded, `remove` is empty and `why` says which;
+ * - `single`: fewer than two hooks are wanted, so there is nothing to merge;
+ * - `separate`: a wanted hook is registered by itself other than as
+ *   recorded here, or a registration recorded here is no longer on the
+ *   event (`why` says which), so the owner changed the event and it is
+ *   left as it is;
+ * - `mergeable`: the entry script can take the place of every registration
+ *   recorded here (`remove`), and runs the wanted hooks not yet registered
+ *   (`missing`).
+ * Which element comes first on the event is never read, and only the
+ * registrations in .claude/settings.json are.
+ */
+export function mergePlan(event, { harness, manifest, root, stack }) {
+  const { path: entry, halves } = ENTRY_SCRIPTS[event];
+  const plan = (state, { missing = [], remove = [], why = null } = {}) => ({ entry, state, missing, remove, why });
+  // `apply` records and replaces registrations in .claude/settings.json
+  // alone, so a registration in another settings file (`settingsFile`, set
+  // by detect-harness.mjs; one without it is taken as in settings.json) is
+  // not one this plan can act on, and is not judged here.
+  const inProjectSettings = r => (r.settingsFile ?? SETTINGS_PATH) === SETTINGS_PATH;
+  const direct = script => directRegistrations(harness, event, script, halfMatcher(script)).filter(inProjectSettings);
+  const recordedFor = scripts => {
+    const kit = new Set(scripts.flatMap(script => [...kitEntryHashes(script, halfMatcher(script))]));
+    return [...new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && kit.has(p.entrySha256)).map(p => p.entrySha256))];
+  };
+  const notAsRecorded = (scripts, recorded) => {
+    const changed = scripts.find(script => direct(script).some(r => !recorded.includes(r.entrySha256)));
+    return changed === undefined ? null : `a registration of ${changed} is not as kh-harness recorded it`;
+  };
+  if (direct(entry).length) {
+    const doubled = halves.filter(half => direct(half).length);
+    if (doubled.length === 0) return plan('merged');
+    const scripts = [...doubled, entry];
+    const recorded = recordedFor(scripts);
+    const why = notAsRecorded(scripts, recorded);
+    if (why !== null) return plan('doubled', { why });
+    const present = new Set(scripts.flatMap(direct).map(r => r.entrySha256));
+    return plan('doubled', { remove: recorded.filter(hash => present.has(hash)) });
+  }
+  const credited = half => registeredHook(harness, event, half, null, { manifest, root, matcher: halfMatcher(half), kitScripts: GENERATOR_SCRIPT_PATHS }).state === 'declared';
+  const wanted = halves.filter(half => half !== LINT_TOUCHED_PATH || hasLintScript(stack) || credited(half));
+  if (wanted.length < 2) return plan('single');
+  const recorded = recordedFor(halves);
+  const why = notAsRecorded(wanted, recorded);
+  if (why !== null) return plan('separate', { why });
+  const registered = new Set((harness.claudeDir.hookRegistrations?.[event] ?? []).filter(inProjectSettings).map(r => r.entrySha256));
+  if (recorded.some(hash => !registered.has(hash))) return plan('separate', { why: `a registration kh-harness recorded on ${event} is no longer there` });
+  return plan('mergeable', { missing: wanted.filter(half => direct(half).length === 0), remove: recorded });
+}
+
+/** The proposals that register `plan.entry` on `event`: the entry script
+ * with every installed script it loads, and its registration, with no
+ * `matcher`, requiring all of them, which takes the place of the
+ * registrations `plan.remove` names when it names any. */
+function entryProposals(event, plan, { kitVersion, reason }) {
+  const files = hookFiles(plan.entry, kitVersion);
+  const registration = {
+    event, step: HOOK_SCRIPTS[plan.entry].step,
+    entry: execEntry(plan.entry),
+    requiresFiles: requiredFiles(files),
+    reason,
+  };
+  return [...files, plan.remove.length > 0 ? { kind: 'settings-hook-replace', ...registration, remove: plan.remove } : { kind: 'settings-hook', ...registration }];
+}
+
+/**
+ * The migration of an install made before the entry scripts: on each event
+ * whose hooks are all registered separately and as recorded (`mergeable`
+ * with nothing `missing`), the entry script replaces them; on each event
+ * where one of them is registered beside the entry script as recorded
+ * (`doubled`), the replacement takes it out. An event with a hook missing
+ * is left to that hook's generator, which registers the entry script
+ * there. Nothing without a manifest, which records nothing to replace.
+ */
+function hookMergeProposal({ kitVersion, harness, manifest, root, stack }) {
+  if (!manifest) return [];
+  return Object.keys(ENTRY_SCRIPTS).flatMap(event => {
+    const plan = mergePlan(event, { harness, manifest, root, stack });
+    if (plan.state === 'mergeable' && plan.missing.length === 0) {
+      return entryProposals(event, plan, { kitVersion, reason: `${event} holds ${plan.remove.length} separate kh-harness registrations; ${plan.entry} runs the same hooks in one process` });
+    }
+    if (plan.state === 'doubled' && plan.why === null) {
+      return entryProposals(event, plan, { kitVersion, reason: `${event} runs kh-harness hooks through ${plan.entry} and by themselves as well; the separate registrations are taken out, so each runs once` });
+    }
+    return [];
+  });
+}
+
 /**
  * Every script a generator registers as a hook, with the kit asset it copies
  * and the runbook step its stamp names. uninstall reverts a hook patch only
@@ -629,6 +774,9 @@ const HOOK_SCRIPTS = Object.freeze({
   [LOOP_WATCH_PATH]: { asset: 'scripts/loop-watch.mjs', step: LOOP_WATCH_STEP, reason: 'no PostToolUseFailure loop-warning hook registered' },
   [SESSION_LOG_PATH]: { asset: 'scripts/session-log.mjs', step: SESSION_LOG_STEP, reason: 'no session-log hook registered' },
   [TOOL_GATE_PATH]: { asset: 'scripts/tool-gate.mjs', step: TOOL_GATE_STEP, reason: 'no PreToolUse gate hook registered' },
+  [DISPATCH_PRE_PATH]: { asset: 'scripts/dispatch-pre-tool.mjs', step: TOOL_GATE_STEP, reason: 'no PreToolUse entry script registered' },
+  [DISPATCH_POST_PATH]: { asset: 'scripts/dispatch-post-tool.mjs', step: 9, reason: 'no PostToolUse entry script registered' },
+  [DISPATCH_FAILURE_PATH]: { asset: 'scripts/dispatch-tool-failure.mjs', step: LOOP_WATCH_STEP, reason: 'no PostToolUseFailure entry script registered' },
 });
 const GENERATOR_SCRIPT_PATHS = Object.freeze(Object.keys(HOOK_SCRIPTS));
 
@@ -640,10 +788,12 @@ const GENERATOR_SCRIPT_PATHS = Object.freeze(Object.keys(HOOK_SCRIPTS));
  * `loadedSiblings`).
  */
 const HOOK_MODULES = Object.freeze({
+  [HARNESS_DISPATCH_PATH]: { asset: 'scripts/harness-dispatch.mjs', step: TOOL_GATE_STEP, reason: 'the shared core the three entry scripts run their hooks through' },
   [HARNESS_GATES_PATH]: { asset: 'scripts/harness-gates.mjs', step: TOOL_GATE_STEP, reason: 'the gate language the PreToolUse gate hook interprets' },
   [HARNESS_LOG_PATH]: { asset: 'scripts/harness-log.mjs', step: TOOL_GATE_STEP, reason: 'the session log library the logging hook writes with and the gate hook records firings with' },
   [HARNESS_SEAL_PATH]: { asset: 'scripts/harness-seal.mjs', step: SESSION_LOG_STEP, reason: 'the module the logging hook loads at session start to seal closed sessions and expire old content' },
   [REDACT_PATH]: { asset: 'scripts/harness-redact.mjs', step: 9, reason: 'the redaction and shared-path module every hook script loads' },
+  [HARNESS_EXTENSIONS_PATH]: { asset: 'scripts/harness-extensions.mjs', step: TOOL_GATE_STEP, reason: 'the loader for the PreToolUse extensions another plugin registers' },
 });
 const HOOK_MODULE_PATHS = Object.freeze(Object.keys(HOOK_MODULES));
 
@@ -694,12 +844,44 @@ export function everyLoadedSibling(path) {
 /** What the kit writes at the installed path `path`: its asset under the
  * machinery stamp, after the shebang for a hook script and first for a
  * module. */
-function installedScriptProposal(path, kitVersion) {
+export function installedScriptProposal(path, kitVersion) {
   const { asset, step, reason } = INSTALLED_SCRIPTS[path];
   const contents = Object.hasOwn(HOOK_SCRIPTS, path)
     ? read(asset).replace('#!/usr/bin/env node\n', `#!/usr/bin/env node\n${machineryStamp(kitVersion, `runbook step ${step}`, '//')}\n`)
     : `${machineryStamp(kitVersion, "shared module loaded by the kit's hook scripts", '//')}\n${read(asset)}`;
   return { kind: 'file', path, step, contents, assetSource: asset, reason };
+}
+
+/** Where the installed script at `path` stands on disk against what this
+ * kit writes there today, line endings aside: `current`; `other-version`
+ * when it is not that but carries another kh-harness version's stamp;
+ * `other` for anything else, including what cannot be read or is not a
+ * regular file; or `missing`, which is also a path Node could not load a
+ * module from.
+ * Read whatever the manifest records, since what runs is the file on
+ * disk. */
+export function installedScriptStatus(root, path, kitVersion) {
+  const expected = installedScriptProposal(path, kitVersion).contents;
+  const file = join(root, path);
+  let st;
+  try {
+    st = statSync(file, { throwIfNoEntry: false });
+  } catch (error) {
+    // Node cannot load a path through a non-directory or a link loop either.
+    return error?.code === 'ENOTDIR' || error?.code === 'ELOOP' ? 'missing' : 'other';
+  }
+  if (st === undefined) return 'missing';
+  // A file larger than twice what is expected cannot be it even with every
+  // LF made CRLF, so it is not read.
+  if (!st.isFile() || st.size > 2 * Buffer.byteLength(expected)) return 'other';
+  try {
+    const bytes = readFileSync(file);
+    if (contentMatches(bytes, sha256(expected))) return 'current';
+    const version = stampVersion(bytes.toString('utf8'));
+    return version !== null && version !== kitVersion ? 'other-version' : 'other';
+  } catch {
+    return 'other';
+  }
 }
 
 /**
@@ -718,6 +900,37 @@ function hookFiles(scriptPath, kitVersion) {
  * hook loads, with the hash of what this kit writes there. `apply` registers
  * the hook only when every one is on disk holding that. */
 const requiredFiles = files => files.map(f => ({ path: f.path, sha256: sha256(f.contents) }));
+
+/**
+ * The installed files `contract.json` speaks for: what contract `CONTRACT`
+ * promises is done by these files when they run. The contract file's
+ * proposal requires each of them (`requiresFiles`), so `apply` writes it
+ * only after them and only beside this kit's bytes in every one, and drops
+ * it while any is held. A promise kept by another installed file adds that
+ * file here.
+ */
+export const CONTRACT_FILES = Object.freeze([DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]);
+
+/** The contract file this kit writes: each of `CONTRACT_FILES` with the LF
+ * SHA-256 of what this kit installs there. */
+export function kitContractText(kitVersion) {
+  return contractFileText(kitVersion, Object.fromEntries(CONTRACT_FILES.map(path => [path, lfSha256(Buffer.from(installedScriptProposal(path, kitVersion).contents))])));
+}
+
+/** The contract file, requiring every file it speaks for. One already on
+ * disk holding exactly this is recorded by `apply`, not written. None where
+ * `.claude` is a link, through which no plugin may read one, whether it is
+ * absent or an older kit wrote it. */
+function contractProposal({ kitVersion, root }) {
+  if (root !== undefined && claudeIsLink(root)) return [];
+  const contents = kitContractText(kitVersion);
+  const onDisk = root !== undefined && holdsExactly(root, CONTRACT_PATH, contents);
+  return [{
+    kind: 'file', path: CONTRACT_PATH, step: TOOL_GATE_STEP, contents,
+    reason: onDisk ? 'on disk as this kit writes it, and not recorded in the manifest' : 'no contract file found',
+    requiresFiles: requiredFiles(CONTRACT_FILES.map(path => installedScriptProposal(path, kitVersion))),
+  }];
+}
 
 const KITSKEW_ID = 'P0.kitskew';
 
@@ -863,6 +1076,20 @@ export function heldHookEvidence(scriptPath, causes) {
     `To install this hook, ${releaseAdvice(causes)}, then run apply again; left as it is, this hook stays off.`;
 }
 
+/** The evidence line of the contract check while a file it speaks for is
+ * held. */
+export function heldContractEvidence(causes) {
+  return `${CONTRACT_PATH} is not written while kh-harness keeps ${keptList(causes)} as ${causes.length === 1 ? 'it is' : 'they are'}: ` +
+    'the contract number speaks for the PreToolUse entry script and every file it loads, so it is written only beside the ones this kit installs';
+}
+
+/** The question the contract check asks while a file it speaks for is
+ * held. */
+export function heldContractQuestion(causes) {
+  return `kh-harness keeps ${keptList(causes)} as ${causes.length === 1 ? 'it is' : 'they are'}, and so does not write ${CONTRACT_PATH}. ` +
+    `${releaseAdvice(causes).replace(/^./, c => c.toUpperCase())}, then run apply again; or leave ${causes.length === 1 ? 'it' : 'them'}, and no contract file is written. Which?`;
+}
+
 /** The one question every hook check held by `causes` asks, so the reports
  * that list questions state the hold once. */
 export function heldQuestion(causes) {
@@ -870,20 +1097,30 @@ export function heldQuestion(causes) {
     `${releaseAdvice(causes).replace(/^./, c => c.toUpperCase())}, then run apply again; or leave ${causes.length === 1 ? 'it' : 'them'}, and the hooks not yet installed stay off. Which?`;
 }
 
+/** The causes that hold the proposal `p`: its own path's, or those of the
+ * first file it requires that is held; null when nothing holds it. */
+function heldBy(held, p) {
+  return held.get(p.path) ?? (p.requiresFiles ?? []).map(f => held.get(f.path)).find(Boolean) ?? null;
+}
+
 /**
  * Every file the manifest records, against what this kit generates for it
  * today. `updates` are proposals for the files `recordedFileStatus` calls
  * `update`; `heldBack` the files it calls `update` that `heldScripts`
- * holds, each with the `causes` that hold it; `kept` names the files that
- * are not the kit's to write, with the status that says why; `unproduced`
+ * holds, or that require a file it holds, each with the `causes` that hold
+ * it; `kept` names the files that are not the kit's to write, with the
+ * status that says why; `unproduced`
  * the recorded paths no generator produces for this repository any more,
  * which are left alone. A `heldBack` or `kept` entry carries `version`,
- * the kit version its stamp names on disk, or null.
+ * the kit version its stamp names on disk, or null. `added` are proposals
+ * for the installed scripts an updated script loads that are neither
+ * recorded nor on disk, so an update never leaves a script beside a sibling
+ * nothing writes; one on disk and not recorded holds its unit instead.
  */
 export function kitSkew({ kitVersion, harness, root, stack, checks, files, manifest }) {
   const produced = currentKitFiles({ kitVersion, harness, root, stack, checks, files, manifest });
   const held = heldScripts(root, manifest, kitVersion);
-  const skew = { versions: '', current: [], updates: [], heldBack: [], kept: [], unproduced: [] };
+  const skew = { versions: '', current: [], updates: [], added: [], heldBack: [], kept: [], unproduced: [] };
   const carried = [];
   for (const entry of manifest.files) {
     const p = produced.get(entry.path);
@@ -896,8 +1133,16 @@ export function kitSkew({ kitVersion, harness, root, stack, checks, files, manif
     const status = recordedFileStatus(root, manifest, entry, p.contents);
     if (status === 'current') skew.current.push(entry.path);
     else if (status !== 'update') skew.kept.push({ path: entry.path, why: status, version });
-    else if (held.has(entry.path)) skew.heldBack.push({ path: entry.path, causes: held.get(entry.path), version });
+    else if (heldBy(held, p)) skew.heldBack.push({ path: entry.path, causes: heldBy(held, p), version });
     else skew.updates.push({ ...p, reason: updateReason(version, kitVersion) });
+  }
+  const recorded = new Set(manifest.files.map(f => f.path));
+  for (const update of skew.updates) {
+    if (!Object.hasOwn(INSTALLED_SCRIPTS, update.path)) continue;
+    for (const path of everyLoadedSibling(update.path)) {
+      if (recorded.has(path) || held.has(path) || existsSync(join(root, path)) || skew.added.some(p => p.path === path)) continue;
+      skew.added.push({ ...installedScriptProposal(path, kitVersion), reason: `${path} is loaded by an installed script this kit updates` });
+    }
   }
   skew.versions = kitVersions(carried, kitVersion);
   return skew;
@@ -938,9 +1183,14 @@ const GENERATORS = {
   'P5.failures': failuresScaffoldProposal,
   'P5.sessionlog': sessionLogProposal,
   'P5.toolgate': toolGateProposal,
+  'P5.contract': contractProposal,
+  'P0.hookmerge': hookMergeProposal,
   // Each update goes through `buildProposals`' recorded-path branch like any
   // other proposal for a recorded file.
-  [KITSKEW_ID]: ctx => kitSkew(ctx).updates,
+  [KITSKEW_ID]: ctx => {
+    const skew = kitSkew(ctx);
+    return [...skew.updates, ...skew.added];
+  },
   // No entry for 'P3.intent', deliberately and permanently: like steps 6
   // and 7a, docs/INTENT.md is written by the skill after reading the
   // repository and gated on its full content (propose.test.mjs's "SECRET:
@@ -988,9 +1238,9 @@ function recordedFileStatus(root, manifest, entry, contents) {
  * file the owner edited or deleted is never proposed again: the edit or the
  * deletion is a decision, not a gap to fill.
  *
- * A script `heldScripts` holds is not written, and a hook that loads one is
- * not registered, whatever the hook's check says: `root` is what lets that
- * be read, and without it nothing is held.
+ * A script `heldScripts` holds is not written, and a hook or file whose
+ * `requiresFiles` names one is not proposed, whatever its check says:
+ * `root` is what lets that be read, and without it nothing is held.
  */
 export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files, generators = {} }) {
   const registry = { ...GENERATORS, ...generators };
@@ -1004,8 +1254,7 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
     const gen = registry[c.id];
     if (!gen) continue;
     for (const p of gen({ kitVersion, harness, root, stack, checks, files, manifest, check: c })) {
-      if (p.kind === 'file' && held.has(p.path)) continue;
-      if (p.kind === 'settings-hook' && (p.requiresFiles ?? []).some(f => held.has(f.path))) continue;
+      if (heldBy(held, p)) continue;
       if (p.kind === 'file' && alreadyWritten.has(p.path)) {
         // Once per run: the first generator to want a stale file gets the
         // update; later ones find it in `recorded` no longer and in
@@ -1030,4 +1279,4 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
 // must produce something when applied. The test membership-tests each real
 // check's id against this table, not a hand-kept list of ids, so a
 // capability added here later is covered with no test edit.
-export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };
+export { BRIEF_PATH, LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, REDACT_PATH, BOOTSTRAP_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, RULES_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, HOOK_MODULE_PATHS, INSTALLED_SCRIPT_PATHS };

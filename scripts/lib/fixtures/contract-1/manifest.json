@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "kitVersion": "0.2.0",
+  "installedAt": "2026-11-25T12:00:00.000Z",
+  "files": [
+    {
+      "path": ".claude/kh-harness/contract.json",
+      "sha256": "eadfe4c9f25a653a3a7c4936116749f5bbc000b9293a63021ab165ce8e39916f",
+      "step": 30,
+      "writtenAt": "2026-11-25T12:00:00.000Z"
+    }
+  ],
+  "settingsPatches": [
+    {
+      "event": "PreToolUse",
+      "container": "/hooks/PreToolUse",
+      "entrySha256": "443690b8a9e04fdee0c986a016c5ae6a4c8b9fd2445330efa387376e8e9a5bd8",
+      "step": 30,
+      "checkId": "P5.toolgate",
+      "appliedAt": "2026-11-25T12:00:00.000Z"
+    },
+    {
+      "event": "permissions.deny",
+      "container": "/permissions/deny",
+      "entrySha256": "5348c00fed4b2f972ad450bc123a94d2d99b22e17f7d44c5ae66b916a7513739",
+      "rules": ["Edit(/.claude/kh-harness/**)"],
+      "step": 30,
+      "checkId": "P5.toolgate",
+      "appliedAt": "2026-11-25T12:00:00.000Z"
+    }
+  ],
+  "dirsCreated": [".claude/scripts", ".claude/kh-harness"],
+  "settingsCreated": true,
+  "learnings": [
+    { "id": "L1", "gateSha256": "c2875944cefeea44b0b38c6ab5a3f4b2dd6434b0cba479226fd3ff57fb50ae8b" }
+  ]
+}
