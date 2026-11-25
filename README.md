@@ -376,7 +376,14 @@ flowchart LR
 ### What runs during a session
 
 `apply` installs up to seven hook scripts in `.claude/scripts/`. Claude
-Code runs each on the event it is registered for.
+Code runs each on the event it is registered for. On `PreToolUse` and
+`PostToolUseFailure`, and on `PostToolUse` where the lint hook is
+installed, the event's two hooks are registered together as one entry script (`dispatch-pre-tool.mjs`,
+`dispatch-post-tool.mjs`, `dispatch-tool-failure.mjs`) that runs them one
+after the other in a single process, so each of those events starts one
+kit process, not two. An install made before the entry scripts is moved
+to them by the next `apply`, which `detect` reports as `P0.hookmerge`,
+except on an event whose kit registrations you changed.
 
 | Hook script | Event | What it does | Can it block? |
 |---|---|---|---|

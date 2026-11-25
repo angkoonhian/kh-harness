@@ -154,6 +154,14 @@ test('F5: the README discloses that installing the hooks executes this repositor
   assert.ok(readme.includes('.claude/kh-harness.manifest.json'), 'the manifest is part of the contract a user must know');
 });
 
+test('the guide names the three entry scripts, the core and the merge check wherever it counts the kit\'s scripts or lists its checks', () => {
+  const how = readFileSync(resolve(import.meta.dirname, '..', '..', 'docs/guide/how-it-works.md'), 'utf8');
+  for (const name of ['dispatch-pre-tool.mjs', 'dispatch-post-tool.mjs', 'dispatch-tool-failure.mjs', 'harness-dispatch.mjs', 'P0.hookmerge']) assert.ok(how.includes(name), name);
+  assert.match(how, /7 hook scripts, 3 entry scripts and 5 modules/);
+  assert.doesNotMatch(how, /states no order between them/);
+  assert.match(readFileSync(README, 'utf8'), /dispatch-pre-tool\.mjs/);
+});
+
 test('the execution disclosure names the UserPromptSubmit re-injection hook and says it executes nothing', () => {
   assert.match(EXECUTION_DISCLOSURE, /UserPromptSubmit/);
   // The disclosure wraps at ~75 columns, so "executes" and "nothing" may sit

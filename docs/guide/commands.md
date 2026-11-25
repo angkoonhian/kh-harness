@@ -92,6 +92,8 @@ Phase 0 — Reconnaissance
         no credential patterns matched in any file this sweep could read (binary, build-output and over-512 KB files are skipped by design; a file that could not be READ is reported, not skipped silently)
   [ ] P0.recon           absent
       → run the recon prompt to write docs/harness/recon.md (the skill drafts this; apply does not write it)
+  [-] P0.hookmerge       n/a
+        no tool-call event holds two kh-harness hooks
   [-] P0.kitskew         n/a
         no .claude/kh-harness.manifest.json: no file is recorded as installed
 …
@@ -109,7 +111,7 @@ Phase 5 — Learning
   [ ] P5.failures        absent
       → scaffold docs/harness/FAILURES.md — generated EMPTY; each failure kind is named by hand, with the recurrence signatures it covers
   [ ] P5.sessionlog      absent
-      → install scripts/session-log.mjs with the three modules it imports (harness-log.mjs, harness-seal.mjs and harness-redact.mjs), and register it on the 16 logged events — it records nothing until the log is enabled for this repository on this machine
+      → install scripts/session-log.mjs with the three modules it imports (harness-log.mjs, harness-seal.mjs and harness-redact.mjs), and register it on the 16 logged events, through the entry script on an event that has one — it records nothing until the log is enabled for this repository on this machine
   [ ] P5.toolgate        absent
       → install scripts/tool-gate.mjs, register a PreToolUse hook that applies learned gates before every tool call, deny edits to the whole .claude/scripts/ directory, the gate file, the manifest, the learned registry and this machine's kh-harness data directory, and deny running the learn subcommands that approve or weaken a gate and `log purge --yes`, which removes them
   [-] P5.integrity       n/a
@@ -165,6 +167,31 @@ What that looks like, and what ends it, is under
 [a hook script is kept, so no hook script is written](troubleshooting.md#a-hook-script-is-kept-so-no-hook-script-is-written).
 The stamp on a hook script says "Do not edit"; scaffolds such as
 `RULES.md` keep "Edit freely".
+
+**An older install is moved to the entry scripts.** Where an install made
+before the entry scripts has the two kit hooks of `PreToolUse`,
+`PostToolUse` or `PostToolUseFailure` registered separately, each as the
+manifest recorded it, `detect`'s `P0.hookmerge` is `absent` and `apply`
+proposes replacing them with the event's entry script. The dry run shows
+each as
+
+    --- .claude/settings.json (hook: PreToolUse, replacing 2 registrations)  [P0.hookmerge]
+
+followed by the registrations it takes out, as removed lines, and the entry
+script, as an added one. `--yes` reports it as
+
+    patched    .claude/settings.json (PreToolUse; 2 separate registrations removed)
+
+An event whose kit registrations you edited or removed is not proposed;
+`P0.hookmerge` names it with the reason, and the rest of the install is
+moved. When, as `--yes` writes, the settings file no longer holds a
+recorded registration as it was recorded, the replacement is not made and
+`apply` prints
+`skipped    .claude/settings.json (registration-changed)`; a replacement
+that would take out a registration the manifest does not record, or one
+that runs anything but kit scripts, prints `(not-recorded)` instead.
+Nothing of that event is changed either way. What the entry scripts do is
+under [the entry scripts](how-it-works.md#the-entry-scripts).
 
 | Flag | What it does |
 |---|---|

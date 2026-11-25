@@ -47,6 +47,8 @@ The 16 events are `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
 The harness line is written at session start, on a model switch, and on a
 prompt whose identity or model has moved since the last one. A change to a
 file the kit did not write, such as your own rules, changes neither hash.
+`base` changes when an install is moved to the entry scripts, as it does
+with any kit update, and not on an `apply` that has nothing to do.
 
 The `root` on a failure is what lets a reader in another worktree make the
 error line's paths relative to the root they were printed under, so a

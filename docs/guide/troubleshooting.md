@@ -449,6 +449,60 @@ installed it, and run `apply --yes` again. `uninstall --yes` followed by
 `apply --yes` does not do this for an edited file; see
 [a hook script is kept, so no hook script is written](#a-hook-script-is-kept-so-no-hook-script-is-written).
 
+### An entry script says a file is missing or older
+
+    kh-harness dispatch-pre-tool: .claude/scripts/harness-dispatch.mjs <problem>, so no kh-harness hook ran on PreToolUse — re-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.
+
+    kh-harness dispatch: .claude/scripts/<hook file> <problem>, so the <name> hook did not run on this event — re-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.
+
+The three entry scripts, `dispatch-pre-tool.mjs`, `dispatch-post-tool.mjs`
+and `dispatch-tool-failure.mjs`, run their event's two hooks through the
+shared core `harness-dispatch.mjs`. `<problem>` is `is missing or cannot
+be loaded`, or that the file is older than the entry script and lacks what
+it needs.
+
+- The first notice, from the entry script named at its start: the core is
+  missing or older, so neither hook ran on that event.
+- The second: one hook's file is missing or older. `<name>` is `gate`,
+  `log`, `lint` or `loop`. That hook did not run; the other one did.
+
+Either notice is a message shown to you. It is given on every call of the
+event, not once per session,
+and never changes the entry script's exit code. What ends it is the same remedy as
+for a hook's own notice, above: `apply --yes`, and restoring a file
+`apply` reports as `kept` or `gone`.
+
+### Running only one hook of a tool-call event
+
+On `PreToolUse`, `PostToolUse` and `PostToolUseFailure`, one entry script
+runs both of the event's kit hooks, so its registration in
+`.claude/settings.json` turns both on or off together. To run only one of
+them, replace the entry script's registration with that hook's own. For
+the gate hook alone on `PreToolUse`:
+
+```json
+"PreToolUse": [
+  {
+    "hooks": [
+      { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/scripts/tool-gate.mjs"] }
+    ]
+  }
+]
+```
+
+The lint sensor's own registration carries `"matcher": "Write|Edit"`
+beside `hooks`, as the kit wrote it before the entry scripts.
+
+- `detect` accepts either form: a hook registered by itself counts as
+  registered, as one run by its entry script does. `P0.hookmerge` reports
+  the event as left on separate registrations, because the registration
+  is not one kh-harness recorded.
+- `apply` will propose the other hook again, on its own registration,
+  each time it runs, and `--yes` installs it with the rest of the run.
+- `uninstall` takes the registration you wrote for the kit's own, edited:
+  it leaves it registered and keeps the scripts it loads, as under
+  [uninstall could not revert a hook entry, and kept its script](#uninstall-could-not-revert-a-hook-entry-and-kept-its-script).
+
 ## log
 
 ### maintain exits 2
