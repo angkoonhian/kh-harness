@@ -36,6 +36,7 @@ All paths are relative to the repository root, with `/` as the separator.
 - [The manifest](#the-manifest)
 - [The `PreToolUse` extension point](#the-pretooluse-extension-point)
 - [Limits](#limits)
+- [What contract 1 gives against the agent being gated](#what-contract-1-gives-against-the-agent-being-gated)
 - [The extensions file and its modules are repository files](#the-extensions-file-and-its-modules-are-repository-files)
 - [A worked extension](#a-worked-extension)
 - [Appending to the session log](#appending-to-the-session-log)
@@ -804,6 +805,28 @@ The file is judged in this order, and the first problem found is named:
 
 A file holding `[]` lists no extension and blocks nothing.
 
+### Sharing the file with other plugins
+
+Several plugins may each register an extension in the one file. A plugin
+that writes it keeps to these rules, and may rely on every other plugin
+written against this contract keeping to them:
+
+- Change only its own entry, matched by `id`. Keep every other entry as it
+  is, with all its fields, in its place in the array.
+- Write the file whole, to a temporary file in `.claude/kh-harness/`, and
+  rename it over `extensions.json`, so a hook never reads a half-written
+  file.
+- On removal, remove only its own entry. Delete the file only when no
+  entry would be left.
+- Add an entry only while the file lists fewer than 8 (`entriesMax`). With
+  8 already there, refuse to install and say why; never drop another
+  plugin's entry to make room.
+
+What happens when a plugin does not: an entry dropped or overwritten turns
+that plugin's gate off without a word, since the hook runs what the file
+lists and nothing else; a file left half-written or holding more than 8
+entries is malformed, and blocks every tool call until it is repaired.
+
 ### How each extension is run
 
 On each `PreToolUse` call whose hook input names a tool, the entry script
@@ -1028,6 +1051,30 @@ holds them:
 | a module on disk | `moduleMaxBytes` 1,048,576 bytes |
 | a block message, as returned and once cleaned | `messageMax` 300 characters |
 | loading a module | `loadMaxMs` 1,000 milliseconds |
+
+## What contract 1 gives against the agent being gated
+
+Contract 1 detects accident, not an agent that sets out to get past it.
+An agent with a shell can delete or empty `extensions.json`, empty or stub
+an installed script, rewrite a module together with its recorded hash, or
+edit either settings file.
+
+- The hook notices, on the next call, only damage: a module that is
+  missing or does not match its hash, a malformed extensions file, and a
+  core or loader that is missing or from another kit version. Each of
+  these blocks, or applies the entry's `onFailure`.
+- It never notices removal: with the extensions file gone, or the
+  registration taken out of `.claude/settings.json`, nothing runs, and so
+  nothing can say so.
+- The checks of [what a plugin must check](#what-a-plugin-must-check-before-relying-on-contract-1)
+  notice either the next time they run, and not before.
+
+So a plugin whose gate must hold against its own agent protects
+`.claude/scripts/**`, `.claude/kh-harness/**`, `.claude/settings.json` and
+`.claude/settings.local.json` by its own means, such as its extension and
+its commit gate, and runs the checks again where it matters, such as
+before it accepts a commit. The deny rules `apply` installs stop Claude
+Code's own tools only; they do not stop a shell command.
 
 ## The extensions file and its modules are repository files
 

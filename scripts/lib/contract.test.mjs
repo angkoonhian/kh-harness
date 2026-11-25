@@ -159,7 +159,8 @@ test('a contract file swapped for a link between its lstat and its open is not f
 // with `"disableAllHooks": "true"` (a string) it did not fire; with
 // `"disableAllHooks": true` it did not fire; with a wrong-shaped sibling
 // event (`"Stop": {}`) beside the PreToolUse registration it still fired.
-// So any disableAllHooks value but `false` is taken as turning hooks off.
+// So `true` and `"true"` turn hooks off; how Claude Code reads any other
+// value but `false` was not seen, and the verifier refuses it too.
 // So a registration that runs before every call and can block is one with
 // no matcher (or "" or "*") and no key on the hook beyond `type`, `command`
 // and `args`, in a project whose settings files do not set disableAllHooks.
