@@ -68,6 +68,19 @@ Exit codes: 0; 2 for a path that does not exist, a second path, or a
 `detect.json` that could not be written. `detect` refuses nothing, so it
 never exits 3.
 
+Two checks concern other plugins. `P5.extensions` lists each extension in
+`.claude/kh-harness/extensions.json` with its version, whether its module
+matches the sha256 recorded for it, and its `onFailure`, and says whether
+the `PreToolUse` entry script that runs them is registered and is this
+kit's; it never loads a module and never proposes anything, and is `n/a`
+without the file. `P5.contract` reads `.claude/kh-harness/contract.json`:
+`absent` with a proposal on an install without it; `declared` when it is
+the file this kit writes, the manifest records it, and every file it
+speaks for is this kit's; `failing` otherwise, for example when it is
+reached through a link or a file it speaks for has changed since, with a
+line naming the cause. See
+[the contract](../CONTRACT.md).
+
 In `detect.json`, `harness.claudeDir.hookRegistrations` lists the hooks
 registered in `.claude/settings.json` (the earlier `hookEvents` field is
 gone), and `harness.remotesError` holds the reason when git could not list
@@ -118,8 +131,13 @@ Phase 5 — Learning
         no .claude/kh-harness.manifest.json: no installed file is recorded, so none was checked
         no kh-harness hook is registered in .claude/settings.json
         .claude/kh-harness/gates.json: no committed gate file
+  [-] P5.extensions      n/a
+        no .claude/kh-harness/extensions.json: no plugin has registered an extension
+  [ ] P5.contract        absent
+        no .claude/kh-harness/contract.json
+      → write .claude/kh-harness/contract.json, which tells another plugin which kh-harness contract this install honours
 
-12 proposals: 9 apply can write, 2 for the skill to draft, 1 for a human. Nothing has been written except docs/harness/detect.json.
+13 proposals: 10 apply can write, 2 for the skill to draft, 1 for a human. Nothing has been written except docs/harness/detect.json.
 …
 ```
 
@@ -219,7 +237,7 @@ which, and for a manifest that cannot be read.
 ```
 $ node scripts/apply.mjs <repo>
 …
-kh-harness: 35 actions to close 9 capability gaps for <repo>
+kh-harness: 36 actions to close 10 capability gaps for <repo>
 
 --- docs/harness/RULES.md  [P3.rules]
     no rules registry found
@@ -267,6 +285,11 @@ patched    .claude/settings.json (permissions.deny)
 …
 ```
 
+The contract file is written after every other file, and only when each
+file it speaks for holds this kit's bytes: its line,
+`wrote      .claude/kh-harness/contract.json`, comes after the other
+`wrote` lines.
+
 `--yes` prints the proposals again, with the settings diffs, before the
 `wrote` and `patched` lines.
 
@@ -284,8 +307,13 @@ kit generator could have written them; as with `apply`, the whole
 `.claude/settings.json` is re-serialised, keeping its content, indentation
 and trailing newline and normalising key order and inline spacing, and it
 is written once, by a temporary file and a rename. The settings are
-reverted before any file is removed. Without `--yes` it is a dry run. The
-repository path is required: there is no default.
+reverted before any file is removed, and of the files,
+`.claude/kh-harness/contract.json` is removed first, so a stopped run never
+leaves the contract number beside missing scripts. Without `--yes` it is a
+dry run. The repository path is required: there is no default.
+`.claude/kh-harness/extensions.json` and the modules it lists were written
+by another plugin and are not in the manifest, so `uninstall` leaves them;
+with the entry script removed, nothing runs them.
 
 - **A hook entry left registered**: Claude Code runs every registered hook
   entry on its event, and a script that is gone fails there. So a kit hook

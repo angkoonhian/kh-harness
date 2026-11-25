@@ -65,6 +65,10 @@ removes nothing, is not denied). The step is `declared` only when the hook and e
 of these rules are present; an existing install missing some is proposed
 exactly those.
 
+`apply` also writes `.claude/kh-harness/contract.json` at this step
+(`P5.contract`), the contract number another plugin reads, last and only
+beside this kit's files; see `docs/CONTRACT.md` in kh-harness.
+
 ## Step 31 — the session log hook
 
 *Script.* *Verified against `gap-model.mjs`'s `P5.sessionlog`,
@@ -94,6 +98,10 @@ approved or on a kit hook that is registered with nothing recording what was
 installed; `n/a` only when it finds neither. It reads only the repository
 and proposes nothing: restoring a file or approving a gate
 is the owner's decision. Report each failing line as `detect` printed it.
+
+The same step's `P5.extensions` lists each extension another plugin
+registered in `.claude/kh-harness/extensions.json`, with whether its
+module matches its recorded sha256; it loads no module and writes nothing.
 
 ## The gate
 

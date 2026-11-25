@@ -422,6 +422,41 @@ first, and the call is denied if any of them blocks. A last line
 would pass 4,000 characters; those gates' firings are recorded all the
 same.
 
+### Every tool call is blocked by the extensions file
+
+Every tool call is denied, and Claude is shown one of these:
+
+    kh-harness: .claude/kh-harness/extensions.json cannot be used (<problem>), so every tool call is blocked. Repair or remove the file outside this session.
+
+    kh-harness: .claude/scripts/<file> <problem> while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes, or remove the extensions file, outside this session.
+
+The first: the extensions file another plugin wrote is not one the
+`PreToolUse` entry script can read. `<problem>` says why: for example it is
+not JSON (a byte order mark at its start counts), lists more than 8
+extensions, has an entry that is not as [the contract](../CONTRACT.md#the-extensions-file)
+describes one, or `.claude/kh-harness` is a link. The second: `<file>` is
+`harness-dispatch.mjs` or `harness-extensions.mjs`, and it is missing or
+older than the entry script, so nothing can run the extensions the file
+lists.
+
+Since every tool call is blocked, Claude cannot fix it in the session. In
+a terminal outside Claude Code: for the second, run
+`node scripts/apply.mjs <repo> --yes` from kh-harness; for the first,
+reinstall the plugin that wrote the file, or remove the file. `detect`
+names the problem under `P5.extensions`.
+
+### An extension says it checks no call
+
+    kh-harness extension <id>: <reason>, so it checks no call (onFailure: allow).
+
+Shown to you once per session. The extension `<id>` registered in
+`.claude/kh-harness/extensions.json` could not decide calls: `<reason>`
+says why, for example `its module file does not match the sha256 recorded
+for it`. Its entry says `onFailure: allow`, so calls go ahead without its
+check. Reinstall the plugin that registered it. With `onFailure: block`,
+the same failure blocks every call instead, with a message ending
+`so this call is blocked (onFailure: block).`
+
 ### A hook says a shared module is missing or older
 
     kh-harness lint-touched: .claude/scripts/harness-redact.mjs <problem>, so edited files are not linted — re-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared asset; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.
@@ -469,10 +504,12 @@ it needs.
   as an older kit's `apply` registers it.
 
 Either notice is a message shown to you. It is given on every call of the
-event, not once per session,
-and never changes the entry script's exit code. What ends it is the same remedy as
-for a hook's own notice, above: `apply --yes`, and restoring a file
-`apply` reports as `kept` or `gone`.
+event, not once per session, and never changes the entry script's exit
+code. What ends it is the same remedy as for a hook's own notice, above:
+`apply --yes`, and restoring a file `apply` reports as `kept` or `gone`.
+On `PreToolUse`, while `.claude/kh-harness/extensions.json` exists, the
+first notice is replaced by a block of every call; see
+[every tool call is blocked by the extensions file](#every-tool-call-is-blocked-by-the-extensions-file).
 
 ### Running only one hook of a tool-call event
 
@@ -564,6 +601,26 @@ From `log maintain`. A session is sealed only after 10 minutes without a new
 event. Run it again later.
 
 ## detect
+
+### P5.extensions is failing
+
+`.claude/kh-harness/extensions.json` is there, and one of these holds:
+
+- it cannot be used: the line says why, and that every tool call is
+  blocked;
+- a module it lists does not match its recorded sha256, is missing, is not
+  a file under `.claude/` in this repository, or could not be read; the
+  line ends with what that does to a call, by the entry's `onFailure`;
+- `.claude/scripts/dispatch-pre-tool.mjs` is not registered on
+  `PreToolUse`, so no extension runs;
+- the entry script, `harness-dispatch.mjs`, `harness-extensions.mjs` or a
+  module it loads is missing or is not the file this kit installs. Run
+  `apply --yes`; `P0.kitskew` says whether it can update each one.
+
+kh-harness never writes the extensions file or its modules. A module that
+does not match is fixed by reinstalling the plugin that registered it; a
+malformed file, by that plugin or by removing the file. `detect` never
+loads a module.
 
 ### P5.integrity is failing
 

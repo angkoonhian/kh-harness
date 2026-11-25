@@ -177,6 +177,16 @@ Notes on the table:
 `apply`'s dry run prints its own account of what each hook reads and runs,
 under `WHAT THE HOOKS EXECUTE`, before anything is installed.
 
+On `PreToolUse`, the entry script first runs the extensions listed in
+`.claude/kh-harness/extensions.json`, a file another plugin's installer
+writes, each module in file order, before the gate hook and the session
+log. An extension can block the call.
+One that cannot decide applies its own `onFailure`: the call is blocked, or
+you are told once per session that it checks no call. An extensions file
+that cannot be read blocks every call. Without the file, nothing of this
+runs and the loader is never loaded. What another plugin may rely on, and
+what an extension can and cannot do, is in [the contract](../CONTRACT.md).
+
 ### The entry scripts
 
 Each tool-call event starts one process for the kit, not two. The two
@@ -187,7 +197,7 @@ is registered this way; an older one is moved to it as described under
 
 | Entry script | Registered on | Runs, in this order | Installed |
 |---|---|---|---|
-| `dispatch-pre-tool.mjs` | `PreToolUse` | `tool-gate.mjs`, then `session-log.mjs` | with the gate hook |
+| `dispatch-pre-tool.mjs` | `PreToolUse` | the extensions `.claude/kh-harness/extensions.json` lists, when there is that file; then `tool-gate.mjs`, then `session-log.mjs` | with the gate hook |
 | `dispatch-post-tool.mjs` | `PostToolUse` | `session-log.mjs`, then `lint-touched.mjs` | only where the lint hook is installed |
 | `dispatch-tool-failure.mjs` | `PostToolUseFailure` | `session-log.mjs`, then `loop-watch.mjs` | with the loop warning |
 
@@ -199,13 +209,15 @@ is registered this way; an older one is moved to it as described under
   the session log alone.
 - A hook that fails, or returns something the entry script cannot read,
   adds nothing, and the other hook still runs.
-- A hook that leaves a fault behind it, such as an error thrown later from
-  a callback, a rejected promise nobody handles, or work that can never
-  finish, ends the run instead: the entry script writes what the hooks
-  before it returned, so a gate's denial still stands, exits with their
-  code and prints no stack trace. A hook that hangs without ever yielding
-  is ended by Claude Code's own hook timeout, and then nothing from that
-  event's entry script is delivered.
+- A fault a hook leaves behind it, such as an error thrown later from a
+  callback or a rejected promise nobody handles, changes nothing: the
+  hooks after it still run, and nothing is printed for it. A hook whose
+  work never finishes ends the run: the entry script writes what the hooks
+  before it returned, so a gate's denial still stands, and exits with their
+  code, as soon as nothing else is left to run, or at 120 seconds when
+  something keeps the process busy. A hook that hangs without ever
+  yielding is ended by Claude Code's own hook timeout, and then nothing
+  from that event's entry script is delivered.
 - The entry script writes one combined output: the notices of both hooks,
   the context of both, and the gate hook's denial when a gate blocks. Its
   exit code is the highest either hook returned. Only the lint sensor ever
@@ -220,6 +232,10 @@ is registered this way; an older one is moved to it as described under
   its line.
 - When `harness-dispatch.mjs` is missing or older than the entry script,
   no hook runs on that event, and every call says so in one fixed notice.
+  On `PreToolUse` while an extensions file is there, every call is blocked
+  instead, and so it is when `harness-extensions.mjs` is missing or older;
+  see
+  [every tool call is blocked by the extensions file](troubleshooting.md#every-tool-call-is-blocked-by-the-extensions-file).
   When one hook's file is missing or older, the entry script does not run
   that hook, runs the other, and every call says so. See
   [an entry script says a file is missing or older](troubleshooting.md#an-entry-script-says-a-file-is-missing-or-older).
@@ -339,6 +355,8 @@ The kit keeps state in three places.
     kh-harness.manifest.json    the record of what the kit wrote
     scripts/                    7 hook scripts, 3 entry scripts and 6 modules
     kh-harness/gates.json       gates landed for everyone
+    kh-harness/contract.json    the contract number other plugins read
+    kh-harness/extensions.json  written by another plugin, never by the kit
     rules/<package>.md          one rule scaffold per workspace package
   docs/harness/
     detect.json                 the last detect report
@@ -359,6 +377,8 @@ The kit keeps state in three places.
 | `.claude/kh-harness.manifest.json` | `apply`, `uninstall`, `learn land`, `learn revert` | Each file with a hash of its content, each settings patch with a hash of what was added. |
 | `.claude/scripts/*.mjs` | `apply` | Copies of `assets/scripts/` with a stamp line that says "Do not edit". |
 | `.claude/kh-harness/gates.json` | `learn land`, `learn revert` | Read by the gate hook before every tool call. |
+| `.claude/kh-harness/contract.json` | `apply`; removed by `uninstall` | The contract number another plugin reads, with the hash of each installed file it speaks for. Written last, only beside this kit's files. See [the contract](../CONTRACT.md). |
+| `.claude/kh-harness/extensions.json` | another plugin's installer, never the kit | Read by the `PreToolUse` entry script before every tool call and by `detect`. Not in the manifest, so `uninstall` leaves it and the modules it lists. |
 | `.claude/rules/<package>.md` | `apply`, in a workspace | A scaffold for you to fill. |
 | `docs/harness/detect.json` | `detect` | Replaced whole on every run. Not in the manifest, so `uninstall` leaves it. |
 | `docs/harness/RULES.md`, `docs/harness/FAILURES.md`, `HANDOFF.md` | `apply`, as empty scaffolds; then you | The stamp says "Edit freely". The kit writes no rule and no failure kind. |
@@ -449,7 +469,7 @@ records holds script names, not script bodies.
 | Phase 2 — Senses | `P2.scripts`, `P2.sensor`, `P2.stopgate`, `P2.loopwatch`, `P2.protected`, `P2.langserver` | declared `test`, `lint` and `typecheck` scripts, the lint sensor, the stop gate, the loop warning, deny rules for protected paths, a language server (always `n/a`: the repository cannot show one) |
 | Phase 3 — Intent | `P3.intent`, `P3.rules`, `P3.reinject` | `docs/INTENT.md`, the rules registry, the rules brief |
 | Phase 4 — Continuity | `P4.remote`, `P4.handoff`, `P4.sessionbrief` | a git remote, the handoff file, the session brief |
-| Phase 5 — Learning | `P5.failures`, `P5.sessionlog`, `P5.toolgate`, `P5.integrity` | the failure taxonomy, the logging hook, the gate hook and its deny rules, kit files and committed gates against their records |
+| Phase 5 — Learning | `P5.failures`, `P5.sessionlog`, `P5.toolgate`, `P5.integrity`, `P5.extensions`, `P5.contract` | the failure taxonomy, the logging hook, the gate hook and its deny rules, kit files and committed gates against their records, registered extensions against their hashes, the contract file |
 
 **States.** Each check reports one of five states.
 

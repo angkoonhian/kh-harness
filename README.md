@@ -839,6 +839,7 @@ report counts: recurrences, replays, firings and what followed them.
 | [The session log](docs/guide/session-log.md) | What is stored and where, the scrub, retention, sealing, cost |
 | [The learning loop](docs/guide/learning-loop.md) | States of a learning, replay, policy, landing, reverting, recovery |
 | [Troubleshooting](docs/guide/troubleshooting.md) | Each refusal and notice, and what ends it |
+| [The contract](docs/CONTRACT.md) | What another plugin may rely on: the contract file, the rules registry, the manifest, the `PreToolUse` extension point and `recordExternalEvent` |
 | [Intent](docs/INTENT.md) | What the kit is for, its success and failure tests, its non-goals |
 | [Rules](docs/harness/RULES.md) | The kit's own rules registry, each rule with its enforcer |
 | [Session log and learning loop design](docs/superpowers/specs/2026-11-19-session-log-and-learning-loop-design.md) | The design, and where the build differs from it |

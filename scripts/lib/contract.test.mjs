@@ -1,13 +1,23 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { constants, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
+import { EXTENSION_LIMITS, EXTENSIONS_PATH, moduleState, readExtensions } from '../../assets/scripts/harness-extensions.mjs';
+import { EXTERNAL_DATA_MAX_BYTES, EXTERNAL_DATA_MAX_DEPTH, readEvents, recordExternalEvent, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
+import { parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { CONTRACT, CONTRACT_PATH, contractEvidence, contractFileText } from './contract.mjs';
+import { APPLY, DETECT, fixture, git, run, runRegisteredHook, sandboxDataDir } from './lifecycle-fixtures.mjs';
+import { KIT_VERSION, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
+import { CONTRACT_FILES, kitContractText } from './propose.mjs';
 import { stampVersion } from './render.mjs';
+import { rulesRegistryEvidence } from './rules-evidence.mjs';
+import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
 
 const dirs = [];
 after(() => {
@@ -119,4 +129,235 @@ test('a contract file swapped for a link between its lstat and its open is not f
   };
   syncBuiltinESMExports();
   assert.deepEqual(contractEvidence(root, TEXT), { state: 'unreadable', link: CONTRACT_PATH });
+});
+
+// --- Contract 1: one fixture per promise -------------------------------------
+//
+// Each fixture under fixtures/contract-1/ is a promised format as another
+// plugin writes or reads it, and docs/CONTRACT.md shows each one verbatim.
+// These tests fail when kh-harness stops accepting or producing one.
+
+const FIXTURES = new URL('./fixtures/contract-1/', import.meta.url);
+const fixtureText = name => fs.readFileSync(new URL(name, FIXTURES), 'utf8');
+const contractDoc = () => fs.readFileSync(new URL('../../docs/CONTRACT.md', import.meta.url), 'utf8');
+const FIXTURE_NAMES = ['RULES.md', 'manifest.json', 'extension.mjs', 'extensions.json', 'contract.json', 'plugin-event.json', 'refusals.json', 'verify-contract-1.mjs'];
+
+sandboxDataDir();
+sandboxMarkerDir();
+
+/** A fresh repository with the kit installed by `apply --yes` and committed. */
+function installedRepo() {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  git(d, 'add', '-A');
+  git(d, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'harness');
+  dirs.push(d);
+  return d;
+}
+
+/** Writes the worked example of docs/CONTRACT.md into `root`, as another
+ * plugin's installer would. */
+function installExample(root) {
+  const [entry] = JSON.parse(fixtureText('extensions.json'));
+  writeAt(join(root, entry.module), fixtureText('extension.mjs'));
+  writeAt(join(root, EXTENSIONS_PATH), fixtureText('extensions.json'));
+  return entry;
+}
+
+const editCall = file => ({ session_id: 'contract-1', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: file, old_string: 'a', new_string: 'b' }, tool_use_id: 'toolu_1' });
+const denial = text => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: text } });
+const hookOutput = r => {
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stderr, '');
+  return r.stdout === '' ? null : JSON.parse(r.stdout);
+};
+const checkState = (d, id) => JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === id).state;
+
+test('contract 1: the rules registry fixture parses to these rules', () => {
+  const { rules, problems } = parseRules(fixtureText('RULES.md'));
+  assert.deepEqual(problems, []);
+  const rest = { origin: null, evidence: null, approvedSha256: null, approvedAction: null };
+  assert.deepEqual(rules.map(({ line, ...r }) => r), [
+    { id: 'R1', rule: 'Every database query is scoped to the current tenant', why: 'a cross-tenant read is a data breach, not a bug', enforcedBy: 'test', pointer: 'tests/tenant.test.mjs', verify: 'npm test -- tenant', priority: 'high', status: 'active', lastVerified: '2026-11-25', ...rest },
+    { id: 'V8', rule: 'Every migration has a down step', why: 'a migration that cannot be reversed blocks a rollback', enforcedBy: 'officer', pointer: 'tools/officers/v8.mjs', verify: null, priority: 'normal', status: 'active', lastVerified: null, ...rest },
+    { id: 'R3', rule: 'Keep each rule to one sentence', why: null, enforcedBy: 'none', pointer: null, verify: null, priority: 'normal', status: 'active', lastVerified: null, ...rest },
+  ]);
+});
+
+test('contract 1: an officer rule\'s pointer is checked as a repository path', () => {
+  const root = tempDir();
+  writeAt(join(root, RULES_PATH), fixtureText('RULES.md'));
+  writeAt(join(root, 'tests/tenant.test.mjs'), '');
+  const harness = { instructions: { path: null, lines: 0 }, claudeDir: { denyRules: 0, hookRegistrations: {}, rules: [] } };
+  assert.deepEqual(rulesRegistryEvidence(root, harness).missingPointers, [{ id: 'V8', pointer: 'tools/officers/v8.mjs', reason: 'not-found' }]);
+  writeAt(join(root, 'tools/officers/v8.mjs'), '');
+  const ev = rulesRegistryEvidence(root, harness);
+  assert.deepEqual(ev.missingPointers, []);
+  assert.deepEqual(ev.byEnforcer, { test: 1, officer: 1, none: 1 });
+});
+
+test('contract 1: the manifest is at .claude/kh-harness.manifest.json and the fixture reads as schema 1', () => {
+  assert.equal(MANIFEST_PATH, '.claude/kh-harness.manifest.json');
+  const root = tempDir();
+  writeAt(join(root, MANIFEST_PATH), fixtureText('manifest.json'));
+  const read = readManifestResult(root);
+  assert.equal(read.state, 'ok');
+  assert.equal(read.manifest.schema, 1);
+});
+
+test('contract 1: a manifest apply writes has only the documented keys', () => {
+  const m = JSON.parse(fs.readFileSync(join(installedRepo(), MANIFEST_PATH), 'utf8'));
+  const fixtureManifest = JSON.parse(fixtureText('manifest.json'));
+  assert.equal(m.schema, 1);
+  for (const key of Object.keys(m)) assert.ok(Object.hasOwn(fixtureManifest, key), key);
+  for (const f of m.files) assert.deepEqual(Object.keys(f), Object.keys(fixtureManifest.files[0]), f.path);
+  for (const p of m.settingsPatches) {
+    assert.deepEqual(Object.keys(p), Object.keys(fixtureManifest.settingsPatches[p.event === 'permissions.deny' ? 1 : 0]), p.event);
+  }
+});
+
+test('contract 1: the worked extension is read, its recorded hash is the hash of its module, and the installed hook allows one call and blocks another', async () => {
+  const d = installedRepo();
+  const entry = installExample(d);
+  assert.deepEqual(readExtensions(d), { state: 'ok', entries: [entry] });
+  // The recorded hash pins the hash rule: SHA-256 of the bytes with each CRLF made LF.
+  assert.equal(moduleState(d, entry).state, 'matches');
+  writeAt(join(d, entry.module), fixtureText('extension.mjs').replace(/\n/g, '\r\n'));
+  assert.equal(moduleState(d, entry).state, 'matches', 'line endings aside');
+  assert.equal(hookOutput(await runRegisteredHook(d, 'PreToolUse', 'dispatch-pre-tool.mjs', editCall('src/index.js'))), null);
+  assert.deepEqual(hookOutput(await runRegisteredHook(d, 'PreToolUse', 'dispatch-pre-tool.mjs', editCall(join(d, 'package-lock.json')))),
+    denial('kh-harness extension acme-lockfile: package-lock.json is written by npm install; do not edit it by hand.'));
+  assert.equal(checkState(d, 'P5.extensions'), 'declared');
+  assert.equal(checkState(d, 'P5.contract'), 'declared');
+  writeAt(join(d, entry.module), `${fixtureText('extension.mjs')}// changed\n`);
+  assert.equal(checkState(d, 'P5.extensions'), 'failing');
+});
+
+test('contract 1: the hash command docs/CONTRACT.md gives prints the sha256 the extensions fixture records', () => {
+  const m = /<!-- example: hash-command -->\n```sh\nnode -e "([^"]+)" (\S+)\n```/.exec(contractDoc());
+  assert.ok(m, 'the hash command is in docs/CONTRACT.md');
+  const [entry] = JSON.parse(fixtureText('extensions.json'));
+  assert.equal(m[2], entry.module);
+  const root = tempDir();
+  writeAt(join(root, entry.module), fixtureText('extension.mjs').replace(/\n/g, '\r\n'));
+  const r = spawnSync(process.execPath, ['-e', m[1], m[2]], { cwd: root, encoding: 'utf8' });
+  assert.equal(r.stdout, `${entry.sha256}\n`, r.stderr);
+});
+
+test('contract 1: the contract file fixture is what apply writes, and its number is 1', () => {
+  const fixtureFile = JSON.parse(fixtureText('contract.json'));
+  assert.equal(fixtureText('contract.json'), contractFileText('0.2.0', fixtureFile.files));
+  assert.deepEqual(Object.keys(fixtureFile.files), CONTRACT_FILES);
+  const written = JSON.parse(kitContractText(KIT_VERSION));
+  assert.deepEqual(Object.keys(written), Object.keys(fixtureFile));
+  assert.deepEqual(Object.keys(written.files), Object.keys(fixtureFile.files));
+  for (const sha256 of Object.values(written.files)) assert.match(sha256, /^[0-9a-f]{64}$/);
+  assert.equal(CONTRACT, 1);
+  assert.equal(CONTRACT_PATH, '.claude/kh-harness/contract.json');
+});
+
+test('contract 1: the verifier docs/CONTRACT.md gives accepts an install and refuses each thing it must refuse', { skip: noLinks }, async () => {
+  const { contract1Problems } = await import(new URL('verify-contract-1.mjs', FIXTURES));
+  const base = installedRepo();
+  const copy = () => {
+    const d = tempDir('hk-contract-copy-');
+    fs.cpSync(base, d, { recursive: true, verbatimSymlinks: true });
+    return d;
+  };
+  assert.deepEqual(contract1Problems(base), []);
+
+  const crlf = copy();
+  for (const path of [CONTRACT_PATH, ...CONTRACT_FILES]) writeFileSync(join(crlf, path), fs.readFileSync(join(crlf, path), 'utf8').replace(/\n/g, '\r\n'));
+  assert.deepEqual(contract1Problems(crlf), [], 'line endings aside');
+  assert.equal(checkState(crlf, 'P5.contract'), 'declared', 'kh-harness agrees');
+
+  const edited = copy();
+  fs.appendFileSync(join(edited, '.claude/scripts/harness-log.mjs'), '// edited\n');
+  assert.deepEqual(contract1Problems(edited), ['.claude/scripts/harness-log.mjs is not the file contract 1 speaks for']);
+  assert.equal(checkState(edited, 'P5.contract'), 'failing', 'kh-harness agrees');
+
+  const unregistered = copy();
+  const s = JSON.parse(fs.readFileSync(join(unregistered, '.claude/settings.json'), 'utf8'));
+  delete s.hooks.PreToolUse;
+  writeFileSync(join(unregistered, '.claude/settings.json'), JSON.stringify(s));
+  assert.deepEqual(contract1Problems(unregistered), ['.claude/settings.json does not register .claude/scripts/dispatch-pre-tool.mjs on PreToolUse for every tool call']);
+
+  const repeated = copy();
+  writeFileSync(join(repeated, CONTRACT_PATH), fs.readFileSync(join(repeated, CONTRACT_PATH), 'utf8').replace('"contract": 1,', '"contract": 2,\n  "contract": 1,'));
+  assert.deepEqual(contract1Problems(repeated), [`${CONTRACT_PATH} is not in the form kh-harness writes`]);
+
+  const linked = copy();
+  const outside = join(tempDir('hk-contract-outside-'), 'contract.json');
+  fs.renameSync(join(linked, CONTRACT_PATH), outside);
+  symlinkSync(outside, join(linked, CONTRACT_PATH), 'file');
+  assert.deepEqual(contract1Problems(linked), [`${CONTRACT_PATH} is missing, a link, not a regular file, or larger than 65536 bytes`]);
+  assert.equal(checkState(linked, 'P5.contract'), 'failing', 'kh-harness agrees');
+
+  const absent = copy();
+  rmSync(join(absent, CONTRACT_PATH));
+  assert.equal(contract1Problems(absent).length, 1);
+});
+
+test('contract 1: recordExternalEvent of the installed scripts writes the fixture\'s line', async () => {
+  const d = installedRepo();
+  const { recordExternalEvent } = await import(pathToFileURL(join(d, '.claude/scripts/harness-log.mjs')).href);
+  assert.equal(typeof recordExternalEvent, 'function');
+  setEnabled(d, true);
+  assert.deepEqual(recordExternalEvent(d, 'fixture', { source: 'kh-orchestration', type: 'officers.run', data: { failed: ['V8'] } }), { recorded: true });
+  const [event, ...more] = readEvents(d, 'fixture').events;
+  assert.deepEqual(more, []);
+  const { ts, pid, ...line } = event;
+  assert.deepEqual(Object.keys(event), ['schema', 'ts', 'pid', 'type', 'session_id', 'source', 'kind', 'data']);
+  assert.match(ts, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(typeof pid, 'number');
+  assert.deepEqual(line, JSON.parse(fixtureText('plugin-event.json')));
+});
+
+test('contract 1: each refusal of recordExternalEvent is the fixture\'s text, in the fixture\'s order', () => {
+  const REASONS = JSON.parse(fixtureText('refusals.json'));
+  const enabled = tempDir();
+  mkdirSync(join(enabled, '.git'));
+  setEnabled(enabled, true);
+  const disabled = tempDir();
+  const ok = { source: 'kh-orchestration', type: 'officers.run', data: { failed: ['V8'] } };
+  let deep = { leaf: 1 };
+  for (let i = 1; i < EXTERNAL_DATA_MAX_DEPTH + 1; i++) deep = { deep };
+  const big = { text: 'x'.repeat(EXTERNAL_DATA_MAX_BYTES - '{"text":""}'.length + 1) };
+  const cases = [
+    [recordExternalEvent(enabled, '../x', ok), 0],
+    [recordExternalEvent('relative', 's', ok), 1],
+    [recordExternalEvent(disabled, 's', ok), 2],
+    [recordExternalEvent(enabled, 's', null), 3],
+    [recordExternalEvent(enabled, 's', { ...ok, source: 'Bad' }), 4],
+    [recordExternalEvent(enabled, 's', { ...ok, type: '1x' }), 5],
+    [recordExternalEvent(enabled, 's', { ...ok, data: [1] }), 3],
+    [recordExternalEvent(enabled, 's', { ...ok, data: big }), 6],
+    [recordExternalEvent(enabled, 's', { ...ok, data: deep }), 7],
+    // In checking order: the first failed check is the one reported.
+    [recordExternalEvent('relative', '../x', ok), 0],
+    [recordExternalEvent(disabled, 's', { ...ok, source: 'Bad' }), 2],
+    [recordExternalEvent(disabled, 's', null), 2],
+    [recordExternalEvent(enabled, 's', { ...ok, source: 'Bad', data: [1] }), 4],
+    [recordExternalEvent(enabled, 's', { ...ok, type: '1x', data: [1] }), 5],
+    [recordExternalEvent(enabled, 's', { ...ok, source: 'Bad', type: '1x' }), 4],
+    [recordExternalEvent(enabled, 's', { ...ok, data: { pad: big.text, deep } }), 6],
+  ];
+  for (const [result, index] of cases) assert.deepEqual(result, { recorded: false, reason: REASONS[index] });
+  assert.equal(JSON.stringify(big).length, EXTERNAL_DATA_MAX_BYTES + 1);
+  writeAt(join(repoDataDir(enabled), 'sessions'), 'a file where the sessions directory goes');
+  assert.deepEqual(recordExternalEvent(enabled, 's', ok), { recorded: false, reason: REASONS[8] });
+});
+
+test('contract 1: docs/CONTRACT.md states the number, names every promise and shows every fixture as it is', () => {
+  const CONTRACT_DOC = contractDoc();
+  assert.match(CONTRACT_DOC, /^Contract number: 1$/m);
+  for (const needle of ['docs/harness/RULES.md', 'approval', 'officer', '.claude/kh-harness.manifest.json', '.claude/kh-harness/extensions.json', 'preToolUse', 'onFailure', 'recordExternalEvent', '.claude/kh-harness/contract.json', 'plugin_event', 'Open questions for the owner']) {
+    assert.ok(CONTRACT_DOC.includes(needle), needle);
+  }
+  for (const name of FIXTURE_NAMES) {
+    const m = new RegExp(`<!-- fixture: ${name.replace(/\./g, '\\.')} -->\\n\`\`\`\\w*\\n([\\s\\S]*?)\`\`\`\\n`).exec(CONTRACT_DOC);
+    assert.ok(m, `docs/CONTRACT.md shows ${name}`);
+    assert.equal(m[1], fixtureText(name), name);
+  }
+  for (const [name, value] of Object.entries(EXTENSION_LIMITS)) assert.ok(CONTRACT_DOC.includes(`\`${name}\` ${value.toLocaleString('en-US')}`), name);
 });
