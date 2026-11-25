@@ -177,7 +177,7 @@ process.stdout.write(
 // settings patch — a hook entry or deny rules — is a few lines and the most
 // security-relevant thing this tool writes, so it is still shown.
 const showFileDiffs = !flags.has('--yes');
-const preview = diffRenderer(root);
+const preview = diffRenderer(root, manifest);
 try {
   for (const p of proposals) {
     const label = p.kind === 'file' ? p.path

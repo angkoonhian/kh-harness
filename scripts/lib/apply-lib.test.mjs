@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, KIT_VERSION, MANIFEST_PATH, readManifest, replaceFile, sha256, writeManifest } from './manifest.mjs';
@@ -1092,8 +1092,8 @@ test('a replacement is skipped whole when a registration it names is not there a
 });
 
 test('the preview of a replacement shows the elements removed and the one added, and nothing else of the file', () => {
-  const { d } = separatelyRegistered();
-  assert.equal(renderDiff(d, replace), [
+  const { d, manifest } = separatelyRegistered();
+  assert.equal(renderDiff(d, replace, manifest), [
     '--- a/.claude/settings.json', '+++ b/.claude/settings.json', '@@ hooks.PreToolUse @@',
     ...JSON.stringify(gate, null, 2).split('\n').map(l => `-${l}`),
     ...JSON.stringify(log, null, 2).split('\n').map(l => `-${l}`),
@@ -1101,13 +1101,13 @@ test('the preview of a replacement shows the elements removed and the one added,
     '(1 other hooks.PreToolUse entry is left unchanged and not shown)',
     '(nothing else in .claude/settings.json is changed, or shown — it is yours, and it may hold credentials)',
   ].join('\n'));
-  assert.doesNotMatch(renderDiff(d, replace), /my-own/);
+  assert.doesNotMatch(renderDiff(d, replace, manifest), /my-own/);
 });
 
 test('the preview of a replacement whose registrations are not there as recorded says it would be skipped', () => {
-  const { d } = separatelyRegistered();
+  const { d, manifest } = separatelyRegistered();
   writeFileSync(join(d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [gate, theirs] } }, null, 2) + '\n');
-  assert.equal(renderDiff(d, replace), [
+  assert.equal(renderDiff(d, replace, manifest), [
     '--- a/.claude/settings.json', '+++ b/.claude/settings.json', '@@ hooks.PreToolUse @@',
     '(a registration kh-harness recorded on hooks.PreToolUse is no longer there as written — this replacement would be skipped)',
     '(nothing else in .claude/settings.json is changed, or shown — it is yours, and it may hold credentials)',
@@ -1115,12 +1115,57 @@ test('the preview of a replacement whose registrations are not there as recorded
 });
 
 test('a replacement with no other entry on its event says nothing of other entries, and a later preview sees what it leaves', () => {
-  const { d } = separatelyRegistered();
+  const { d, manifest } = separatelyRegistered();
   writeFileSync(join(d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [log, gate] } }, null, 2) + '\n');
-  const preview = diffRenderer(d);
+  const preview = diffRenderer(d, manifest);
   assert.doesNotMatch(preview(replace), /other hooks\.PreToolUse/);
   const later = { kind: 'settings-hook', event: 'PreToolUse', step: 31, checkId: 'x', reason: 'r', entry: { type: 'command', command: 'node', args: ['x.mjs'] } };
   assert.match(preview(later), /appended after 1 existing hooks\.PreToolUse entry,/);
+});
+
+/** Applies `proposal` to `d` and asserts it is skipped for `why`, with the
+ * settings file and the manifest as they were, and that its preview prints
+ * nothing of the owner's element. */
+function refusedWhole(d, manifest, proposal, why) {
+  const before = readFileSync(join(d, SETTINGS_PATH), 'utf8');
+  const preview = renderDiff(d, proposal, manifest);
+  assert.doesNotMatch(preview, /my-own/, 'the preview prints nothing of the owner\'s element');
+  const r = applyProposals({ root: d, proposals: [proposal], manifest, kitVersion: '0.2.0' });
+  assert.deepEqual(r.patched, []);
+  assert.deepEqual(r.skipped, [{ path: SETTINGS_PATH, why, checkId: 'P0.hookmerge' }]);
+  assert.equal(readFileSync(join(d, SETTINGS_PATH), 'utf8'), before, 'the file is byte for byte as it was');
+  assert.deepEqual(r.manifest, manifest, 'the manifest is as it was');
+  return preview;
+}
+
+test('a replacement naming an element the manifest does not record is skipped, and its preview prints nothing of it', () => {
+  const { d, manifest } = separatelyRegistered();
+  const preview = refusedWhole(d, manifest, { ...replace, remove: [matcherEntrySha256(theirs)] }, 'not-recorded');
+  assert.equal(preview, [
+    '--- a/.claude/settings.json', '+++ b/.claude/settings.json', '@@ hooks.PreToolUse @@',
+    '(this replacement names a registration on hooks.PreToolUse that kh-harness did not record writing — it would be skipped)',
+    '(nothing else in .claude/settings.json is changed, or shown — it is yours, and it may hold credentials)',
+  ].join('\n'));
+});
+
+test('a replacement naming a recorded hash whose element runs no kit script is skipped, and its preview prints nothing of it', () => {
+  const { d, manifest } = separatelyRegistered();
+  const forged = { ...manifest, settingsPatches: [...manifest.settingsPatches, { ...kitRecord(TOOL_GATE_PATH, 30, 'P5.toolgate'), entrySha256: matcherEntrySha256(theirs) }] };
+  refusedWhole(d, forged, { ...replace, remove: [matcherEntrySha256(gate), matcherEntrySha256(theirs)] }, 'not-recorded');
+});
+
+test('a replacement whose recorded element was edited to run the owner\'s script is skipped, and its preview prints nothing of it', () => {
+  const { d, manifest } = separatelyRegistered();
+  writeFileSync(join(d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [gate, { hooks: [{ type: 'command', command: 'node', args: ['my-own.mjs'] }] }] } }, null, 2) + '\n');
+  refusedWhole(d, manifest, replace, 'registration-changed');
+});
+
+test('an entry added in the run after a replacement took out an element of the same hash keeps its record', () => {
+  const { d, manifest } = separatelyRegistered();
+  const readd = { kind: 'settings-hook', event: 'PreToolUse', step: 31, checkId: 'P5.sessionlog', reason: 'r', entry: execEntry(SESSION_LOG_PATH) };
+  const r = applyProposals({ root: d, proposals: [replace, readd], manifest, kitVersion: '0.2.0' });
+  assert.deepEqual(readSettings(d).hooks.PreToolUse, [theirs, { hooks: [execEntry(DISPATCH_PRE_PATH)] }, log]);
+  assert.deepEqual(r.manifest.settingsPatches.map(p => p.entrySha256), [hookEntrySha256(execEntry(DISPATCH_PRE_PATH)), matcherEntrySha256(log)]);
 });
 
 test('an unknown proposal kind still throws before anything is written', () => {
@@ -1175,6 +1220,25 @@ for (const point of ['before-settings', 'after-settings']) {
     const entryOnPre = readSettings(d).hooks.PreToolUse.some(m => matcherEntrySha256(m) === hookEntrySha256(execEntry(DISPATCH_PRE_PATH)));
     assert.equal(entryOnPre, point === 'after-settings', 'fixture: the entry script is in the file only after the kill point');
     for (const h of runEveryRegisteredHook(d)) assert.notEqual(h.status, 1, `${h.script} on ${h.event}: ${h.stderr}`);
+
+    // The next apply, on a copy so uninstall below starts from the killed state.
+    const again = mkdtempSync(join(tmpdir(), 'hk-apply-again-'));
+    cpSync(d, again, { recursive: true });
+    const killedSettings = readFileSync(join(again, SETTINGS_PATH), 'utf8');
+    const next = applyProposals({ root: again, proposals: [proposal], manifest: manifestOf(again), kitVersion: KIT_VERSION });
+    const dispatchSha = hookEntrySha256(execEntry(DISPATCH_PRE_PATH));
+    const preRecords = next.manifest.settingsPatches.filter(p => p.event === 'PreToolUse').map(p => p.entrySha256).sort();
+    if (point === 'before-settings') {
+      assert.deepEqual(next.patched, [{ event: 'PreToolUse', step: 30, checkId: 'P0.hookmerge', replaced: 2 }], 'the next apply completes the replacement');
+      assert.deepEqual(readSettings(again).hooks.PreToolUse.map(matcherEntrySha256), [dispatchSha]);
+      assert.deepEqual(preRecords, [dispatchSha], 'one record, of the entry script; the records of the removed registrations are gone');
+    } else {
+      assert.deepEqual([next.patched, next.skipped], [[], [{ path: SETTINGS_PATH, why: 'unchanged', checkId: 'P0.hookmerge' }]]);
+      assert.equal(readFileSync(join(again, SETTINGS_PATH), 'utf8'), killedSettings, 'the file is unchanged');
+      assert.deepEqual(preRecords, [...proposal.remove, dispatchSha].sort(),
+        'the records of the two removed registrations stay, with no entry in the file, beside the entry script\'s');
+    }
+    rmSync(again, { recursive: true, force: true });
 
     const uninstalled = runResult(UNINSTALL, d, '--yes');
     assert.equal(uninstalled.status, 0, uninstalled.stdout + uninstalled.stderr);

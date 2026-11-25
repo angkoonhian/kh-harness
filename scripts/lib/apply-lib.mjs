@@ -16,7 +16,8 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { defaultBranches, git, gitFailure } from './git-info.mjs';
 import { classify, contentMatches, emptyManifest, MANIFEST_PATH, replaceFile, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
-import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook, replaceHookEntries, SETTINGS_PATH } from './settings-merge.mjs';
+import { GENERATOR_SCRIPT_PATHS } from './propose.mjs';
+import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook, replaceHookEntries, runsOnlyKitScripts, SETTINGS_PATH } from './settings-merge.mjs';
 import { readJsonFile, stripBom, UTF8_BOM } from './read-json.mjs';
 
 /**
@@ -566,18 +567,27 @@ function settingsHookPreview(settings, proposal) {
   return lines.join('\n');
 }
 
+/** What a replacement preview says in place of a diff, for each reason
+ * `replacementOf` gives for skipping it. */
+const UNREPLACEABLE = Object.freeze({
+  'not-recorded': container => `(this replacement names a registration on ${container} that kh-harness did not record writing — it would be skipped)`,
+  'registration-changed': container => `(a registration kh-harness recorded on ${container} is no longer there as written — this replacement would be skipped)`,
+});
+
 /**
  * Preview of a settings-hook-replace proposal against `settings`, given
- * `replaced`, what `replaceHookEntries` returns for it: the elements taken
- * out and the one added, and nothing else, as for a settings-hook preview.
- * An element taken out is printed only because its hash is one the
- * proposal names, a registration the kit recorded writing.
+ * `outcome`, what `replacementOf` returns for it: the elements taken out
+ * and the one added, and nothing else, as for a settings-hook preview. An
+ * element taken out is printed only once `replacementOf` has established
+ * that the manifest records it and that it runs only kit scripts; anything
+ * else is one fixed line, so nothing of the owner's is printed.
  */
-function settingsReplacePreview(settings, proposal, replaced) {
+function settingsReplacePreview(settings, proposal, outcome) {
   const container = `hooks.${proposal.event}`;
   const lines = [`--- a/${SETTINGS_PATH}`, `+++ b/${SETTINGS_PATH}`, `@@ ${container} @@`];
-  if (replaced === null) {
-    lines.push(`(a registration kh-harness recorded on ${container} is no longer there as written — this replacement would be skipped)`);
+  const { replaced, why } = outcome;
+  if (why) {
+    lines.push(UNREPLACEABLE[why](container));
   } else {
     for (const element of replaced.removed) {
       for (const line of splitLines(JSON.stringify(element, null, 2))) lines.push(`-${line}`);
@@ -638,9 +648,10 @@ function fileDiff(root, proposal) {
  * `apply` will act on them. The settings file is read once, and each
  * settings preview is made against what the previews before it would leave,
  * as the write is: so the second deny preview of a run counts, and does not
- * offer again, the rules the first adds.
+ * offer again, the rules the first adds. `manifest` is the one the run is
+ * applied against; a replacement is previewed against its records.
  */
-export function diffRenderer(root) {
+export function diffRenderer(root, manifest) {
   let staged = null;
   return proposal => {
     if (proposal.kind === 'file') return fileDiff(root, proposal);
@@ -652,9 +663,9 @@ export function diffRenderer(root) {
       return preview;
     }
     if (proposal.kind === 'settings-hook-replace') {
-      const replaced = replaceHookEntries(staged.settings, proposal.event, proposal.remove, proposal.entry);
-      const preview = settingsReplacePreview(staged.settings, proposal, replaced);
-      if (replaced !== null) staged.settings = replaced.settings;
+      const outcome = replacementOf(staged.settings, manifest, proposal);
+      const preview = settingsReplacePreview(staged.settings, proposal, outcome);
+      if (!outcome.why) staged.settings = outcome.replaced.settings;
       return preview;
     }
     const { settings, added } = addDenyRules(staged.settings, proposal.globs);
@@ -665,8 +676,8 @@ export function diffRenderer(root) {
 }
 
 /** The preview of one proposal on its own, against what is on disk today. */
-export function renderDiff(root, proposal) {
-  return diffRenderer(root)(proposal);
+export function renderDiff(root, proposal, manifest) {
+  return diffRenderer(root, manifest)(proposal);
 }
 
 /**
@@ -801,6 +812,28 @@ function unmetDependencies(root, proposal) {
 /** What makes two patch records the same patch. */
 const patchKey = patch => `${patch.container}\n${patch.entrySha256}`;
 
+const KIT_HOOK_SCRIPTS = new Set(GENERATOR_SCRIPT_PATHS);
+
+/**
+ * What a settings-hook-replace proposal does to `settings`, judged against
+ * `manifest`: `{ replaced }`, what `replaceHookEntries` returns, or `{ why }`.
+ * A proposal's hashes are only a claim, so an element is taken out only
+ * when the manifest records a patch on the event with its hash and every
+ * hook in it is what a generator writes for a kit script (the rule
+ * `revertPatch` applies, since a manifest can be forged): otherwise
+ * `not-recorded`. `registration-changed` when a recorded element is no
+ * longer in the file as written.
+ */
+function replacementOf(settings, manifest, proposal) {
+  const container = `/hooks/${proposal.event}`;
+  const recorded = new Set((manifest?.settingsPatches ?? []).map(patchKey));
+  if (!proposal.remove.every(entrySha256 => recorded.has(patchKey({ container, entrySha256 })))) return { why: 'not-recorded' };
+  const replaced = replaceHookEntries(settings, proposal.event, proposal.remove, proposal.entry);
+  if (replaced === null) return { why: 'registration-changed' };
+  if (!replaced.removed.every(element => runsOnlyKitScripts(element, KIT_HOOK_SCRIPTS))) return { why: 'not-recorded' };
+  return { replaced };
+}
+
 /**
  * `.claude/settings.json` as one run patches it: read once, patched in
  * memory by each settings proposal in turn, and written once at the end
@@ -845,10 +878,11 @@ function stageSettingsHook({ root, proposal, batch, skipped }) {
   batch.patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId });
 }
 
-/** Stages a settings-hook-replace proposal: skipped as a settings-hook
- * proposal is, and as `registration-changed` when an element it names is
- * not in the file as recorded; otherwise wholly, never in part. */
-function stageSettingsReplace({ root, proposal, batch, skipped }) {
+/** Stages a settings-hook-replace proposal against the records `manifest`
+ * held when the run began: skipped as a settings-hook proposal is,
+ * and for the reason `replacementOf` gives; otherwise wholly, never in
+ * part. */
+function stageSettingsReplace({ root, proposal, batch, manifest, skipped }) {
   const unmet = unmetDependencies(root, proposal);
   if (unmet !== null) {
     skipped.push({ path: SETTINGS_PATH, why: unmet, checkId: proposal.checkId });
@@ -862,9 +896,9 @@ function stageSettingsReplace({ root, proposal, batch, skipped }) {
     skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
     return;
   }
-  const replaced = replaceHookEntries(batch.settings, proposal.event, proposal.remove, proposal.entry);
-  if (replaced === null) {
-    skipped.push({ path: SETTINGS_PATH, why: 'registration-changed', checkId: proposal.checkId });
+  const { replaced, why } = replacementOf(batch.settings, manifest, proposal);
+  if (why) {
+    skipped.push({ path: SETTINGS_PATH, why, checkId: proposal.checkId });
     return;
   }
 
@@ -957,6 +991,8 @@ function writeSettingsBatch({ root, batch, nextManifest, patched, failed, replac
     failed.push({ path: SETTINGS_PATH, error: `failed to write ${SETTINGS_PATH}: ${err?.message ?? String(err)}` });
     return;
   }
+  // A record staged in this run stays even when a replacement named its
+  // key: its entry was added after the replacement and is in the file.
   nextManifest.settingsPatches = nextManifest.settingsPatches.filter(patch => staged.has(patchKey(patch)) || !batch.dropped.has(patchKey(patch)));
   if (batch.read.raw === null) nextManifest.settingsCreated = true;
   patched.push(...batch.patched);
@@ -1037,7 +1073,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
       } else {
         batch ??= openSettingsBatch(root);
         if (proposal.kind === 'settings-hook') stageSettingsHook({ root, proposal, batch, skipped });
-        else if (proposal.kind === 'settings-hook-replace') stageSettingsReplace({ root, proposal, batch, skipped });
+        else if (proposal.kind === 'settings-hook-replace') stageSettingsReplace({ root, proposal, batch, manifest: nextManifest, skipped });
         else stageSettingsDeny({ proposal, batch, skipped });
       }
     } catch (err) {

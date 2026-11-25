@@ -237,6 +237,15 @@ function scriptRunBy(entry) {
   return tokens.length === 2 && tokens[0] === 'node' ? normalizeHookPath(tokens[1]) : null;
 }
 
+/** True when the `hooks.<event>` element `matcherEntry` holds at least one
+ * hook and every hook in it is exactly what a generator writes for a script
+ * in `producibleHookScripts` (see scriptRunBy): the only element the kit
+ * ever takes out of a settings file. */
+export function runsOnlyKitScripts(matcherEntry, producibleHookScripts) {
+  const hooks = matcherEntry?.hooks;
+  return Array.isArray(hooks) && hooks.length > 0 && hooks.every(h => producibleHookScripts.has(scriptRunBy(h)));
+}
+
 /**
  * Remove what `patch` records, but only when one of our generators could
  * have written it. The manifest is a file in the repository and can be
@@ -315,10 +324,7 @@ export function revertPatch(settings, patch, { producibleHookScripts, producible
       && m.hooks.some(h => hookPathTokens(h).some(token => producibleHookScripts.has(token))));
     return kitHookRemains ? keep('patch-modified') : alreadyGone;
   }
-  const hooks = list[idx]?.hooks;
-  if (!Array.isArray(hooks) || hooks.length === 0 || !hooks.every(h => producibleHookScripts.has(scriptRunBy(h)))) {
-    return keep('not-generator-producible');
-  }
+  if (!runsOnlyKitScripts(list[idx], producibleHookScripts)) return keep('not-generator-producible');
   list.splice(idx, 1);
   if (list.length === 0) delete next.hooks[event];
   if (next.hooks && Object.keys(next.hooks).length === 0) delete next.hooks;
