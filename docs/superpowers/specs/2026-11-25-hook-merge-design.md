@@ -61,7 +61,7 @@ The core:
 - a `deny` from any half or extension wins on `PreToolUse`, with the reasons joined in running order;
 - `systemMessage` texts are joined, and `additionalContext` texts are joined;
 - the exit code is the highest any half returned, and standard error is every half's standard error in order;
-- when the exit code is 2, Claude Code ignores the JSON, so any notice another half produced is appended to standard error instead of being dropped.
+- when the exit code is 2, the JSON is still written: the hooks reference says Claude Code still reads the fields of valid JSON from a hook that exits 2, and shows its standard error to Claude. So a notice from another half keeps its own reader. (Corrected 2026-11-25: an earlier draft said Claude Code ignores the JSON; the reference read that day says otherwise.)
 
 **The four scripts.** Each gains an exported function that takes the parsed payload and returns its result without writing or exiting. `tool-gate.mjs` already has a pure `decide`, and `session-log.mjs` an async `record`. `lint-touched.mjs` and `loop-watch.mjs` run and exit on import today and write from inside their helpers; they are restructured so the helpers return their output, and gain the entry-point guard the other two have. Neither checks the event or the tool today, relying on the registration; their exported functions apply those tests themselves. Run directly, all four behave exactly as they do now.
 
