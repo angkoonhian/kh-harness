@@ -238,8 +238,11 @@ is registered this way; an older one is moved to it as described under
   its line.
 - When `harness-dispatch.mjs` is missing or older than the entry script,
   no hook runs on that event, and every call says so in one fixed notice.
-  On `PreToolUse` while an extensions file is there, every call is blocked
-  instead, and so it is when `harness-extensions.mjs` is missing or older;
+  The `PreToolUse` entry script judges the core and `harness-extensions.mjs`
+  by the level each exports, so a file from any other kit version counts
+  as one it cannot use. On `PreToolUse` while an extensions file is there,
+  every call is blocked instead, and so it is when `harness-extensions.mjs`
+  is missing or from another kit version;
   see
   [every tool call is blocked by the extensions file](troubleshooting.md#every-tool-call-is-blocked-by-the-extensions-file).
   When one hook's file is missing or older, the entry script does not run

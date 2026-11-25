@@ -503,7 +503,8 @@ The three entry scripts, `dispatch-pre-tool.mjs`, `dispatch-post-tool.mjs`
 and `dispatch-tool-failure.mjs`, run their event's two hooks through the
 shared core `harness-dispatch.mjs`. `<problem>` is `is missing or cannot
 be loaded`, or that the file is older than the entry script and lacks what
-it needs.
+it needs; for the core beside `dispatch-pre-tool.mjs`, which judges it by
+the level it exports, `is not the version this entry script runs with`.
 
 - The first notice, from the entry script named at its start: the core is
   missing or older, so neither hook ran on that event.
