@@ -57,8 +57,17 @@ export async function readPayload() {
   return isPlainObject(payload) ? payload : null;
 }
 
+/** True when `result` is a half result: `{ json, stderr, exitCode }` with
+ * `json` an object or null, `stderr` a string and `exitCode` 0 or 2. */
+const isHalfResult = result =>
+  isPlainObject(result)
+  && (result.json === null || isPlainObject(result.json))
+  && typeof result.stderr === 'string'
+  && (result.exitCode === 0 || result.exitCode === 2);
+
 /** The results of running each of `halves` on `payload`, in order. A half
- * that throws or returns null contributes nothing. */
+ * that throws, returns null or returns anything but a half result
+ * contributes nothing. */
 export async function runHalves(payload, halves) {
   const results = [];
   for (const { run } of halves) {
@@ -68,7 +77,7 @@ export async function runHalves(payload, halves) {
     } catch {
       continue;
     }
-    if (result !== null && result !== undefined) results.push(result);
+    if (isHalfResult(result)) results.push(result);
   }
   return results;
 }
@@ -110,6 +119,17 @@ export function combine(event, results) {
 export function emit(combined) {
   if (combined.json !== null) process.stdout.write(JSON.stringify(combined.json) + '\n');
   if (combined.stderr !== '') process.stderr.write(combined.stderr);
+}
+
+/** Runs `halves` on the payload standard input holds, writes their
+ * combined output for `event`, and returns the exit code: 0 when the payload
+ * is not an object. */
+export async function dispatch(event, halves) {
+  const payload = await readPayload();
+  if (payload === null) return 0;
+  const combined = combine(event, await runHalves(payload, halves));
+  emit(combined);
+  return combined.exitCode;
 }
 
 /** The half `name`: the export `exportName` of the installed `file`, which

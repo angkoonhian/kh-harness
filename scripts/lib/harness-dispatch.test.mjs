@@ -153,6 +153,24 @@ test('a half that throws yields nothing and the halves after it still run', asyn
   assert.deepEqual(results.map(r => r.json.systemMessage), ['a', 'd']);
 });
 
+test('a half that returns anything but a half result yields nothing', async () => {
+  const returning = value => ({ name: 'x', run: () => value });
+  const malformed = [
+    {}, 'text', [], { json: {}, stderr: '' }, { json: {}, stderr: '', exitCode: 1 }, { json: {}, stderr: '', exitCode: Number.NaN },
+    { json: 'n', stderr: '', exitCode: 0 }, { json: [], stderr: '', exitCode: 0 }, { json: null, stderr: null, exitCode: 0 },
+  ];
+  const ok = { json: null, stderr: 'kept\n', exitCode: 2 };
+  assert.deepEqual(await runHalves({}, [...malformed.map(returning), returning(ok)]), [ok]);
+});
+
+test('an entry script beside a half that returns a malformed result exits 0 and the other half still runs', () => {
+  const root = project();
+  const dir = installed({ 'loop-watch.mjs': 'export function loopHalf() { return { json: { systemMessage: \'n\' }, stderr: \'\' }; }\n' });
+  const r = runEntry('dispatch-tool-failure.mjs', root, failure('bad-1'), { dir });
+  assert.deepEqual({ status: r.status, stdout: r.stdout, stderr: r.stderr }, { status: 0, stdout: '', stderr: '' });
+  assert.equal(readEvents(root, 'bad-1').events.length, 1, 'the log half still recorded the failure');
+});
+
 test('dispatch-pre-tool.mjs prints the denial tool-gate.mjs prints and records what both hooks record', () => {
   const rootA = gatedProject();
   const rootB = gatedProject();

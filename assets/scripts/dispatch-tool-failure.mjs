@@ -11,7 +11,7 @@
 // A core that is missing or too old to provide what this script uses means
 // no hook runs, and every call says so in one fixed notice.
 const EVENT = 'PostToolUseFailure';
-const CORE = ['combine', 'emit', 'half', 'readPayload', 'runHalves'];
+const CORE = ['combine', 'dispatch', 'emit', 'half', 'readPayload', 'runHalves'];
 
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 
@@ -28,14 +28,10 @@ async function main() {
     return coreNotice('is missing or cannot be loaded');
   }
   if (CORE.some(name => !(name in core))) return coreNotice('is older than this entry script and lacks what it needs');
-  const payload = await core.readPayload();
-  if (payload === null) return 0;
-  const combined = core.combine(EVENT, await core.runHalves(payload, [
+  return core.dispatch(EVENT, [
     core.half('log', 'session-log.mjs', 'logHalf', () => import('./session-log.mjs')),
     core.half('loop', 'loop-watch.mjs', 'loopHalf', () => import('./loop-watch.mjs')),
-  ]));
-  core.emit(combined);
-  return combined.exitCode;
+  ]);
 }
 
 let code = 0;
