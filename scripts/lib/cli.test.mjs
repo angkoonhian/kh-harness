@@ -262,8 +262,11 @@ test('the README and the guide say the same of the extensions as the disclosure'
   }
   assert.match(readme, /Three of them can run THIS REPOSITORY'S OWN CODE AUTOMATICALLY/, 'the README\'s excerpt of the disclosure');
   assert.doesNotMatch(readme, /Two of them run THIS REPOSITORY'S OWN SCRIPTS/);
-  assert.match(how, /The other four hook scripts run nothing of the repository's/);
-  assert.doesNotMatch(how, /The other five/);
+  // The guide's table lists seven hook scripts, two of which run the
+  // repository's code; the third that does is the entry script, outside it.
+  assert.match(how, /the `PreToolUse` entry script `dispatch-pre-tool\.mjs`, which is not in the table/);
+  assert.match(how, /The other five hook scripts in the table run nothing of the repository's/);
+  assert.doesNotMatch(how, /The other four/);
 });
 
 test('the execution disclosure names the terminal check for what it checks', () => {
