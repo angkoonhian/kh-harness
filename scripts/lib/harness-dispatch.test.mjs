@@ -30,6 +30,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { readEvents, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { combine, runHalves } from '../../assets/scripts/harness-dispatch.mjs';
+import { EXTENSIONS_PATH, moduleSha256 } from '../../assets/scripts/harness-extensions.mjs';
 import { GATES_PATH } from '../../assets/scripts/tool-gate.mjs';
 import { addedLatency } from './latency-fixtures.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -365,6 +366,16 @@ function assertWithinBudget(name, root, payload) {
 
 test('latency budget: dispatch-pre-tool.mjs — the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
   assertWithinBudget('dispatch-pre-tool.mjs', gatedProject(), call('latency-pre', 'npm test'));
+});
+
+test('latency budget: dispatch-pre-tool.mjs with one small allowing extension — the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {
+  const root = gatedProject();
+  const source = "export const preToolUse = () => ({ decision: 'allow' });\n";
+  const module = '.claude/ext/allow.mjs';
+  mkdirSync(join(root, '.claude/ext'), { recursive: true });
+  writeFileSync(join(root, module), source);
+  writeFileSync(join(root, EXTENSIONS_PATH), JSON.stringify([{ id: 'allow', version: '1.0.0', module, sha256: moduleSha256(Buffer.from(source)), onFailure: 'block' }]));
+  assertWithinBudget('dispatch-pre-tool.mjs', root, call('latency-pre-ext', 'npm test'));
 });
 
 test('latency budget: dispatch-post-tool.mjs — the fastest of 40 interleaved runs adds no more than the budget recorded in the test to a bare node start', () => {

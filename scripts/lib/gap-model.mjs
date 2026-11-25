@@ -1088,6 +1088,7 @@ const CHECKS = [
       const evidence = [
         skew.versions,
         ...skew.updates.map(p => `out of date: ${displayPath(p.path)}`),
+        ...skew.added.map(p => `missing: ${displayPath(p.path)} (an updated script loads it)`),
         ...skew.heldBack.map(h => `held back${atKit(h.version)}: ${displayPath(h.path)} (out of date, but kh-harness keeps ${h.causes.map(c => c.path).join(', ')} as ${h.causes.length === 1 ? 'it is' : 'they are'}, and its hook scripts are updated together or not at all)`),
         ...skew.kept.map(k => `kept${atKit(k.version)}: ${displayPath(k.path)} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
         ...skew.unproduced.map(path => `left alone: ${displayPath(path)} (this kit no longer generates it for this repository)`),

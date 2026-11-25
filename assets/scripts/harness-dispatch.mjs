@@ -11,9 +11,11 @@
 // halves that one runs. A half that cannot be loaded, or that lacks its
 // export, gives one fixed notice on every call; a half that throws gives
 // nothing, and the halves after it still run. A fault a half leaves behind
-// it — an exception thrown from a callback, a rejection nobody handles, a
-// promise that never settles — ends the run instead: what the halves had
-// returned by then is written, and no half after it runs.
+// it — an exception thrown from a callback, a rejection nobody handles —
+// changes nothing: it drops no result already gathered, and the halves
+// still to run still run. A half whose promise can never settle ends the
+// run instead: what the halves had returned by then is written, and no half
+// after it runs.
 //
 // Runs on every tool call, so it imports nothing and never spawns a child
 // process.
@@ -129,13 +131,15 @@ export function emit(combined) {
  * combined output for `event`, and returns the exit code: 0 when the payload
  * is not an object.
  *
- * Until it returns, an uncaught exception, an unhandled rejection or an
- * event loop left with nothing to do (a half whose promise never settles,
- * for which Node would otherwise exit 13 with a warning on standard error,
- * since each entry script awaits this at its top level) writes the
- * combined output of the results gathered so far and exits with its code,
- * with no stack trace. A block an earlier half decided therefore stands
- * whatever a later half does. */
+ * Until it returns, an uncaught exception or an unhandled rejection is
+ * ignored, with no stack trace, so a fault one half leaves behind (the
+ * PreToolUse extensions run first, and are another plugin's code) can stop
+ * neither the halves after it nor the output. An event loop left with
+ * nothing to do (a half whose promise never settles, for which Node would
+ * otherwise exit 13 with a warning on standard error, since each entry
+ * script awaits this at its top level) writes the combined output of the
+ * results gathered so far and exits with its code. A block an earlier half
+ * decided therefore stands whatever a later half does. */
 export async function dispatch(event, halves) {
   const results = [];
   let written = null;
@@ -146,8 +150,10 @@ export async function dispatch(event, halves) {
     }
     return written.exitCode;
   };
-  const abandon = () => process.exit(write());
-  for (const name of ['uncaughtException', 'unhandledRejection', 'beforeExit']) process.on(name, abandon);
+  const ignore = () => {};
+  process.on('uncaughtException', ignore);
+  process.on('unhandledRejection', ignore);
+  process.on('beforeExit', () => process.exit(write()));
   const payload = await readPayload();
   if (payload !== null) await runHalves(payload, halves, results);
   return write();

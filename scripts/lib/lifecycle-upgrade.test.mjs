@@ -7,8 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DETECT, APPLY, UNINSTALL, git, kitAt, loggingScript, run, runEveryRegisteredHook, sandboxDataDir, settings } from './lifecycle-fixtures.mjs';
-import { LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
+import { DETECT, APPLY, UNINSTALL, git, kitAt, loggingScript, manifestOf, run, runEveryRegisteredHook, sandboxDataDir, settings } from './lifecycle-fixtures.mjs';
+import { HARNESS_EXTENSIONS_PATH, LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 sandboxDataDir();
@@ -122,4 +122,29 @@ test('UPGRADE B: uninstall then apply puts no 0.2.0 module beside the edited 0.1
   assert.ok(scriptsOnDisk(d).includes('session-log.mjs'));
   assertNoHookCrashes(d);
   for (const id of ['P2.sensor', 'P5.sessionlog', 'P5.toolgate', 'P2.loopwatch', 'P4.sessionbrief']) assert.equal(checkOf(d, id).state, 'declared', id);
+});
+
+// Task 1's last commit of the contract-and-extension-point plan: the last
+// kit whose PreToolUse entry script does not load the extension loader.
+const KIT_BEFORE_LOADER = '71e45f3';
+const beforeLoader = kitAt(KIT_BEFORE_LOADER);
+const skipBeforeLoader = beforeLoader === null ? `commit ${KIT_BEFORE_LOADER} is not in this checkout (a shallow clone); fetch the full history to run this` : false;
+
+test('REVIEW FOCUS 3: an install made before the extension loader existed gets it with the entry script that loads it', { skip: skipBeforeLoader }, () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-upgrade-loader-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node -e 0' } }));
+  writeFileSync(join(d, 'index.js'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  commit(d, 'init');
+  run(beforeLoader.apply, d, '--yes');
+  assert.ok(existsSync(join(d, '.claude/scripts/dispatch-pre-tool.mjs')), 'fixture sanity: the older kit installed the entry script');
+  assert.equal(existsSync(join(d, HARNESS_EXTENSIONS_PATH)), false, 'fixture sanity: the older kit did not install the loader');
+  commit(d, 'install the older kit');
+  run(APPLY, d, '--yes');
+  assert.ok(existsSync(join(d, HARNESS_EXTENSIONS_PATH)));
+  assert.ok(manifestOf(d).files.some(f => f.path === HARNESS_EXTENSIONS_PATH));
+  for (const r of runEveryRegisteredHook(d)) assert.equal(r.status, 0, `${r.script}: ${r.stderr}`);
+  commit(d, 'update kh-harness');
+  assert.match(run(APPLY, d), /no actions for/);
 });

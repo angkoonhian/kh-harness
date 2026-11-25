@@ -104,8 +104,9 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
   the hooks it installed. Neither is installed unless its check reported
   \`absent\` and you ran \`apply --yes\`.
 
-  The other five run nothing of this repository's. Each reads what is said
-  below and executes no command.
+  The other five run no script of this repository's. Each reads what is said
+  below, and only the PreToolUse hook can load code: the modules an
+  extensions file lists.
 
   Each hook is registered in Claude Code's exec form — \`node\` plus the
   script's path rooted at \`\${CLAUDE_PROJECT_DIR}\` — so it runs with no shell
@@ -149,9 +150,16 @@ export const EXECUTION_DISCLOSURE = `WHAT THE HOOKS EXECUTE — read this before
                                  call when a gate with action \`block\`
                                  matches; a \`warn\` gate's message reaches
                                  the model alongside the tool's result, after
-                                 the call has run. It executes nothing, and no
-                                 gate exists until one is learned and
-                                 promoted, so until then it does nothing.
+                                 the call has run; no gate exists until one
+                                 is learned and promoted. It also reads
+                                 .claude/kh-harness/extensions.json when
+                                 another plugin has written one, and loads
+                                 and runs each module that file lists: one
+                                 self-contained file under .claude/, run
+                                 only when its bytes match the hash the file
+                                 records for it. Such a module can BLOCK a
+                                 call. kh-harness never writes that file, and
+                                 without it the hook executes nothing.
                                  Installed with it: deny rules for edits to
                                  the WHOLE .claude/scripts/ directory,
                                  including any script of yours kept there,

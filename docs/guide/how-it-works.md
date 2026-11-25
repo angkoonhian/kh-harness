@@ -109,7 +109,7 @@ The kit is built so that code decides and the model drafts:
 
 A **hook** is a command Claude Code runs by itself when an event happens in
 a session, such as a prompt being sent or a tool being called. `apply`
-copies up to seven hook scripts, three entry scripts and the five modules
+copies up to seven hook scripts, three entry scripts and the six modules
 they load, from this repository's `assets/scripts/` into your repository's
 `.claude/scripts/`, and registers them in `.claude/settings.json`. Each
 copy is the asset plus one stamp line. The plugin installs none of them;
@@ -144,7 +144,12 @@ The 16 events `session-log.mjs` is registered on are `SessionStart`,
 Notes on the table:
 
 - Two scripts run your repository's own commands: `lint-touched.mjs` and
-  `verify-touched.mjs`. The other five run nothing of the repository's.
+  `verify-touched.mjs`. The other five run no script of the repository's.
+  Only the `PreToolUse` entry script loads repository code: each module
+  another plugin lists in `.claude/kh-harness/extensions.json`, one
+  self-contained file under `.claude/` run only when its bytes match the
+  hash recorded for it, which can block the call. kh-harness never writes
+  that file.
 - On the three tool-call events the kit's two hooks run one after the
   other, always in the same order: before a call, the gate hook and then
   the session log; after a call, the session log and then the lint
@@ -152,13 +157,15 @@ Notes on the table:
   On `SessionStart`, `UserPromptSubmit` and `Stop`, where the session log
   sits beside another kit hook, each is its own registration and its own
   process, and no order between the two is promised.
-- The five modules are loaded by the scripts above and registered on no
+- The six modules are loaded by the scripts above and registered on no
   event: `harness-redact.mjs` (the credential mask, shared paths, bounded
   runner), `harness-log.mjs` (where the data directory is, appending an
   event), `harness-seal.mjs` (sealing and retention),
-  `harness-gates.mjs` (validating and matching a gate) and
+  `harness-gates.mjs` (validating and matching a gate),
   `harness-dispatch.mjs` (the shared core the three entry scripts run
-  their hooks through).
+  their hooks through) and `harness-extensions.mjs` (reading the
+  extensions file and running each module it lists, loaded by the
+  `PreToolUse` entry script only when that file is there).
 - Every hook exits 0 when something inside it fails, or when a module it
   loads is missing or older than it. The work that hook does is then not
   done. What each says when that happens is under
@@ -328,7 +335,7 @@ The kit keeps state in three places.
   .claude/
     settings.json               hook entries and deny rules
     kh-harness.manifest.json    the record of what the kit wrote
-    scripts/                    7 hook scripts, 3 entry scripts and 5 modules
+    scripts/                    7 hook scripts, 3 entry scripts and 6 modules
     kh-harness/gates.json       gates landed for everyone
     rules/<package>.md          one rule scaffold per workspace package
   docs/harness/

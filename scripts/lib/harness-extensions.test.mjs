@@ -99,6 +99,7 @@ test('each entry is returned as a fresh object of the five fields', () => {
 test('a file that cannot be used is malformed, with fixed text that quotes nothing from it', async (t) => {
   const ENTRY_1 = 'entry 1 is not an extension entry as docs/CONTRACT.md describes one';
   const NOT_A_DIRECTORY = '.claude or .claude/kh-harness is a link or not a directory';
+  const LINKED_CLAUDE = '.claude is a link, and an extensions file must be a file of the repository itself';
   const valid = { id: 'a', version: '1.0.0', module: '.claude/ext/a.mjs', sha256: moduleSha256(Buffer.from(ALLOW)), onFailure: 'block' };
   const changed = o => ({ ...valid, ...o });
   const { sha256: _sha256, ...withoutSha } = valid;
@@ -146,11 +147,20 @@ test('a file that cannot be used is malformed, with fixed text that quotes nothi
       mkdirSync(join(root, '.claude'));
       return linkOrSkip(st, join(root, 'gone'), join(root, '.claude/kh-harness'), 'junction');
     }, NOT_A_DIRECTORY],
-    ['.claude a link to an empty directory outside the repository', (root, st) => linkOrSkip(st, tempDir('hk-ext-outside-'), join(root, '.claude'), 'junction'), NOT_A_DIRECTORY],
-    ['.claude a link to a directory inside the repository', (root, st) => {
+    ['.claude a link to a directory inside the repository that holds an extensions file', (root, st) => {
       writeAt(join(root, 'elsewhere/kh-harness/extensions.json'), '[]');
       return linkOrSkip(st, join(root, 'elsewhere'), join(root, '.claude'), 'junction');
-    }, NOT_A_DIRECTORY],
+    }, LINKED_CLAUDE],
+    ['.claude a link to a directory outside the repository that holds an extensions file', (root, st) => {
+      const outside = tempDir('hk-ext-outside-');
+      writeAt(join(outside, 'kh-harness/extensions.json'), '[]');
+      return linkOrSkip(st, outside, join(root, '.claude'), 'junction');
+    }, LINKED_CLAUDE],
+    ['.claude a link through which a directory sits at the extensions path', (root, st) => {
+      const outside = tempDir('hk-ext-outside-');
+      mkdirSync(join(outside, 'kh-harness/extensions.json'), { recursive: true });
+      return linkOrSkip(st, outside, join(root, '.claude'), 'junction');
+    }, LINKED_CLAUDE],
     ['not JSON', root => writeExtensions(root, '{ not json'), 'it is not JSON'],
     ['an object, not an array', root => writeExtensions(root, '{"extensions":[]}'), 'it is not a JSON array'],
     ['nine entries', root => writeExtensions(root, nine), 'it lists more than 8 extensions'],
@@ -202,6 +212,31 @@ test('a link swapped in at the file after it was examined is not followed', (t) 
   };
   syncBuiltinESMExports();
   assert.deepEqual(readExtensions(root), { state: 'malformed', problem: 'it could not be read' });
+});
+
+test('a .claude that is a link through which no extensions file is reached means no extensions', async (t) => {
+  const rows = [
+    ['a link to an empty directory outside the repository', () => tempDir('hk-ext-outside-')],
+    ['a link to a directory holding the kit\'s scripts and gates but no extensions file', () => {
+      const outside = tempDir('hk-ext-outside-');
+      writeAt(join(outside, 'scripts/dispatch-pre-tool.mjs'), ALLOW);
+      writeAt(join(outside, 'kh-harness/gates.json'), '{}');
+      return outside;
+    }],
+    ['a link whose kh-harness is a file', () => {
+      const outside = tempDir('hk-ext-outside-');
+      writeAt(join(outside, 'kh-harness'), '');
+      return outside;
+    }],
+    ['a dangling link', root => join(root, 'gone')],
+  ];
+  for (const [name, target] of rows) {
+    await t.test(name, (st) => {
+      const root = project();
+      if (!linkOrSkip(st, target(root), join(root, '.claude'), 'junction')) return;
+      assert.deepEqual(readExtensions(root), { state: 'absent' });
+    });
+  }
 });
 
 test('no .claude, or no .claude/kh-harness, means no extensions', () => {

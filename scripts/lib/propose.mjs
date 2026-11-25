@@ -1027,12 +1027,15 @@ export function heldQuestion(causes) {
  * are not the kit's to write, with the status that says why; `unproduced`
  * the recorded paths no generator produces for this repository any more,
  * which are left alone. A `heldBack` or `kept` entry carries `version`,
- * the kit version its stamp names on disk, or null.
+ * the kit version its stamp names on disk, or null. `added` are proposals
+ * for the installed scripts an updated script loads that are neither
+ * recorded nor on disk, so an update never leaves a script beside a sibling
+ * nothing writes; one on disk and not recorded holds its unit instead.
  */
 export function kitSkew({ kitVersion, harness, root, stack, checks, files, manifest }) {
   const produced = currentKitFiles({ kitVersion, harness, root, stack, checks, files, manifest });
   const held = heldScripts(root, manifest, kitVersion);
-  const skew = { versions: '', current: [], updates: [], heldBack: [], kept: [], unproduced: [] };
+  const skew = { versions: '', current: [], updates: [], added: [], heldBack: [], kept: [], unproduced: [] };
   const carried = [];
   for (const entry of manifest.files) {
     const p = produced.get(entry.path);
@@ -1047,6 +1050,14 @@ export function kitSkew({ kitVersion, harness, root, stack, checks, files, manif
     else if (status !== 'update') skew.kept.push({ path: entry.path, why: status, version });
     else if (held.has(entry.path)) skew.heldBack.push({ path: entry.path, causes: held.get(entry.path), version });
     else skew.updates.push({ ...p, reason: updateReason(version, kitVersion) });
+  }
+  const recorded = new Set(manifest.files.map(f => f.path));
+  for (const update of skew.updates) {
+    if (!Object.hasOwn(INSTALLED_SCRIPTS, update.path)) continue;
+    for (const path of everyLoadedSibling(update.path)) {
+      if (recorded.has(path) || held.has(path) || existsSync(join(root, path)) || skew.added.some(p => p.path === path)) continue;
+      skew.added.push({ ...installedScriptProposal(path, kitVersion), reason: `${path} is loaded by an installed script this kit updates` });
+    }
   }
   skew.versions = kitVersions(carried, kitVersion);
   return skew;
@@ -1090,7 +1101,10 @@ const GENERATORS = {
   'P0.hookmerge': hookMergeProposal,
   // Each update goes through `buildProposals`' recorded-path branch like any
   // other proposal for a recorded file.
-  [KITSKEW_ID]: ctx => kitSkew(ctx).updates,
+  [KITSKEW_ID]: ctx => {
+    const skew = kitSkew(ctx);
+    return [...skew.updates, ...skew.added];
+  },
   // No entry for 'P3.intent', deliberately and permanently: like steps 6
   // and 7a, docs/INTENT.md is written by the skill after reading the
   // repository and gated on its full content (propose.test.mjs's "SECRET:

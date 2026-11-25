@@ -31,6 +31,10 @@ enforces whatever the gate files hold, however a gate got there. See
 - Its lint sensor and stop gate run this repository's own `lint`,
   `typecheck` or `test` scripts automatically, after edits and at each turn
   end.
+- Before every tool call it loads and runs each module another plugin
+  lists in `.claude/kh-harness/extensions.json`: one self-contained file
+  under `.claude/`, run only when its bytes match the hash that file
+  records, which can block the call. kh-harness never writes that file.
 - Once you enable the session log, it stores every prompt and every tool
   call's input and output on this machine, after a best-effort credential
   scrub.

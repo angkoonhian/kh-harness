@@ -158,7 +158,7 @@ test('F5: the README discloses that installing the hooks executes this repositor
 test('the guide names the three entry scripts, the core and the merge check wherever it counts the kit\'s scripts or lists its checks', () => {
   const how = readFileSync(resolve(import.meta.dirname, '..', '..', 'docs/guide/how-it-works.md'), 'utf8');
   for (const name of ['dispatch-pre-tool.mjs', 'dispatch-post-tool.mjs', 'dispatch-tool-failure.mjs', 'harness-dispatch.mjs', 'P0.hookmerge']) assert.ok(how.includes(name), name);
-  assert.match(how, /7 hook scripts, 3 entry scripts and 5 modules/);
+  assert.match(how, /7 hook scripts, 3 entry scripts and 6 modules/);
   assert.doesNotMatch(how, /states no order between them/);
   assert.match(readFileSync(README, 'utf8'), /dispatch-pre-tool\.mjs/);
 });
@@ -226,8 +226,20 @@ test('the execution disclosure says what the loop-warning hook reads, keeps and 
 
 test('the execution disclosure says which hooks run this repository\'s scripts and that the others run none', () => {
   assert.match(disclosed, /Two of them run THIS REPOSITORY'S OWN SCRIPTS AUTOMATICALLY/);
-  assert.match(disclosed, /The other five run nothing of this repository's/);
+  assert.match(disclosed, /The other five run no script of this repository's\. Each reads what is said below, and only the PreToolUse hook can load code: the modules an extensions file lists\./);
   assert.match(disclosed, /SessionStart \(per session\) reads HANDOFF\.md \(or docs\/HANDOFF\.md\)/);
+});
+
+test('the execution disclosure says the PreToolUse hook loads the modules an extensions file lists', () => {
+  const entry = /PreToolUse \(per tool call\) (.*?) (?=Session log \(per event\))/.exec(disclosed)?.[1] ?? '';
+  assert.match(entry, /\.claude\/kh-harness\/extensions\.json/);
+  assert.match(entry, /loads and runs each module that file lists/);
+  assert.match(entry, /one self-contained file under \.claude\//);
+  assert.match(entry, /the hash the file records for it/);
+  assert.match(entry, /such a module can BLOCK a call/i);
+  assert.match(entry, /kh-harness never writes that file/);
+  assert.doesNotMatch(entry, /It executes nothing, and no gate exists/);
+  assert.doesNotMatch(disclosed, /The other \w+ run nothing of this repository's\. Each reads what is said\s+below and executes no command\./);
 });
 
 test('the execution disclosure names the terminal check for what it checks', () => {
