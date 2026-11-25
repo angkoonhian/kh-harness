@@ -142,14 +142,14 @@ function manifestAbsence(root) {
 
 /**
  * The entries of `notCurrent`, `[path, status]` pairs, that no proposal of
- * this run writes: the proposals `buildProposals` makes from the checks
- * evaluated so far, with P0.hookmerge's and P0.kitskew's generators, which
- * come later, run as well. Without `root` and `kitVersion` none is judged.
+ * this run writes: the proposals `buildProposals` makes from every check of
+ * the run but the one asking, `checks` (those before it) followed by
+ * `checksAfter()` (those after it). Without `root` and `kitVersion` none is
+ * judged.
  */
-function notWrittenByRun(notCurrent, { checks, manifest, kitVersion, harness, root, stack, files }) {
+function notWrittenByRun(notCurrent, { checks, checksAfter, manifest, kitVersion, harness, root, stack, files }) {
   if (notCurrent.length === 0 || root === undefined || kitVersion === undefined) return [];
-  const later = [{ id: 'P0.hookmerge', state: 'absent' }, ...(manifest ? [{ id: 'P0.kitskew', state: 'absent' }] : [])];
-  const written = new Set(buildProposals({ checks: [...checks, ...later], manifest, kitVersion, harness, root, stack, files })
+  const written = new Set(buildProposals({ checks: [...checks, ...checksAfter()], manifest, kitVersion, harness, root, stack, files })
     .filter(p => p.kind === 'file').map(p => p.path));
   return notCurrent.filter(([path]) => !written.has(path));
 }
@@ -945,7 +945,7 @@ const CHECKS = [
     // the number speaks for the installed files. Absent, it is proposed only
     // when this run leaves every file it speaks for as this kit installs it;
     // present and unrecorded, it is proposed for `apply` to record.
-    check: ({ harness, manifest, heldScript, checks, kitVersion, root, stack, files }) => {
+    check: ({ harness, manifest, heldScript, checks, checksAfter, kitVersion, root, stack, files }) => {
       const file = harness.contract;
       if (!file) return { state: 'n/a', evidence: ['the contract file was not read'] };
       if (file.state === 'unreadable') {
@@ -959,13 +959,20 @@ const CHECKS = [
         const says = `${CONTRACT_PATH}: contract ${file.contract}${file.contract === CONTRACT ? '' : ` (this kit honours contract ${CONTRACT})`}`;
         const notKit = installed.filter(([, status]) => status !== 'current');
         const problems = [
-          ...(file.kitWritten ? [] : [`${CONTRACT_PATH} says contract ${file.contract}, but it is not the file this kit writes there: its number, its list of files and their sha256, or its stamp differ, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`]),
+          ...(file.kitWritten ? [] : [`${CONTRACT_PATH} says contract ${file.contract}, but it is not the file this kit writes there: its bytes differ from what this kit writes, line endings aside, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`]),
           ...(notKit.length === 0 ? [] : [
             `the contract file says ${file.contract}, but ${notKit.length} of the ${CONTRACT_FILES.length} files it speaks for ${notKit.length === 1 ? 'is' : 'are'} not what this kit installs: ` +
             `${notKit.map(([path, status]) => `${path} (${INSTALLED_STATUS_WORDS[status]})`).join(', ')}; whether the installed files honour it was not read. ` +
             'apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them']),
         ];
         if (problems.length) return { state: 'failing', evidence: [says, ...problems] };
+        if (!manifest && manifestAbsence(root) === 'corrupt') {
+          return {
+            state: 'absent', decidable: false,
+            evidence: [says, `${CONTRACT_PATH} holds what this kit writes there, but ${MANIFEST_PATH} could not be read as a manifest, so it is not recorded, and apply refuses to run until the manifest is restored`],
+            question: `Restore ${MANIFEST_PATH} from git, then run apply again, which records ${CONTRACT_PATH}; or leave the manifest as it is, and uninstall cannot remove the contract file. Which?`,
+          };
+        }
         if (!(manifest?.files ?? []).some(f => f.path === CONTRACT_PATH)) {
           return {
             state: 'absent',
@@ -995,7 +1002,7 @@ const CHECKS = [
           question: `${list} ${was} deleted since kh-harness wrote ${it}, so kh-harness does not write ${CONTRACT_PATH}. Restore ${it} from git and run apply again; or leave ${it} deleted, and no contract file is written. Which?`,
         };
       }
-      const unwritten = notWrittenByRun(installed.filter(([, status]) => status !== 'current'), { checks, manifest, kitVersion, harness, root, stack, files });
+      const unwritten = notWrittenByRun(installed.filter(([, status]) => status !== 'current'), { checks, checksAfter, manifest, kitVersion, harness, root, stack, files });
       if (unwritten.length) {
         const paths = unwritten.map(([path]) => path);
         const [list, is, it] = [paths.join(', '), paths.length === 1 ? 'is' : 'are', paths.length === 1 ? 'it' : 'them'];
@@ -1330,7 +1337,6 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
     throw new TypeError('buildGaps: `files` is required — P1.bootstrap and P2.protected both decide a capability\'s reported state from it, and a defaulted `[]` would report P2.protected as `n/a` for a caller that merely forgot to pass it.');
   }
   const applicable = new Set(profile.appliesToSteps());
-  // Each check is given the checks evaluated before it.
   const checks = [];
   // Which installed scripts are held, read once and only when a hook check
   // asks. Without `root` or `kitVersion` it cannot be read, and no check
@@ -1341,7 +1347,15 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
     held ??= heldScripts(root, manifest, kitVersion);
     return held.get(path) ?? null;
   };
-  const gapFor = def => {
+  // Each check is given `checks`, those before it, and `checksAfter`, which
+  // evaluates those after it on the checks before it, for a check that asks
+  // what the whole run writes.
+  const gapFor = (def, seen) => {
+    const checksAfter = () => {
+      const after = [];
+      for (const later of checkDefs.slice(checkDefs.indexOf(def) + 1)) after.push(gapFor(later, [...seen, ...after]));
+      return after;
+    };
     if (!applicable.has(def.step)) {
       // The three-way split for P1.bootstrap (and, in principle, any future
       // check with the same shape):
@@ -1379,7 +1393,7 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
         lookedFor: def.lookedFor, evidence: [`not applicable to profile ${profile.id}`],
         decidable: true, question: null, proposal: null, via: null, advice: [] };
     }
-    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion, checks, heldScript });
+    const r = def.check({ stack, harness, exposures, profile, git, files, root, manifest, kitVersion, checks: seen, checksAfter, heldScript });
     // The second axis, enforced in the same place and for the same reason.
     // `absent` means two incompatible things: "I enumerated the complete space
     // and it is not there" (decidable — the bootstrap script, the deny rules,
@@ -1406,6 +1420,6 @@ export function buildGaps({ stack, harness, exposures, profile, git, files, root
       via: proposal ? proposalVia(def) : null,
     };
   };
-  for (const def of checkDefs) checks.push(gapFor(def));
+  for (const def of checkDefs) checks.push(gapFor(def, checks));
   return checks;
 }

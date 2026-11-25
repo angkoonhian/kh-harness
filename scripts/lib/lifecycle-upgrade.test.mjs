@@ -11,6 +11,7 @@ import { DETECT, APPLY, UNINSTALL, git, kitAt, loggingScript, manifestOf, run, r
 import { CONTRACT_FILES, HARNESS_EXTENSIONS_PATH, HARNESS_LOG_PATH, HARNESS_SEAL_PATH, kitContractText, LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
 import { CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
+import { EXECUTION_DISCLOSURE } from './cli.mjs';
 
 sandboxDataDir();
 
@@ -150,6 +151,23 @@ test('REVIEW FOCUS 3: an install made before the extension loader existed gets i
   for (const r of runEveryRegisteredHook(d)) assert.equal(r.status, 0, `${r.script}: ${r.stderr}`);
   commit(d, 'update kh-harness');
   assert.match(run(APPLY, d), /no actions for/);
+});
+
+test('the dry run of an update that makes the registered PreToolUse hook run repository code says what the hooks execute, before its first proposal', { skip: skipBeforeLoader }, () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-upgrade-disclose-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node -e 0' } }));
+  writeFileSync(join(d, 'index.js'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  commit(d, 'init');
+  run(beforeLoader.apply, d, '--yes');
+  commit(d, 'install the older kit');
+  const dry = run(APPLY, d);
+  assert.match(dry, /^--- \.claude\/scripts\/dispatch-pre-tool\.mjs {2}\[P0\.kitskew\]$/m, 'fixture sanity: a file update of the entry script');
+  assert.doesNotMatch(dry, /^--- \.claude\/settings\.json/m, 'fixture sanity: no hook is registered by this run');
+  const at = dry.indexOf(EXECUTION_DISCLOSURE);
+  assert.ok(at !== -1, 'the disclosure is printed');
+  assert.ok(at < dry.indexOf('\n--- '), 'before the first proposal');
 });
 
 // The last commit before the registry took `enforced-by: officer`: its

@@ -80,6 +80,7 @@ test('apply on an install with separate registrations proposes exactly one repla
   assert.match(dry, /^-\s+"\$\{CLAUDE_PROJECT_DIR\}\/\.claude\/scripts\/tool-gate\.mjs"$/m);
   assert.match(dry, /^\+\s+"\$\{CLAUDE_PROJECT_DIR\}\/\.claude\/scripts\/dispatch-pre-tool\.mjs"$/m);
   assert.ok(dry.includes(EXECUTION_DISCLOSURE), 'the dry run says what the hooks it registers do');
+  assert.ok(dry.indexOf(EXECUTION_DISCLOSURE) < dry.indexOf('\n--- '), 'before the first proposal, not after every diff');
 
   const out = run(APPLY, d, '--yes');
   for (const event of Object.keys(ENTRY_SCRIPTS)) assert.ok(out.includes(`patched    .claude/settings.json (${event}; 2 separate registrations removed)`), event);

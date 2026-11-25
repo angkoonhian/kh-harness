@@ -2255,7 +2255,7 @@ const kitContract = (installed = CONTRACT_FILES_CURRENT) => ({ state: 'ok', cont
 const NOT_KIT = 'the contract file says 1, but 2 of the ' + CONTRACT_FILES.length + ' files it speaks for are not what this kit installs: ' +
   `${DISPATCH_PRE_PATH} (is not the file this kit installs), ${HARNESS_EXTENSIONS_PATH} (is missing); whether the installed files honour it was not read. ` +
   'apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them';
-const NOT_WRITTEN = n => `${CONTRACT_PATH} says contract ${n}, but it is not the file this kit writes there: its number, its list of files and their sha256, or its stamp differ, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`;
+const NOT_WRITTEN = n => `${CONTRACT_PATH} says contract ${n}, but it is not the file this kit writes there: its bytes differ from what this kit writes, line endings aside, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`;
 
 test('P5.contract sits directly after P5.extensions, at the gate hook\'s step, and says what it looked for', () => {
   const ids = gaps(bareStack, bareHarness).map(c => c.id);
@@ -2286,6 +2286,18 @@ test('P5.contract is failing for a contract file this kit did not write as it is
   assert.deepEqual([one.state, one.evidence], ['failing', ['.claude/kh-harness/contract.json: contract 1', NOT_WRITTEN(1)]]);
   const unrecorded = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, kitWritten: false, installed: CONTRACT_FILES_CURRENT } }, null);
   assert.deepEqual([unrecorded.state, unrecorded.proposal], ['failing', null], 'a file this kit did not write is not adopted');
+});
+
+test('P5.contract asks, rather than proposes recording, while the manifest cannot be read, since apply refuses to run then', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hk-contract-corrupt-'));
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, MANIFEST_PATH), '{ not a manifest');
+  const c = byId(buildGaps({ stack: bareStack, harness: { ...bareHarness, contract: kitContract() }, exposures: [], profile: selectProfile(bareStack),
+    git: { branch: 'main', isRepo: true }, files: [], root, manifest: null, kitVersion: '0.2.0' }), 'P5.contract');
+  assert.deepEqual([c.state, c.decidable, c.proposal], ['absent', false, null]);
+  assert.deepEqual(c.evidence, ['.claude/kh-harness/contract.json: contract 1',
+    '.claude/kh-harness/contract.json holds what this kit writes there, but .claude/kh-harness.manifest.json could not be read as a manifest, so it is not recorded, and apply refuses to run until the manifest is restored']);
+  assert.equal(c.question, 'Restore .claude/kh-harness.manifest.json from git, then run apply again, which records .claude/kh-harness/contract.json; or leave the manifest as it is, and uninstall cannot remove the contract file. Which?');
 });
 
 test('P5.contract proposes recording a contract file that holds what this kit writes beside the files it speaks for, when the manifest does not record it', () => {

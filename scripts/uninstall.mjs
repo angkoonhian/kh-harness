@@ -290,10 +290,12 @@ if (result.patchesNotReverted.length > 0) {
 // with its reason, and never a failure.
 if (plan.keep.length > 0 || result.patchesKept.length > 0) {
   console.log('Kept:');
-  // A kept contract file still tells another plugin a contract holds here.
-  const contractOrphaned = CONTRACT_FILES.every(path => !existsSync(join(root, path)));
+  // A kept contract file still tells another plugin a contract holds here,
+  // beside none, or only some, of the scripts it speaks for.
+  const gone = CONTRACT_FILES.filter(path => !existsSync(join(root, path))).length;
+  const removedScripts = gone === CONTRACT_FILES.length ? 'the scripts it speaks for were' : `${gone} of the ${CONTRACT_FILES.length} scripts it speaks for were`;
   for (const k of plan.keep) {
-    const orphan = k.path === CONTRACT_PATH && contractOrphaned ? ': it still declares a kh-harness contract, and the scripts it speaks for were removed; delete it by hand' : '';
+    const orphan = k.path === CONTRACT_PATH && gone > 0 ? `: it still declares a kh-harness contract, and ${removedScripts} removed; delete it by hand` : '';
     console.log(`  ${displayPath(k.path)} (${keptWhy(k)}${orphan})`);
   }
   for (const p of result.patchesKept) {

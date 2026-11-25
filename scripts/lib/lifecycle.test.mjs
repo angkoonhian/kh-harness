@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
@@ -1376,13 +1376,24 @@ test('a contract file reached through a link is reported as unreadable, and is n
   rmSync(outside, { recursive: true, force: true });
 });
 
-const NOT_WRITTEN = n => `${CONTRACT_FILE} says contract ${n}, but it is not the file this kit writes there: its number, its list of files and their sha256, or its stamp differ, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`;
+const NOT_WRITTEN = n => `${CONTRACT_FILE} says contract ${n}, but it is not the file this kit writes there: its bytes differ from what this kit writes, line endings aside, so the number is not this kit's to vouch for; P0.kitskew says whether apply can update it`;
 /** `d`'s manifest without its record of the contract file, the file left. */
 function unrecordContract(d) {
   const m = manifestOf(d);
   m.files = m.files.filter(f => f.path !== CONTRACT_FILE);
   writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
 }
+
+test('a contract file found on disk is not said to be recorded when the manifest could not be written', { skip: process.platform === 'win32' || process.getuid?.() === 0 ? 'a read-only file does not stop this user writing it' : false }, () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  unrecordContract(d);
+  chmodSync(join(d, '.claude/kh-harness.manifest.json'), 0o444);
+  const r = runResult(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /^recorded /m);
+  assert.match(r.stdout, /^not recorded \.claude\/kh-harness\/contract\.json \(on disk as this kit writes it, but the manifest could not be written\)$/m);
+});
 
 test('a contract file the owner edited beside this kit\'s files is failing, whatever number it says', () => {
   const d = fixture();
@@ -1424,6 +1435,18 @@ test('uninstall says a contract file it keeps still declares a contract, once th
   assert.ok(existsSync(join(d, CONTRACT_FILE)));
 });
 
+test('uninstall says a contract file it keeps still declares a contract when only some of the scripts it speaks for are gone', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  writeFileSync(join(d, CONTRACT_FILE), JSON.stringify({ contract: 1 }));
+  const gate = join(d, '.claude/scripts/tool-gate.mjs');
+  writeFileSync(gate, readFileSync(gate, 'utf8') + '// my own tweak\n');
+  const result = runResult(UNINSTALL, d, '--yes');
+  assert.equal(existsSync(gate), true, 'fixture: the edited script is kept');
+  const kept = linesAfter(result.stdout, 'Kept:').find(l => l.includes(CONTRACT_FILE));
+  assert.ok(kept?.endsWith(`it still declares a kh-harness contract, and ${CONTRACT_FILES.length - 1} of the ${CONTRACT_FILES.length} scripts it speaks for were removed; delete it by hand)`), result.stdout);
+});
+
 test('with a file the contract speaks for missing, unrecorded and written by nothing in the run, the contract file is not proposed, and detect asks', () => {
   const d = fixture();
   run(APPLY, d, '--yes');
@@ -1438,6 +1461,29 @@ test('with a file the contract speaks for missing, unrecorded and written by not
   assert.equal(gap.evidence[1], `${CONTRACT_FILE} is not written: ${loader} is missing and nothing in this run writes it, and the contract number speaks for the PreToolUse entry script and every file it loads`);
   assert.equal(gap.question, `${loader} is missing, not recorded in .claude/kh-harness.manifest.json, and written by nothing in this run, so kh-harness does not write ${CONTRACT_FILE}. Restore it from git and run apply again; or leave it missing, and no contract file is written. Which?`);
   assert.doesNotMatch(run(APPLY, d), /--- \.claude\/kh-harness\/contract\.json/);
+});
+
+test('a file the contract speaks for that a check after it writes does not keep the contract file from being proposed and written', () => {
+  const d = fixture();
+  // Installed before the package had a test script, so the stop gate is
+  // not, and its check, which comes after P5.contract's, now proposes it
+  // with the shared module it loads.
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: {} }));
+  run(APPLY, d, '--yes', '--allow-dirty');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'vitest' } }));
+  withoutContract(d);
+  const redact = '.claude/scripts/harness-redact.mjs';
+  rmSync(join(d, redact));
+  const m = manifestOf(d);
+  m.files = m.files.filter(f => f.path !== redact);
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+  const dry = run(APPLY, d);
+  assert.match(dry, /--- \.claude\/scripts\/harness-redact\.mjs {2}\[P2\.stopgate\]/, 'fixture sanity: the stop gate writes the shared module');
+  const gap = contractGap(d);
+  assert.deepEqual([gap.state, gap.decidable], ['absent', true], JSON.stringify(gap.evidence));
+  assert.match(dry, /--- \.claude\/kh-harness\/contract\.json {2}\[P5\.contract\]/);
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), kitContractText(KIT_VERSION));
 });
 
 test('the credential sweep does not take the hashes in an installed contract file for a credential', () => {
