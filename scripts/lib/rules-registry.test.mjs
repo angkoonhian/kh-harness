@@ -246,6 +246,18 @@ test('an approval key is accepted and ignored, whatever its value', () => {
   }
 });
 
+test('no spelling or placement of an approval line changes the parsed rule or causes a problem', () => {
+  const plain = parseRules('## R1 — A rule\n- enforced-by: officer\n- pointer: tools/r1.mjs\n');
+  const variants = [
+    ['mixed letter case', '## R1 — A rule\n- Approval: Owner\n- enforced-by: officer\n- pointer: tools/r1.mjs\n'],
+    ['an empty value', '## R1 — A rule\n- approval:\n- enforced-by: officer\n- pointer: tools/r1.mjs\n'],
+    ['a repeated line', '## R1 — A rule\n- approval: owner\n- approval: agent\n- enforced-by: officer\n- pointer: tools/r1.mjs\n'],
+    ['after pointer', '## R1 — A rule\n- enforced-by: officer\n- pointer: tools/r1.mjs\n- approval: agent\n'],
+  ];
+  assert.deepEqual(plain.problems, []);
+  for (const [name, text] of variants) assert.deepEqual(parseRules(text), plain, name);
+});
+
 test('the problem for an unknown enforcer names officer among the choices', () => {
   assert.deepEqual(parseRules('## R1 — A rule\n- enforced-by: robot\n').problems,
     ['R1: enforced-by "robot" is not one of deny/hook/lint/test/critic/ci/review/officer/none — recorded as none']);

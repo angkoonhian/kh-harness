@@ -693,6 +693,13 @@ const CHECKS = [
       const listed = lines => lines.length > 10 ? `${lines.slice(0, 10).join(', ')} … and ${lines.length - 10} more` : lines.join(', ');
       const advice = (harness.ruleShapedLines ?? []).map(({ file, lines }) =>
         `${file} holds ${lines.length} rule-shaped line${lines.length === 1 ? '' : 's'} (line${lines.length === 1 ? '' : 's'} ${listed(lines)}) not in ${RULES_PATH} — consider moving each there with an enforced-by line, so told rules and enforced rules can be told apart`);
+      // Why each pointer was not counted, by rules-evidence.mjs's `reason`.
+      const missing = {
+        'no-pointer': m => `${m.id}: enforced-by names a mechanism but no pointer says where it is`,
+        'not-found': m => `${m.id}: pointer ${m.pointer} does not exist`,
+        'not-in-repository': m => `${m.id}: pointer ${m.pointer} is not a path inside this repository, so it was not looked up; an officer's pointer, and any pointer that is not a settings: pointer, must name a path inside this repository`,
+        'leaves-repository': m => `${m.id}: pointer ${m.pointer} leads outside this repository through a link, so it was not counted as existing`,
+      };
       // One registry file's counts, superseded rules, dead pointers and
       // parser problems. The owner's rules and the learned rules are
       // reported apart, each in this shape. A file that was not read has
@@ -707,11 +714,7 @@ const CHECKS = [
         // An officer is a check another tool runs, never this kit: what
         // was read of one is that its pointer exists, and the line says so.
         if (file.byEnforcer.officer) lines.push(`officer rules (${file.byEnforcer.officer}): only whether each pointer names a path that exists in this repository was read; kh-harness runs no officer, so whether one passes was not read`);
-        for (const m of file.missingPointers) {
-          lines.push(m.pointer == null
-            ? `${m.id}: enforced-by names a mechanism but no pointer says where it is`
-            : `${m.id}: pointer ${m.pointer} does not exist`);
-        }
+        for (const m of file.missingPointers) lines.push(missing[m.reason](m));
         for (const p of file.problems) lines.push(`${problemPrefix}: ${p}`);
         return lines;
       };

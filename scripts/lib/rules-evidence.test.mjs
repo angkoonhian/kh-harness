@@ -8,7 +8,7 @@
 // into docs/harness/detect.json, which is committed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rulesRegistryEvidence, ruleShapedLines, RULE_SHAPED } from './rules-evidence.mjs';
@@ -73,14 +73,14 @@ test('a pointer to a missing file is reported with its id', () => {
   const d = repo();
   write(d, RULES_PATH, '## R1 — r\n- enforced-by: test\n- pointer: tests/gone.test.mjs\n');
   const ev = rulesRegistryEvidence(d, bare);
-  assert.deepEqual(ev.missingPointers, [{ id: 'R1', pointer: 'tests/gone.test.mjs' }]);
+  assert.deepEqual(ev.missingPointers, [{ id: 'R1', pointer: 'tests/gone.test.mjs', reason: 'not-found' }]);
 });
 
 test('settings:hooks.Stop resolves when a Stop hook is registered, and is missing when not', () => {
   const d = repo();
   write(d, RULES_PATH, '## R4 — r\n- enforced-by: hook\n- pointer: settings:hooks.Stop\n');
   assert.deepEqual(rulesRegistryEvidence(d, withHooks).missingPointers, []);
-  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'R4', pointer: 'settings:hooks.Stop' }]);
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'R4', pointer: 'settings:hooks.Stop', reason: 'not-found' }]);
 });
 
 /** A harness whose Stop event holds exactly `registrations`. */
@@ -93,7 +93,7 @@ const LOGGING_UNRESOLVED = { script: null, matcher: null, entrySha256: hookEntry
 test('a rule pointing at settings:hooks.Stop is reported dead when only the logging hook is on Stop', () => {
   const d = repo();
   write(d, RULES_PATH, '## R4 — r\n- enforced-by: hook\n- pointer: settings:hooks.Stop\n');
-  const dead = [{ id: 'R4', pointer: 'settings:hooks.Stop' }];
+  const dead = [{ id: 'R4', pointer: 'settings:hooks.Stop', reason: 'not-found' }];
   assert.deepEqual(rulesRegistryEvidence(d, onStop([LOGGING])).missingPointers, dead);
   assert.deepEqual(rulesRegistryEvidence(d, onStop([LOGGING_UNRESOLVED])).missingPointers, dead, 'known by its hash when its script does not resolve');
 });
@@ -124,7 +124,7 @@ const denying = denyRuleList => ({ ...bare, claudeDir: { ...bare.claudeDir, deny
 test('settings:permissions.deny resolves on a deny rule of the owner\'s, and not on the rules the kit installs with its gate hook', () => {
   const d = repo();
   write(d, RULES_PATH, '## R5 — r\n- enforced-by: deny\n- pointer: settings:permissions.deny\n');
-  const dead = [{ id: 'R5', pointer: 'settings:permissions.deny' }];
+  const dead = [{ id: 'R5', pointer: 'settings:permissions.deny', reason: 'not-found' }];
   const pointers = list => rulesRegistryEvidence(d, denying(list)).missingPointers;
   assert.deepEqual(pointers([]), dead);
   assert.deepEqual(pointers(toolGateDenyRules()), dead, 'every install holds these, whatever the owner denies');
@@ -143,7 +143,7 @@ test('an absolute or .. pointer is reported as missing, never resolved', () => {
     '',
   ].join('\n'));
   const ev = rulesRegistryEvidence(d, bare);
-  assert.deepEqual(ev.missingPointers.map(m => m.id), ['A', 'B', 'C']);
+  assert.deepEqual(ev.missingPointers.map(m => [m.id, m.reason]), [['A', 'not-in-repository'], ['B', 'not-in-repository'], ['C', 'not-in-repository']]);
 });
 
 const OFFICER = '## V8 — Screens use the design tokens\n- enforced-by: officer\n- pointer: tools/officers/v8.mjs\n';
@@ -161,37 +161,63 @@ test('an officer rule whose pointer exists is counted under officer and reported
 test('an officer rule whose pointer does not exist is a missing pointer', () => {
   const d = repo();
   write(d, RULES_PATH, OFFICER);
-  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: 'tools/officers/v8.mjs' }]);
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: 'tools/officers/v8.mjs', reason: 'not-found' }]);
 });
 
 test('an officer rule with no pointer, or a settings: pointer, is a missing pointer', () => {
   const d = repo();
   write(d, RULES_PATH, '## V8 — r\n- enforced-by: officer\n');
-  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: null }]);
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: null, reason: 'no-pointer' }]);
   const pre = { ...bare, claudeDir: { ...bare.claudeDir, hookRegistrations: { PreToolUse: [{ script: DISPATCH_PRE_PATH, matcher: null }] } } };
   write(d, RULES_PATH, '## R4 — r\n- enforced-by: hook\n- pointer: settings:hooks.PreToolUse\n');
   assert.deepEqual(rulesRegistryEvidence(d, pre).missingPointers, [], 'the same registration holds a hook rule');
   write(d, RULES_PATH, '## V8 — r\n- enforced-by: officer\n- pointer: settings:hooks.PreToolUse\n');
-  assert.deepEqual(rulesRegistryEvidence(d, pre).missingPointers, [{ id: 'V8', pointer: 'settings:hooks.PreToolUse' }]);
+  assert.deepEqual(rulesRegistryEvidence(d, pre).missingPointers, [{ id: 'V8', pointer: 'settings:hooks.PreToolUse', reason: 'not-in-repository' }]);
 });
 
-test('an officer pointer is held to the repository-path rules: absolute, .., over-long or unprintable is missing', () => {
+test('an officer pointer that is absolute or has a .. segment is not in the repository; a long or unusual name that exists resolves', () => {
   const d = repo();
   const long = `tools/${'a'.repeat(200)}.mjs`;
-  const unprintable = `tools/v8${String.fromCodePoint(0x200b)}.mjs`;
+  const spaced = 'tools/officers/a b.mjs';
+  const unusual = `tools/v8${String.fromCodePoint(0x200b)}.mjs`;
   write(d, 'README.md', '');
   write(d, long, '');
-  write(d, unprintable, '');
+  write(d, spaced, '');
+  write(d, unusual, '');
   write(d, RULES_PATH, [
     '## A — r', '- enforced-by: officer', `- pointer: ${join(d, 'README.md')}`,
     '## B — r', '- enforced-by: officer', '- pointer: ../README.md',
     '## C — r', '- enforced-by: officer', '- pointer: docs/../README.md',
     '## D — r', '- enforced-by: officer', `- pointer: ${long}`,
-    '## E — r', '- enforced-by: officer', `- pointer: ${unprintable}`,
+    '## E — r', '- enforced-by: officer', `- pointer: ${unusual}`,
     '## F — r', '- enforced-by: officer', '- pointer: README.md',
+    '## G — r', '- enforced-by: officer', `- pointer: ${spaced}`,
     '',
   ].join('\n'));
-  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers.map(m => m.id), ['A', 'B', 'C', 'D', 'E']);
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers.map(m => [m.id, m.reason]),
+    [['A', 'not-in-repository'], ['B', 'not-in-repository'], ['C', 'not-in-repository']]);
+});
+
+test('an officer pointer: a trailing slash after a file, a name that differs only in case, a directory', () => {
+  const d = repo();
+  write(d, 'tools/officers/v8.mjs', '');
+  write(d, RULES_PATH, [
+    '## S — r', '- enforced-by: officer', '- pointer: tools/officers/v8.mjs/',
+    '## K — r', '- enforced-by: officer', '- pointer: tools/officers/V8.mjs',
+    '## D — r', '- enforced-by: officer', '- pointer: tools/officers',
+    '',
+  ].join('\n'));
+  // Both answers are the filesystem's, not the kit's, so each expectation is
+  // read from the filesystem the test runs on. Whether `V8.mjs` names
+  // `v8.mjs`: case-insensitive on default macOS and Windows volumes,
+  // sensitive on Linux. Whether a file followed by a slash exists: not on
+  // POSIX (ENOTDIR).
+  const caseFolds = existsSync(join(d, 'tools/officers/V8.mjs'));
+  const slashFolds = existsSync(join(d, 'tools/officers/v8.mjs/'));
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [
+    ...(slashFolds ? [] : [{ id: 'S', pointer: 'tools/officers/v8.mjs/', reason: 'not-found' }]),
+    ...(caseFolds ? [] : [{ id: 'K', pointer: 'tools/officers/V8.mjs', reason: 'not-found' }]),
+  ]);
 });
 
 test('an officer pointer through a link that leaves the repository is missing, one through a link inside it exists', () => {
@@ -206,14 +232,14 @@ test('an officer pointer through a link that leaves the repository is missing, o
     '## V9 — r', '- enforced-by: officer', '- pointer: tools/in/v8.mjs',
     '',
   ].join('\n'));
-  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: 'tools/out/v8.mjs' }]);
+  assert.deepEqual(rulesRegistryEvidence(d, bare).missingPointers, [{ id: 'V8', pointer: 'tools/out/v8.mjs', reason: 'leaves-repository' }]);
 });
 
 test('a rule with an enforcer but no pointer is reported as missing a pointer; none/review need none', () => {
   const d = repo();
   write(d, RULES_PATH, '## A — r\n- enforced-by: test\n## B — r\n- enforced-by: review\n## C — r\n- enforced-by: none\n');
   const ev = rulesRegistryEvidence(d, bare);
-  assert.deepEqual(ev.missingPointers, [{ id: 'A', pointer: null }]);
+  assert.deepEqual(ev.missingPointers, [{ id: 'A', pointer: null, reason: 'no-pointer' }]);
 });
 
 test('superseded rules are excluded from count, byEnforcer, unenforced and pointer checks', () => {
@@ -303,10 +329,10 @@ test('a learned entry whose pointer does not resolve is reported the way an owne
   write(d, RULES_PATH, '## R1 — r\n- enforced-by: test\n- pointer: tests/gone.test.mjs\n');
   write(d, LEARNED_PATH, LEARNED);
   const ev = rulesRegistryEvidence(d, bare);
-  assert.deepEqual(ev.missingPointers, [{ id: 'R1', pointer: 'tests/gone.test.mjs' }]);
+  assert.deepEqual(ev.missingPointers, [{ id: 'R1', pointer: 'tests/gone.test.mjs', reason: 'not-found' }]);
   assert.deepEqual(ev.learned.missingPointers, [
-    { id: 'L1', pointer: '.claude/kh-harness/gates.json' },
-    { id: 'L2', pointer: 'tests/money.test.mjs' },
+    { id: 'L1', pointer: '.claude/kh-harness/gates.json', reason: 'not-found' },
+    { id: 'L2', pointer: 'tests/money.test.mjs', reason: 'not-found' },
   ]);
 });
 

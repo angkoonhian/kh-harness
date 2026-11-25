@@ -8,7 +8,8 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, wri
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DETECT, APPLY, UNINSTALL, git, kitAt, loggingScript, manifestOf, run, runEveryRegisteredHook, sandboxDataDir, settings } from './lifecycle-fixtures.mjs';
-import { HARNESS_EXTENSIONS_PATH, LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
+import { HARNESS_EXTENSIONS_PATH, kitContractText, LINT_TOUCHED_PATH, REDACT_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, LOOP_WATCH_PATH } from './propose.mjs';
+import { CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
 sandboxDataDir();
@@ -147,6 +148,35 @@ test('REVIEW FOCUS 3: an install made before the extension loader existed gets i
   assert.ok(existsSync(join(d, HARNESS_EXTENSIONS_PATH)));
   assert.ok(manifestOf(d).files.some(f => f.path === HARNESS_EXTENSIONS_PATH));
   for (const r of runEveryRegisteredHook(d)) assert.equal(r.status, 0, `${r.script}: ${r.stderr}`);
+  commit(d, 'update kh-harness');
+  assert.match(run(APPLY, d), /no actions for/);
+});
+
+// The last commit before the registry took `enforced-by: officer`: its
+// harness-redact.mjs has other bytes, so the hash its contract file records
+// for that file is not this kit's.
+const KIT_BEFORE_OFFICER = '7a29268';
+const beforeOfficer = kitAt(KIT_BEFORE_OFFICER);
+const skipBeforeOfficer = beforeOfficer === null ? `commit ${KIT_BEFORE_OFFICER} is not in this checkout (a shallow clone); fetch the full history to run this` : false;
+
+test('an install whose harness-redact.mjs predates officer is offered, by one apply, the script and then the contract file, and P5.contract is declared after', { skip: skipBeforeOfficer }, () => {
+  const d = mkdtempSync(join(tmpdir(), 'hk-upgrade-officer-'));
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'app', scripts: { lint: 'node -e 0' } }));
+  writeFileSync(join(d, 'index.js'), 'export const ok = true;\n');
+  execFileSync('git', ['init', '-q', d]);
+  git(d, 'checkout', '-q', '-b', 'chore/harness');
+  commit(d, 'init');
+  run(beforeOfficer.apply, d, '--yes');
+  const recorded = JSON.parse(readFileSync(join(d, CONTRACT_PATH), 'utf8')).files[REDACT_PATH];
+  assert.notEqual(recorded, JSON.parse(kitContractText(CURRENT)).files[REDACT_PATH], 'fixture sanity: the older contract file records another hash for harness-redact.mjs');
+  assert.doesNotMatch(readFileSync(join(d, REDACT_PATH), 'utf8'), /'officer'/, 'fixture sanity: the older harness-redact.mjs has no officer');
+  commit(d, 'install the older kit');
+  const wrote = run(APPLY, d, '--yes').split('\n').filter(l => l.startsWith('wrote ')).map(l => l.slice('wrote '.length).trim());
+  assert.ok(wrote.includes(REDACT_PATH), wrote.join(', '));
+  assert.equal(wrote.at(-1), CONTRACT_PATH, `the contract file is written last: ${wrote.join(', ')}`);
+  assert.match(readFileSync(join(d, REDACT_PATH), 'utf8'), /'officer'/);
+  assert.equal(readFileSync(join(d, CONTRACT_PATH), 'utf8'), kitContractText(CURRENT));
+  assert.equal(checkOf(d, 'P5.contract').state, 'declared');
   commit(d, 'update kh-harness');
   assert.match(run(APPLY, d), /no actions for/);
 });

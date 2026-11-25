@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildGaps, countProposals, STATES } from './gap-model.mjs';
@@ -1760,7 +1760,7 @@ const emptyRegistry = { path: 'docs/harness/RULES.md', count: 0, superseded: 0, 
 const learnedRegistry = {
   path: 'docs/harness/LEARNED.md', count: 2, superseded: 1,
   byEnforcer: { hook: 1, test: 1 }, unenforced: [],
-  missingPointers: [{ id: 'L2', pointer: 'tests/gone.test.mjs' }], problems: ['L9: no enforced-by line — recorded as none'],
+  missingPointers: [{ id: 'L2', pointer: 'tests/gone.test.mjs', reason: 'not-found' }], problems: ['L9: no enforced-by line — recorded as none'],
 };
 const noOwner = { ...emptyRegistry, path: null };
 const p3Harness = (extra = {}) => ({ ...bareHarness, intent: null, rulesRegistry: null, ruleShapedLines: [], ...extra });
@@ -1829,7 +1829,7 @@ test('P3.rules and P3.reinject: a registry that was not read is said to be unrea
 });
 
 test('P3.rules: declared evidence counts enforcers, names unenforced ids, missing pointers and problems', () => {
-  const reg = { ...filledRegistry, missingPointers: [{ id: 'R1', pointer: '.claude/agents/tenant-scoping.md' }, { id: 'R2', pointer: null }], problems: ['R9: enforced-by "magic" is not one of deny/hook — recorded as none'] };
+  const reg = { ...filledRegistry, missingPointers: [{ id: 'R1', pointer: '.claude/agents/tenant-scoping.md', reason: 'not-found' }, { id: 'R2', pointer: null, reason: 'no-pointer' }], problems: ['R9: enforced-by "magic" is not one of deny/hook — recorded as none'] };
   const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: reg })), 'P3.rules');
   assert.equal(c.state, 'declared');
   assert.deepEqual(c.evidence, [
@@ -1856,6 +1856,32 @@ test('P3.rules prints an officer rule\'s dead pointer, and says of every officer
     'docs/harness/RULES.md: 2 rules — 2 enforced (officer 2), none with enforced-by: none',
     'officer rules (2): only whether each pointer names a path that exists in this repository was read; kh-harness runs no officer, so whether one passes was not read',
     'V8: pointer tools/officers/v8.mjs does not exist',
+  ]);
+});
+
+test('P3.rules says why a pointer was not counted: not in the repository, or out of it through a link', () => {
+  const d = mkdtempSync(join(tmpdir(), 'gm-officer-'));
+  const outside = mkdtempSync(join(tmpdir(), 'gm-outside-'));
+  writeFileSync(join(outside, 'v8.mjs'), '');
+  mkdirSync(join(d, 'docs', 'harness'), { recursive: true });
+  mkdirSync(join(d, 'tools'), { recursive: true });
+  writeFileSync(join(d, 'README.md'), '');
+  symlinkSync(outside, join(d, 'tools', 'out'), 'junction');
+  writeFileSync(join(d, 'docs', 'harness', 'RULES.md'), [
+    '## V1 — r', '- enforced-by: officer', '- pointer: settings:hooks.PreToolUse',
+    '## V2 — r', '- enforced-by: officer', '- pointer: ../README.md',
+    '## V3 — r', '- enforced-by: officer', '- pointer: tools/out/v8.mjs',
+    '## T1 — r', '- enforced-by: test', `- pointer: ${join(d, 'README.md')}`,
+    '',
+  ].join('\n'));
+  const pre = { ...bareHarness, claudeDir: { ...bareHarness.claudeDir, hookRegistrations: { PreToolUse: [{ script: '.claude/scripts/dispatch-pre-tool.mjs', matcher: null }] } } };
+  const c = byId(gaps(bareStack, p3Harness({ rulesRegistry: rulesRegistryEvidence(d, pre) })), 'P3.rules');
+  const notInRepository = pointer => `pointer ${pointer} is not a path inside this repository, so it was not looked up; an officer's pointer, and any pointer that is not a settings: pointer, must name a path inside this repository`;
+  assert.deepEqual(c.evidence.slice(2), [
+    `V1: ${notInRepository('settings:hooks.PreToolUse')}`,
+    `V2: ${notInRepository('../README.md')}`,
+    'V3: pointer tools/out/v8.mjs leads outside this repository through a link, so it was not counted as existing',
+    `T1: ${notInRepository(join(d, 'README.md'))}`,
   ]);
 });
 

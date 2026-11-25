@@ -28,7 +28,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { OVER_DOCUMENT_LIMIT, readDocument, readIfPresent } from './scan.mjs';
-import { findLearned, findRules, heldByBlockingGate, parseRules, stripUnsafe } from '../../assets/scripts/harness-redact.mjs';
+import { findLearned, findRules, heldByBlockingGate, parseRules } from '../../assets/scripts/harness-redact.mjs';
 import { assertContained } from './apply-lib.mjs';
 import { runsKitScript } from './hook-evidence.mjs';
 import { SESSION_LOG_PATH, toolGateDenyRules } from './propose.mjs';
@@ -37,57 +37,53 @@ import { SESSION_LOG_PATH, toolGateDenyRules } from './propose.mjs';
 const POINTERLESS = new Set(['none', 'review']);
 
 const SETTINGS_POINTER = /^settings:(permissions\.deny|hooks\.([A-Za-z]+))$/;
-// An officer's pointer is one token of at most 200 characters with nothing
-// a key line or a delimited block could be split by: the bound the kit
-// holds a learned entry's pointer to.
-const OFFICER_POINTER = /^[^\s<>]{1,200}$/;
 
 /**
- * Does `pointer` name something that exists? Three shapes:
- *   settings:permissions.deny     — iff a deny rule in effect is not one the
- *                                   kit installs with its gate hook: those
- *                                   are on every install and deny nothing
- *                                   the owner's rule names. A rule `detect`
- *                                   redacts to null is a command rule of the
- *                                   owner's, and counts
- *   settings:hooks.<Event>        — iff a hook other than the logging hook is
- *                                   registered on that event: the logging
- *                                   hook is on every logged event and
- *                                   enforces nothing
- *   <repository-relative path>    — iff the file or directory exists
- * An absolute path or any `..` segment is refused outright (reported as
- * missing, never resolved): a pointer is meant to name something INSIDE
- * this repository, and the containment rule apply-lib.mjs applies to
- * writes applies to what this report will vouch for too.
+ * Why `pointer` was not counted, or null when it names something that
+ * exists. Three shapes:
+ *   settings:permissions.deny     — exists iff a deny rule in effect is not
+ *                                   one the kit installs with its gate hook:
+ *                                   those are on every install and deny
+ *                                   nothing the owner's rule names. A rule
+ *                                   `detect` redacts to null is a command
+ *                                   rule of the owner's, and counts
+ *   settings:hooks.<Event>        — exists iff a hook other than the logging
+ *                                   hook is registered on that event: the
+ *                                   logging hook is on every logged event
+ *                                   and enforces nothing
+ *   <repository-relative path>    — exists iff the file or directory exists
+ * The reasons are `not-found`; `not-in-repository`, for an absolute path or
+ * one with a `..` segment, which is never looked up, because a pointer is
+ * meant to name something INSIDE this repository and the containment rule
+ * apply-lib.mjs applies to writes applies to what this report will vouch
+ * for too; and `leaves-repository`.
  *
  * `pathOnly` marks an officer rule's pointer, the repository path of a check
- * another tool runs, so a `settings:` pointer names nothing, and the path
- * must also be one printable token of at most 200 characters whose real
- * path, through any link, stays inside the repository. Only its existence
- * is read; nothing here runs the check.
+ * another tool runs: a `settings:` pointer is `not-in-repository`, and a
+ * path that exists but whose real path leaves the repository through a
+ * link is `leaves-repository`. Only existence is read; nothing here runs
+ * the check.
  */
-function pointerResolves(root, harness, pointer, { pathOnly = false } = {}) {
+function pointerProblem(root, harness, pointer, { pathOnly = false } = {}) {
   const m = pointer.match(SETTINGS_POINTER);
-  if (m && pathOnly) return false;
+  if (m && pathOnly) return 'not-in-repository';
   if (m) {
     if (m[1] === 'permissions.deny') {
       const kitRules = new Set(toolGateDenyRules());
-      return (harness?.claudeDir?.denyRuleList ?? []).some(rule => !kitRules.has(rule));
+      return (harness?.claudeDir?.denyRuleList ?? []).some(rule => !kitRules.has(rule)) ? null : 'not-found';
     }
     const registrations = harness?.claudeDir?.hookRegistrations?.[m[2]] ?? [];
-    return registrations.some(r => !runsKitScript(r, SESSION_LOG_PATH, undefined));
+    return registrations.some(r => !runsKitScript(r, SESSION_LOG_PATH, undefined)) ? null : 'not-found';
   }
   const p = pointer.split('\\').join('/');
-  if (p.startsWith('/') || /^[A-Za-z]:/.test(p)) return false;
-  if (p.split('/').includes('..')) return false;
-  if (!existsSync(join(root, p))) return false;
-  if (!pathOnly) return true;
-  if (!OFFICER_POINTER.test(pointer) || stripUnsafe(pointer) !== pointer) return false;
+  if (p.startsWith('/') || /^[A-Za-z]:/.test(p) || p.split('/').includes('..')) return 'not-in-repository';
+  if (!existsSync(join(root, p))) return 'not-found';
+  if (!pathOnly) return null;
   try {
     assertContained(root, p);
-    return true;
+    return null;
   } catch {
-    return false;
+    return 'leaves-repository';
   }
 }
 
@@ -112,8 +108,8 @@ function fileEvidence(root, harness, rel) {
     byEnforcer[r.enforcedBy] = (byEnforcer[r.enforcedBy] ?? 0) + 1;
     if (r.enforcedBy === 'none') unenforced.push(r.id);
     if (POINTERLESS.has(r.enforcedBy)) continue;
-    if (r.pointer == null) missingPointers.push({ id: r.id, pointer: null });
-    else if (!pointerResolves(root, harness, r.pointer, { pathOnly: r.enforcedBy === 'officer' })) missingPointers.push({ id: r.id, pointer: r.pointer });
+    const reason = r.pointer == null ? 'no-pointer' : pointerProblem(root, harness, r.pointer, { pathOnly: r.enforcedBy === 'officer' });
+    if (reason !== null) missingPointers.push({ id: r.id, pointer: r.pointer, reason });
   }
   return {
     active,
@@ -141,8 +137,10 @@ function fileEvidence(root, harness, rel) {
  *
  * `count`, `byEnforcer`, `unenforced` and `missingPointers` cover ACTIVE
  * rules only (a superseded rule is a record, not a claim), and
- * `missingPointers` is `[{ id, pointer }]` — `pointer: null` when an
- * enforcer other than none/review was declared with no pointer at all.
+ * `missingPointers` is `[{ id, pointer, reason }]`: `reason` is
+ * `no-pointer`, with `pointer: null`, when an enforcer other than
+ * none/review was declared with no pointer at all, and otherwise one of
+ * `pointerProblem`'s.
  * `injectable` counts every active owner's rule and every active learned
  * rule but those `heldByBlockingGate`, the test the rules brief applies.
  */
