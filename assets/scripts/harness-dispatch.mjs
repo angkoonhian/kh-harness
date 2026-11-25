@@ -10,7 +10,10 @@
 // names no sibling, so it is installed beside every entry script whatever
 // halves that one runs. A half that cannot be loaded, or that lacks its
 // export, gives one fixed notice on every call; a half that throws gives
-// nothing, and the halves after it still run.
+// nothing, and the halves after it still run. A fault a half leaves behind
+// it — an exception thrown from a callback, a rejection nobody handles, a
+// promise that never settles — ends the run instead: what the halves had
+// returned by then is written, and no half after it runs.
 //
 // Runs on every tool call, so it imports nothing and never spawns a child
 // process.
@@ -65,11 +68,10 @@ const isHalfResult = result =>
   && typeof result.stderr === 'string'
   && (result.exitCode === 0 || result.exitCode === 2);
 
-/** The results of running each of `halves` on `payload`, in order. A half
- * that throws, returns null or returns anything but a half result
- * contributes nothing. */
-export async function runHalves(payload, halves) {
-  const results = [];
+/** The results of running each of `halves` on `payload`, in order, each
+ * added to `results` as its half returns it. A half that throws, returns
+ * null or returns anything but a half result contributes nothing. */
+export async function runHalves(payload, halves, results = []) {
   for (const { run } of halves) {
     let result;
     try {
@@ -125,13 +127,30 @@ export function emit(combined) {
 
 /** Runs `halves` on the payload standard input holds, writes their
  * combined output for `event`, and returns the exit code: 0 when the payload
- * is not an object. */
+ * is not an object.
+ *
+ * Until it returns, an uncaught exception, an unhandled rejection or an
+ * event loop left with nothing to do (a half whose promise never settles,
+ * for which Node would otherwise exit 13 with a warning on standard error,
+ * since each entry script awaits this at its top level) writes the
+ * combined output of the results gathered so far and exits with its code,
+ * with no stack trace. A block an earlier half decided therefore stands
+ * whatever a later half does. */
 export async function dispatch(event, halves) {
+  const results = [];
+  let written = null;
+  const write = () => {
+    if (written === null) {
+      written = combine(event, results);
+      emit(written);
+    }
+    return written.exitCode;
+  };
+  const abandon = () => process.exit(write());
+  for (const name of ['uncaughtException', 'unhandledRejection', 'beforeExit']) process.on(name, abandon);
   const payload = await readPayload();
-  if (payload === null) return 0;
-  const combined = combine(event, await runHalves(payload, halves));
-  emit(combined);
-  return combined.exitCode;
+  if (payload !== null) await runHalves(payload, halves, results);
+  return write();
 }
 
 /** The half `name`: the export `exportName` of the installed `file`, which
@@ -139,7 +158,7 @@ export async function dispatch(event, halves) {
  * fixed notice instead. */
 export function half(name, file, exportName, load) {
   const notice = problem => ({
-    json: { systemMessage: `kh-harness dispatch: .claude/scripts/${file} ${problem}, so the ${name} hook did not run on this event — ${REMEDY}` },
+    json: { systemMessage: `kh-harness dispatch: .claude/scripts/${file} ${problem}, so this entry script did not run the ${name} hook — ${REMEDY}` },
     stderr: '',
     exitCode: 0,
   });

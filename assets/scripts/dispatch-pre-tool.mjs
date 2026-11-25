@@ -14,7 +14,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const EVENT = 'PreToolUse';
-const CORE = ['combine', 'dispatch', 'emit', 'half', 'readPayload', 'runHalves'];
+const CORE = ['dispatch', 'half'];
 
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 
@@ -33,7 +33,7 @@ async function main() {
   } catch {
     return coreNotice('is missing or cannot be loaded');
   }
-  if (CORE.some(name => !(name in core))) return coreNotice('is older than this entry script and lacks what it needs');
+  if (CORE.some(name => typeof core[name] !== 'function')) return coreNotice('is older than this entry script and lacks what it needs');
   return core.dispatch(EVENT, [
     ...preHalves,
     core.half('gate', 'tool-gate.mjs', 'gateHalf', () => import('./tool-gate.mjs')),

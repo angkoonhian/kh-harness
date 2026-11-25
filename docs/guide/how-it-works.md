@@ -190,6 +190,13 @@ is registered this way; an older one is moved to it as described under
   the session log alone.
 - A hook that fails, or returns something the entry script cannot read,
   adds nothing, and the other hook still runs.
+- A hook that leaves a fault behind it, such as an error thrown later from
+  a callback, a rejected promise nobody handles, or work that can never
+  finish, ends the run instead: the entry script writes what the hooks
+  before it returned, so a gate's denial still stands, exits with their
+  code and prints no stack trace. A hook that hangs without ever yielding
+  is ended by Claude Code's own hook timeout, and then nothing from that
+  event's entry script is delivered.
 - The entry script writes one combined output: the notices of both hooks,
   the context of both, and the gate hook's denial when a gate blocks. Its
   exit code is the highest either hook returned. Only the lint sensor ever
@@ -204,8 +211,8 @@ is registered this way; an older one is moved to it as described under
   its line.
 - When `harness-dispatch.mjs` is missing or older than the entry script,
   no hook runs on that event, and every call says so in one fixed notice.
-  When one hook's file is missing or older, that hook does not run, the
-  other does, and every call says so. See
+  When one hook's file is missing or older, the entry script does not run
+  that hook, runs the other, and every call says so. See
   [an entry script says a file is missing or older](troubleshooting.md#an-entry-script-says-a-file-is-missing-or-older).
 - The registration is the switch: to run only one of the two hooks on an
   event, see

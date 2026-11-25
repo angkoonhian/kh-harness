@@ -24,7 +24,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -261,21 +261,62 @@ test('one half throwing does not stop the other', () => {
   assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, 'deny', 'the gate still denied');
 });
 
+// Each fault below is in the log half, which runs after the gate on
+// PreToolUse: what the gate decided is written whatever the log half does
+// after it, as when the gate runs alone.
+const LATER_FAULTS = {
+  'throws from an asynchronous callback': 'export function logHalf() {\n  setTimeout(() => { throw new Error(\'boom\'); }, 0);\n  return new Promise(done => setTimeout(() => done({ json: null, stderr: \'\', exitCode: 0 }), 200));\n}\n',
+  'leaves a promise rejection unhandled': 'export function logHalf() {\n  Promise.reject(new Error(\'boom\'));\n  return new Promise(done => setTimeout(() => done({ json: null, stderr: \'\', exitCode: 0 }), 200));\n}\n',
+  'returns a promise that never settles': 'export function logHalf() { return new Promise(() => {}); }\n',
+};
+
+for (const [fault, text] of Object.entries(LATER_FAULTS)) {
+  test(`a gate denial is still written, with exit 0 and nothing on stderr, when the half after it ${fault}`, () => {
+    const single = direct(GATE, gatedProject(), call('late-1', 'rm -rf build'));
+    assert.equal(JSON.parse(single.stdout).hookSpecificOutput.permissionDecision, 'deny', 'fixture sanity: the gate blocks');
+    const r = runEntry('dispatch-pre-tool.mjs', gatedProject(), call('late-1', 'rm -rf build'), { dir: installed({ 'session-log.mjs': text }) });
+    assert.deepEqual(r, { status: 0, stdout: single.stdout, stderr: '' });
+  });
+}
+
+test('a lint report is still written, with exit 2, when a half after it never settles', () => {
+  const report = direct(LINT, failingRepo(), edit('src/a.ts', 'late-2'));
+  assert.match(report.stderr, /no-unused-vars/, 'fixture sanity: the linter reports');
+  const lint = "core.half('lint', 'lint-touched.mjs', 'lintHalf', () => import('./lint-touched.mjs')),";
+  const entry = readFileSync(join(ASSETS, 'dispatch-post-tool.mjs'), 'utf8');
+  assert.ok(entry.includes(lint), 'fixture sanity: the entry script runs the lint half');
+  const dir = installed({ 'dispatch-post-tool.mjs': entry.replace(lint, `${lint}\n    { name: 'hang', run: () => new Promise(() => {}) },`) });
+  const r = runEntry('dispatch-post-tool.mjs', failingRepo(), edit('src/a.ts', 'late-2'), { dir });
+  assert.deepEqual(r, { status: 2, stdout: '', stderr: report.stderr });
+});
+
+test('a core whose dispatch and half are functions is used, whatever else it exports', () => {
+  const core = 'export async function dispatch() { process.stdout.write(\'ran\\n\'); return 0; }\nexport function half() { return {}; }\n';
+  for (const name of ENTRY_SCRIPTS) {
+    assert.deepEqual(runEntry(name, project(), failure('core-1'), { dir: installed({ 'harness-dispatch.mjs': core }) }), { status: 0, stdout: 'ran\n', stderr: '' }, name);
+  }
+});
+
 test('an entry script beside a missing or older half or core exits 0 with one fixed notice', () => {
   const root = project();
   const older = runEntry('dispatch-pre-tool.mjs', root, call('skew-1', 'ls'), { dir: installed({ 'tool-gate.mjs': 'export {};\n' }) });
   assert.equal(older.status, 0);
   assert.equal(older.stderr, '');
-  assert.match(JSON.parse(older.stdout).systemMessage, /^kh-harness dispatch: \.claude\/scripts\/tool-gate\.mjs is older than its entry script and lacks what it needs, so the gate hook did not run on this event — re-run `node scripts\/apply\.mjs <repo> --yes`/);
+  assert.match(JSON.parse(older.stdout).systemMessage, /^kh-harness dispatch: \.claude\/scripts\/tool-gate\.mjs is older than its entry script and lacks what it needs, so this entry script did not run the gate hook — re-run `node scripts\/apply\.mjs <repo> --yes`/);
   assert.equal(readEvents(root, 'skew-1').events.length, 1);
   const missing = runEntry('dispatch-pre-tool.mjs', root, call('skew-3', 'ls'), { dir: installed({ 'tool-gate.mjs': null }) });
-  assert.match(JSON.parse(missing.stdout).systemMessage, /^kh-harness dispatch: \.claude\/scripts\/tool-gate\.mjs is missing or cannot be loaded, so the gate hook did not run on this event — /);
-  for (const [core, problem] of [[null, 'is missing or cannot be loaded'], ['export {};\n', 'is older than this entry script and lacks what it needs']]) {
-    const r = runEntry('dispatch-tool-failure.mjs', root, failure('skew-2'), { dir: installed({ 'harness-dispatch.mjs': core }) });
-    assert.equal(r.status, 0);
-    assert.equal(r.stderr, '');
-    assert.deepEqual(Object.keys(JSON.parse(r.stdout)), ['systemMessage']);
-    assert.ok(JSON.parse(r.stdout).systemMessage.startsWith(`kh-harness dispatch-tool-failure: .claude/scripts/harness-dispatch.mjs ${problem}, so no kh-harness hook ran on PostToolUseFailure — `));
+  assert.match(JSON.parse(missing.stdout).systemMessage, /^kh-harness dispatch: \.claude\/scripts\/tool-gate\.mjs is missing or cannot be loaded, so this entry script did not run the gate hook — /);
+  const tooOld = 'is older than this entry script and lacks what it needs';
+  const cores = [[null, 'is missing or cannot be loaded'], ['export {};\n', tooOld], ['export const combine = 1, dispatch = 1, emit = 1, half = 1, readPayload = 1, runHalves = 1;\n', tooOld]];
+  const events = { 'dispatch-pre-tool.mjs': 'PreToolUse', 'dispatch-post-tool.mjs': 'PostToolUse', 'dispatch-tool-failure.mjs': 'PostToolUseFailure' };
+  for (const [name, event] of Object.entries(events)) {
+    for (const [core, problem] of cores) {
+      const r = runEntry(name, root, failure('skew-2'), { dir: installed({ 'harness-dispatch.mjs': core }) });
+      assert.equal(r.status, 0, `${name} beside ${JSON.stringify(core)}`);
+      assert.equal(r.stderr, '');
+      assert.deepEqual(Object.keys(JSON.parse(r.stdout)), ['systemMessage']);
+      assert.ok(JSON.parse(r.stdout).systemMessage.startsWith(`kh-harness ${name.replace('.mjs', '')}: .claude/scripts/harness-dispatch.mjs ${problem}, so no kh-harness hook ran on ${event} — `), `${name} beside ${JSON.stringify(core)}`);
+    }
   }
 });
 

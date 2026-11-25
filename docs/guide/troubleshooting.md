@@ -453,7 +453,7 @@ installed it, and run `apply --yes` again. `uninstall --yes` followed by
 
     kh-harness dispatch-pre-tool: .claude/scripts/harness-dispatch.mjs <problem>, so no kh-harness hook ran on PreToolUse — re-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.
 
-    kh-harness dispatch: .claude/scripts/<hook file> <problem>, so the <name> hook did not run on this event — re-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.
+    kh-harness dispatch: .claude/scripts/<hook file> <problem>, so this entry script did not run the <name> hook — re-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.
 
 The three entry scripts, `dispatch-pre-tool.mjs`, `dispatch-post-tool.mjs`
 and `dispatch-tool-failure.mjs`, run their event's two hooks through the
@@ -464,7 +464,9 @@ it needs.
 - The first notice, from the entry script named at its start: the core is
   missing or older, so neither hook ran on that event.
 - The second: one hook's file is missing or older. `<name>` is `gate`,
-  `log`, `lint` or `loop`. That hook did not run; the other one did.
+  `log`, `lint` or `loop`. The entry script did not run that hook, and ran
+  the other one. The hook still runs if it is also registered on its own,
+  as an older kit's `apply` registers it.
 
 Either notice is a message shown to you. It is given on every call of the
 event, not once per session,
