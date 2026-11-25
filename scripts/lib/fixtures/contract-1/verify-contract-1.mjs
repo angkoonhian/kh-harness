@@ -2,10 +2,10 @@
 // and that a plugin's own extension is in place to run before every tool
 // call, before the plugin relies on either. Node built-ins only; it loads no
 // file of the repository's. `checkContract1(root, extension)` takes the
-// entry the plugin wrote for its extension, `{ id, version, module, sha256,
-// onFailure }`, and returns `{ problems, warnings }`: one sentence per
-// failed check, and one per risk the caller should show. Rely on the gate
-// only when `problems` is empty.
+// repository root and the entry the plugin wrote for its extension, an
+// object of exactly `{ id, version, module, sha256, onFailure }`, and
+// returns `{ problems, warnings }`: one sentence per failed check, and one
+// per risk. A gate that must hold is relied on only when both are empty.
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { join, sep } from 'node:path';
@@ -13,6 +13,8 @@ import { join, sep } from 'node:path';
 const CONTRACT_PATH = '.claude/kh-harness/contract.json';
 const EXTENSIONS_PATH = '.claude/kh-harness/extensions.json';
 const ENTRY_SCRIPT = '.claude/scripts/dispatch-pre-tool.mjs';
+// Contract 1 always lists these: the entry script, the core and the loader.
+const ALWAYS_LISTED = [ENTRY_SCRIPT, '.claude/scripts/harness-dispatch.mjs', '.claude/scripts/harness-extensions.mjs'];
 const ENTRY_ARG = '${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-pre-tool.mjs';
 const LISTED_PATH = /^\.claude\/scripts\/[A-Za-z0-9._-]+\.mjs$/;
 const ENTRY_KEYS = ['id', 'version', 'module', 'sha256', 'onFailure'];
@@ -150,9 +152,13 @@ function contractProblems(root) {
   }
   // Written by kh-harness as JSON.stringify(value, null, 2) and a newline;
   // anything else, such as a repeated key, is not a file it wrote.
-  if (!isObject(file) || `${JSON.stringify(file, null, 2)}\n` !== text) return [`${CONTRACT_PATH} is not in the form kh-harness writes`];
+  if (!isObject(file) || `${JSON.stringify(file, null, 2)}\n` !== text) {
+    return [`${CONTRACT_PATH} is not in the form kh-harness writes`];
+  }
   if (file.contract !== 1) return [`${CONTRACT_PATH} does not say contract 1`];
-  if (!isObject(file.files) || !Object.hasOwn(file.files, ENTRY_SCRIPT)) return [`${CONTRACT_PATH} does not list ${ENTRY_SCRIPT}`];
+  if (!isObject(file.files)) return [`${CONTRACT_PATH} lists no files`];
+  const unlisted = ALWAYS_LISTED.filter(path => !Object.hasOwn(file.files, path));
+  if (unlisted.length > 0) return [`${CONTRACT_PATH} does not list ${unlisted.join(', ')}`];
   const problems = [];
   for (const [path, sha256] of Object.entries(file.files)) {
     if (!LISTED_PATH.test(path)) {
@@ -172,9 +178,16 @@ function settingsProblems(root) {
   const local = isAbsent(localPath) ? {} : readJson(localPath, MiB);
   if (!isObject(settings)) problems.push('.claude/settings.json could not be read');
   if (!isObject(local)) problems.push('.claude/settings.local.json could not be read');
-  if (settings?.disableAllHooks === true) problems.push('.claude/settings.json sets disableAllHooks');
-  if (local?.disableAllHooks === true) problems.push('.claude/settings.local.json sets disableAllHooks');
-  if (isObject(settings) && !entryScriptRegistered(settings)) problems.push(`.claude/settings.json does not register ${ENTRY_SCRIPT} on PreToolUse for every tool call, as apply writes it`);
+  // Claude Code turns every hook off for a disableAllHooks it does not read
+  // as false, the string "true" among them.
+  for (const [name, value] of [['.claude/settings.json', settings], ['.claude/settings.local.json', local]]) {
+    if (isObject(value) && Object.hasOwn(value, 'disableAllHooks') && value.disableAllHooks !== false) {
+      problems.push(`${name} sets disableAllHooks to a value other than false`);
+    }
+  }
+  if (isObject(settings) && !entryScriptRegistered(settings)) {
+    problems.push(`.claude/settings.json does not register ${ENTRY_SCRIPT} on PreToolUse for every tool call, as apply writes it`);
+  }
   return problems;
 }
 
@@ -187,15 +200,25 @@ function extensionProblems(root, extension) {
   } catch {
     list = undefined;
   }
-  if (!isExtensionsFile(list)) return [`${EXTENSIONS_PATH} is not an extensions file as contract 1 describes one, so every tool call is blocked`];
+  if (!isExtensionsFile(list)) {
+    return [`${EXTENSIONS_PATH} is not an extensions file as contract 1 describes one, so every tool call is blocked`];
+  }
   const listed = list.find(e => e.id === extension.id);
-  if (listed === undefined || ENTRY_KEYS.some(k => listed[k] !== extension[k])) return [`${EXTENSIONS_PATH} does not list the extension ${extension.id} as expected`];
-  return moduleMatches(root, listed.module, listed.sha256) ? [] : [`the module of ${listed.id} does not hash to its recorded sha256`];
+  if (listed === undefined || ENTRY_KEYS.some(k => listed[k] !== extension[k])) {
+    return [`${EXTENSIONS_PATH} does not list the extension ${extension.id} as expected`];
+  }
+  if (!moduleMatches(root, listed.module, listed.sha256)) return [`the module of ${listed.id} does not hash to its recorded sha256`];
+  return [];
 }
 
 export function checkContract1(root, extension) {
+  if (!isEntry(extension)) {
+    return { problems: ['the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one'], warnings: [] };
+  }
   for (const dir of ['.claude', '.claude/kh-harness', '.claude/scripts']) {
-    if (!isRealDirectory(join(root, dir))) return { problems: [`${dir} is missing, a link, or not a directory`], warnings: [] };
+    if (!isRealDirectory(join(root, dir))) {
+      return { problems: [`${dir} is missing, a link, or not a directory`], warnings: [] };
+    }
   }
   const problems = [...contractProblems(root), ...settingsProblems(root), ...extensionProblems(root, extension)];
   const warnings = extension.onFailure === 'allow'

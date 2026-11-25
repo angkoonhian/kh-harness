@@ -15,7 +15,7 @@ import { parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs'
 import { CONTRACT, CONTRACT_PATH, contractEvidence, contractFileText } from './contract.mjs';
 import { APPLY, fixture, git, run, runRegisteredHook, sandboxDataDir } from './lifecycle-fixtures.mjs';
 import { KIT_VERSION, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
-import { CONTRACT_FILES, kitContractText } from './propose.mjs';
+import { CONTRACT_FILES, DISPATCH_PRE_PATH, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, kitContractText } from './propose.mjs';
 import { stampVersion } from './render.mjs';
 import { rulesRegistryEvidence } from './rules-evidence.mjs';
 import { sandboxMarkerDir } from './test-marker-sandbox.mjs';
@@ -154,6 +154,12 @@ test('a contract file swapped for a link between its lstat and its open is not f
 //     settings file. Claude Code reads the value left after settings
 //     precedence applies", and `--settings '{"disableAllHooks": true}'`
 //     "takes precedence over project and local settings".
+// Observed in headless sessions of Claude Code 2.1.332 on 2026-11-25, each
+// run once: with a control .claude/settings.json the PreToolUse hook fired;
+// with `"disableAllHooks": "true"` (a string) it did not fire; with
+// `"disableAllHooks": true` it did not fire; with a wrong-shaped sibling
+// event (`"Stop": {}`) beside the PreToolUse registration it still fired.
+// So any disableAllHooks value but `false` is taken as turning hooks off.
 // So a registration that runs before every call and can block is one with
 // no matcher (or "" or "*") and no key on the hook beyond `type`, `command`
 // and `args`, in a project whose settings files do not set disableAllHooks.
@@ -348,11 +354,17 @@ test('contract 1: the verifier docs/CONTRACT.md gives accepts an install with th
   assert.deepEqual(checkContract1(registeredAs(e => { e.hooks[0].timeout = 5; }), entry), NOT_REGISTERED, 'a timeout key');
   assert.deepEqual(checkContract1(registeredAs(e => { e.matcher = 'Bash'; }), entry), NOT_REGISTERED, 'a matcher selecting some calls');
   assert.deepEqual(checkContract1(registeredAs(e => { e.matcher = '*'; }), entry), OK, 'the matcher "*" selects every call');
-  assert.deepEqual(checkContract1(registeredAs((_, s) => { s.disableAllHooks = true; }), entry),
-    { problems: ['.claude/settings.json sets disableAllHooks'], warnings: [] });
-  const localOff = copy();
-  writeJson(localOff, '.claude/settings.local.json', { disableAllHooks: true });
-  assert.deepEqual(checkContract1(localOff, entry), { problems: ['.claude/settings.local.json sets disableAllHooks'], warnings: [] });
+  for (const value of [true, 'true', 1, null]) {
+    assert.deepEqual(checkContract1(registeredAs((_, s) => { s.disableAllHooks = value; }), entry),
+      { problems: ['.claude/settings.json sets disableAllHooks to a value other than false'], warnings: [] }, JSON.stringify(value));
+    const localOff = copy();
+    writeJson(localOff, '.claude/settings.local.json', { disableAllHooks: value });
+    assert.deepEqual(checkContract1(localOff, entry), { problems: ['.claude/settings.local.json sets disableAllHooks to a value other than false'], warnings: [] }, JSON.stringify(value));
+  }
+  assert.deepEqual(checkContract1(registeredAs((_, s) => { s.disableAllHooks = false; }), entry), OK, 'disableAllHooks: false');
+  const localOn = copy();
+  writeJson(localOn, '.claude/settings.local.json', { disableAllHooks: false });
+  assert.deepEqual(checkContract1(localOn, entry), OK, 'disableAllHooks: false in settings.local.json');
   const localOnly = copy();
   const s = readJson(localOnly, '.claude/settings.json');
   writeJson(localOnly, '.claude/settings.local.json', { hooks: { PreToolUse: s.hooks.PreToolUse } });
@@ -390,6 +402,23 @@ test('contract 1: the verifier docs/CONTRACT.md gives accepts an install with th
   const absent = copy();
   rmSync(join(absent, CONTRACT_PATH));
   assert.equal(checkContract1(absent, entry).problems.length, 1);
+  const trimmed = copy();
+  const full = readJson(trimmed, CONTRACT_PATH);
+  writeFileSync(join(trimmed, CONTRACT_PATH), `${JSON.stringify({ ...full, files: { [DISPATCH_PRE_PATH]: full.files[DISPATCH_PRE_PATH] } }, null, 2)}\n`);
+  assert.deepEqual(checkContract1(trimmed, entry),
+    { problems: [`${CONTRACT_PATH} does not list .claude/scripts/harness-dispatch.mjs, .claude/scripts/harness-extensions.mjs`], warnings: [] },
+    'a contract file in the kit\'s format that lists only the entry script');
+
+  // The caller's own argument.
+  const NOT_AN_ENTRY = { problems: ['the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one'], warnings: [] };
+  for (const bad of [undefined, null, 'acme-lockfile', [], { ...entry, onFailure: 'warn' }, { id: entry.id }]) assert.deepEqual(checkContract1(base, bad), NOT_AN_ENTRY, JSON.stringify(bad));
+});
+
+test('contract 1: the contract file always lists the entry script, the core and the loader', () => {
+  for (const path of [DISPATCH_PRE_PATH, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH]) assert.ok(CONTRACT_FILES.includes(path), path);
+  assert.deepEqual([DISPATCH_PRE_PATH, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH], ['.claude/scripts/dispatch-pre-tool.mjs', '.claude/scripts/harness-dispatch.mjs', '.claude/scripts/harness-extensions.mjs']);
+  const listed = Object.keys(JSON.parse(kitContractText(KIT_VERSION)).files);
+  for (const path of [DISPATCH_PRE_PATH, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH]) assert.ok(listed.includes(path), path);
 });
 
 test('contract 1: recordExternalEvent of the installed scripts writes the fixture\'s line', async () => {

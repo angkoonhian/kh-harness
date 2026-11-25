@@ -47,10 +47,16 @@ repository honours. It is read-only to every other plugin.
 
 - No file means the install is older than the contract, or kh-harness is
   not installed. Treat it as no contract.
-- `apply --yes` writes it last in its run, and only when every file it
-  speaks for (its `files` key) is on disk holding exactly what this kit
-  installs there. While one of them is edited, not recorded in the
-  manifest, or deleted, `apply` does not write the contract file.
+- `apply --yes` writes it last in its run, and only when, at that moment,
+  every file it speaks for (its `files` key) is on disk holding exactly the
+  bytes this kit installs there, line endings aside. It checks the bytes on
+  disk, whether or not the manifest records the file. A listed file the run
+  does not bring to those bytes keeps the contract file from being
+  written: one edited since kh-harness wrote it, one without the
+  kh-harness stamp, one on disk with other bytes that the manifest does not
+  record (`apply` writes none of the scripts while such a file is there),
+  and one recorded and since deleted (`apply` does not write a deleted
+  recorded file again).
 - `apply --yes` rewrites an existing contract file only when the manifest
   records it as unchanged since kh-harness wrote it, the text this kit
   writes is different (a kit update changes the listed hashes), and every
@@ -96,8 +102,12 @@ endings. As kh-harness 0.2.0 writes it:
 
 `files` lists the `PreToolUse` entry script,
 `.claude/scripts/dispatch-pre-tool.mjs`, and every installed file it loads.
-The list itself is what contract 1 speaks for: read it from the file and
-do not assume a fixed set. The hashes change with every kit version.
+Contract 1 promises that it always lists at least these three: the entry
+script, the core `.claude/scripts/harness-dispatch.mjs` and the loader
+`.claude/scripts/harness-extensions.mjs`. A contract file that lacks any of
+them is not one contract 1 describes. Beyond those, the list itself is what
+contract 1 speaks for: read it from the file and do not assume a fixed
+set. The hashes change with every kit version.
 
 The number speaks for these files only: what they do when they run. It
 does not say that anything runs them. The owner can remove a hook
@@ -116,8 +126,9 @@ extension's `sha256` (below).
 ### How kh-harness itself reads it
 
 For people, kh-harness's `detect` reads the file less strictly than a
-plugin must (next section), and what it reports is not promised: a link at the file, at `.claude/kh-harness`, or at a `.claude`
-through which the file is reached is no contract number; it reads at most
+plugin must (next section), and what it reports is not promised: a link at
+the file, at `.claude/kh-harness`, or at a `.claude` through which the file
+is reached is no contract number; it reads at most
 65,536 bytes; the file must be a JSON object whose `contract` is a safe
 integer of 1 or more. A `.claude` that is a link through which no contract
 file is reached counts as no file. `P5.contract` is `declared` only when the
@@ -133,6 +144,12 @@ key must be refused by a reader; the check below does that.
 
 Before a plugin installs anything that depends on kh-harness, and again
 before each use, it checks the install. Do all of the following.
+
+**A plugin whose gate must hold relies on it only when every check below
+passes with no problem and no warning.** The verifier below returns
+`{ problems, warnings }`: rely on the gate only when both are empty. A
+warning (`onFailure: "allow"`) is a state in which the gate can turn off
+with only a notice to the person.
 
 1. **Read the contract file safely.**
    - `.claude`, `.claude/kh-harness` and `.claude/scripts` must each be a
@@ -152,9 +169,10 @@ before each use, it checks the install. Do all of the following.
 2. **Check every hash in `files`. This step is mandatory**: it is the only
    check that the installed scripts are the ones contract 1 describes (see
    [when the kit's own files cannot run the extensions](#when-the-kits-own-files-cannot-run-the-extensions)).
-   - `files` must be an object listing `.claude/scripts/dispatch-pre-tool.mjs`.
-     A plugin that calls `recordExternalEvent` also requires
-     `.claude/scripts/harness-log.mjs`.
+   - `files` must be an object listing `.claude/scripts/dispatch-pre-tool.mjs`,
+     `.claude/scripts/harness-dispatch.mjs` and
+     `.claude/scripts/harness-extensions.mjs`. A plugin that calls
+     `recordExternalEvent` also requires `.claude/scripts/harness-log.mjs`.
    - Every key must match `/^\.claude\/scripts\/[A-Za-z0-9._-]+\.mjs$/`.
    - Each listed file must be a regular file and not a link, of at most
      4 MiB (4,194,304 bytes), read as in step 1, whose hash by
@@ -180,8 +198,9 @@ before each use, it checks the install. Do all of the following.
      narrower matcher, a plugin must not treat its gates as holding for
      every tool call.
    - Neither `.claude/settings.json` nor `.claude/settings.local.json` may
-     set `"disableAllHooks": true`; a `settings.local.json` that is there
-     must be readable JSON. A registration only in `settings.local.json` is
+     have a `disableAllHooks` key with any value but `false`: Claude Code
+     turns hooks off for the string `"true"` as for `true`. A
+     `settings.local.json` that is there must be readable JSON. A registration only in `settings.local.json` is
      not the one `apply` writes and does not count.
 4. **Check the plugin's own extension.** Steps 1 to 3 pass with no
    extensions file at all.
@@ -196,7 +215,8 @@ before each use, it checks the install. Do all of the following.
      1,048,576 bytes, whose bytes hash to that `sha256` by the hashing rule.
    - A gate that must hold needs `onFailure: "block"`. With `"allow"`, a
      module that is missing or differs turns the gate off, and only the
-     person is told, once per session.
+     person is told, once per session; so `"allow"` is a warning, and by
+     the rule at the top of this section the gate is not relied on.
 
 `detect` is a diagnostic for people, not part of the contract: its states
 and its output may change without a new contract number, and it reports
@@ -210,6 +230,10 @@ What the checks cannot show:
   settings and a `--settings` argument, which can set `disableAllHooks`;
   a plugin cannot read them all, and a project setting does not override
   a `--settings` argument or a managed one;
+- whether Claude Code loads the project settings file: one it does not
+  load runs none of its hooks, and a plugin cannot fully determine from
+  the file whether Claude Code will load it. Project hooks may also not
+  run in a folder the person has not trusted;
 - that the session in progress loaded the settings as they are now on
   disk.
 
@@ -219,17 +243,20 @@ such an install apart: its `dispatch-pre-tool.mjs` is not the file the
 contract file lists, or there is no contract file at all.
 
 This module does steps 1 to 4, with Node built-ins only and without
-loading any file of the repository's. It takes the entry the plugin wrote
-and returns `{ problems, warnings }`; rely on the gate only when `problems`
-is empty, and show `warnings` to the person. kh-harness's tests run it
-against real installs holding the worked extension below: it accepts a
-fresh install and one whose files have CRLF line endings, and refuses an
-edited listed file; a missing registration, one with `async: true`, with a
-`timeout` key, under the matcher `Bash`, or only in `settings.local.json`;
-`disableAllHooks: true` in either settings file; no extensions file, an
-extensions file without the entry, a malformed one, and a module edited by
-one byte; a repeated key and a contract file that is a link. It warns of
-`onFailure: "allow"`.
+loading any file of the repository's. It takes the repository root and
+the entry the plugin wrote, an object of exactly `id`, `version`,
+`module`, `sha256` and `onFailure` (anything else is reported as a problem,
+not thrown), and returns `{ problems, warnings }`. kh-harness's tests run
+it against real installs holding the worked extension below: it accepts a
+fresh install, one whose files have CRLF line endings, and
+`disableAllHooks: false`; and refuses an edited listed file; a contract
+file listing only the entry script; a missing registration, one with
+`async: true`, with a `timeout` key, under the matcher `Bash`, or only in
+`settings.local.json`; `disableAllHooks` set to `true`, `"true"`, `1` or
+`null` in either settings file; no extensions file, an extensions file
+without the entry, a malformed one, and a module edited by one byte; a
+repeated key and a contract file that is a link; and an argument that is
+not an entry. It warns of `onFailure: "allow"`.
 
 <!-- fixture: verify-contract-1.mjs -->
 ```js
@@ -237,10 +264,10 @@ one byte; a repeated key and a contract file that is a link. It warns of
 // and that a plugin's own extension is in place to run before every tool
 // call, before the plugin relies on either. Node built-ins only; it loads no
 // file of the repository's. `checkContract1(root, extension)` takes the
-// entry the plugin wrote for its extension, `{ id, version, module, sha256,
-// onFailure }`, and returns `{ problems, warnings }`: one sentence per
-// failed check, and one per risk the caller should show. Rely on the gate
-// only when `problems` is empty.
+// repository root and the entry the plugin wrote for its extension, an
+// object of exactly `{ id, version, module, sha256, onFailure }`, and
+// returns `{ problems, warnings }`: one sentence per failed check, and one
+// per risk. A gate that must hold is relied on only when both are empty.
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { join, sep } from 'node:path';
@@ -248,6 +275,8 @@ import { join, sep } from 'node:path';
 const CONTRACT_PATH = '.claude/kh-harness/contract.json';
 const EXTENSIONS_PATH = '.claude/kh-harness/extensions.json';
 const ENTRY_SCRIPT = '.claude/scripts/dispatch-pre-tool.mjs';
+// Contract 1 always lists these: the entry script, the core and the loader.
+const ALWAYS_LISTED = [ENTRY_SCRIPT, '.claude/scripts/harness-dispatch.mjs', '.claude/scripts/harness-extensions.mjs'];
 const ENTRY_ARG = '${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-pre-tool.mjs';
 const LISTED_PATH = /^\.claude\/scripts\/[A-Za-z0-9._-]+\.mjs$/;
 const ENTRY_KEYS = ['id', 'version', 'module', 'sha256', 'onFailure'];
@@ -385,9 +414,13 @@ function contractProblems(root) {
   }
   // Written by kh-harness as JSON.stringify(value, null, 2) and a newline;
   // anything else, such as a repeated key, is not a file it wrote.
-  if (!isObject(file) || `${JSON.stringify(file, null, 2)}\n` !== text) return [`${CONTRACT_PATH} is not in the form kh-harness writes`];
+  if (!isObject(file) || `${JSON.stringify(file, null, 2)}\n` !== text) {
+    return [`${CONTRACT_PATH} is not in the form kh-harness writes`];
+  }
   if (file.contract !== 1) return [`${CONTRACT_PATH} does not say contract 1`];
-  if (!isObject(file.files) || !Object.hasOwn(file.files, ENTRY_SCRIPT)) return [`${CONTRACT_PATH} does not list ${ENTRY_SCRIPT}`];
+  if (!isObject(file.files)) return [`${CONTRACT_PATH} lists no files`];
+  const unlisted = ALWAYS_LISTED.filter(path => !Object.hasOwn(file.files, path));
+  if (unlisted.length > 0) return [`${CONTRACT_PATH} does not list ${unlisted.join(', ')}`];
   const problems = [];
   for (const [path, sha256] of Object.entries(file.files)) {
     if (!LISTED_PATH.test(path)) {
@@ -407,9 +440,16 @@ function settingsProblems(root) {
   const local = isAbsent(localPath) ? {} : readJson(localPath, MiB);
   if (!isObject(settings)) problems.push('.claude/settings.json could not be read');
   if (!isObject(local)) problems.push('.claude/settings.local.json could not be read');
-  if (settings?.disableAllHooks === true) problems.push('.claude/settings.json sets disableAllHooks');
-  if (local?.disableAllHooks === true) problems.push('.claude/settings.local.json sets disableAllHooks');
-  if (isObject(settings) && !entryScriptRegistered(settings)) problems.push(`.claude/settings.json does not register ${ENTRY_SCRIPT} on PreToolUse for every tool call, as apply writes it`);
+  // Claude Code turns every hook off for a disableAllHooks it does not read
+  // as false, the string "true" among them.
+  for (const [name, value] of [['.claude/settings.json', settings], ['.claude/settings.local.json', local]]) {
+    if (isObject(value) && Object.hasOwn(value, 'disableAllHooks') && value.disableAllHooks !== false) {
+      problems.push(`${name} sets disableAllHooks to a value other than false`);
+    }
+  }
+  if (isObject(settings) && !entryScriptRegistered(settings)) {
+    problems.push(`.claude/settings.json does not register ${ENTRY_SCRIPT} on PreToolUse for every tool call, as apply writes it`);
+  }
   return problems;
 }
 
@@ -422,15 +462,25 @@ function extensionProblems(root, extension) {
   } catch {
     list = undefined;
   }
-  if (!isExtensionsFile(list)) return [`${EXTENSIONS_PATH} is not an extensions file as contract 1 describes one, so every tool call is blocked`];
+  if (!isExtensionsFile(list)) {
+    return [`${EXTENSIONS_PATH} is not an extensions file as contract 1 describes one, so every tool call is blocked`];
+  }
   const listed = list.find(e => e.id === extension.id);
-  if (listed === undefined || ENTRY_KEYS.some(k => listed[k] !== extension[k])) return [`${EXTENSIONS_PATH} does not list the extension ${extension.id} as expected`];
-  return moduleMatches(root, listed.module, listed.sha256) ? [] : [`the module of ${listed.id} does not hash to its recorded sha256`];
+  if (listed === undefined || ENTRY_KEYS.some(k => listed[k] !== extension[k])) {
+    return [`${EXTENSIONS_PATH} does not list the extension ${extension.id} as expected`];
+  }
+  if (!moduleMatches(root, listed.module, listed.sha256)) return [`the module of ${listed.id} does not hash to its recorded sha256`];
+  return [];
 }
 
 export function checkContract1(root, extension) {
+  if (!isEntry(extension)) {
+    return { problems: ['the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one'], warnings: [] };
+  }
   for (const dir of ['.claude', '.claude/kh-harness', '.claude/scripts']) {
-    if (!isRealDirectory(join(root, dir))) return { problems: [`${dir} is missing, a link, or not a directory`], warnings: [] };
+    if (!isRealDirectory(join(root, dir))) {
+      return { problems: [`${dir} is missing, a link, or not a directory`], warnings: [] };
+    }
   }
   const problems = [...contractProblems(root), ...settingsProblems(root), ...extensionProblems(root, extension)];
   const warnings = extension.onFailure === 'allow'
