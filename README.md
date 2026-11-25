@@ -4,7 +4,7 @@ A Claude Code plugin and five small Node scripts that inspect a repository,
 propose only the agent harness it is missing, write it when you say so, and
 remove it again cleanly.
 
-[![version 0.2.0](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
+[![version 0.3.0](https://img.shields.io/badge/version-0.3.0-blue)](CHANGELOG.md)
 [![Node 22+](https://img.shields.io/badge/node-%3E%3D22-339933)](package.json)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](.claude-plugin/plugin.json)
@@ -176,7 +176,7 @@ node <kh-harness>/scripts/detect.mjs .
 ```
 
 ```
-kh-harness 0.2.0 — demo-app
+kh-harness 0.3.0 — demo-app
 profile: typescript-single   branch: harness
 
 Phase 0 — Reconnaissance
