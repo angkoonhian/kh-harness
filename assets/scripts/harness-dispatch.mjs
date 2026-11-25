@@ -86,9 +86,11 @@ const strings = values => values.filter(value => typeof value === 'string');
 
 /** The one output of `results` on `event`: every notice, every context and,
  * on PreToolUse, every denial reason joined in running order, the highest
- * exit code, and the standard error of each. With exit code 2 Claude Code
- * ignores standard output, so the notices and context go to standard error
- * after the rest. With one contributing half the JSON is that half's own. */
+ * exit code, and the standard error of each in order, whatever the exit
+ * code. With exit code 2 Claude Code still reads the fields of valid JSON
+ * and, on PostToolUse and PostToolUseFailure, shows standard error to
+ * Claude, so each half's text reaches the reader it reaches when the half
+ * runs alone. With one contributing half the JSON is that half's own. */
 export function combine(event, results) {
   const jsons = results.map(r => r.json).filter(isPlainObject);
   const outputs = jsons.map(j => j.hookSpecificOutput).filter(isPlainObject);
@@ -107,11 +109,11 @@ export function combine(event, results) {
   if (notices.length > 0) json.systemMessage = notices.join('\n');
   if (hookSpecificOutput !== undefined) json.hookSpecificOutput = hookSpecificOutput;
 
-  const exitCode = Math.max(0, ...results.map(r => r.exitCode));
-  let stderr = results.map(r => r.stderr).join('');
-  if (exitCode !== 2) return { json: Object.keys(json).length === 0 ? null : json, stderr, exitCode };
-  for (const text of [notices.join('\n'), contexts.join('\n')]) if (text !== '') stderr += `${text}\n`;
-  return { json: null, stderr, exitCode };
+  return {
+    json: Object.keys(json).length === 0 ? null : json,
+    stderr: results.map(r => r.stderr).join(''),
+    exitCode: Math.max(0, ...results.map(r => r.exitCode)),
+  };
 }
 
 /** Writes `combined`: its JSON and a newline to standard output when there

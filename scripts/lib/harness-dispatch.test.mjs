@@ -5,6 +5,21 @@
 // child, and compares it with a direct run of the hook it stands in for on a
 // twin project, each side in a session of its own.
 //
+// Pinned against the hooks reference, https://code.claude.com/docs/en/hooks,
+// read on 2026-11-25, for what an entry script writes when a half exits 2
+// (the two exit-2 tests below):
+//   - section "Exit code output", the row for a "JSON object that passes
+//     schema validation" under "Exit 2": "Blocking error. Claude Code still
+//     reads the fields, but a `PreToolUse` call stays blocked even if you
+//     return `"allow"` or `continue: false`";
+//   - section "Exit code 2": "Other JSON that passes schema validation:
+//     Claude Code still reads the JSON output fields.";
+//   - section "Exit code 2 behavior per event": "`PostToolUse` | No | Shows
+//     stderr to Claude; the tool already ran" and "`PostToolUseFailure` | No
+//     | Shows stderr to Claude; the tool already failed".
+// So with exit code 2 the combined JSON is still written to standard output
+// and every half's standard error is written unchanged.
+//
 // Every test runs against a temporary KH_DATA_DIR and HK_MARKER_DIR.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -140,10 +155,11 @@ test('a denial from any half wins on PreToolUse, with the reasons in running ord
   assert.equal(combine('PostToolUse', [deny('a')]).json, null, 'a denial means nothing on another event');
 });
 
-test('with exit code 2 the JSON is dropped and every notice is appended to stderr', () => {
+test('with exit code 2 the JSON is kept and every half\'s stderr is left as it was', () => {
   const notice = { json: { systemMessage: 'n', hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'c' } }, stderr: '', exitCode: 0 };
   const report = { json: null, stderr: 'report\n', exitCode: 2 };
-  assert.deepEqual(combine('PostToolUse', [notice, report]), { json: null, stderr: 'report\nn\nc\n', exitCode: 2 });
+  assert.deepEqual(combine('PostToolUse', [notice, report]), { json: notice.json, stderr: 'report\n', exitCode: 2 });
+  assert.deepEqual(combine('PostToolUse', [report]), { json: null, stderr: 'report\n', exitCode: 2 });
   assert.deepEqual(combine('PostToolUse', []), { json: null, stderr: '', exitCode: 0 });
 });
 
@@ -189,6 +205,18 @@ test('dispatch-post-tool.mjs gives the lint report on stderr with exit 2, as lin
   assert.match(single.stderr, /no-unused-vars/, 'fixture sanity: the linter reports');
   assert.deepEqual({ status: merged.status, stdout: merged.stdout, stderr: merged.stderr }, { status: 2, stdout: '', stderr: single.stderr });
   assert.deepEqual(readEvents(repoA, 'post-1').events.map(e => e.type), ['PostToolUse']);
+});
+
+test('a lint report and the log hook\'s notice in one run give the notice on stdout and the report on stderr, with exit 2', () => {
+  const dir = installed({ 'harness-log.mjs': null });
+  const repoA = failingRepo();
+  const repoB = failingRepo();
+  const notice = direct(join(dir, 'session-log.mjs'), repoA, edit('src/a.ts', 'both-1'));
+  const report = direct(LINT, repoB, edit('src/a.ts', 'both-2'));
+  assert.match(notice.stdout, /^\{"systemMessage":"kh-harness session-log: /, 'fixture sanity: the log hook gives a notice');
+  assert.match(report.stderr, /no-unused-vars/, 'fixture sanity: the linter reports');
+  const merged = runEntry('dispatch-post-tool.mjs', repoA, edit('src/a.ts', 'both-3'), { dir });
+  assert.deepEqual(merged, { status: 2, stdout: notice.stdout + '\n', stderr: report.stderr });
 });
 
 test('dispatch-post-tool.mjs does not lint for a tool that is not an edit, whatever its input names', () => {
