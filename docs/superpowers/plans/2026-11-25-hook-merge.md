@@ -61,7 +61,7 @@ Each is a choice the design left open or that the code forced. One line each, wi
 Conditions the design implies that its own measures do not exercise; each is pinned by a test in the task named.
 
 1. **An entry script beside a missing or older core or half.** It exits 0 with one fixed notice and the other half still runs. (Task 2)
-2. **A lint failure and another half's notice in the same run.** Exit 2 makes Claude Code ignore standard output, so the notice is appended to standard error, not lost. (Task 2)
+2. **A lint failure and another half's notice in the same run.** On exit 2 Claude Code still reads valid JSON and shows standard error to Claude, so the entry script writes both and each message keeps its reader. (Task 2; corrected 2026-11-25.)
 3. **A non-edit tool whose input has a `file_path`** (`Read` on a `.ts` file): the entry script has no matcher, so the lint half must refuse it itself. (Tasks 1, 2)
 4. **`apply` killed between its manifest write and its settings write during a migration.** No entry is left without a record, `uninstall` still removes everything, and the next `apply` finishes. (Task 6)
 5. **A repository that gitignores `.claude/`**, where no script resolves through the file scan: the halves are still credited through the entry script's recorded hash. (Task 4)
