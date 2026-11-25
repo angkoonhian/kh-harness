@@ -183,8 +183,10 @@ writes, each module in file order, before the gate hook and the session
 log. An extension can block the call.
 One that cannot decide applies its own `onFailure`: the call is blocked, or
 you are told once per session that it checks no call. An extensions file
-that cannot be read blocks every call. Without the file, nothing of this
-runs and the loader is never loaded. What another plugin may rely on, and
+that cannot be read blocks every call, and so do a core or a loader from
+another kit version than the entry script, and a run that ends before the
+extensions were applied, for whatever reason. Without the file, nothing of
+this runs and the loader is never loaded. What another plugin may rely on, and
 what an extension can and cannot do, is in [the contract](../CONTRACT.md).
 
 ### The entry scripts
@@ -215,7 +217,9 @@ is registered this way; an older one is moved to it as described under
   work never finishes ends the run: the entry script writes what the hooks
   before it returned, so a gate's denial still stands, and exits with their
   code, as soon as nothing else is left to run, or at 120 seconds when
-  something keeps the process busy. A hook that hangs without ever
+  something keeps the process busy. On `PreToolUse`, while an extensions
+  file is in play, a run that ends this way before the extensions were
+  applied blocks the call instead. A hook that hangs without ever
   yielding is ended by Claude Code's own hook timeout, and then nothing
   from that event's entry script is delivered.
 - The entry script writes one combined output: the notices of both hooks,

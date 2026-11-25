@@ -29,11 +29,12 @@
 // Every test runs against a temporary KH_DATA_DIR and HK_MARKER_DIR.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs, { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
 import { EXTENSIONS_PATH, moduleSha256 } from '../../assets/scripts/harness-extensions.mjs';
 import { readEvents, setEnabled } from '../../assets/scripts/harness-log.mjs';
@@ -120,9 +121,9 @@ const block = message => `export const preToolUse = () => ({ decision: 'block', 
 const ALLOW = "export const preToolUse = () => ({ decision: 'allow' });\n";
 const FAIL_BLOCK = (id, reason) => `kh-harness extension ${id}: ${reason}, so this call is blocked (onFailure: block). Reinstall the plugin that registered it, or remove its entry from .claude/kh-harness/extensions.json outside this session.`;
 const FAIL_ALLOW = (id, reason) => `kh-harness extension ${id}: ${reason}, so it checks no call (onFailure: allow).`;
-const UNUSABLE = (file, problem) => `kh-harness: .claude/scripts/${file} ${problem} while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes, or remove the extensions file, outside this session.`;
+const UNUSABLE = (file, problem) => `kh-harness: .claude/scripts/${file} ${problem} while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes from a kit at least as new as the one that installed .claude/scripts/dispatch-pre-tool.mjs, or remove the extensions file, outside this session.`;
 const LOADER_MISSING = UNUSABLE('harness-extensions.mjs', 'is missing or cannot be loaded');
-const OLDER = 'is older than this entry script and lacks what it needs';
+const MISMATCH = 'is not the version this entry script runs with';
 
 /** Makes a link at `link` to `target`, or skips the test where this platform
  * cannot make one without elevation. Returns whether the link was made. */
@@ -429,10 +430,10 @@ test('without harness-extensions.mjs and with an extensions file every call is b
   assert.deepEqual(runEntry(root, rmCall('noloader-3'), { script }), denial(`${LOADER_MISSING}\n${GATE_LINE}`));
 });
 
-test('a harness-extensions.mjs without extensionsHalf, beside an extensions file, blocks every call', () => {
+test('a harness-extensions.mjs without a level, beside an extensions file, blocks every call', () => {
   const root = withExtensions(r => [extension(r, 'a', ALLOW)]);
   const script = join(installed({ 'harness-extensions.mjs': 'export const readExtensions = () => ({ state: \'absent\' });\n' }), 'dispatch-pre-tool.mjs');
-  assert.deepEqual(runEntry(root, call('oldloader-1'), { script }), denial(UNUSABLE('harness-extensions.mjs', OLDER)));
+  assert.deepEqual(runEntry(root, call('oldloader-1'), { script }), denial(UNUSABLE('harness-extensions.mjs', MISMATCH)));
 });
 
 test('a harness-log.mjs lacking what harness-extensions.mjs imports, beside an extensions file, blocks every call and leaves the gate running', async () => {
@@ -447,8 +448,8 @@ test('a harness-log.mjs lacking what harness-extensions.mjs imports, beside an e
   }
 });
 
-test('a harness-dispatch.mjs that is missing or older, beside an extensions file, blocks every call with fixed text', () => {
-  for (const [core, problem] of [[null, 'is missing or cannot be loaded'], ['export {};\n', OLDER]]) {
+test('a harness-dispatch.mjs that is missing or has no level, beside an extensions file, blocks every call with fixed text', () => {
+  for (const [core, problem] of [[null, 'is missing or cannot be loaded'], ['export {};\n', MISMATCH]]) {
     const script = join(installed({ 'harness-dispatch.mjs': core }), 'dispatch-pre-tool.mjs');
     const root = withExtensions(r => [extension(r, 'a', ALLOW)]);
     assert.deepEqual(runEntry(root, call('nocore-1'), { script }), denial(UNUSABLE('harness-dispatch.mjs', problem)), String(core));
@@ -497,6 +498,153 @@ test('with the core missing, the entry blocks wherever the loader would find the
       assert.equal(readExtensions(root).state !== 'absent', blocks, 'readExtensions agrees');
     });
   }
+});
+
+// --- Older siblings beside the entry script (C2) ------------------------------
+//
+// Each older file is the real one, as its commit holds it: fixtures/
+// <name>.<commit>.mjs.gz.b64, gzipped and base64-encoded as hook-skew's
+// fixture is, so the suite runs without the history; the first test checks
+// each against git where the checkout holds it.
+
+const REPO = resolve(import.meta.dirname, '..', '..');
+const OLDER_FILES = [['harness-dispatch.mjs', 'a3aa08e'], ['harness-dispatch.mjs', '5fd7c68'], ['harness-extensions.mjs', '5fd7c68']];
+const older = (name, commit) => gunzipSync(Buffer.from(fs.readFileSync(join(import.meta.dirname, 'fixtures', `${name.replace('.mjs', '')}.${commit}.mjs.gz.b64`), 'utf8'), 'base64')).toString('utf8');
+
+test('each older core and loader fixture is the file its commit holds', t => {
+  for (const [name, commit] of OLDER_FILES) {
+    let shipped;
+    try {
+      shipped = execFileSync('git', ['show', `${commit}:assets/scripts/${name}`], { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      t.skip(`this checkout does not hold ${commit} (a shallow clone)`);
+      return;
+    }
+    assert.equal(older(name, commit), shipped, `${name} at ${commit}`);
+  }
+});
+
+test('an older core or loader that still has the exports the entry script calls, beside an extensions file, blocks every call, whichever of the two is older', () => {
+  const coreMismatch = denial(UNUSABLE('harness-dispatch.mjs', MISMATCH));
+  const loaderMismatch = denial(UNUSABLE('harness-extensions.mjs', MISMATCH));
+  const rows = [
+    [{ 'harness-dispatch.mjs': older('harness-dispatch.mjs', 'a3aa08e') }, coreMismatch],
+    [{ 'harness-dispatch.mjs': older('harness-dispatch.mjs', '5fd7c68') }, coreMismatch],
+    [{ 'harness-extensions.mjs': older('harness-extensions.mjs', '5fd7c68') }, loaderMismatch],
+    [{ 'harness-dispatch.mjs': older('harness-dispatch.mjs', '5fd7c68'), 'harness-extensions.mjs': older('harness-extensions.mjs', '5fd7c68') }, coreMismatch],
+  ];
+  for (const [replaced, expected] of rows) {
+    const script = join(installed(replaced), 'dispatch-pre-tool.mjs');
+    const label = Object.keys(replaced).join(' and ');
+    assert.deepEqual(runEntry(withExtensions(r => [extension(r, 'a', block('B.'))]), call('older-1'), { script }), expected, `${label}, an extension that blocks`);
+    assert.deepEqual(runEntry(withExtensions(r => [extension(r, 'a', ALLOW)]), call('older-2'), { script }), expected, `${label}, an extension that allows`);
+  }
+});
+
+test('an older core with no extensions file gives the notice a core of another version gives, and an older loader is never loaded', () => {
+  for (const commit of ['a3aa08e', '5fd7c68']) {
+    const script = join(installed({ 'harness-dispatch.mjs': older('harness-dispatch.mjs', commit) }), 'dispatch-pre-tool.mjs');
+    const plain = runEntry(project(), call('older-3'), { script });
+    assert.deepEqual(Object.keys(plain), ['systemMessage'], commit);
+    assert.match(plain.systemMessage, /^kh-harness dispatch-pre-tool: \.claude\/scripts\/harness-dispatch\.mjs is not the version this entry script runs with, so no kh-harness hook ran on PreToolUse — /, commit);
+  }
+  const root = project();
+  commitGate(root);
+  const script = join(installed({ 'harness-extensions.mjs': older('harness-extensions.mjs', '5fd7c68') }), 'dispatch-pre-tool.mjs');
+  assert.deepEqual(runEntry(root, rmCall('older-4'), { script }), denial(GATE_LINE));
+});
+
+test('a loader at the entry script\'s level that cannot apply the extensions blocks the call', async () => {
+  const { LEVEL } = await import('../../assets/scripts/harness-extensions.mjs');
+  for (const loader of [`export const LEVEL = ${LEVEL};\n`, `export const LEVEL = ${LEVEL};\nexport const extensionsHalf = () => { throw new Error('x'); };\n`, `export const LEVEL = ${LEVEL};\nexport const extensionsHalf = () => 'allow';\n`]) {
+    const script = join(installed({ 'harness-extensions.mjs': loader }), 'dispatch-pre-tool.mjs');
+    assert.deepEqual(runEntry(withExtensions(r => [extension(r, 'a', ALLOW)]), call('stub-1'), { script }), denial(NOT_APPLIED('the extensions half failed')), loader);
+  }
+});
+
+test('a core at the entry script\'s level that cannot run the call, beside an extensions file, blocks it, and without one says nothing', async () => {
+  const { LEVEL } = await import('../../assets/scripts/harness-dispatch.mjs');
+  for (const core of [`export const LEVEL = ${LEVEL};\n`, `export const LEVEL = ${LEVEL};\nexport const half = () => ({});\nexport const dispatch = async () => { throw new Error('x'); };\n`]) {
+    const script = join(installed({ 'harness-dispatch.mjs': core }), 'dispatch-pre-tool.mjs');
+    assert.deepEqual(runEntry(withExtensions(r => [extension(r, 'a', ALLOW)]), call('stubcore-1'), { script }), denial(UNUSABLE('harness-dispatch.mjs', 'could not run this call')), core);
+    assert.equal(runEntry(project(), call('stubcore-2'), { script }), null, core);
+  }
+});
+
+test('the entry script, the core and the loader each carry the same integer level, beside a comment saying when to raise it', async () => {
+  const core = await import('../../assets/scripts/harness-dispatch.mjs');
+  const loader = await import('../../assets/scripts/harness-extensions.mjs');
+  assert.ok(Number.isSafeInteger(core.LEVEL) && core.LEVEL >= 1);
+  assert.equal(loader.LEVEL, core.LEVEL);
+  for (const name of ['dispatch-pre-tool.mjs', 'harness-dispatch.mjs', 'harness-extensions.mjs']) {
+    const text = fs.readFileSync(join(ASSETS, name), 'utf8');
+    assert.match(text, new RegExp(`^(export )?const LEVEL = ${core.LEVEL};$`, 'm'), name);
+    assert.match(text.replace(/\n\/\/ /g, ' '), /Raise it in all three together whenever one of them comes to rely on a change in another\./, name);
+  }
+});
+
+// --- A run that ends before the extensions were applied (C1) -----------------
+//
+// The run's two time limits can be shortened through the environment, and a
+// project's .claude/settings.json `env` reaches the hook process. Whatever
+// ends the run early, while an extensions file is in play the call is
+// blocked; with none, the run is written as it was.
+
+const NOT_APPLIED = cause => `kh-harness: the extensions .claude/kh-harness/extensions.json lists were not applied to this call (${cause}), so it is blocked. A time limit shortened through HK_RUN_DEADLINE_MS or HK_STDIN_TIMEOUT_MS in the environment hooks run with blocks every call this way.`;
+const EARLY = [NOT_APPLIED('the run reached its time limit first'), NOT_APPLIED('the hook input could not be read in full in time')];
+const SHORTENED = { HK_RUN_DEADLINE_MS: '1', HK_STDIN_TIMEOUT_MS: '1' };
+
+test('with both time limits shortened to 1 ms, an extensions file blocks the call, whether its extension blocks or allows', () => {
+  for (const [label, source] of [['blocks', block('B.')], ['allows', ALLOW]]) {
+    const out = runEntry(withExtensions(r => [extension(r, 'a', source)]), call(`short-${label}`), { env: SHORTENED });
+    assert.equal(out?.hookSpecificOutput?.permissionDecision, 'deny', `an extension that ${label}: ${JSON.stringify(out)}`);
+    assert.ok(EARLY.includes(out.hookSpecificOutput.permissionDecisionReason), out.hookSpecificOutput.permissionDecisionReason);
+  }
+});
+
+test('the worked extension of docs/CONTRACT.md blocks with the run deadline shortened to 1 ms', () => {
+  const root = project();
+  const [entry] = JSON.parse(fs.readFileSync(new URL('./fixtures/contract-1/extensions.json', import.meta.url), 'utf8'));
+  writeAt(join(root, entry.module), fs.readFileSync(new URL('./fixtures/contract-1/extension.mjs', import.meta.url), 'utf8'));
+  writeExtensions(root, [entry]);
+  const edit = call('short-worked', { tool_name: 'Edit', tool_input: { file_path: join(root, 'package-lock.json'), old_string: 'a', new_string: 'b' } });
+  for (const env of [{ HK_RUN_DEADLINE_MS: '1' }, SHORTENED]) {
+    assert.equal(runEntry(root, edit, { env })?.hookSpecificOutput?.permissionDecision, 'deny', JSON.stringify(env));
+  }
+});
+
+test('with both time limits shortened and no extensions file, the run is written as it is without the extension point', () => {
+  assert.equal(runEntry(project(), call('short-none'), { env: SHORTENED }), null);
+});
+
+/** Runs the entry script on `root` with standard input left open and
+ * nothing written to it, and resolves to its exit code, standard output and
+ * standard error. */
+function runWithOpenStdin(root, env = {}) {
+  return new Promise(done => {
+    const child = spawn(process.execPath, [ENTRY], { env: { ...process.env, CLAUDE_PROJECT_DIR: root, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const killer = setTimeout(() => child.kill(), 30_000);
+    child.on('close', status => { clearTimeout(killer); child.stdin.destroy(); done({ status, stdout, stderr }); });
+  });
+}
+
+test('a standard input that never closes, beside an extensions file, blocks the call once the read gives up', async () => {
+  const root = withExtensions(r => [extension(r, 'a', block('B.'))]);
+  const r = await runWithOpenStdin(root, { HK_STDIN_TIMEOUT_MS: '300' });
+  assert.deepEqual(r, { status: 0, stdout: `${JSON.stringify(denial(NOT_APPLIED('the hook input could not be read in full in time')))}\n`, stderr: '' });
+  assert.deepEqual(await runWithOpenStdin(project(), { HK_STDIN_TIMEOUT_MS: '300' }), { status: 0, stdout: '', stderr: '' }, 'without an extensions file, as it was');
+});
+
+test('an extension that replaces process.exit for good cannot keep the hook from exiting with its block', () => {
+  // An accessor whose setter ignores the loader putting process.exit back.
+  const body = "() => { Object.defineProperty(process, 'exit', { configurable: true, get: () => () => {}, set: () => {} }); setInterval(() => {}, 1000); return { decision: 'block', message: 'B.' }; }";
+  const root = withExtensions(r => [extension(r, 'a', fn(body))]);
+  commitGate(root);
+  assert.deepEqual(runEntry(root, rmCall('exit-1'), { env: { HK_RUN_DEADLINE_MS: '3000' } }), denial(`kh-harness extension a: B.\n${GATE_LINE}`));
 });
 
 /** A project whose `.claude` is a link to a directory elsewhere holding

@@ -372,6 +372,16 @@ test('contract 1: the verifier docs/CONTRACT.md gives accepts an install with th
   writeJson(localOnly, '.claude/settings.json', s);
   assert.deepEqual(checkContract1(localOnly, entry), NOT_REGISTERED, 'a registration in settings.local.json only');
 
+  // The environment the project's settings give every hook.
+  const ENV = name => ({ problems: [`${name} sets, under env, a variable that changes what the kit's hooks do (HK_*, KH_*, NODE_OPTIONS, PATH or CLAUDE_PROJECT_DIR)`], warnings: [] });
+  for (const key of ['HK_RUN_DEADLINE_MS', 'HK_STDIN_TIMEOUT_MS', 'KH_DATA_DIR', 'hk_marker_dir', 'NODE_OPTIONS', 'PATH', 'Path', 'CLAUDE_PROJECT_DIR']) {
+    assert.deepEqual(checkContract1(registeredAs((_, s) => { s.env = { [key]: '1' }; }), entry), ENV('.claude/settings.json'), key);
+    const localEnv = copy();
+    writeJson(localEnv, '.claude/settings.local.json', { env: { [key]: '1' } });
+    assert.deepEqual(checkContract1(localEnv, entry), ENV('.claude/settings.local.json'), `${key} in settings.local.json`);
+  }
+  assert.deepEqual(checkContract1(registeredAs((_, s) => { s.env = { NODE_ENV: 'test', HKX: '1' }; }), entry), OK, 'other variables');
+
   // The plugin's own extension.
   const noFile = copy();
   rmSync(join(noFile, EXTENSIONS_PATH));
@@ -412,6 +422,49 @@ test('contract 1: the verifier docs/CONTRACT.md gives accepts an install with th
   // The caller's own argument.
   const NOT_AN_ENTRY = { problems: ['the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one'], warnings: [] };
   for (const bad of [undefined, null, 'acme-lockfile', [], { ...entry, onFailure: 'warn' }, { id: entry.id }]) assert.deepEqual(checkContract1(base, bad), NOT_AN_ENTRY, JSON.stringify(bad));
+});
+
+test('contract 1: the verifier\'s probe runs the installed entry script as Claude Code would and requires the plugin\'s own block', { skip: noLinks }, async () => {
+  const { checkContract1, probeContract1 } = await import(new URL('verify-contract-1.mjs', FIXTURES));
+  const base = installedRepo();
+  const entry = installExample(base);
+  const probe = editCall(join(base, 'package-lock.json'));
+  const copy = () => {
+    const d = tempDir('hk-contract-probe-');
+    fs.cpSync(base, d, { recursive: true, verbatimSymlinks: true });
+    return d;
+  };
+  const NO_DENY = { problems: ['the installed entry script did not print the deny contract 1 describes for the extension acme-lockfile'] };
+  assert.deepEqual(probeContract1(base, entry, probe), { problems: [] });
+  assert.deepEqual(probeContract1(base, entry, editCall(join(base, 'src/index.js'))), NO_DENY, 'a call the extension allows is no probe');
+  assert.deepEqual(probeContract1(base, { id: entry.id }, probe), { problems: ['the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one'] });
+
+  /** A copy whose entry script is `text`, re-hashed into its contract file
+   * so the hash check of every listed file passes. */
+  const stubbed = text => {
+    const d = copy();
+    writeFileSync(join(d, DISPATCH_PRE_PATH), text);
+    const contract = JSON.parse(fs.readFileSync(join(d, CONTRACT_PATH), 'utf8'));
+    contract.files[DISPATCH_PRE_PATH] = moduleSha256(Buffer.from(text));
+    writeFileSync(join(d, CONTRACT_PATH), `${JSON.stringify(contract, null, 2)}\n`);
+    return d;
+  };
+  const allowsAll = stubbed('process.exit(0);\n');
+  assert.deepEqual(checkContract1(allowsAll, entry), { problems: [], warnings: [] }, 'the hashes agree with each other');
+  assert.deepEqual(probeContract1(allowsAll, entry, editCall(join(allowsAll, 'package-lock.json'))), NO_DENY);
+
+  // The entry script as it was before a shortened run deadline blocked:
+  // silent whenever the project's settings give it one.
+  const real = fs.realpathSync(ENTRY_ASSET);
+  const overridden = stubbed(`if (process.env.HK_RUN_DEADLINE_MS) process.exit(0);\nprocess.argv[1] = ${JSON.stringify(real)};\nawait import(${JSON.stringify(pathToFileURL(real).href)});\n`);
+  const settingsPath = join(overridden, '.claude/settings.json');
+  const before = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  assert.deepEqual(probeContract1(overridden, entry, editCall(join(overridden, 'package-lock.json'))), { problems: [] }, 'fixture sanity: the stub runs the real entry script');
+  writeFileSync(settingsPath, JSON.stringify({ ...before, env: { HK_RUN_DEADLINE_MS: '1' } }, null, 2));
+  assert.deepEqual(probeContract1(overridden, entry, editCall(join(overridden, 'package-lock.json'))), NO_DENY, 'the project settings\' env is applied');
+  writeFileSync(settingsPath, JSON.stringify(before, null, 2));
+  writeFileSync(join(overridden, '.claude/settings.local.json'), JSON.stringify({ env: { HK_RUN_DEADLINE_MS: '1' } }));
+  assert.deepEqual(probeContract1(overridden, entry, editCall(join(overridden, 'package-lock.json'))), NO_DENY, 'and so is the local settings\' env');
 });
 
 test('contract 1: the contract file always lists the entry script, the core and the loader', () => {

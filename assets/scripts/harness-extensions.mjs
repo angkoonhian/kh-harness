@@ -34,6 +34,11 @@ import { join, sep } from 'node:path';
 import { lfNormalised, lfSha256 } from './harness-log.mjs';
 import { escapeDelimiters, markerPath, maskText, projectRoot, safeSessionId, stripUnsafe } from './harness-redact.mjs';
 
+// What dispatch-pre-tool.mjs requires of this module and of
+// harness-dispatch.mjs, compared by value. Raise it in all three together
+// whenever one of them comes to rely on a change in another.
+export const LEVEL = 1;
+
 /** SHA-256 hex of a module's bytes with each CRLF made LF, the hash an
  * extension's entry records. */
 export { lfSha256 as moduleSha256 };

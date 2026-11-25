@@ -30,7 +30,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { readEvents, setEnabled } from '../../assets/scripts/harness-log.mjs';
-import { combine, runHalves } from '../../assets/scripts/harness-dispatch.mjs';
+import { combine, LEVEL, runHalves } from '../../assets/scripts/harness-dispatch.mjs';
 import { EXTENSIONS_PATH, moduleSha256 } from '../../assets/scripts/harness-extensions.mjs';
 import { GATES_PATH } from '../../assets/scripts/tool-gate.mjs';
 import { addedLatency } from './latency-fixtures.mjs';
@@ -339,11 +339,13 @@ test('a lint report is still written, with exit 2, when a half after it never se
   assert.deepEqual(r, { status: 2, stdout: '', stderr: report.stderr });
 });
 
-test('a core whose dispatch and half are functions is used, whatever else it exports', () => {
+test('a core whose dispatch and half are functions is used, whatever else it exports, by the PreToolUse entry script only when it carries that script\'s level', () => {
   const core = 'export async function dispatch() { process.stdout.write(\'ran\\n\'); return 0; }\nexport function half() { return {}; }\n';
-  for (const name of ENTRY_SCRIPTS) {
+  for (const name of ['dispatch-post-tool.mjs', 'dispatch-tool-failure.mjs']) {
     assert.deepEqual(runEntry(name, project(), failure('core-1'), { dir: installed({ 'harness-dispatch.mjs': core }) }), { status: 0, stdout: 'ran\n', stderr: '' }, name);
   }
+  assert.deepEqual(runEntry('dispatch-pre-tool.mjs', project(), failure('core-1'), { dir: installed({ 'harness-dispatch.mjs': `${core}export const LEVEL = ${LEVEL};\n` }) }), { status: 0, stdout: 'ran\n', stderr: '' });
+  assert.match(runEntry('dispatch-pre-tool.mjs', project(), failure('core-1'), { dir: installed({ 'harness-dispatch.mjs': `${core}export const LEVEL = ${LEVEL + 1};\n` }) }).stdout, /harness-dispatch\.mjs is not the version this entry script runs with, so no kh-harness hook ran on PreToolUse/);
 });
 
 test('an entry script beside a missing or older half or core exits 0 with one fixed notice', () => {
@@ -364,7 +366,8 @@ test('an entry script beside a missing or older half or core exits 0 with one fi
       assert.equal(r.status, 0, `${name} beside ${JSON.stringify(core)}`);
       assert.equal(r.stderr, '');
       assert.deepEqual(Object.keys(JSON.parse(r.stdout)), ['systemMessage']);
-      assert.ok(JSON.parse(r.stdout).systemMessage.startsWith(`kh-harness ${name.replace('.mjs', '')}: .claude/scripts/harness-dispatch.mjs ${problem}, so no kh-harness hook ran on ${event} — `), `${name} beside ${JSON.stringify(core)}`);
+      const said = name === 'dispatch-pre-tool.mjs' && problem === tooOld ? 'is not the version this entry script runs with' : problem;
+      assert.ok(JSON.parse(r.stdout).systemMessage.startsWith(`kh-harness ${name.replace('.mjs', '')}: .claude/scripts/harness-dispatch.mjs ${said}, so no kh-harness hook ran on ${event} — `), `${name} beside ${JSON.stringify(core)}`);
     }
   }
 });

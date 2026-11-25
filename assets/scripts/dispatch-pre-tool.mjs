@@ -8,26 +8,37 @@
 // returned. Its registration in .claude/settings.json is the switch: the
 // hooks it runs are not registered on this event separately.
 //
-// A core that is missing or too old to provide what this script uses means
-// no hook runs, and every call says so in one fixed notice; while the
-// repository holds an extensions file, every call is blocked instead, since
-// nothing can apply the extensions it lists. The same holds for the loader
-// of those extensions, harness-extensions.mjs, except that the gate and the
-// log still run beside the block. Whether there is such a file is decided
-// here, before either module is loaded, from Node built-ins alone; without
-// one, the loader is never loaded.
+// The core and the loader of the extensions, harness-extensions.mjs, are
+// used only when each exports `LEVEL` equal to this script's own: a file
+// from another kit version, older or newer, is refused whatever functions
+// it exports. A core that is missing or refused means no hook runs, and
+// every call says so in one fixed notice; while the repository holds an
+// extensions file, every call is blocked instead, since nothing can apply
+// the extensions it lists. The same holds for the loader, except that the
+// gate and the log still run beside the block. Whether there is such a file
+// is decided here, before either module is loaded, from Node built-ins
+// alone; without one, the loader is never loaded. With one, the extensions
+// half is owed an answer (harness-dispatch.mjs's `unfinished`): a run that
+// ends before it returned, for whatever reason, blocks the call.
 import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// What this script requires of harness-dispatch.mjs and
+// harness-extensions.mjs, compared by value with the `LEVEL` each exports.
+// Raise it in all three together whenever one of them comes to rely on a
+// change in another.
+const LEVEL = 1;
+
 const EVENT = 'PreToolUse';
-const CORE = ['dispatch', 'half'];
+const exit = process.exit.bind(process);
 
 const REMEDY = 're-run `node scripts/apply.mjs <repo> --yes` from kh-harness to update the shared modules; if apply reports a file kept or gone, restore it to what kh-harness wrote (git holds it, in the commit that installed it), then run `apply --yes` again.';
 
 const EXTENSIONS_FILE = '.claude/kh-harness/extensions.json';
 const MISSING = 'is missing or cannot be loaded';
-const OLDER = 'is older than this entry script and lacks what it needs';
+const MISMATCH = 'is not the version this entry script runs with';
+const FAILED = 'could not run this call';
 
 /** True unless the extensions file is plainly not there, by the rule
  * harness-extensions.mjs's `readExtensions` reads it by: a `.claude` that is
@@ -61,13 +72,16 @@ function reached(path) {
   }
 }
 
+const deny = reason => ({ json: { hookSpecificOutput: { hookEventName: EVENT, permissionDecision: 'deny', permissionDecisionReason: reason } }, stderr: '', exitCode: 0 });
+
 /** The half result that blocks every call because the installed `file` is
- * unusable while the repository holds an extensions file. */
-const unusable = (file, problem) => ({
-  json: { hookSpecificOutput: { hookEventName: EVENT, permissionDecision: 'deny', permissionDecisionReason: `kh-harness: .claude/scripts/${file} ${problem} while ${EXTENSIONS_FILE} exists, so every tool call is blocked. Run kh-harness apply --yes, or remove the extensions file, outside this session.` } },
-  stderr: '',
-  exitCode: 0,
-});
+ * unusable while the repository holds an extensions file. An `apply --yes`
+ * from an older kit would put back the files this script refuses. */
+const unusable = (file, problem) => deny(`kh-harness: .claude/scripts/${file} ${problem} while ${EXTENSIONS_FILE} exists, so every tool call is blocked. Run kh-harness apply --yes from a kit at least as new as the one that installed .claude/scripts/dispatch-pre-tool.mjs, or remove the extensions file, outside this session.`);
+
+/** The half result that blocks a call the extensions were not applied to,
+ * for `cause`, one of harness-dispatch.mjs's fixed `CAUSES`. */
+const notApplied = cause => deny(`kh-harness: the extensions ${EXTENSIONS_FILE} lists were not applied to this call (${cause}), so it is blocked. A time limit shortened through HK_RUN_DEADLINE_MS or HK_STDIN_TIMEOUT_MS in the environment hooks run with blocks every call this way.`);
 
 /** The extensions half, from the loader imported here rather than at the
  * top, so a loader that cannot be loaded leaves the gate and the log
@@ -79,13 +93,13 @@ async function extensions(payload) {
   } catch {
     return unusable('harness-extensions.mjs', MISSING);
   }
-  if (typeof loader.extensionsHalf !== 'function') return unusable('harness-extensions.mjs', OLDER);
+  if (loader.LEVEL !== LEVEL) return unusable('harness-extensions.mjs', MISMATCH);
   return loader.extensionsHalf(payload);
 }
 
 /** Halves run before the gate, in order, while the repository holds an
  * extensions file. */
-export const preHalves = [{ name: 'extensions', run: extensions }];
+export const preHalves = [{ name: 'extensions', run: extensions, unfinished: notApplied }];
 
 function coreNotice(problem) {
   process.stdout.write(JSON.stringify({ systemMessage: `kh-harness dispatch-pre-tool: .claude/scripts/harness-dispatch.mjs ${problem}, so no kh-harness hook ran on ${EVENT} — ${REMEDY}` }) + '\n');
@@ -100,15 +114,14 @@ function coreUnusable(expected, problem) {
   return 0;
 }
 
-async function main() {
-  const expected = extensionsExpected(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+async function main(expected) {
   let core;
   try {
     core = await import('./harness-dispatch.mjs');
   } catch {
     return coreUnusable(expected, MISSING);
   }
-  if (CORE.some(name => typeof core[name] !== 'function')) return coreUnusable(expected, OLDER);
+  if (core.LEVEL !== LEVEL) return coreUnusable(expected, MISMATCH);
   return core.dispatch(EVENT, [
     ...(expected ? preHalves : []),
     core.half('gate', 'tool-gate.mjs', 'gateHalf', () => import('./tool-gate.mjs')),
@@ -128,12 +141,16 @@ function isEntryPoint() {
 }
 
 if (isEntryPoint()) {
+  const expected = extensionsExpected(process.env.CLAUDE_PROJECT_DIR || process.cwd());
   let code = 0;
   try {
-    code = await main();
+    code = await main(expected);
   } catch {
-    code = 0; // never throw — a hook that breaks a session is worse than none
+    // Never throw — a hook that breaks a session is worse than none — but
+    // never let an extensions file go unapplied in silence either. The core
+    // writes nothing before it returns, so this is the only output.
+    code = expected ? coreUnusable(true, FAILED) : 0;
   }
   // Not `exitCode`: a stdin the caller never closed would keep the process.
-  process.exit(code);
+  exit(code);
 }

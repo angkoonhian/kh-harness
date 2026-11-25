@@ -37,8 +37,13 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - The `PreToolUse` extension point. The entry script runs each module
     listed in `.claude/kh-harness/extensions.json`, a repository file
     another plugin's installer writes, before the gate hook, loaded from the bytes whose sha256 the file records, and
-    applies the entry's `onFailure` when it cannot. A malformed file, or a
-    missing or older core or loader beside one, blocks every call.
+    applies the entry's `onFailure` when it cannot. A malformed file blocks
+    every call, and so, beside one, do a core or a loader that is missing
+    or from another kit version (the entry script, the core and the loader
+    each carry a level, compared by value), and a run that ends before the
+    extensions were applied: at either time limit, which
+    `HK_RUN_DEADLINE_MS` and `HK_STDIN_TIMEOUT_MS` can only shorten into a
+    block, or on a hook input not read in full.
     kh-harness never writes the file. The check `P5.extensions` lists each
     extension, whether its module matches, and its `onFailure`, and loads
     none. The new installed module is `harness-extensions.mjs`.

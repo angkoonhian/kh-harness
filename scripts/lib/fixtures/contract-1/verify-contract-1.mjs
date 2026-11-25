@@ -1,11 +1,16 @@
 // Checks that the kh-harness install in a repository honours contract 1,
 // and that a plugin's own extension is in place to run before every tool
-// call, before the plugin relies on either. Node built-ins only; it loads no
-// file of the repository's. `checkContract1(root, extension)` takes the
-// repository root and the entry the plugin wrote for its extension, an
-// object of exactly `{ id, version, module, sha256, onFailure }`, and
-// returns `{ problems, warnings }`: one sentence per failed check, and one
-// per risk. A gate that must hold is relied on only when both are empty.
+// call, before the plugin relies on either. Node built-ins only.
+// `checkContract1(root, extension)` takes the repository root and the entry
+// the plugin wrote for its extension, an object of exactly
+// `{ id, version, module, sha256, onFailure }`, and returns
+// `{ problems, warnings }`: one sentence per failed check, and one per risk.
+// It loads no file of the repository's. `probeContract1(root, extension,
+// payload)` then runs the installed entry script on `payload`, a hook input
+// the extension blocks, and returns `{ problems }`; it runs the repository's
+// code. A gate that must hold is relied on only when all three lists are
+// empty.
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { join, sep } from 'node:path';
@@ -23,6 +28,11 @@ const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$/;
 const MODULE = /^\.claude\/[A-Za-z0-9._/-]+\.mjs$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MiB = 1024 * 1024;
+// A project setting's `env` reaches every hook process. These change what
+// the kit's hooks do, or which script and repository the hook runs.
+const HOOK_ENV = /^(HK_|KH_)|^(NODE_OPTIONS|PATH|CLAUDE_PROJECT_DIR)$/;
+const PROBE_TIMEOUT_MS = 30_000;
+const NOT_AN_ENTRY = 'the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one';
 const FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 /** SHA-256 hex of `bytes` with each CRLF made LF, in one pass. */
@@ -178,11 +188,16 @@ function settingsProblems(root) {
   const local = isAbsent(localPath) ? {} : readJson(localPath, MiB);
   if (!isObject(settings)) problems.push('.claude/settings.json could not be read');
   if (!isObject(local)) problems.push('.claude/settings.local.json could not be read');
-  // Claude Code turns every hook off for a disableAllHooks it does not read
-  // as false, the string "true" among them.
+  // Claude Code was seen to turn every hook off for disableAllHooks `true`
+  // and for the string "true"; any other value but false is refused too,
+  // since how Claude Code reads it was not seen.
   for (const [name, value] of [['.claude/settings.json', settings], ['.claude/settings.local.json', local]]) {
     if (isObject(value) && Object.hasOwn(value, 'disableAllHooks') && value.disableAllHooks !== false) {
       problems.push(`${name} sets disableAllHooks to a value other than false`);
+    }
+    // Compared in upper case: on win32 a variable's name has no case.
+    if (isObject(value) && isObject(value.env) && Object.keys(value.env).some(key => HOOK_ENV.test(key.toUpperCase()))) {
+      problems.push(`${name} sets, under env, a variable that changes what the kit's hooks do (HK_*, KH_*, NODE_OPTIONS, PATH or CLAUDE_PROJECT_DIR)`);
     }
   }
   if (isObject(settings) && !entryScriptRegistered(settings)) {
@@ -213,7 +228,7 @@ function extensionProblems(root, extension) {
 
 export function checkContract1(root, extension) {
   if (!isEntry(extension)) {
-    return { problems: ['the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one'], warnings: [] };
+    return { problems: [NOT_AN_ENTRY], warnings: [] };
   }
   for (const dir of ['.claude', '.claude/kh-harness', '.claude/scripts']) {
     if (!isRealDirectory(join(root, dir))) {
@@ -225,4 +240,48 @@ export function checkContract1(root, extension) {
     ? [`the extension ${extension.id} has onFailure "allow": if its module is missing or differs, its gate is off and only the person is told, once per session`]
     : [];
   return { problems, warnings };
+}
+
+/** The `env` of the project's two settings files, the local one last, as
+ * strings; what cannot be read gives nothing. */
+function projectEnv(root) {
+  const env = {};
+  for (const name of ['.claude/settings.json', '.claude/settings.local.json']) {
+    const value = readJson(join(root, name), MiB);
+    if (isObject(value) && isObject(value.env)) {
+      for (const [key, v] of Object.entries(value.env)) env[key] = String(v);
+    }
+  }
+  return env;
+}
+
+/** Runs the installed entry script as Claude Code runs it, from `root`, with
+ * the project settings' `env` over this process's environment and
+ * `CLAUDE_PROJECT_DIR` set to `root`, on `payload`: a hook input the
+ * extension `extension` must block. Requires exit 0 and one JSON object
+ * denying the call with a line from that extension. It runs the repository's
+ * code, and shows only what the install does at this moment. */
+export function probeContract1(root, extension, payload) {
+  if (!isEntry(extension)) return { problems: [NOT_AN_ENTRY] };
+  const r = spawnSync(process.execPath, [join(root, ENTRY_SCRIPT)], {
+    cwd: root,
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    env: { ...process.env, ...projectEnv(root), CLAUDE_PROJECT_DIR: root },
+    timeout: PROBE_TIMEOUT_MS,
+  });
+  if (r.error?.code === 'ETIMEDOUT') return { problems: [`the installed entry script did not finish within ${PROBE_TIMEOUT_MS / 1000} seconds`] };
+  if (r.error !== undefined || r.signal !== null) return { problems: ['the installed entry script could not be run to its end'] };
+  if (r.status !== 0) return { problems: ['the installed entry script exited with a code other than 0'] };
+  let output;
+  try {
+    output = JSON.parse(r.stdout);
+  } catch {
+    output = undefined;
+  }
+  const decision = isObject(output) ? output.hookSpecificOutput : undefined;
+  const denied = isObject(decision) && decision.hookEventName === 'PreToolUse' && decision.permissionDecision === 'deny'
+    && typeof decision.permissionDecisionReason === 'string'
+    && decision.permissionDecisionReason.split('\n').some(line => line.startsWith(`kh-harness extension ${extension.id}: `));
+  return { problems: denied ? [] : [`the installed entry script did not print the deny contract 1 describes for the extension ${extension.id}`] };
 }

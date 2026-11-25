@@ -93,7 +93,7 @@ function hookDenies(d) {
 
 const REMEDY = 'run kh-harness apply --yes; P0.kitskew says whether it can update each file';
 const UNCHECKED = 'matches its recorded sha256 (whether it loads and runs is not checked)';
-const unusableDeny = file => `kh-harness: .claude/scripts/${file} is missing or cannot be loaded while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes, or remove the extensions file, outside this session.`;
+const unusableDeny = file => `kh-harness: .claude/scripts/${file} is missing or cannot be loaded while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes from a kit at least as new as the one that installed .claude/scripts/dispatch-pre-tool.mjs, or remove the extensions file, outside this session.`;
 
 test('no file is absent, a bad file is malformed with the loader\'s own problem text', () => {
   const d = tempDir();

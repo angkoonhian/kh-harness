@@ -428,22 +428,31 @@ Every tool call is denied, and Claude is shown one of these:
 
     kh-harness: .claude/kh-harness/extensions.json cannot be used (<problem>), so every tool call is blocked. Repair or remove the file outside this session.
 
-    kh-harness: .claude/scripts/<file> <problem> while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes, or remove the extensions file, outside this session.
+    kh-harness: .claude/scripts/<file> <problem> while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes from a kit at least as new as the one that installed .claude/scripts/dispatch-pre-tool.mjs, or remove the extensions file, outside this session.
+
+    kh-harness: the extensions .claude/kh-harness/extensions.json lists were not applied to this call (<cause>), so it is blocked. A time limit shortened through HK_RUN_DEADLINE_MS or HK_STDIN_TIMEOUT_MS in the environment hooks run with blocks every call this way.
 
 The first: the extensions file another plugin wrote is not one the
 `PreToolUse` entry script can read. `<problem>` says why: for example it is
 not JSON (a byte order mark at its start counts), lists more than 8
 extensions, has an entry that is not as [the contract](../CONTRACT.md#the-extensions-file)
 describes one, or `.claude/kh-harness` is a link. The second: `<file>` is
-`harness-dispatch.mjs` or `harness-extensions.mjs`, and it is missing or
-older than the entry script, so nothing can run the extensions the file
-lists.
+`harness-dispatch.mjs` or `harness-extensions.mjs`, and it is missing, or
+from another kit version than the entry script, so nothing can run the
+extensions the file lists. The third: the hook's run ended before the
+extensions were applied; `<cause>` says how. On every call it means one of
+the two time limits is shortened: look for `HK_RUN_DEADLINE_MS` or
+`HK_STDIN_TIMEOUT_MS` under `env` in `.claude/settings.json`,
+`.claude/settings.local.json` or `~/.claude/settings.json`, and in the
+shell that started Claude Code.
 
 Since every tool call is blocked, Claude cannot fix it in the session. In
 a terminal outside Claude Code: for the second, run
-`node scripts/apply.mjs <repo> --yes` from kh-harness; for the first,
-reinstall the plugin that wrote the file, or remove the file. `detect`
-names the problem under `P5.extensions`.
+`node scripts/apply.mjs <repo> --yes` from a kh-harness checkout at least
+as new as the one that installed the entry script, since an older one puts
+the older files back; for the first, reinstall the plugin that wrote the
+file, or remove the file; for the third, remove the variable. `detect`
+names the first two under `P5.extensions`.
 
 ### An extension says it checks no call
 

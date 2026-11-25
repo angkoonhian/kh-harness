@@ -30,6 +30,8 @@ All paths are relative to the repository root, with `/` as the separator.
 
 - [The contract file](#the-contract-file)
 - [What a plugin must check before relying on contract 1](#what-a-plugin-must-check-before-relying-on-contract-1)
+- [What the checks cannot show](#what-the-checks-cannot-show)
+- [A verifier to copy](#a-verifier-to-copy)
 - [The rules registry](#the-rules-registry)
 - [The manifest](#the-manifest)
 - [The `PreToolUse` extension point](#the-pretooluse-extension-point)
@@ -147,9 +149,10 @@ before each use, it checks the install. Do all of the following.
 
 **A plugin whose gate must hold relies on it only when every check below
 passes with no problem and no warning.** The verifier below returns
-`{ problems, warnings }`: rely on the gate only when both are empty. A
-warning (`onFailure: "allow"`) is a state in which the gate can turn off
-with only a notice to the person.
+`{ problems, warnings }` from steps 1 to 4 and `{ problems }` from step 5:
+rely on the gate only when all three lists are empty. A warning
+(`onFailure: "allow"`) is a state in which the gate can turn off with only
+a notice to the person.
 
 1. **Read the contract file safely.**
    - `.claude`, `.claude/kh-harness` and `.claude/scripts` must each be a
@@ -167,12 +170,15 @@ with only a notice to the person.
      kh-harness did not write); and `contract` must be an integer this
      plugin supports. For a plugin written against this document: `1`.
 2. **Check every hash in `files`. This step is mandatory**: it is the only
-   check that the installed scripts are the ones contract 1 describes (see
-   [when the kit's own files cannot run the extensions](#when-the-kits-own-files-cannot-run-the-extensions)).
+   check that the installed scripts are the ones the contract file lists,
+   and so catches a stale, partial or edited install. It does not show that
+   they are kh-harness's (see [what the checks cannot show](#what-the-checks-cannot-show)).
    - `files` must be an object listing `.claude/scripts/dispatch-pre-tool.mjs`,
      `.claude/scripts/harness-dispatch.mjs` and
      `.claude/scripts/harness-extensions.mjs`. A plugin that calls
-     `recordExternalEvent` also requires `.claude/scripts/harness-log.mjs`.
+     `recordExternalEvent` also requires `.claude/scripts/harness-log.mjs`
+     and `.claude/scripts/harness-seal.mjs`, since the seal is what expires
+     the event's `data`.
    - Every key must match `/^\.claude\/scripts\/[A-Za-z0-9._-]+\.mjs$/`.
    - Each listed file must be a regular file and not a link, of at most
      4 MiB (4,194,304 bytes), read as in step 1, whose hash by
@@ -200,8 +206,17 @@ with only a notice to the person.
    - Neither `.claude/settings.json` nor `.claude/settings.local.json` may
      have a `disableAllHooks` key with any value but `false`: Claude Code
      turns hooks off for the string `"true"` as for `true`. A
-     `settings.local.json` that is there must be readable JSON. A registration only in `settings.local.json` is
-     not the one `apply` writes and does not count.
+     `settings.local.json` that is there must be readable JSON. A
+     registration only in `settings.local.json` is not the one `apply`
+     writes and does not count.
+   - Neither file's `env` may set a variable whose name, in upper case,
+     starts `HK_` or `KH_`, or is `NODE_OPTIONS`, `PATH` or
+     `CLAUDE_PROJECT_DIR`. Claude Code passes a project setting's `env` to
+     every hook process, and these change what the kit's hooks do, or which
+     script and repository the hook runs: `HK_RUN_DEADLINE_MS` and
+     `HK_STDIN_TIMEOUT_MS` shorten the hook's time limits, which blocks
+     every call while an extensions file is in play
+     ([below](#when-a-run-ends-before-the-extensions-were-applied)).
 4. **Check the plugin's own extension.** Steps 1 to 3 pass with no
    extensions file at all.
    - `.claude/kh-harness/extensions.json` must be a regular file and not a
@@ -217,19 +232,48 @@ with only a notice to the person.
      module that is missing or differs turns the gate off, and only the
      person is told, once per session; so `"allow"` is a warning, and by
      the rule at the top of this section the gate is not relied on.
+5. **Run the installed entry script on a call the plugin's extension
+   blocks. This step is mandatory for a gate that must hold**: steps 1 to 4
+   show that the files agree with each other, and only running them shows
+   that they block.
+   - Run `node .claude/scripts/dispatch-pre-tool.mjs` with the repository
+     as its working directory, the `env` of `.claude/settings.json` and
+     then of `.claude/settings.local.json` applied over the plugin's own
+     environment, `CLAUDE_PROJECT_DIR` set to the repository, and on
+     standard input a hook input (as [How each extension is run](#how-each-extension-is-run)
+     describes it) that the plugin's own extension blocks.
+   - It must exit 0 and print one JSON object whose `hookSpecificOutput`
+     has `hookEventName` `"PreToolUse"`, `permissionDecision` `"deny"`, and
+     a `permissionDecisionReason` with a line starting
+     `kh-harness extension <id>: ` for the plugin's `id`.
+   - This runs the repository's code: do it only after steps 1 to 4 pass,
+     and only where running that code is acceptable. It shows what the
+     install does at this moment, with this environment; it shows nothing
+     about the session's own environment or about later changes.
 
 `detect` is a diagnostic for people, not part of the contract: its states
-and its output may change without a new contract number, and it reports
-`P5.extensions` and `P5.contract` as `declared` for a registration under a
-narrower matcher or with `"async": true`. A plugin verifies by the steps
-above, performed itself.
+and its output may change without a new contract number. A plugin
+verifies by the steps above, performed itself.
 
-What the checks cannot show:
+An entry script installed before the extension point ignores
+`extensions.json` without a word. The hash check of step 2 is what tells
+such an install apart: its `dispatch-pre-tool.mjs` is not the file the
+contract file lists, or there is no contract file at all.
 
+### What the checks cannot show
+
+- that the files are kh-harness's: the contract file is a file of the
+  repository, so whoever can write the scripts can write the hashes beside
+  them. The hashes show that the files agree with each other; step 5 shows
+  what they do when run;
 - the user-level settings (`~/.claude/settings.json`), managed policy
   settings and a `--settings` argument, which can set `disableAllHooks`;
   a plugin cannot read them all, and a project setting does not override
   a `--settings` argument or a managed one;
+- the environment the hook process gets from anything but the project's
+  two settings files: the user-level and managed settings' `env`, and the
+  shell that started Claude Code. A variable step 3 refuses, set there,
+  changes what the hook does just as it does from the project's settings;
 - whether Claude Code loads the project settings file: one it does not
   load runs none of its hooks, and a plugin cannot fully determine from
   the file whether Claude Code will load it. Project hooks may also not
@@ -237,37 +281,50 @@ What the checks cannot show:
 - that the session in progress loaded the settings as they are now on
   disk.
 
-An entry script installed before the extension point ignores
-`extensions.json` without a word. The hash check of step 2 is what tells
-such an install apart: its `dispatch-pre-tool.mjs` is not the file the
-contract file lists, or there is no contract file at all.
+### A verifier to copy
 
-This module does steps 1 to 4, with Node built-ins only and without
-loading any file of the repository's. It takes the repository root and
-the entry the plugin wrote, an object of exactly `id`, `version`,
-`module`, `sha256` and `onFailure` (anything else is reported as a problem,
-not thrown), and returns `{ problems, warnings }`. kh-harness's tests run
-it against real installs holding the worked extension below: it accepts a
+This module does all five steps with Node built-ins only.
+`checkContract1(root, extension)` does steps 1 to 4 without loading any
+file of the repository's. It takes the repository root and the entry the
+plugin wrote, an object of exactly `id`, `version`, `module`, `sha256` and
+`onFailure` (anything else is reported as a problem, not thrown), and
+returns `{ problems, warnings }`. `probeContract1(root, extension,
+payload)` does step 5, with `payload` the hook input the extension blocks,
+and returns `{ problems }`. kh-harness's tests run both against real
+installs holding the worked extension below. `checkContract1` accepts a
 fresh install, one whose files have CRLF line endings, and
 `disableAllHooks: false`; and refuses an edited listed file; a contract
 file listing only the entry script; a missing registration, one with
 `async: true`, with a `timeout` key, under the matcher `Bash`, or only in
 `settings.local.json`; `disableAllHooks` set to `true`, `"true"`, `1` or
-`null` in either settings file; no extensions file, an extensions file
-without the entry, a malformed one, and a module edited by one byte; a
-repeated key and a contract file that is a link; and an argument that is
-not an entry. It warns of `onFailure: "allow"`.
+`null` in either settings file; an `env` in either settings file setting
+`HK_RUN_DEADLINE_MS`, `HK_STDIN_TIMEOUT_MS`, `KH_DATA_DIR`, `hk_marker_dir`,
+`NODE_OPTIONS`, `PATH`, `Path` or `CLAUDE_PROJECT_DIR`; no extensions file,
+an extensions file without the entry, a malformed one, and a module edited
+by one byte; a repeated key and a contract file that is a link; and an
+argument that is not an entry. It warns of `onFailure: "allow"`.
+`probeContract1` accepts a fresh install on an `Edit` of
+`package-lock.json`; and refuses an `Edit` the extension allows, an entry
+script replaced by `process.exit(0);` and re-hashed into the contract file
+(which `checkContract1` accepts), and an entry script that stays silent
+when `HK_RUN_DEADLINE_MS` is set, with that variable in either settings
+file's `env`.
 
 <!-- fixture: verify-contract-1.mjs -->
 ```js
 // Checks that the kh-harness install in a repository honours contract 1,
 // and that a plugin's own extension is in place to run before every tool
-// call, before the plugin relies on either. Node built-ins only; it loads no
-// file of the repository's. `checkContract1(root, extension)` takes the
-// repository root and the entry the plugin wrote for its extension, an
-// object of exactly `{ id, version, module, sha256, onFailure }`, and
-// returns `{ problems, warnings }`: one sentence per failed check, and one
-// per risk. A gate that must hold is relied on only when both are empty.
+// call, before the plugin relies on either. Node built-ins only.
+// `checkContract1(root, extension)` takes the repository root and the entry
+// the plugin wrote for its extension, an object of exactly
+// `{ id, version, module, sha256, onFailure }`, and returns
+// `{ problems, warnings }`: one sentence per failed check, and one per risk.
+// It loads no file of the repository's. `probeContract1(root, extension,
+// payload)` then runs the installed entry script on `payload`, a hook input
+// the extension blocks, and returns `{ problems }`; it runs the repository's
+// code. A gate that must hold is relied on only when all three lists are
+// empty.
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { join, sep } from 'node:path';
@@ -285,6 +342,11 @@ const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$/;
 const MODULE = /^\.claude\/[A-Za-z0-9._/-]+\.mjs$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MiB = 1024 * 1024;
+// A project setting's `env` reaches every hook process. These change what
+// the kit's hooks do, or which script and repository the hook runs.
+const HOOK_ENV = /^(HK_|KH_)|^(NODE_OPTIONS|PATH|CLAUDE_PROJECT_DIR)$/;
+const PROBE_TIMEOUT_MS = 30_000;
+const NOT_AN_ENTRY = 'the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one';
 const FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 /** SHA-256 hex of `bytes` with each CRLF made LF, in one pass. */
@@ -440,11 +502,16 @@ function settingsProblems(root) {
   const local = isAbsent(localPath) ? {} : readJson(localPath, MiB);
   if (!isObject(settings)) problems.push('.claude/settings.json could not be read');
   if (!isObject(local)) problems.push('.claude/settings.local.json could not be read');
-  // Claude Code turns every hook off for a disableAllHooks it does not read
-  // as false, the string "true" among them.
+  // Claude Code was seen to turn every hook off for disableAllHooks `true`
+  // and for the string "true"; any other value but false is refused too,
+  // since how Claude Code reads it was not seen.
   for (const [name, value] of [['.claude/settings.json', settings], ['.claude/settings.local.json', local]]) {
     if (isObject(value) && Object.hasOwn(value, 'disableAllHooks') && value.disableAllHooks !== false) {
       problems.push(`${name} sets disableAllHooks to a value other than false`);
+    }
+    // Compared in upper case: on win32 a variable's name has no case.
+    if (isObject(value) && isObject(value.env) && Object.keys(value.env).some(key => HOOK_ENV.test(key.toUpperCase()))) {
+      problems.push(`${name} sets, under env, a variable that changes what the kit's hooks do (HK_*, KH_*, NODE_OPTIONS, PATH or CLAUDE_PROJECT_DIR)`);
     }
   }
   if (isObject(settings) && !entryScriptRegistered(settings)) {
@@ -475,7 +542,7 @@ function extensionProblems(root, extension) {
 
 export function checkContract1(root, extension) {
   if (!isEntry(extension)) {
-    return { problems: ['the extension given is not an entry { id, version, module, sha256, onFailure } as contract 1 describes one'], warnings: [] };
+    return { problems: [NOT_AN_ENTRY], warnings: [] };
   }
   for (const dir of ['.claude', '.claude/kh-harness', '.claude/scripts']) {
     if (!isRealDirectory(join(root, dir))) {
@@ -487,6 +554,50 @@ export function checkContract1(root, extension) {
     ? [`the extension ${extension.id} has onFailure "allow": if its module is missing or differs, its gate is off and only the person is told, once per session`]
     : [];
   return { problems, warnings };
+}
+
+/** The `env` of the project's two settings files, the local one last, as
+ * strings; what cannot be read gives nothing. */
+function projectEnv(root) {
+  const env = {};
+  for (const name of ['.claude/settings.json', '.claude/settings.local.json']) {
+    const value = readJson(join(root, name), MiB);
+    if (isObject(value) && isObject(value.env)) {
+      for (const [key, v] of Object.entries(value.env)) env[key] = String(v);
+    }
+  }
+  return env;
+}
+
+/** Runs the installed entry script as Claude Code runs it, from `root`, with
+ * the project settings' `env` over this process's environment and
+ * `CLAUDE_PROJECT_DIR` set to `root`, on `payload`: a hook input the
+ * extension `extension` must block. Requires exit 0 and one JSON object
+ * denying the call with a line from that extension. It runs the repository's
+ * code, and shows only what the install does at this moment. */
+export function probeContract1(root, extension, payload) {
+  if (!isEntry(extension)) return { problems: [NOT_AN_ENTRY] };
+  const r = spawnSync(process.execPath, [join(root, ENTRY_SCRIPT)], {
+    cwd: root,
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    env: { ...process.env, ...projectEnv(root), CLAUDE_PROJECT_DIR: root },
+    timeout: PROBE_TIMEOUT_MS,
+  });
+  if (r.error?.code === 'ETIMEDOUT') return { problems: [`the installed entry script did not finish within ${PROBE_TIMEOUT_MS / 1000} seconds`] };
+  if (r.error !== undefined || r.signal !== null) return { problems: ['the installed entry script could not be run to its end'] };
+  if (r.status !== 0) return { problems: ['the installed entry script exited with a code other than 0'] };
+  let output;
+  try {
+    output = JSON.parse(r.stdout);
+  } catch {
+    output = undefined;
+  }
+  const decision = isObject(output) ? output.hookSpecificOutput : undefined;
+  const denied = isObject(decision) && decision.hookEventName === 'PreToolUse' && decision.permissionDecision === 'deny'
+    && typeof decision.permissionDecisionReason === 'string'
+    && decision.permissionDecisionReason.split('\n').some(line => line.startsWith(`kh-harness extension ${extension.id}: `));
+  return { problems: denied ? [] : [`the installed entry script did not print the deny contract 1 describes for the extension ${extension.id}`] };
 }
 ```
 
@@ -789,31 +900,51 @@ each names the entry's `id` is.
 
 ### When the kit's own files cannot run the extensions
 
+The entry script, the core `harness-dispatch.mjs` and the loader
+`harness-extensions.mjs` each carry an integer level; the core and the
+loader export theirs as `LEVEL`. The entry script uses the core and the
+loader only when each exports a `LEVEL` equal to its own, compared by
+value, whatever functions they export: a core or a loader from another
+kit version, older or newer, is refused. The levels are raised together
+whenever one of the three files comes to rely on a change in another.
+
 When an extensions file is in play (anything at its path, a `.claude`
 that is a file, a `.claude/kh-harness` that is a link or not a directory,
 or a `.claude` link through which something is at its path), the entry
-script refuses the core `harness-dispatch.mjs` when it is missing, cannot
-be loaded, or lacks a function export named `dispatch` or `half`, and the
-loader `harness-extensions.mjs` when it is missing, cannot be loaded, or
-lacks a function export named `extensionsHalf`. Then every call is blocked
-with:
+script blocks every call when the core or the loader is missing, cannot be
+loaded, or is refused, and when the core cannot run the call:
 
-    kh-harness: .claude/scripts/<file> <problem> while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes, or remove the extensions file, outside this session.
+    kh-harness: .claude/scripts/<file> <problem> while .claude/kh-harness/extensions.json exists, so every tool call is blocked. Run kh-harness apply --yes from a kit at least as new as the one that installed .claude/scripts/dispatch-pre-tool.mjs, or remove the extensions file, outside this session.
 
-The entry script judges these files by those exports alone. A core or a
-loader older than the entry script that still has them is not detected:
-beside the entry script of this kit, a core from before the extension
-point's output handling lets an extension's block vanish, with no output
-and exit 0, so the call goes ahead. This is why
-[step 2](#what-a-plugin-must-check-before-relying-on-contract-1), the hash
-check of every listed file, is mandatory. *(Known defect, to be fixed: the
-entry script does not yet refuse an older core or loader that has the
-exports.)*
+An `apply --yes` run from an older kit puts back the older files, and the
+block with them.
 
 Without an extensions file, the loader is never loaded, and the kit's own
-hooks behave as they do without the extension point. A loader that is
-missing still leaves the gate and the log running beside the block; a core
-that is missing leaves nothing running.
+hooks behave as they do without the extension point; a core that is
+missing or refused gives a notice for the person instead. A loader that is
+missing or refused still leaves the gate and the log running beside the
+block; a core that is missing or refused leaves nothing running.
+
+### When a run ends before the extensions were applied
+
+While an extensions file is in play, the hook ends without a deny only
+when every extension allowed the call, or when the hook input was read in
+full and is not a `PreToolUse` call naming a tool. Each of these blocks the
+call instead, with the cause named:
+
+| Cause | In the message |
+|---|---|
+| the run deadline (120 seconds) is reached before the extensions half returned | `the run reached its time limit first` |
+| the event loop is left with nothing to wait on before the extensions half returned | `the run was left with nothing to wait on first` |
+| standard input does not end within 5 seconds, or fails | `the hook input could not be read in full in time` |
+| the loader at the right level throws, or returns something that is not a result | `the extensions half failed` |
+
+    kh-harness: the extensions .claude/kh-harness/extensions.json lists were not applied to this call (<cause>), so it is blocked. A time limit shortened through HK_RUN_DEADLINE_MS or HK_STDIN_TIMEOUT_MS in the environment hooks run with blocks every call this way.
+
+The two time limits can be shortened through `HK_RUN_DEADLINE_MS` and
+`HK_STDIN_TIMEOUT_MS` in the hook's environment, so a shortened one can
+only block. Without an extensions file, a run that ends early writes what
+the kit's own hooks had returned, as it does without the extension point.
 
 ### What `detect` reports
 
@@ -845,7 +976,10 @@ after it.
 
 A run that some half leaves unsettled is written, with what was gathered,
 when the event loop has nothing left to do or at the run deadline, 120
-seconds.
+seconds; while the extensions half has not returned, that blocks the call
+([above](#when-a-run-ends-before-the-extensions-were-applied)). The run
+ends through the `process.exit` the core found when it was loaded, so an
+extension that replaces `process.exit` cannot keep the process alive.
 
 The kit does not contain an extension that sets out to escape it. An
 extension, once its hash is recorded, can still defeat the hook:
@@ -855,6 +989,8 @@ extension, once its hash is recorded, can still defeat the hook:
   (`process.stdout._write`, `process.stdout.end()`);
 - by calling `process.reallyExit`, or `process.exit`, `process.abort` or
   `process.kill` from a callback that runs after its call returned;
+- by replacing `process.reallyExit`, through which `process.exit` ends the
+  process;
 - by looping forever synchronously, which nothing in the process can end;
   Claude Code's hook timeout (600 seconds by default) ends it, and a
   `PreToolUse` hook that times out does not block the call;
@@ -945,7 +1081,9 @@ Then verify:
 
 1. Run `checkContract1(root, entry)` (above), with `entry` the object the
    installer wrote: it returns `{ problems: [], warnings: [] }`.
-2. Run the entry script as Claude Code does, with the hook input on
+2. Run `probeContract1(root, entry, payload)` with `payload` an `Edit` of
+   `package-lock.json`: it returns `{ problems: [] }`.
+3. Run the entry script as Claude Code does, with the hook input on
    standard input and `CLAUDE_PROJECT_DIR` set to the repository. An
    `Edit` of `src/index.js` prints nothing (the call is allowed). An
    `Edit` of `package-lock.json` prints the denial
@@ -1084,8 +1222,8 @@ A half-updated install, with a new `harness-log.mjs` beside an older
   them other than `recordExternalEvent`, `EXTERNAL_DATA_MAX_BYTES` and
   `EXTERNAL_DATA_MAX_DEPTH` in `harness-log.mjs` and `EXTENSION_LIMITS` in
   `harness-extensions.mjs`.
-- Which files `files` lists, beyond the entry script; their hashes, which
-  change with every kit version.
+- Which files `files` lists, beyond the entry script, the core and the
+  loader; their hashes, which change with every kit version.
 - The wording of every message other than the fixed texts stated as fixed
   here: the extension block line, the deny output's shape and the
   `recordExternalEvent` reasons.
