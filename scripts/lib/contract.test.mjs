@@ -2,17 +2,18 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { constants, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { EXTENSION_LIMITS, EXTENSIONS_PATH, moduleState, readExtensions } from '../../assets/scripts/harness-extensions.mjs';
+import { EXTENSION_LIMITS, EXTENSIONS_PATH, moduleSha256, moduleState, readExtensions } from '../../assets/scripts/harness-extensions.mjs';
 import { EXTERNAL_DATA_MAX_BYTES, EXTERNAL_DATA_MAX_DEPTH, readEvents, recordExternalEvent, repoDataDir, setEnabled } from '../../assets/scripts/harness-log.mjs';
 import { parseRules, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { CONTRACT, CONTRACT_PATH, contractEvidence, contractFileText } from './contract.mjs';
-import { APPLY, DETECT, fixture, git, run, runRegisteredHook, sandboxDataDir } from './lifecycle-fixtures.mjs';
+import { APPLY, fixture, git, run, runRegisteredHook, sandboxDataDir } from './lifecycle-fixtures.mjs';
 import { KIT_VERSION, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { CONTRACT_FILES, kitContractText } from './propose.mjs';
 import { stampVersion } from './render.mjs';
@@ -136,6 +137,26 @@ test('a contract file swapped for a link between its lstat and its open is not f
 // Each fixture under fixtures/contract-1/ is a promised format as another
 // plugin writes or reads it, and docs/CONTRACT.md shows each one verbatim.
 // These tests fail when kh-harness stops accepting or producing one.
+//
+// The registration a plugin must find, pinned against the hooks reference,
+// https://code.claude.com/docs/en/hooks, read on 2026-11-25:
+//   - "Matcher patterns": `"*"`, `""`, or omitted — "Match all | fires on
+//     every occurrence of the event"; a matcher of only letters, digits,
+//     `_`, `-`, spaces, `,` and `|` is "Exact string, or list of exact
+//     strings"; any other character makes it a "JavaScript regular
+//     expression, unanchored";
+//   - the command hook fields: `async` — "If `true`, runs in the background
+//     without blocking"; `timeout` — "Seconds before canceling"; `if` —
+//     "The hook command only runs if the tool call matches the pattern";
+//     `onFailure` — "Whether the action that triggered the hook goes ahead
+//     when the hook fails";
+//   - "Disable or remove hooks": "set `"disableAllHooks": true` in your
+//     settings file. Claude Code reads the value left after settings
+//     precedence applies", and `--settings '{"disableAllHooks": true}'`
+//     "takes precedence over project and local settings".
+// So a registration that runs before every call and can block is one with
+// no matcher (or "" or "*") and no key on the hook beyond `type`, `command`
+// and `args`, in a project whose settings files do not set disableAllHooks.
 
 const FIXTURES = new URL('./fixtures/contract-1/', import.meta.url);
 const fixtureText = name => fs.readFileSync(new URL(name, FIXTURES), 'utf8');
@@ -171,7 +192,6 @@ const hookOutput = r => {
   assert.equal(r.stderr, '');
   return r.stdout === '' ? null : JSON.parse(r.stdout);
 };
-const checkState = (d, id) => JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === id).state;
 
 test('contract 1: the rules registry fixture parses to these rules', () => {
   const { rules, problems } = parseRules(fixtureText('RULES.md'));
@@ -227,10 +247,43 @@ test('contract 1: the worked extension is read, its recorded hash is the hash of
   assert.equal(hookOutput(await runRegisteredHook(d, 'PreToolUse', 'dispatch-pre-tool.mjs', editCall('src/index.js'))), null);
   assert.deepEqual(hookOutput(await runRegisteredHook(d, 'PreToolUse', 'dispatch-pre-tool.mjs', editCall(join(d, 'package-lock.json')))),
     denial('kh-harness extension acme-lockfile: package-lock.json is written by npm install; do not edit it by hand.'));
-  assert.equal(checkState(d, 'P5.extensions'), 'declared');
-  assert.equal(checkState(d, 'P5.contract'), 'declared');
-  writeAt(join(d, entry.module), `${fixtureText('extension.mjs')}// changed\n`);
-  assert.equal(checkState(d, 'P5.extensions'), 'failing');
+});
+
+/** A repository with no kit install, a `.git` directory and an extensions
+ * file listing `sources`, one module per id; run against the kit's own
+ * entry script. */
+function withModules(sources) {
+  const root = tempDir();
+  mkdirSync(join(root, '.git'));
+  const entries = Object.entries(sources).map(([id, source]) => {
+    const module = `.claude/ext/${id}.mjs`;
+    writeAt(join(root, module), source);
+    return { id, version: '1.0.0', module, sha256: moduleSha256(Buffer.from(source, 'latin1')), onFailure: 'block' };
+  });
+  writeAt(join(root, EXTENSIONS_PATH), JSON.stringify(entries));
+  return root;
+}
+const ENTRY_ASSET = new URL('../../assets/scripts/dispatch-pre-tool.mjs', import.meta.url);
+const runEntry = (root, payload) => hookOutput(spawnSync(process.execPath, [fs.realpathSync(ENTRY_ASSET)], {
+  input: JSON.stringify(payload), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root }, timeout: 30_000,
+}));
+const blocking = message => `export const preToolUse = () => ({ decision: 'block', message: ${JSON.stringify(message)} });\n`;
+
+test('contract 1: two blocks are two lines in file order, and a block message cannot open or close a delimited block', () => {
+  const root = withModules({ first: blocking('Use <b> here, not </b>.'), second: blocking('Second > first.') });
+  assert.deepEqual(runEntry(root, editCall('src/index.js')),
+    denial('kh-harness extension first: Use &lt;b&gt; here, not &lt;/b&gt;.\nkh-harness extension second: Second &gt; first.'));
+});
+
+test('contract 1: a module is hashed with each CRLF made LF in one pass, so CR CR LF keeps one CR', () => {
+  const source = "// a comment ending CR CR LF\r\r\nexport const preToolUse = () => ({ decision: 'allow' });\n";
+  const onePass = createHash('sha256').update(Buffer.from(source.replace(/\r\n/g, '\n'), 'latin1')).digest('hex');
+  const root = withModules({ crcrlf: source });
+  const [entry] = readExtensions(root).entries;
+  assert.equal(entry.sha256, onePass, 'the recorded hash is the one-pass hash');
+  assert.notEqual(onePass, createHash('sha256').update('// a comment ending CR CR LF\nexport const preToolUse = () => ({ decision: \'allow\' });\n').digest('hex'));
+  assert.equal(moduleState(root, entry).state, 'matches');
+  assert.equal(runEntry(root, editCall('src/index.js')), null, 'it loads and allows');
 });
 
 test('contract 1: the hash command docs/CONTRACT.md gives prints the sha256 the extensions fixture records', () => {
@@ -256,46 +309,87 @@ test('contract 1: the contract file fixture is what apply writes, and its number
   assert.equal(CONTRACT_PATH, '.claude/kh-harness/contract.json');
 });
 
-test('contract 1: the verifier docs/CONTRACT.md gives accepts an install and refuses each thing it must refuse', { skip: noLinks }, async () => {
-  const { contract1Problems } = await import(new URL('verify-contract-1.mjs', FIXTURES));
+test('contract 1: the verifier docs/CONTRACT.md gives accepts an install with the plugin\'s extension and refuses each thing it must refuse', { skip: noLinks }, async () => {
+  const { checkContract1 } = await import(new URL('verify-contract-1.mjs', FIXTURES));
   const base = installedRepo();
+  const entry = installExample(base);
+  const OK = { problems: [], warnings: [] };
   const copy = () => {
     const d = tempDir('hk-contract-copy-');
     fs.cpSync(base, d, { recursive: true, verbatimSymlinks: true });
     return d;
   };
-  assert.deepEqual(contract1Problems(base), []);
+  const readJson = (d, rel) => JSON.parse(fs.readFileSync(join(d, rel), 'utf8'));
+  const writeJson = (d, rel, value) => writeAt(join(d, rel), JSON.stringify(value, null, 2));
+  /** A copy whose PreToolUse registration of the entry script is `change`d. */
+  const registeredAs = change => {
+    const d = copy();
+    const s = readJson(d, '.claude/settings.json');
+    const element = s.hooks.PreToolUse.find(e => e.hooks.some(h => h.args?.[0] === '${CLAUDE_PROJECT_DIR}/.claude/scripts/dispatch-pre-tool.mjs'));
+    change(element, s);
+    writeJson(d, '.claude/settings.json', s);
+    return d;
+  };
+  const NOT_REGISTERED = { problems: ['.claude/settings.json does not register .claude/scripts/dispatch-pre-tool.mjs on PreToolUse for every tool call, as apply writes it'], warnings: [] };
+
+  assert.deepEqual(checkContract1(base, entry), OK);
 
   const crlf = copy();
-  for (const path of [CONTRACT_PATH, ...CONTRACT_FILES]) writeFileSync(join(crlf, path), fs.readFileSync(join(crlf, path), 'utf8').replace(/\n/g, '\r\n'));
-  assert.deepEqual(contract1Problems(crlf), [], 'line endings aside');
-  assert.equal(checkState(crlf, 'P5.contract'), 'declared', 'kh-harness agrees');
+  for (const path of [CONTRACT_PATH, EXTENSIONS_PATH, entry.module, ...CONTRACT_FILES]) writeFileSync(join(crlf, path), fs.readFileSync(join(crlf, path), 'utf8').replace(/\n/g, '\r\n'));
+  assert.deepEqual(checkContract1(crlf, entry), OK, 'line endings aside');
 
   const edited = copy();
   fs.appendFileSync(join(edited, '.claude/scripts/harness-log.mjs'), '// edited\n');
-  assert.deepEqual(contract1Problems(edited), ['.claude/scripts/harness-log.mjs is not the file contract 1 speaks for']);
-  assert.equal(checkState(edited, 'P5.contract'), 'failing', 'kh-harness agrees');
+  assert.deepEqual(checkContract1(edited, entry), { problems: ['.claude/scripts/harness-log.mjs is not the file contract 1 speaks for'], warnings: [] });
 
-  const unregistered = copy();
-  const s = JSON.parse(fs.readFileSync(join(unregistered, '.claude/settings.json'), 'utf8'));
+  // The registration: exactly as apply writes it, before every call, able to block.
+  assert.deepEqual(checkContract1(registeredAs((_, s) => { delete s.hooks.PreToolUse; }), entry), NOT_REGISTERED, 'no registration');
+  assert.deepEqual(checkContract1(registeredAs(e => { e.hooks[0].async = true; }), entry), NOT_REGISTERED, 'async: true runs it in the background');
+  assert.deepEqual(checkContract1(registeredAs(e => { e.hooks[0].timeout = 5; }), entry), NOT_REGISTERED, 'a timeout key');
+  assert.deepEqual(checkContract1(registeredAs(e => { e.matcher = 'Bash'; }), entry), NOT_REGISTERED, 'a matcher selecting some calls');
+  assert.deepEqual(checkContract1(registeredAs(e => { e.matcher = '*'; }), entry), OK, 'the matcher "*" selects every call');
+  assert.deepEqual(checkContract1(registeredAs((_, s) => { s.disableAllHooks = true; }), entry),
+    { problems: ['.claude/settings.json sets disableAllHooks'], warnings: [] });
+  const localOff = copy();
+  writeJson(localOff, '.claude/settings.local.json', { disableAllHooks: true });
+  assert.deepEqual(checkContract1(localOff, entry), { problems: ['.claude/settings.local.json sets disableAllHooks'], warnings: [] });
+  const localOnly = copy();
+  const s = readJson(localOnly, '.claude/settings.json');
+  writeJson(localOnly, '.claude/settings.local.json', { hooks: { PreToolUse: s.hooks.PreToolUse } });
   delete s.hooks.PreToolUse;
-  writeFileSync(join(unregistered, '.claude/settings.json'), JSON.stringify(s));
-  assert.deepEqual(contract1Problems(unregistered), ['.claude/settings.json does not register .claude/scripts/dispatch-pre-tool.mjs on PreToolUse for every tool call']);
+  writeJson(localOnly, '.claude/settings.json', s);
+  assert.deepEqual(checkContract1(localOnly, entry), NOT_REGISTERED, 'a registration in settings.local.json only');
 
+  // The plugin's own extension.
+  const noFile = copy();
+  rmSync(join(noFile, EXTENSIONS_PATH));
+  assert.deepEqual(checkContract1(noFile, entry), { problems: [`${EXTENSIONS_PATH} is missing, a link, not a regular file, or larger than 65536 bytes`], warnings: [] });
+  const removed = copy();
+  writeJson(removed, EXTENSIONS_PATH, []);
+  assert.deepEqual(checkContract1(removed, entry), { problems: [`${EXTENSIONS_PATH} does not list the extension acme-lockfile as expected`], warnings: [] });
+  const oneByte = copy();
+  fs.appendFileSync(join(oneByte, entry.module), ' ');
+  assert.deepEqual(checkContract1(oneByte, entry), { problems: ['the module of acme-lockfile does not hash to its recorded sha256'], warnings: [] });
+  const allowing = copy();
+  const allowEntry = { ...entry, onFailure: 'allow' };
+  writeJson(allowing, EXTENSIONS_PATH, [allowEntry]);
+  assert.deepEqual(checkContract1(allowing, allowEntry), { problems: [], warnings: ['the extension acme-lockfile has onFailure "allow": if its module is missing or differs, its gate is off and only the person is told, once per session'] });
+  const malformed = copy();
+  writeJson(malformed, EXTENSIONS_PATH, [entry, { ...entry, id: 'other' }]);
+  assert.deepEqual(checkContract1(malformed, entry), { problems: [`${EXTENSIONS_PATH} is not an extensions file as contract 1 describes one, so every tool call is blocked`], warnings: [] });
+
+  // The contract file.
   const repeated = copy();
   writeFileSync(join(repeated, CONTRACT_PATH), fs.readFileSync(join(repeated, CONTRACT_PATH), 'utf8').replace('"contract": 1,', '"contract": 2,\n  "contract": 1,'));
-  assert.deepEqual(contract1Problems(repeated), [`${CONTRACT_PATH} is not in the form kh-harness writes`]);
-
+  assert.deepEqual(checkContract1(repeated, entry), { problems: [`${CONTRACT_PATH} is not in the form kh-harness writes`], warnings: [] });
   const linked = copy();
   const outside = join(tempDir('hk-contract-outside-'), 'contract.json');
   fs.renameSync(join(linked, CONTRACT_PATH), outside);
   symlinkSync(outside, join(linked, CONTRACT_PATH), 'file');
-  assert.deepEqual(contract1Problems(linked), [`${CONTRACT_PATH} is missing, a link, not a regular file, or larger than 65536 bytes`]);
-  assert.equal(checkState(linked, 'P5.contract'), 'failing', 'kh-harness agrees');
-
+  assert.deepEqual(checkContract1(linked, entry), { problems: [`${CONTRACT_PATH} is missing, a link, not a regular file, or larger than 65536 bytes`], warnings: [] });
   const absent = copy();
   rmSync(join(absent, CONTRACT_PATH));
-  assert.equal(contract1Problems(absent).length, 1);
+  assert.equal(checkContract1(absent, entry).problems.length, 1);
 });
 
 test('contract 1: recordExternalEvent of the installed scripts writes the fixture\'s line', async () => {
@@ -344,8 +438,15 @@ test('contract 1: each refusal of recordExternalEvent is the fixture\'s text, in
   ];
   for (const [result, index] of cases) assert.deepEqual(result, { recorded: false, reason: REASONS[index] });
   assert.equal(JSON.stringify(big).length, EXTERNAL_DATA_MAX_BYTES + 1);
-  writeAt(join(repoDataDir(enabled), 'sessions'), 'a file where the sessions directory goes');
-  assert.deepEqual(recordExternalEvent(enabled, 's', ok), { recorded: false, reason: REASONS[8] });
+  let atBound = { leaf: 1 };
+  for (let i = 1; i < EXTERNAL_DATA_MAX_DEPTH; i++) atBound = { deep: atBound };
+  assert.deepEqual(recordExternalEvent(enabled, 'bound', { ...ok, data: atBound }), { recorded: true }, 'data at exactly 32 levels is recorded');
+  assert.deepEqual(readEvents(enabled, 'bound').events[0].data, atBound, 'and stored whole');
+  const unwritable = tempDir();
+  mkdirSync(join(unwritable, '.git'));
+  setEnabled(unwritable, true);
+  writeAt(join(repoDataDir(unwritable), 'sessions'), 'a file where the sessions directory goes');
+  assert.deepEqual(recordExternalEvent(unwritable, 's', ok), { recorded: false, reason: REASONS[8] });
 });
 
 test('contract 1: docs/CONTRACT.md states the number, names every promise and shows every fixture as it is', () => {

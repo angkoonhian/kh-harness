@@ -101,7 +101,8 @@ is the owner's decision. Report each failing line as `detect` printed it.
 
 The same step's `P5.extensions` lists each extension another plugin
 registered in `.claude/kh-harness/extensions.json`, with whether its
-module matches its recorded sha256; it loads no module and writes nothing.
+module matches its recorded sha256. The check loads no module and proposes
+nothing; `detect` itself writes only `docs/harness/detect.json`.
 
 ## The gate
 
