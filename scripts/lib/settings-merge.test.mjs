@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addHookEntry, hasEquivalentHook, hookPathTokens, hookScriptOf, normalizeMatcher, matcherCovers, revertPatch, revertPatches, addDenyRules } from './settings-merge.mjs';
+import { addHookEntry, hasEquivalentHook, hookEntrySha256, hookPathTokens, hookScriptOf, matcherEntrySha256, normalizeMatcher, matcherCovers, replaceHookEntries, revertPatch, revertPatches, addDenyRules } from './settings-merge.mjs';
 import { sha256 } from './manifest.mjs';
-import { DISPATCH_PRE_PATH, GENERATOR_SCRIPT_PATHS } from './propose.mjs';
+import { DISPATCH_PRE_PATH, GENERATOR_SCRIPT_PATHS, SESSION_LOG_PATH, TOOL_GATE_PATH } from './propose.mjs';
 import { execEntry } from './hook-evidence.mjs';
 
 // What revertPatch may remove: every generator hook script, and the deny
@@ -489,4 +489,40 @@ test('reverting the last deny rule prunes deny but keeps sibling keys', () => {
   assert.equal(s2.permissions.deny, undefined, 'the emptied deny array is pruned');
   assert.deepEqual(s2.permissions.allow, ['Read(*)'], 'allow must survive');
   assert.equal(s2.permissions.defaultMode, 'allow', 'defaultMode must survive');
+});
+
+// --- A replacement swaps recorded registrations for one -------------------
+
+const gate = { hooks: [execEntry(TOOL_GATE_PATH)] };
+const log = { hooks: [execEntry(SESSION_LOG_PATH)] };
+const theirs = { hooks: [{ type: 'command', command: 'node my-own.mjs' }] };
+const sha = matcherEntrySha256;
+
+test('replaceHookEntries takes out the named elements, appends the entry and leaves every other element where it was', () => {
+  const before = { env: { A: '1' }, hooks: { PreToolUse: [gate, theirs, log], Stop: [theirs] } };
+  const r = replaceHookEntries(before, 'PreToolUse', [sha(log), sha(gate)], execEntry(DISPATCH_PRE_PATH));
+  assert.deepEqual(r.settings, { env: { A: '1' }, hooks: { PreToolUse: [theirs, { hooks: [execEntry(DISPATCH_PRE_PATH)] }], Stop: [theirs] } });
+  assert.deepEqual(r.patch, { container: '/hooks/PreToolUse', entrySha256: hookEntrySha256(execEntry(DISPATCH_PRE_PATH)) });
+  assert.deepEqual(r.removed, [gate, log]);
+  assert.deepEqual(before.hooks.PreToolUse, [gate, theirs, log], 'the input is not changed');
+});
+
+test('replaceHookEntries changes nothing when a named element is not there as written', () => {
+  const edited = { hooks: [{ ...execEntry(SESSION_LOG_PATH), timeout: 5 }] };
+  assert.equal(replaceHookEntries({ hooks: { PreToolUse: [gate, edited] } }, 'PreToolUse', [sha(gate), sha(log)], execEntry(DISPATCH_PRE_PATH)), null);
+  assert.equal(replaceHookEntries({}, 'PreToolUse', [sha(gate)], execEntry(DISPATCH_PRE_PATH)), null);
+});
+
+test('replaceHookEntries takes out one element for each hash named, so a hash named once leaves its twin in place', () => {
+  const r = replaceHookEntries({ hooks: { PreToolUse: [gate, gate] } }, 'PreToolUse', [sha(gate)], execEntry(DISPATCH_PRE_PATH));
+  assert.deepEqual(r.settings.hooks.PreToolUse, [gate, { hooks: [execEntry(DISPATCH_PRE_PATH)] }]);
+  assert.equal(replaceHookEntries({ hooks: { PreToolUse: [gate] } }, 'PreToolUse', [sha(gate), sha(gate)], execEntry(DISPATCH_PRE_PATH)), null);
+});
+
+test('records a killed replacement left behind are gone to uninstall, and the entry script\'s registration is reverted', () => {
+  const settings = { hooks: { PreToolUse: [{ hooks: [execEntry(DISPATCH_PRE_PATH)] }] } };
+  const patch = (script) => ({ event: 'PreToolUse', container: '/hooks/PreToolUse', entrySha256: hookEntrySha256(execEntry(script)) });
+  const r = revertPatches(settings, [patch(TOOL_GATE_PATH), patch(SESSION_LOG_PATH), patch(DISPATCH_PRE_PATH)], PRODUCIBLE);
+  assert.deepEqual(r.settings, {});
+  assert.deepEqual([r.reverted.length, r.gone.length, r.kept.length], [1, 2, 0]);
 });

@@ -182,6 +182,7 @@ try {
   for (const p of proposals) {
     const label = p.kind === 'file' ? p.path
       : p.kind === 'settings-deny' ? '.claude/settings.json (deny rules)'
+      : p.kind === 'settings-hook-replace' ? `.claude/settings.json (hook: ${p.event}, replacing ${p.remove.length} registration${p.remove.length === 1 ? '' : 's'})`
       : `.claude/settings.json (hook: ${p.event})`;
     process.stdout.write(`--- ${label}  [${p.checkId}]\n`);
     process.stdout.write(`    ${p.reason}\n`);
@@ -196,7 +197,7 @@ try {
 if (!flags.has('--yes')) {
   // A hook runs by itself once registered, so what each one does is said
   // beside the dry run that would register it, not only under --help.
-  if (proposals.some(p => p.kind === 'settings-hook')) process.stdout.write(EXECUTION_DISCLOSURE + '\n\n');
+  if (proposals.some(p => p.kind === 'settings-hook' || p.kind === 'settings-hook-replace')) process.stdout.write(EXECUTION_DISCLOSURE + '\n\n');
   reportDrift();
   // What `--yes` would refuse, said now rather than after the diffs have
   // been read and acted on — see writeGateRefusals.
@@ -273,7 +274,10 @@ for (const w of result.written) {
     process.stdout.write(`note: Windows cannot record the execute bit — run \`git update-index --chmod=+x ${w.path}\` before committing\n`);
   }
 }
-for (const p of result.patched) process.stdout.write(`patched    .claude/settings.json (${p.event})\n`);
+for (const p of result.patched) {
+  const removed = p.replaced ? `; ${p.replaced} separate registration${p.replaced === 1 ? '' : 's'} removed` : '';
+  process.stdout.write(`patched    .claude/settings.json (${p.event}${removed})\n`);
+}
 if (result.patched.length > 0 && !settingsWasCanonical) {
   process.stdout.write(settingsReformattedNote('applying the patch above') + '\n');
 }

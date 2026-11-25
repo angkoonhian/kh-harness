@@ -16,7 +16,7 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { defaultBranches, git, gitFailure } from './git-info.mjs';
 import { classify, contentMatches, emptyManifest, MANIFEST_PATH, replaceFile, sha256 } from './manifest.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
-import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook, SETTINGS_PATH } from './settings-merge.mjs';
+import { addDenyRules, addHookEntry, buildMatcherEntry, hasEquivalentHook, replaceHookEntries, SETTINGS_PATH } from './settings-merge.mjs';
 import { readJsonFile, stripBom, UTF8_BOM } from './read-json.mjs';
 
 /**
@@ -567,6 +567,32 @@ function settingsHookPreview(settings, proposal) {
 }
 
 /**
+ * Preview of a settings-hook-replace proposal against `settings`, given
+ * `replaced`, what `replaceHookEntries` returns for it: the elements taken
+ * out and the one added, and nothing else, as for a settings-hook preview.
+ * An element taken out is printed only because its hash is one the
+ * proposal names, a registration the kit recorded writing.
+ */
+function settingsReplacePreview(settings, proposal, replaced) {
+  const container = `hooks.${proposal.event}`;
+  const lines = [`--- a/${SETTINGS_PATH}`, `+++ b/${SETTINGS_PATH}`, `@@ ${container} @@`];
+  if (replaced === null) {
+    lines.push(`(a registration kh-harness recorded on ${container} is no longer there as written — this replacement would be skipped)`);
+  } else {
+    for (const element of replaced.removed) {
+      for (const line of splitLines(JSON.stringify(element, null, 2))) lines.push(`-${line}`);
+    }
+    for (const line of splitLines(JSON.stringify(buildMatcherEntry(proposal.entry), null, 2))) lines.push(`+${line}`);
+    const others = settings.hooks[proposal.event].length - replaced.removed.length;
+    if (others > 0) {
+      lines.push(`(${others} other ${container} entr${others === 1 ? 'y is' : 'ies are'} left unchanged and not shown)`);
+    }
+  }
+  lines.push(`(nothing else in ${SETTINGS_PATH} is changed, or shown — it is yours, and it may hold credentials)`);
+  return lines.join('\n');
+}
+
+/**
  * Preview of a settings-deny proposal against `settings`: the rules that
  * would be added, `added` as `addDenyRules` computes them, and nothing
  * else. `permissions.deny` can hold the owner's own rules, and a
@@ -623,6 +649,12 @@ export function diffRenderer(root) {
     if (proposal.kind === 'settings-hook') {
       const preview = settingsHookPreview(staged.settings, proposal);
       staged.settings = addHookEntry(staged.settings, proposal.event, proposal.entry, proposal.matcher).settings;
+      return preview;
+    }
+    if (proposal.kind === 'settings-hook-replace') {
+      const replaced = replaceHookEntries(staged.settings, proposal.event, proposal.remove, proposal.entry);
+      const preview = settingsReplacePreview(staged.settings, proposal, replaced);
+      if (replaced !== null) staged.settings = replaced.settings;
       return preview;
     }
     const { settings, added } = addDenyRules(staged.settings, proposal.globs);
@@ -766,15 +798,20 @@ function unmetDependencies(root, proposal) {
   return stale.length ? `dependency-not-this-kit-version: ${stale.join(', ')}` : null;
 }
 
+/** What makes two patch records the same patch. */
+const patchKey = patch => `${patch.container}\n${patch.entrySha256}`;
+
 /**
  * `.claude/settings.json` as one run patches it: read once, patched in
  * memory by each settings proposal in turn, and written once at the end
  * (`writeSettingsBatch`). `records` are the manifest's patch records for
- * what has been staged, `patched` what the caller is told of each.
+ * what has been staged, `patched` what the caller is told of each, and
+ * `dropped` the keys (`patchKey`) of the records whose entries a staged
+ * replacement takes out.
  */
 function openSettingsBatch(root) {
   const read = readSettingsResult(root);
-  return { read, settings: read.ok ? read.settings : null, records: [], patched: [] };
+  return { read, settings: read.ok ? read.settings : null, records: [], patched: [], dropped: new Set() };
 }
 
 function stageSettingsHook({ root, proposal, batch, skipped }) {
@@ -808,6 +845,43 @@ function stageSettingsHook({ root, proposal, batch, skipped }) {
   batch.patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId });
 }
 
+/** Stages a settings-hook-replace proposal: skipped as a settings-hook
+ * proposal is, and as `registration-changed` when an element it names is
+ * not in the file as recorded; otherwise wholly, never in part. */
+function stageSettingsReplace({ root, proposal, batch, skipped }) {
+  const unmet = unmetDependencies(root, proposal);
+  if (unmet !== null) {
+    skipped.push({ path: SETTINGS_PATH, why: unmet, checkId: proposal.checkId });
+    return;
+  }
+  if (!batch.read.ok) {
+    skipped.push({ path: SETTINGS_PATH, why: 'unparseable', checkId: proposal.checkId });
+    return;
+  }
+  if (hasEquivalentHook(batch.settings, proposal.event, proposal.entry)) {
+    skipped.push({ path: SETTINGS_PATH, why: 'unchanged', checkId: proposal.checkId });
+    return;
+  }
+  const replaced = replaceHookEntries(batch.settings, proposal.event, proposal.remove, proposal.entry);
+  if (replaced === null) {
+    skipped.push({ path: SETTINGS_PATH, why: 'registration-changed', checkId: proposal.checkId });
+    return;
+  }
+
+  const { settings, patch } = replaced;
+  batch.settings = settings;
+  batch.records.push({
+    event: proposal.event,
+    container: patch.container,
+    entrySha256: patch.entrySha256,
+    step: proposal.step,
+    checkId: proposal.checkId,
+    appliedAt: new Date().toISOString(),
+  });
+  for (const entrySha256 of proposal.remove) batch.dropped.add(patchKey({ container: patch.container, entrySha256 }));
+  batch.patched.push({ event: proposal.event, step: proposal.step, checkId: proposal.checkId, replaced: proposal.remove.length });
+}
+
 function stageSettingsDeny({ proposal, batch, skipped }) {
   if (!batch.read.ok) {
     skipped.push({ path: SETTINGS_PATH, why: 'unparseable', checkId: proposal.checkId });
@@ -836,9 +910,6 @@ function stageSettingsDeny({ proposal, batch, skipped }) {
   batch.patched.push({ event: 'permissions.deny', step: proposal.step, checkId: proposal.checkId });
 }
 
-/** What makes two patch records the same patch. */
-const patchKey = patch => `${patch.container}\n${patch.entrySha256}`;
-
 /**
  * Writes what the batch staged, in one whole-file replacement, so the file
  * on disk is the owner's old one or the complete new one. The manifest is
@@ -849,6 +920,13 @@ const patchKey = patch => `${patch.container}\n${patch.entrySha256}`;
  * recorded. Either way no entry is in the file without a record. A record
  * staged again replaces the one already held for the same patch, whose
  * entry is no longer in the file or it would not have been staged.
+ *
+ * The records of the entries a replacement takes out (`batch.dropped`)
+ * leave `nextManifest` only once the settings file is replaced: the
+ * manifest written first holds them beside the new record, so a run killed
+ * at either side of the write leaves every kit entry in the file recorded.
+ * A record left beside an entry no longer there is one `uninstall` treats
+ * as gone.
  *
  * A write that fails is reported in `failed`, and the records are taken
  * back out of `nextManifest`, which the caller writes next.
@@ -879,6 +957,7 @@ function writeSettingsBatch({ root, batch, nextManifest, patched, failed, replac
     failed.push({ path: SETTINGS_PATH, error: `failed to write ${SETTINGS_PATH}: ${err?.message ?? String(err)}` });
     return;
   }
+  nextManifest.settingsPatches = nextManifest.settingsPatches.filter(patch => staged.has(patchKey(patch)) || !batch.dropped.has(patchKey(patch)));
   if (batch.read.raw === null) nextManifest.settingsCreated = true;
   patched.push(...batch.patched);
 }
@@ -929,7 +1008,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
     if (proposal.kind === 'file') {
       assertAllowed(proposal.path);
       assertContained(root, proposal.path);
-    } else if (proposal.kind === 'settings-hook' || proposal.kind === 'settings-deny') {
+    } else if (proposal.kind === 'settings-hook' || proposal.kind === 'settings-hook-replace' || proposal.kind === 'settings-deny') {
       assertAllowed(SETTINGS_PATH);
       assertContained(root, SETTINGS_PATH);
     } else {
@@ -958,6 +1037,7 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
       } else {
         batch ??= openSettingsBatch(root);
         if (proposal.kind === 'settings-hook') stageSettingsHook({ root, proposal, batch, skipped });
+        else if (proposal.kind === 'settings-hook-replace') stageSettingsReplace({ root, proposal, batch, skipped });
         else stageSettingsDeny({ proposal, batch, skipped });
       }
     } catch (err) {

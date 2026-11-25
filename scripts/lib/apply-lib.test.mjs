@@ -1,12 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { emptyManifest, readManifest, sha256 } from './manifest.mjs';
+import { emptyManifest, KIT_VERSION, MANIFEST_PATH, readManifest, replaceFile, sha256, writeManifest } from './manifest.mjs';
 import { assertAllowed, applyProposals, diffRenderer, renderDiff, isAllowedDirectory, isCanonicalJson, isWellFormedHooks, detectIndent, ALLOWED_PREFIXES, settingsReformattedNote, unusableSettingsReason } from './apply-lib.mjs';
-import { APPLY, fixture, git } from './lifecycle-fixtures.mjs';
+import { APPLY, fixture, git, manifestOf, run, runEveryRegisteredHook, runResult, sandboxDataDir, separateRegistrations, settings as readSettings, UNINSTALL } from './lifecycle-fixtures.mjs';
+import { execEntry } from './hook-evidence.mjs';
+import { DISPATCH_PRE_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH } from './propose.mjs';
+import { hookEntrySha256, matcherEntrySha256, SETTINGS_PATH } from './settings-merge.mjs';
+
+sandboxDataDir();
 
 const repo = () => mkdtempSync(join(tmpdir(), 'hk-apply-'));
 
@@ -1009,3 +1014,172 @@ test('the second hook preview on one event counts the entry the first would add'
   assert.match(preview({ ...batchHook('Stop'), matcher: 'Bash' }), /appended after 1 existing hooks\.Stop entry,/);
   assert.doesNotMatch(renderDiff(d, batchHook('Stop')), /appended after/, 'a preview on its own starts from the file');
 });
+
+// --- A replacement swaps the registrations apply recorded for another -------
+
+const gate = { hooks: [execEntry(TOOL_GATE_PATH)] };
+const log = { hooks: [execEntry(SESSION_LOG_PATH)] };
+const theirs = { hooks: [{ type: 'command', command: 'node my-own.mjs' }] };
+const ENTRY_BYTES = 'the entry script\n';
+const replace = {
+  kind: 'settings-hook-replace', event: 'PreToolUse', step: 30, checkId: 'P0.hookmerge', reason: 'r',
+  entry: execEntry(DISPATCH_PRE_PATH),
+  remove: [matcherEntrySha256(gate), matcherEntrySha256(log)],
+  requiresFiles: [{ path: DISPATCH_PRE_PATH, sha256: sha256(ENTRY_BYTES) }],
+};
+const kitRecord = (script, step, checkId) => ({
+  event: 'PreToolUse', container: '/hooks/PreToolUse', entrySha256: hookEntrySha256(execEntry(script)), step, checkId, appliedAt: '2026-11-01T00:00:00.000Z',
+});
+
+/** A repository whose settings hold the two kit hooks on PreToolUse
+ * separately, with one of the owner's between them, and the entry script
+ * on disk; and the manifest recording the two kit patches. */
+function separatelyRegistered() {
+  const d = repo();
+  mkdirSync(join(d, '.claude/scripts'), { recursive: true });
+  writeFileSync(join(d, DISPATCH_PRE_PATH), ENTRY_BYTES);
+  writeFileSync(join(d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [gate, theirs, log] } }, null, 2) + '\n');
+  const manifest = { ...emptyManifest('0.2.0'), settingsPatches: [kitRecord(TOOL_GATE_PATH, 30, 'P5.toolgate'), kitRecord(SESSION_LOG_PATH, 31, 'P5.sessionlog')] };
+  return { d, manifest };
+}
+
+test('a replacement removes the recorded registrations, adds the entry script and swaps the records', () => {
+  const { d, manifest } = separatelyRegistered();
+  const r = applyProposals({ root: d, proposals: [replace], manifest, kitVersion: '0.2.0' });
+  assert.deepEqual(readSettings(d).hooks.PreToolUse, [theirs, { hooks: [execEntry(DISPATCH_PRE_PATH)] }]);
+  assert.deepEqual(r.patched, [{ event: 'PreToolUse', step: 30, checkId: 'P0.hookmerge', replaced: 2 }]);
+  assert.deepEqual(r.manifest.settingsPatches.map(p => p.entrySha256), [hookEntrySha256(execEntry(DISPATCH_PRE_PATH))]);
+  assert.deepEqual(Object.keys(r.manifest.settingsPatches[0]), ['event', 'container', 'entrySha256', 'step', 'checkId', 'appliedAt']);
+});
+
+test('the manifest written before the settings file still records the registrations about to be removed', () => {
+  const { d, manifest } = separatelyRegistered();
+  let persisted;
+  applyProposals({ root: d, proposals: [replace], manifest, kitVersion: '0.2.0', persistManifest: m => { persisted = structuredClone(m); } });
+  assert.equal(persisted.settingsPatches.length, 3);
+});
+
+test('a settings write that fails during a replacement leaves the manifest\'s records as they were', () => {
+  const { d, manifest } = separatelyRegistered();
+  const r = applyProposals({ root: d, proposals: [replace], manifest, kitVersion: '0.2.0', replaceSettings: () => { throw new Error('disk full'); } });
+  assert.deepEqual(r.manifest.settingsPatches, manifest.settingsPatches);
+  assert.equal(r.failed.length, 1);
+  assert.deepEqual(readSettings(d).hooks.PreToolUse, [gate, theirs, log]);
+});
+
+test('a replacement is skipped whole when a registration it names is not there as recorded, is already made, or lacks a file', () => {
+  const skippedWhole = (d, manifest, why) => {
+    const before = readFileSync(join(d, SETTINGS_PATH), 'utf8');
+    const r = applyProposals({ root: d, proposals: [replace], manifest, kitVersion: '0.2.0' });
+    assert.deepEqual(r.patched, []);
+    assert.equal(r.skipped.length, 1);
+    assert.deepEqual({ ...r.skipped[0], why: why(r.skipped[0].why) }, { path: SETTINGS_PATH, why: true, checkId: 'P0.hookmerge' });
+    assert.equal(readFileSync(join(d, SETTINGS_PATH), 'utf8'), before, 'the file is unchanged');
+    assert.deepEqual(r.manifest.settingsPatches, manifest.settingsPatches, 'the manifest is unchanged');
+  };
+
+  const edited = separatelyRegistered();
+  writeFileSync(join(edited.d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [gate, theirs, { hooks: [{ ...execEntry(SESSION_LOG_PATH), timeout: 5 }] }] } }, null, 2) + '\n');
+  skippedWhole(edited.d, edited.manifest, why => why === 'registration-changed');
+
+  const made = separatelyRegistered();
+  writeFileSync(join(made.d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [gate, theirs, log, { hooks: [execEntry(DISPATCH_PRE_PATH)] }] } }, null, 2) + '\n');
+  skippedWhole(made.d, made.manifest, why => why === 'unchanged');
+
+  const lacking = separatelyRegistered();
+  rmSync(join(lacking.d, DISPATCH_PRE_PATH));
+  skippedWhole(lacking.d, lacking.manifest, why => why.startsWith('missing-dependency: '));
+});
+
+test('the preview of a replacement shows the elements removed and the one added, and nothing else of the file', () => {
+  const { d } = separatelyRegistered();
+  assert.equal(renderDiff(d, replace), [
+    '--- a/.claude/settings.json', '+++ b/.claude/settings.json', '@@ hooks.PreToolUse @@',
+    ...JSON.stringify(gate, null, 2).split('\n').map(l => `-${l}`),
+    ...JSON.stringify(log, null, 2).split('\n').map(l => `-${l}`),
+    ...JSON.stringify({ hooks: [execEntry(DISPATCH_PRE_PATH)] }, null, 2).split('\n').map(l => `+${l}`),
+    '(1 other hooks.PreToolUse entry is left unchanged and not shown)',
+    '(nothing else in .claude/settings.json is changed, or shown — it is yours, and it may hold credentials)',
+  ].join('\n'));
+  assert.doesNotMatch(renderDiff(d, replace), /my-own/);
+});
+
+test('the preview of a replacement whose registrations are not there as recorded says it would be skipped', () => {
+  const { d } = separatelyRegistered();
+  writeFileSync(join(d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [gate, theirs] } }, null, 2) + '\n');
+  assert.equal(renderDiff(d, replace), [
+    '--- a/.claude/settings.json', '+++ b/.claude/settings.json', '@@ hooks.PreToolUse @@',
+    '(a registration kh-harness recorded on hooks.PreToolUse is no longer there as written — this replacement would be skipped)',
+    '(nothing else in .claude/settings.json is changed, or shown — it is yours, and it may hold credentials)',
+  ].join('\n'));
+});
+
+test('a replacement with no other entry on its event says nothing of other entries, and a later preview sees what it leaves', () => {
+  const { d } = separatelyRegistered();
+  writeFileSync(join(d, SETTINGS_PATH), JSON.stringify({ hooks: { PreToolUse: [log, gate] } }, null, 2) + '\n');
+  const preview = diffRenderer(d);
+  assert.doesNotMatch(preview(replace), /other hooks\.PreToolUse/);
+  const later = { kind: 'settings-hook', event: 'PreToolUse', step: 31, checkId: 'x', reason: 'r', entry: { type: 'command', command: 'node', args: ['x.mjs'] } };
+  assert.match(preview(later), /appended after 1 existing hooks\.PreToolUse entry,/);
+});
+
+test('an unknown proposal kind still throws before anything is written', () => {
+  const { d, manifest } = separatelyRegistered();
+  const before = readFileSync(join(d, SETTINGS_PATH), 'utf8');
+  assert.throws(() => applyProposals({ root: d, proposals: [{ ...replace, kind: 'settings-hook-remove' }], manifest, kitVersion: '0.2.0' }), /unknown proposal kind/);
+  assert.equal(readFileSync(join(d, SETTINGS_PATH), 'utf8'), before);
+});
+
+// --- A replacement killed at either side of the settings write --------------
+
+/** An installed repository whose tool-call events hold the old separate
+ * registrations, and the proposal that replaces PreToolUse's with the entry
+ * script the install wrote, as `apply.mjs` would apply it. */
+function installedSeparately() {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  separateRegistrations(d);
+  const recorded = manifestOf(d).settingsPatches.filter(p => p.event === 'PreToolUse').map(p => p.entrySha256);
+  assert.equal(recorded.length, 2, 'fixture: two separate registrations recorded on PreToolUse');
+  const proposal = {
+    ...replace, remove: recorded,
+    requiresFiles: [DISPATCH_PRE_PATH, TOOL_GATE_PATH, SESSION_LOG_PATH].map(path => ({ path, sha256: sha256(readFileSync(join(d, path), 'utf8')) })),
+  };
+  return { d, proposal };
+}
+
+const KILLED = 'the run was killed here';
+const kitEntryScripts = d => Object.values(readSettings(d).hooks ?? {}).flat().flatMap(m => m.hooks ?? []).map(h => h.args?.[0] ?? h.command).filter(s => s.includes('.claude/scripts/'));
+
+for (const point of ['before-settings', 'after-settings']) {
+  test(`a replacement killed ${point} leaves every kit entry in the file recorded, and one uninstall removes the install`, () => {
+    const { d, proposal } = installedSeparately();
+    const manifestPath = join(d, MANIFEST_PATH);
+    let onDiskAtKill = null;
+    const r = applyProposals({
+      root: d, proposals: [proposal], manifest: manifestOf(d), kitVersion: KIT_VERSION,
+      persistManifest: staged => writeManifest(d, staged),
+      replaceSettings: (path, text) => {
+        if (point === 'after-settings') replaceFile(path, text);
+        onDiskAtKill = readFileSync(manifestPath);
+        throw new Error(KILLED);
+      },
+    });
+    assert.deepEqual(r.failed.map(f => f.error), [`failed to write ${SETTINGS_PATH}: ${KILLED}`]);
+    // The process is gone at the throw: the manifest is as it was then.
+    writeFileSync(manifestPath, onDiskAtKill);
+
+    const recorded = new Set(manifestOf(d).settingsPatches.map(p => p.entrySha256));
+    const elements = Object.values(readSettings(d).hooks).flat().filter(m => m.hooks?.some(h => h.args?.[0]?.includes('.claude/scripts/')));
+    for (const m of elements) assert.ok(recorded.has(matcherEntrySha256(m)), `${JSON.stringify(m)} is recorded`);
+    const entryOnPre = readSettings(d).hooks.PreToolUse.some(m => matcherEntrySha256(m) === hookEntrySha256(execEntry(DISPATCH_PRE_PATH)));
+    assert.equal(entryOnPre, point === 'after-settings', 'fixture: the entry script is in the file only after the kill point');
+    for (const h of runEveryRegisteredHook(d)) assert.notEqual(h.status, 1, `${h.script} on ${h.event}: ${h.stderr}`);
+
+    const uninstalled = runResult(UNINSTALL, d, '--yes');
+    assert.equal(uninstalled.status, 0, uninstalled.stdout + uninstalled.stderr);
+    assert.deepEqual(kitEntryScripts(d), [], 'no kit hook entry is left registered');
+    assert.equal(existsSync(manifestPath), false, 'the manifest is removed');
+    assert.deepEqual(readSettings(d).permissions?.deny, ['Edit(secrets/**)'], "the owner's own rule is as it was");
+  });
+}

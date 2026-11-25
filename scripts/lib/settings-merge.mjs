@@ -49,6 +49,33 @@ export function addHookEntry(settings, event, entry, matcher) {
 }
 
 /**
+ * `settings` with the elements of `hooks[event]` whose hashes are `remove`
+ * (`matcherEntrySha256`, one element for each hash) taken out and
+ * `buildMatcherEntry(entry)` appended, as one change; `null` unless every
+ * hash names an element still there, so an element the owner edited since
+ * it was recorded is never taken out. `removed` holds the elements taken
+ * out, in file order.
+ */
+export function replaceHookEntries(settings, event, remove, entry) {
+  if (!Array.isArray(settings?.hooks?.[event])) return null;
+  const next = clone(settings);
+  const list = next.hooks[event];
+  const hashes = list.map(matcherEntrySha256);
+  const taken = new Set();
+  for (const hash of remove) {
+    const at = hashes.findIndex((h, i) => h === hash && !taken.has(i));
+    if (at === -1) return null;
+    taken.add(at);
+  }
+  next.hooks[event] = [...list.filter((_, i) => !taken.has(i)), buildMatcherEntry(entry)];
+  return {
+    settings: next,
+    patch: { container: `/hooks/${event}`, entrySha256: hookEntrySha256(entry) },
+    removed: list.filter((_, i) => taken.has(i)),
+  };
+}
+
+/**
  * A matcher, normalised. Claude Code treats an omitted matcher, `""` and
  * `"*"` alike — every tool (or every source) — so those become `null`. A
  * plain alternation of names (`Write|Edit`, `Edit, Write`) is a SET: it is
