@@ -200,6 +200,8 @@ function commandScript(entry, files) {
  * hash is the one the install record holds. It is NON-ENUMERABLE, so it
  * never reaches docs/harness/detect.json, which is committed: a hash of a
  * command that embeds a short credential can be tested against guesses.
+ * `settingsFile`, also non-enumerable, names the settings file the entry is
+ * in, since `apply` patches only `.claude/settings.json`.
  *
  * Never throws: a missing file, bad JSON or any malformed shape yields `{}`.
  */
@@ -221,6 +223,7 @@ function hookRegistrations(root, files) {
           if (!command) continue;
           const registration = { script: commandScript(entry, files), matcher: m };
           Object.defineProperty(registration, 'entrySha256', { value: entrySha256, enumerable: false });
+          Object.defineProperty(registration, 'settingsFile', { value: rel, enumerable: false });
           (out[event] ??= []).push(registration);
         }
       }

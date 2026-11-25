@@ -2256,6 +2256,27 @@ test('when one hook of an event is missing and the other is as recorded, the mis
   assert.deepEqual(settingsOnPre.map(p => p.kind), ['settings-hook-replace'], 'the event is proposed once');
 });
 
+test('an event whose two hooks are both as recorded but credited by neither check is proposed once, by P0.hookmerge', () => {
+  // `.claude/` gitignored, so no script resolves, and the scripts gone from
+  // disk, so neither hook's own check can confirm its registration.
+  const unresolved = ({ registration }) => Object.defineProperty({ script: null, matcher: registration.matcher }, 'entrySha256', { value: registration.entrySha256 });
+  const l = recorded(SESSION_LOG_PATH, undefined, 'PostToolUse'), lint = recorded(LINT_TOUCHED_PATH, SENSOR_MATCHER, 'PostToolUse');
+  const ctx = hookCtx({ PostToolUse: [unresolved(l), unresolved(lint)] }, [l.patch, lint.patch]);
+  const checks = gapsFor(ctx);
+  assert.deepEqual(['P2.sensor', 'P5.sessionlog', 'P0.hookmerge'].map(id => byId(checks, id).state), ['absent', 'absent', 'absent'], 'fixture sanity: every one of the three generators runs');
+  assert.deepEqual(mergePlan('PostToolUse', ctx), { entry: DISPATCH_POST_PATH, state: 'mergeable', missing: [], remove: [l.patch.entrySha256, lint.patch.entrySha256], why: null });
+  const onPost = buildProposals(argsFor(ctx)).filter(p => p.kind !== 'file' && p.event === 'PostToolUse');
+  assert.deepEqual(onPost.map(p => [p.kind, p.checkId]), [['settings-hook-replace', 'P0.hookmerge']]);
+});
+
+test('a kit registration that is only in .claude/settings.local.json, which apply never writes, is not judged mergeable', () => {
+  const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH);
+  const local = Object.defineProperty(l.registration, 'settingsFile', { value: '.claude/settings.local.json' });
+  const ctx = hookCtx({ PreToolUse: [local, g.registration] }, [l.patch, g.patch]);
+  assert.deepEqual(mergePlan('PreToolUse', ctx), { entry: DISPATCH_PRE_PATH, state: 'separate', missing: [], remove: [], why: 'a registration kh-harness recorded on PreToolUse is no longer there' });
+  assert.deepEqual(replacements(ctx), []);
+});
+
 test('an install killed after its settings write, whose records of the removed registrations remain, reads as merged', () => {
   const g = recorded(TOOL_GATE_PATH), l = recorded(SESSION_LOG_PATH), entry = recorded(DISPATCH_PRE_PATH);
   const ctx = hookCtx({ PreToolUse: [entry.registration] }, [l.patch, g.patch, entry.patch]);

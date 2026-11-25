@@ -22,7 +22,7 @@ import { selectProfile } from './profiles/index.mjs';
 import { buildProposals, DISPATCH_FAILURE_PATH, DISPATCH_POST_PATH, DISPATCH_PRE_PATH, GENERATORS, SESSION_LOG_PATH } from './propose.mjs';
 import { DETECT_REPORT_PATH } from './report.mjs';
 import { listFiles } from './scan.mjs';
-import { buildMatcherEntry, hookEntrySha256 } from './settings-merge.mjs';
+import { buildMatcherEntry, hookEntrySha256, matcherEntrySha256 } from './settings-merge.mjs';
 import { harnessIdentity } from '../../assets/scripts/harness-log.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 
@@ -58,6 +58,14 @@ function installedSeparately() {
  * else of the kit's. */
 function assertMerged(d) {
   for (const [event, { path }] of Object.entries(ENTRY_SCRIPTS)) assert.deepEqual(kitEntriesOn(d, event), [`\${CLAUDE_PROJECT_DIR}/${path}`], event);
+}
+
+/** Asserts the manifest records exactly the entry script on each tool-call
+ * event of `d`. */
+function assertRecordsMerged(d) {
+  for (const [event, { path }] of Object.entries(ENTRY_SCRIPTS)) {
+    assert.deepEqual(manifestOf(d).settingsPatches.filter(p => p.event === event).map(p => p.entrySha256), [hookEntrySha256(execEntry(path))], event);
+  }
 }
 
 test('apply on an install with separate registrations proposes exactly one replacement per tool-call event, and a second apply proposes nothing', () => {
@@ -256,6 +264,82 @@ test('an install made by the kit at eead407 is merged by one apply', { skip }, (
   assertMerged(d);
   const checks = JSON.parse(run(DETECT, d, '--json')).checks;
   assert.deepEqual(checks.filter(c => c.proposal && c.id in GENERATORS).map(c => c.id), [], 'nothing is left to propose');
+  assertRecordsMerged(d);
   for (const h of runEveryRegisteredHook(d)) assert.notEqual(h.status, 1, `${h.script} on ${h.event}: ${h.stderr}`);
   assert.match(run(APPLY, d, '--allow-dirty'), /no actions/);
+  assertUninstallRecovers(d);
+});
+
+// --- Forms a real install may have -------------------------------------------
+
+/** Rewrites every kit hook on the tool-call events of `d` into the shell
+ * form the kit wrote before the exec form, with the manifest's records of
+ * them to match. */
+function toShellForm(d) {
+  const s = settings(d);
+  const m = manifestOf(d);
+  for (const event of Object.keys(ENTRY_SCRIPTS)) {
+    s.hooks[event] = s.hooks[event].map(element => {
+      const script = element.hooks[0].args[0].replace('${CLAUDE_PROJECT_DIR}/', '');
+      const shell = { ...element, hooks: [{ type: 'command', command: `node ${script}` }] };
+      const record = m.settingsPatches.find(p => p.event === event && p.entrySha256 === matcherEntrySha256(element));
+      record.entrySha256 = matcherEntrySha256(shell);
+      return shell;
+    });
+  }
+  // Written as apply writes it, keeping whether the file ended in a newline.
+  const ending = readFileSync(join(d, SETTINGS_PATH), 'utf8').endsWith('\n') ? '\n' : '';
+  writeFileSync(join(d, SETTINGS_PATH), JSON.stringify(s, null, 2) + ending);
+  writeJson(d, MANIFEST_PATH, m);
+}
+
+test('an install whose separate registrations are in the shell form is migrated, with one record per event', () => {
+  const { d, original } = installedSeparately();
+  toShellForm(d);
+  commit(d, 'the shell form');
+  assert.deepEqual(kitEntriesOn(d, 'PreToolUse'), [`node ${SESSION_LOG_PATH}`, 'node .claude/scripts/tool-gate.mjs'], 'fixture: the shell form');
+  const out = run(APPLY, d, '--yes');
+  for (const event of Object.keys(ENTRY_SCRIPTS)) assert.ok(out.includes(`patched    .claude/settings.json (${event}; 2 separate registrations removed)`), event);
+  assertMerged(d);
+  assertRecordsMerged(d);
+  assert.match(run(APPLY, d, '--allow-dirty'), /no actions/);
+  run(UNINSTALL, d, '--yes');
+  assert.equal(readFileSync(join(d, SETTINGS_PATH), 'utf8'), original);
+});
+
+test('a repository that ignores .claude/ is migrated through the install record', () => {
+  const d = fixtureWithLint();
+  writeFileSync(join(d, '.gitignore'), '.claude/\n');
+  git(d, 'rm', '-q', '--cached', SETTINGS_PATH);
+  commit(d, 'ignore .claude/');
+  run(APPLY, d, '--yes');
+  separateRegistrations(d);
+  commit(d, 'install kh-harness with separate registrations');
+  assert.equal(git(d, 'ls-files', '.claude').trim(), '', 'fixture: nothing under .claude/ is tracked');
+  const merge = checkOf(d, 'P0.hookmerge');
+  assert.equal(merge.state, 'absent', JSON.stringify(merge.evidence));
+  const out = run(APPLY, d, '--yes');
+  for (const event of Object.keys(ENTRY_SCRIPTS)) assert.ok(out.includes(`patched    .claude/settings.json (${event}; 2 separate registrations removed)`), event);
+  assertMerged(d);
+  assertRecordsMerged(d);
+  assert.equal(checkOf(d, 'P0.hookmerge').state, 'declared');
+  assert.match(run(APPLY, d, '--allow-dirty'), /no actions/);
+  assertUninstallRecovers(d);
+});
+
+test('a kit registration moved into .claude/settings.local.json leaves its event alone, and apply then has nothing to do', () => {
+  const { d } = installedSeparately();
+  const s = settings(d);
+  const log = s.hooks.PreToolUse.find(m => m.hooks[0].args[0].endsWith('/session-log.mjs'));
+  s.hooks.PreToolUse = s.hooks.PreToolUse.filter(m => m !== log);
+  writeJson(d, SETTINGS_PATH, s);
+  writeJson(d, '.claude/settings.local.json', { hooks: { PreToolUse: [log] } });
+  commit(d, 'the logging hook on PreToolUse is local');
+
+  const merge = checkOf(d, 'P0.hookmerge');
+  assert.ok(merge.evidence.includes('PreToolUse: left on separate registrations — a registration kh-harness recorded on PreToolUse is no longer there'), JSON.stringify(merge.evidence));
+  assert.equal(run(APPLY, d).includes('(hook: PreToolUse'), false);
+  run(APPLY, d, '--yes');
+  assert.match(run(APPLY, d, '--allow-dirty'), /no actions/);
+  assert.equal(readFileSync(join(d, DETECT_REPORT_PATH), 'utf8').includes('settingsFile'), false, 'which file a registration is in is not written to the committed report');
 });

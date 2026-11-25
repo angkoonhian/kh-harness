@@ -16,6 +16,7 @@ import { pathRuleTargets } from './pathrules-evidence.mjs';
 import { LEARNED_PATH, RULES_PATH } from '../../assets/scripts/harness-redact.mjs';
 import { FAILURES_PATH } from './failures-evidence.mjs';
 import { ENTRY_SCRIPTS, directRegistrations, execEntry, kitEntryHashes, registeredHook } from './hook-evidence.mjs';
+import { SETTINGS_PATH } from './settings-merge.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
 
@@ -121,7 +122,7 @@ function sensorProposal({ kitVersion, stack, check, harness, manifest, root }) {
   if (!hasLintScript(stack)) return [];
   const reason = hookRegistrationReason('PostToolUse', check);
   const plan = mergePlan('PostToolUse', { harness, manifest, root, stack });
-  if (plan.state === 'mergeable') return entryProposals('PostToolUse', plan, { kitVersion, reason });
+  if (plan.state === 'mergeable') return plan.missing.includes(LINT_TOUCHED_PATH) ? entryProposals('PostToolUse', plan, { kitVersion, reason }) : [];
   const files = hookFiles(LINT_TOUCHED_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PostToolUse', step: 9,
@@ -200,7 +201,7 @@ const LOOP_WATCH_STEP = 13;
 function loopWatchProposal({ kitVersion, check, harness, manifest, root, stack }) {
   const reason = hookRegistrationReason('PostToolUseFailure', check);
   const plan = mergePlan('PostToolUseFailure', { harness, manifest, root, stack });
-  if (plan.state === 'mergeable') return entryProposals('PostToolUseFailure', plan, { kitVersion, reason });
+  if (plan.state === 'mergeable') return plan.missing.includes(LOOP_WATCH_PATH) ? entryProposals('PostToolUseFailure', plan, { kitVersion, reason }) : [];
   const files = hookFiles(LOOP_WATCH_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PostToolUseFailure', step: LOOP_WATCH_STEP,
@@ -234,8 +235,10 @@ export function sessionLogRegistrations(harness, { manifest, root } = {}) {
  * registration when only the logging hook is missing there; when the other
  * hook is missing too, the event is left to that hook's generator if it
  * runs in this proposal (its check is among `checks`, absent and
- * decidable). On every other missing event the logging hook is registered
- * by itself, so no event goes without it.
+ * decidable); when the logging hook is not among the hooks missing there,
+ * another generator owns the event and this one proposes nothing for it.
+ * On every other missing event the logging hook is registered by itself,
+ * so no event goes without it.
  */
 function sessionLogProposal({ kitVersion, harness, manifest, root, stack, checks }) {
   const files = hookFiles(SESSION_LOG_PATH, kitVersion);
@@ -244,7 +247,8 @@ function sessionLogProposal({ kitVersion, harness, manifest, root, stack, checks
   return [...files, ...missing.flatMap(r => {
     const reason = hookRegistrationReason(r.event, r);
     const plan = Object.hasOwn(ENTRY_SCRIPTS, r.event) ? mergePlan(r.event, { harness, manifest, root, stack }) : null;
-    if (plan?.state === 'mergeable' && plan.missing.includes(SESSION_LOG_PATH)) {
+    if (plan?.state === 'mergeable') {
+      if (!plan.missing.includes(SESSION_LOG_PATH)) return [];
       if (plan.missing.length === 1) return entryProposals(r.event, plan, { kitVersion, reason });
       if (proposing(ENTRY_CHECKS[r.event])) return [];
     }
@@ -355,7 +359,7 @@ function toolGateProposal({ kitVersion, check, harness, manifest, root, stack })
   if (toolGateHookRegistered({ harness, manifest, root })) return deny;
   const reason = hookRegistrationReason('PreToolUse', check);
   const plan = mergePlan('PreToolUse', { harness, manifest, root, stack });
-  if (plan.state === 'mergeable') return [...entryProposals('PreToolUse', plan, { kitVersion, reason }), ...deny];
+  if (plan.state === 'mergeable') return [...(plan.missing.includes(TOOL_GATE_PATH) ? entryProposals('PreToolUse', plan, { kitVersion, reason }) : []), ...deny];
   const files = hookFiles(TOOL_GATE_PATH, kitVersion);
   return [...files, {
     kind: 'settings-hook', event: 'PreToolUse', step: TOOL_GATE_STEP,
@@ -674,12 +678,18 @@ const halfMatcher = scriptPath => (scriptPath === LINT_TOUCHED_PATH ? SENSOR_MAT
  * - `mergeable`: the entry script can take the place of every registration
  *   recorded here (`remove`), and runs the wanted hooks not yet registered
  *   (`missing`).
- * Which element comes first on the event is never read.
+ * Which element comes first on the event is never read, and only the
+ * registrations in .claude/settings.json are.
  */
 export function mergePlan(event, { harness, manifest, root, stack }) {
   const { path: entry, halves } = ENTRY_SCRIPTS[event];
   const plan = (state, { missing = [], remove = [], why = null } = {}) => ({ entry, state, missing, remove, why });
-  const direct = script => directRegistrations(harness, event, script, halfMatcher(script));
+  // `apply` records and replaces registrations in .claude/settings.json
+  // alone, so a registration in another settings file (`settingsFile`, set
+  // by detect-harness.mjs; one without it is taken as in settings.json) is
+  // not one this plan can act on, and is not judged here.
+  const inProjectSettings = r => (r.settingsFile ?? SETTINGS_PATH) === SETTINGS_PATH;
+  const direct = script => directRegistrations(harness, event, script, halfMatcher(script)).filter(inProjectSettings);
   const recordedFor = scripts => {
     const kit = new Set(scripts.flatMap(script => [...kitEntryHashes(script, halfMatcher(script))]));
     return [...new Set((manifest?.settingsPatches ?? []).filter(p => p.event === event && kit.has(p.entrySha256)).map(p => p.entrySha256))];
@@ -704,7 +714,7 @@ export function mergePlan(event, { harness, manifest, root, stack }) {
   const recorded = recordedFor(halves);
   const why = notAsRecorded(wanted, recorded);
   if (why !== null) return plan('separate', { why });
-  const registered = new Set((harness.claudeDir.hookRegistrations?.[event] ?? []).map(r => r.entrySha256));
+  const registered = new Set((harness.claudeDir.hookRegistrations?.[event] ?? []).filter(inProjectSettings).map(r => r.entrySha256));
   if (recorded.some(hash => !registered.has(hash))) return plan('separate', { why: `a registration kh-harness recorded on ${event} is no longer there` });
   return plan('mergeable', { missing: wanted.filter(half => direct(half).length === 0), remove: recorded });
 }
