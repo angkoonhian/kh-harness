@@ -673,10 +673,10 @@ test('a hook registered in settings.json but living outside .claude/scripts/ is 
     assert.ok(logCheck.evidence.some(e => e.includes(cmd)), `P5.sessionlog evidence must name ${cmd}; got ${JSON.stringify(logCheck.evidence)}`);
   }
 
-  // Eight proposals now (seven hooks + protected paths), where there used to
-  // be none — the defect, inverted.
+  // Nine proposals now (seven hooks, protected paths and the contract
+  // file), where there used to be none — the defect, inverted.
   assert.doesNotMatch(cli(d), /no proposals/i);
-  assert.match(cli(d), /8 proposals/i);
+  assert.match(cli(d), /9 proposals/i);
 });
 
 // D1: a real repository keeps 456 lines under docs/wiki/ and names it in

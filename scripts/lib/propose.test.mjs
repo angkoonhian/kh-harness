@@ -4,7 +4,9 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyManifest, sha256 as sha, readManifest, writeManifest } from './manifest.mjs';
-import { buildProposals, mergePlan, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, SENSOR_MATCHER, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, kitSkew, loadedSiblings } from './propose.mjs';
+import { buildProposals, mergePlan, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH, SENSOR_MATCHER, HARNESS_DISPATCH_PATH, HARNESS_EXTENSIONS_PATH, GENERATORS, RULES_BRIEF_PATH, REDACT_PATH, BRIEF_PATH, LINT_TOUCHED_PATH, LOOP_WATCH_PATH, GENERATOR_SCRIPT_PATHS, HARNESS_GATES_PATH, HARNESS_LOG_PATH, HOOK_MODULE_PATHS, TOOL_GATE_PATH, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, HARNESS_SEAL_PATH, SESSION_LOG_PATH, VERIFY_TOUCHED_PATH, INSTALLED_SCRIPT_PATHS, everyLoadedSibling, heldScripts, kitSkew, loadedSiblings, CONTRACT_FILES, installedScriptProposal } from './propose.mjs';
+import { CONTRACT_PATH, contractFileText } from './contract.mjs';
+import { EXTENSIONS_PATH } from '../../assets/scripts/harness-extensions.mjs';
 import { buildGaps } from './gap-model.mjs';
 import { deriveCouldNotDerive } from './report.mjs';
 import { selectProfile } from './profiles/index.mjs';
@@ -1606,7 +1608,7 @@ test('a file the user edited is reported as kept and never updated', () => {
   const skew = kitskew(ctx.checks);
   assert.equal(skew.state, 'declared', 'an edited file alone does not make the check absent');
   assert.ok(skew.evidence.some(e => e.startsWith('kept at kit 0.1.9: ') && e.includes(BRIEF_PATH)), JSON.stringify(skew.evidence));
-  assert.equal(skew.evidence[0], 'current kit 0.2.0; of 15 installed files that carry a stamp, 1 from kit 0.1.9', 'the versions on disk are counted, not the manifest\'s one');
+  assert.equal(skew.evidence[0], 'current kit 0.2.0; of 16 installed files that carry a stamp, 1 from kit 0.1.9', 'the versions on disk are counted, not the manifest\'s one');
   assert.equal(skew.proposal, null);
   assert.equal(buildProposals(ctx).find(p => p.path === BRIEF_PATH), undefined);
 });
@@ -2431,4 +2433,55 @@ test('an update with every loaded sibling recorded adds nothing', () => {
   const skew = kitSkew(detectedAt(installedAt('0.1.9'), '0.2.0'));
   assert.ok(skew.updates.length > 0, 'fixture sanity: there are updates');
   assert.deepEqual(skew.added, []);
+});
+
+// --- The contract file ------------------------------------------------------
+
+const contractCheck = () => check({ id: 'P5.contract', step: 30, phase: 5, proposal: `write ${CONTRACT_PATH}` });
+
+test('the gate hook\'s deny rules cover the contract file and the extensions file', () => {
+  assert.ok(toolGateDenyRules().includes('Edit(/.claude/kh-harness/**)'));
+  assert.ok(CONTRACT_PATH.startsWith('.claude/kh-harness/'));
+  assert.ok(EXTENSIONS_PATH.startsWith('.claude/kh-harness/'));
+});
+
+test('the contract speaks for the PreToolUse entry script and every installed file it loads', () => {
+  assert.deepEqual(CONTRACT_FILES, [DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]);
+  assert.ok(CONTRACT_FILES.includes(HARNESS_EXTENSIONS_PATH), 'the extension point is among them');
+});
+
+test('the contract generator writes one stamped file at step 30, requiring the files it speaks for', () => {
+  assert.deepEqual(GENERATORS['P5.contract']({ kitVersion: '0.2.0' }), [{
+    kind: 'file', path: CONTRACT_PATH, step: 30, contents: contractFileText('0.2.0'), reason: 'no contract file found',
+    requiresFiles: CONTRACT_FILES.map(path => ({ path, sha256: sha(installedScriptProposal(path, '0.2.0').contents) })),
+  }]);
+});
+
+test('the contract file is not proposed, as a new file or an update, while a file it speaks for is held', () => {
+  const d = installedAt('0.1.9');
+  assert.ok(readManifest(d).files.some(f => f.path === CONTRACT_PATH), 'fixture sanity: the install wrote the contract file');
+  writeFileSync(join(d, DISPATCH_PRE_PATH), readF(join(d, DISPATCH_PRE_PATH), 'utf8') + '// my own tweak\n');
+  const ctx = detectedAt(d, '0.2.0');
+  assert.deepEqual(buildProposals(ctx).filter(p => p.path === CONTRACT_PATH), [], 'no update of the contract file');
+  const skew = kitSkew(ctx);
+  assert.deepEqual(skew.heldBack.find(h => h.path === CONTRACT_PATH)?.causes, [{ path: DISPATCH_PRE_PATH, why: 'edited' }]);
+  assert.equal(skew.updates.some(p => p.path === CONTRACT_PATH), false);
+  assert.ok(kitskew(ctx.checks).evidence.includes(`held back at kit 0.1.9: ${CONTRACT_PATH} (out of date, but kh-harness keeps ${DISPATCH_PRE_PATH} as it is, and the contract file is written only beside the files this kit installs for it to speak for)`),
+    JSON.stringify(kitskew(ctx.checks).evidence));
+  // Forced open, as a fresh check would be.
+  assert.deepEqual(buildProposals({ ...ctx, checks: [contractCheck()] }), []);
+});
+
+test('an upgrade writes the contract file after every file it speaks for', () => {
+  const d = installedAt('0.1.9');
+  const ctx = detectedAt(d, '0.2.0');
+  const proposals = buildProposals(ctx);
+  const update = proposals.find(p => p.path === CONTRACT_PATH);
+  assert.equal(update.checkId, 'P0.kitskew');
+  assert.deepEqual(update.requiresFiles.map(f => f.path), CONTRACT_FILES);
+  const result = applyProposals({ root: d, proposals, manifest: ctx.manifest, kitVersion: '0.2.0' });
+  assert.deepEqual(result.failed, []);
+  assert.equal(result.written.at(-1).path, CONTRACT_PATH);
+  for (const path of CONTRACT_FILES) assert.ok(result.written.some(w => w.path === path), path);
+  assert.equal(readF(join(d, CONTRACT_PATH), 'utf8'), contractFileText('0.2.0'));
 });

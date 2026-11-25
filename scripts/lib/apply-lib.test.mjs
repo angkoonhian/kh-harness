@@ -867,6 +867,47 @@ test('a hook whose required files hold this kit\'s bytes, CRLF or LF, is registe
   assert.deepEqual(r.patched.map(p => p.event), ['Stop']);
 });
 
+// --- A file that speaks for other files is written after them ---------------
+
+const X = '.claude/scripts/x.mjs';
+const CONTRACT = '.claude/kh-harness/contract.json';
+const speaker = () => fileProposal({ path: CONTRACT, step: 30, contents: '{}\n', checkId: 'P5.contract', requiresFiles: [{ path: X, sha256: sha256('x\n') }] });
+
+test('a file proposal that requires files is written after every other file, whatever the order it was proposed in', () => {
+  const d = repo();
+  const r = applyProposals({ root: d, proposals: [speaker(), fileProposal({ path: X, contents: 'x\n', checkId: 'P5.toolgate' })], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual(r.written.map(w => w.path), [X, CONTRACT]);
+  assert.deepEqual(r.manifest.files.map(f => f.path), [X, CONTRACT]);
+  assert.deepEqual(r.skipped, []);
+});
+
+test('a file proposal whose required file is missing or another kit version\'s is not written, and the skip names the file', () => {
+  const missing = repo();
+  const r = applyProposals({ root: missing, proposals: [speaker()], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual(r.written, []);
+  assert.deepEqual(r.skipped, [{ path: CONTRACT, why: `missing-dependency: ${X}`, checkId: 'P5.contract' }]);
+  assert.equal(existsSync(join(missing, '.claude/kh-harness')), false);
+
+  const stale = repo();
+  const s = applyProposals({ root: stale, proposals: [speaker(), fileProposal({ path: X, contents: 'old\n', checkId: 'P5.toolgate' })], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual(s.written.map(w => w.path), [X]);
+  assert.deepEqual(s.skipped.map(k => k.why), [`dependency-not-this-kit-version: ${X}`]);
+  assert.equal(existsSync(join(stale, CONTRACT)), false);
+});
+
+test('a file proposal that requires files is not attempted after a write failure stopped the run', () => {
+  const d = repo();
+  mkdirSync(join(d, '.claude/scripts'), { recursive: true });
+  writeFileSync(join(d, X), 'x\n');
+  mkdirSync(join(d, 'docs'), { recursive: true });
+  writeFileSync(join(d, 'docs/harness'), 'a plain file sitting where a directory needs to go\n');
+  const blocked = { kind: 'file', path: 'docs/harness/x.json', step: 1, contents: '{}\n', checkId: 'x', reason: 'r' };
+  const r = applyProposals({ root: d, proposals: [speaker(), blocked], manifest: null, kitVersion: '0.2.0' });
+  assert.deepEqual(r.failed.map(f => f.path), ['docs/harness/x.json']);
+  assert.deepEqual([r.written, r.skipped], [[], []]);
+  assert.equal(existsSync(join(d, CONTRACT)), false);
+});
+
 // --- The settings patches of one run are one write --------------------------
 
 const batchHook = event => ({ kind: 'settings-hook', event, step: 31, checkId: 'P5.sessionlog', reason: 'r', entry: { type: 'command', command: 'node', args: ['${CLAUDE_PROJECT_DIR}/.claude/scripts/session-log.mjs'] } });

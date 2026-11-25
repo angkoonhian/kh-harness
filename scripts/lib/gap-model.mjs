@@ -18,7 +18,8 @@ import { splitExposures, partitionProminent, collapsedExposureNote, unexaminedEx
 // generator cannot drift apart.
 // propose.mjs does not import gap-model.mjs (or anything that does), so this
 // is a one-directional import, not a cycle.
-import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, RULES_BRIEF_PATH, LOOP_WATCH_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, SENSOR_MATCHER, GENERATORS, GENERATOR_SCRIPT_PATHS, CONTRACT_FILES, heldContractEvidence, heldContractQuestion, heldHookEvidence, heldQuestion, heldScripts, kitSkew, mergePlan, missingToolGateDenyRules, sessionLogRegistrations, toolGateDenyRules } from './propose.mjs';
+import { CONTRACT, CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { displayPath, MANIFEST_PATH, readManifestResult } from './manifest.mjs';
 import { INTENT_PATH, INTENT_SECTIONS } from './intent-evidence.mjs';
@@ -907,6 +908,52 @@ const CHECKS = [
     },
   },
   {
+    id: 'P5.contract', step: 30, phase: 5,
+    lookedFor: [CONTRACT_PATH, `${CONTRACT_FILES.join(', ')} against what this kit installs`],
+    // Read from `harness.contract`: what the file says, and each file it
+    // speaks for against what this kit installs there. Nothing executes, so
+    // it is never `verified`, and the number is reported as read, not as
+    // honoured. Whether anything registers the entry script is P5.toolgate's
+    // and P5.extensions' to say: the number speaks for the installed files.
+    check: ({ harness, manifest, heldScript }) => {
+      const file = harness.contract;
+      if (!file) return { state: 'n/a', evidence: ['the contract file was not read'] };
+      if (file.state === 'unreadable') {
+        return { state: 'failing', evidence: [file.link
+          ? `${CONTRACT_PATH} is reached through a link (${file.link} is one), so it was not read: a contract file must be a file of the repository itself`
+          : `${CONTRACT_PATH} exists and holds no contract number`] };
+      }
+      const installed = Object.entries(file.installed ?? {});
+      if (file.state === 'ok') {
+        const says = `${CONTRACT_PATH}: contract ${file.contract}${file.contract === CONTRACT ? '' : ` (this kit honours contract ${CONTRACT})`}`;
+        const notKit = installed.filter(([, status]) => status !== 'current');
+        if (!notKit.length) return { state: 'declared', evidence: [says] };
+        const n = notKit.length;
+        return {
+          state: 'failing',
+          evidence: [says,
+            `the contract file says ${file.contract}, but ${n} of the ${CONTRACT_FILES.length} files it speaks for ${n === 1 ? 'is' : 'are'} not what this kit installs: ` +
+            `${notKit.map(([path, status]) => `${path} (${INSTALLED_STATUS_WORDS[status]})`).join(', ')}; whether the installed files honour it was not read. ` +
+            `apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them`],
+        };
+      }
+      const none = `no ${CONTRACT_PATH}`;
+      const causes = [...new Map(CONTRACT_FILES.flatMap(path => heldScript(path) ?? []).map(c => [c.path, c])).values()];
+      if (causes.length) return { state: 'absent', decidable: false, evidence: [none, heldContractEvidence(causes)], question: heldContractQuestion(causes) };
+      const recorded = new Set((manifest?.files ?? []).map(f => f.path));
+      const deleted = installed.filter(([path, status]) => status === 'missing' && recorded.has(path)).map(([path]) => path);
+      if (deleted.length) {
+        const [list, was, it] = [deleted.join(', '), deleted.length === 1 ? 'was' : 'were', deleted.length === 1 ? 'it' : 'them'];
+        return {
+          state: 'absent', decidable: false,
+          evidence: [none, `${CONTRACT_PATH} is not written: ${list} ${was} deleted since kh-harness wrote ${it}, apply does not write again a file the owner deleted, and the contract number speaks for the PreToolUse entry script and every file it loads`],
+          question: `${list} ${was} deleted since kh-harness wrote ${it}, so kh-harness does not write ${CONTRACT_PATH}. Restore ${it} from git and run apply again; or leave ${it} deleted, and no contract file is written. Which?`,
+        };
+      }
+      return { state: 'absent', evidence: [none], proposal: `write ${CONTRACT_PATH}, which tells another plugin which kh-harness contract this install honours` };
+    },
+  },
+  {
     id: 'P2.scripts', step: 8, phase: 2,
     lookedFor: ['a lint and typecheck script in every package', 'an ESLint, ruff or tsconfig.json config to derive a command from'],
     // Adding a missing lint/typecheck script means writing to a package's own manifest (package.json,
@@ -1197,7 +1244,7 @@ const CHECKS = [
         skew.versions,
         ...skew.updates.map(p => `out of date: ${displayPath(p.path)}`),
         ...skew.added.map(p => `missing: ${displayPath(p.path)} (an updated script loads it)`),
-        ...skew.heldBack.map(h => `held back${atKit(h.version)}: ${displayPath(h.path)} (out of date, but kh-harness keeps ${h.causes.map(c => c.path).join(', ')} as ${h.causes.length === 1 ? 'it is' : 'they are'}, and its hook scripts are updated together or not at all)`),
+        ...skew.heldBack.map(h => `held back${atKit(h.version)}: ${displayPath(h.path)} (out of date, but kh-harness keeps ${h.causes.map(c => c.path).join(', ')} as ${h.causes.length === 1 ? 'it is' : 'they are'}, and ${h.path === CONTRACT_PATH ? 'the contract file is written only beside the files this kit installs for it to speak for' : 'its hook scripts are updated together or not at all'})`),
         ...skew.kept.map(k => `kept${atKit(k.version)}: ${displayPath(k.path)} (${k.why === 'edited' ? 'edited or deleted since kh-harness wrote it' : 'does not carry the kh-harness stamp'} — never overwritten)`),
         ...skew.unproduced.map(path => `left alone: ${displayPath(path)} (this kit no longer generates it for this repository)`),
         ...(skew.current.length ? [`${skew.current.length} kit-owned file${skew.current.length === 1 ? '' : 's'} match what this kit generates`] : []),

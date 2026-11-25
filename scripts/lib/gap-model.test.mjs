@@ -6,13 +6,14 @@ import { join } from 'node:path';
 import { buildGaps, countProposals, STATES } from './gap-model.mjs';
 import { selectProfile } from './profiles/index.mjs';
 import { buildReport, deriveCouldNotDerive, renderSummary } from './report.mjs';
-import { MANIFEST_PATH } from './manifest.mjs';
+import { emptyManifest, MANIFEST_PATH } from './manifest.mjs';
 import { listFiles } from './scan.mjs';
 import { detectHarness } from './detect-harness.mjs';
 import {
   LINT_TOUCHED_PATH, VERIFY_TOUCHED_PATH, BRIEF_PATH, SESSION_LOG_PATH, TOOL_GATE_PATH, DISPATCH_PRE_PATH, DISPATCH_POST_PATH, DISPATCH_FAILURE_PATH,
-  SENSOR_MATCHER, GENERATOR_SCRIPT_PATHS, GENERATORS, toolGateDenyRules,
+  SENSOR_MATCHER, GENERATOR_SCRIPT_PATHS, GENERATORS, toolGateDenyRules, CONTRACT_FILES, HARNESS_EXTENSIONS_PATH,
 } from './propose.mjs';
+import { CONTRACT_PATH } from './contract.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { hasEquivalentHook, hookEntrySha256 } from './settings-merge.mjs';
 import { ENTRY_SCRIPTS, execEntry, registeredHook } from './hook-evidence.mjs';
@@ -2176,4 +2177,80 @@ test('P5.extensions never proposes and is never verified', () => {
     assert.equal(c.proposal, null, JSON.stringify(c.evidence));
     assert.notEqual(c.state, 'verified');
   }
+});
+
+// --- P5.contract -------------------------------------------------------------
+
+const CONTRACT_FILES_CURRENT = Object.freeze(Object.fromEntries(CONTRACT_FILES.map(path => [path, 'current'])));
+const contractCheck = harness => byId(gaps(bareStack, harness), 'P5.contract');
+const NOT_KIT = 'the contract file says 1, but 2 of the ' + CONTRACT_FILES.length + ' files it speaks for are not what this kit installs: ' +
+  `${DISPATCH_PRE_PATH} (is not the file this kit installs), ${HARNESS_EXTENSIONS_PATH} (is missing); whether the installed files honour it was not read. ` +
+  'apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them';
+
+test('P5.contract sits directly after P5.extensions, at the gate hook\'s step, and says what it looked for', () => {
+  const ids = gaps(bareStack, bareHarness).map(c => c.id);
+  assert.equal(ids[ids.indexOf('P5.extensions') + 1], 'P5.contract');
+  const c = contractCheck(bareHarness);
+  assert.deepEqual([c.step, c.phase], [30, 5]);
+  assert.deepEqual(c.lookedFor, [CONTRACT_PATH, `${CONTRACT_FILES.join(', ')} against what this kit installs`]);
+  assert.equal(CONTRACT_FILES[0], DISPATCH_PRE_PATH);
+});
+
+test('P5.contract: n/a unread, absent with a proposal, declared with the number, failing when unreadable', () => {
+  const unread = contractCheck(bareHarness);
+  assert.deepEqual([unread.state, unread.evidence, unread.proposal], ['n/a', ['the contract file was not read'], null]);
+  const absent = contractCheck({ ...bareHarness, contract: { state: 'absent' } });
+  assert.deepEqual([absent.state, absent.evidence, absent.proposal, absent.via],
+    ['absent', [`no ${CONTRACT_PATH}`], 'write .claude/kh-harness/contract.json, which tells another plugin which kh-harness contract this install honours', 'apply']);
+  const one = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1 } });
+  assert.deepEqual([one.state, one.evidence, one.proposal], ['declared', ['.claude/kh-harness/contract.json: contract 1'], null]);
+  const two = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 2 } });
+  assert.deepEqual([two.state, two.evidence], ['declared', ['.claude/kh-harness/contract.json: contract 2 (this kit honours contract 1)']]);
+  const unreadable = contractCheck({ ...bareHarness, contract: { state: 'unreadable' } });
+  assert.deepEqual([unreadable.state, unreadable.evidence, unreadable.proposal], ['failing', ['.claude/kh-harness/contract.json exists and holds no contract number'], null]);
+});
+
+test('P5.contract says which link a contract file is reached through, and reads nothing through it', () => {
+  for (const link of ['.claude', '.claude/kh-harness', CONTRACT_PATH]) {
+    const c = contractCheck({ ...bareHarness, contract: { state: 'unreadable', link } });
+    assert.deepEqual([c.state, c.proposal], ['failing', null]);
+    assert.deepEqual(c.evidence, [`${CONTRACT_PATH} is reached through a link (${link} is one), so it was not read: a contract file must be a file of the repository itself`]);
+  }
+});
+
+test('P5.contract is failing when the contract file is there and the files it speaks for are not all this kit\'s, and names them', () => {
+  const installed = { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other', [HARNESS_EXTENSIONS_PATH]: 'missing' };
+  const c = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, installed } });
+  assert.deepEqual([c.state, c.proposal], ['failing', null]);
+  assert.deepEqual(c.evidence, ['.claude/kh-harness/contract.json: contract 1', NOT_KIT]);
+  const current = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, installed: CONTRACT_FILES_CURRENT } });
+  assert.deepEqual([current.state, current.evidence], ['declared', ['.claude/kh-harness/contract.json: contract 1']]);
+  const otherVersion = contractCheck({ ...bareHarness, contract: { state: 'ok', contract: 1, installed: { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other-version' } } });
+  assert.equal(otherVersion.state, 'failing');
+  assert.match(otherVersion.evidence[1], /^the contract file says 1, but 1 of the \d+ files it speaks for is not what this kit installs: \.claude\/scripts\/dispatch-pre-tool\.mjs \(carries another kh-harness version's stamp\);/);
+});
+
+test('P5.contract proposes nothing, and asks, when apply would not install a file the contract speaks for', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hk-contract-gap-'));
+  const kitVersion = '0.2.0';
+  const run = (manifest, installed) => byId(buildGaps({ stack: bareStack, harness: { ...bareHarness, contract: { state: 'absent', installed } },
+    exposures: [], profile: selectProfile(bareStack), git: { branch: 'main', isRepo: true }, files: [], root, manifest, kitVersion }), 'P5.contract');
+
+  // Deleted since kh-harness wrote it: never written again.
+  const recorded = { ...emptyManifest(kitVersion), files: [{ path: DISPATCH_PRE_PATH, sha256: '0'.repeat(64), step: 30, writtenAt: '2026-11-25T00:00:00.000Z' }] };
+  const deleted = run(recorded, { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'missing' });
+  assert.deepEqual([deleted.state, deleted.decidable, deleted.proposal], ['absent', false, null]);
+  assert.deepEqual(deleted.evidence, [`no ${CONTRACT_PATH}`,
+    `${CONTRACT_PATH} is not written: ${DISPATCH_PRE_PATH} was deleted since kh-harness wrote it, apply does not write again a file the owner deleted, and the contract number speaks for the PreToolUse entry script and every file it loads`]);
+  assert.equal(deleted.question, `${DISPATCH_PRE_PATH} was deleted since kh-harness wrote it, so kh-harness does not write ${CONTRACT_PATH}. Restore it from git and run apply again; or leave it deleted, and no contract file is written. Which?`);
+
+  // A file kh-harness did not write holds the entry script's unit.
+  mkdirSync(join(root, '.claude/scripts'), { recursive: true });
+  writeFileSync(join(root, DISPATCH_PRE_PATH), 'export {};\n');
+  const held = run(null, { ...CONTRACT_FILES_CURRENT, [DISPATCH_PRE_PATH]: 'other' });
+  assert.deepEqual([held.state, held.decidable, held.proposal], ['absent', false, null]);
+  assert.deepEqual(held.evidence, [`no ${CONTRACT_PATH}`,
+    `${CONTRACT_PATH} is not written while kh-harness keeps ${DISPATCH_PRE_PATH} (not recorded in the manifest as written by kh-harness) as it is: the contract number speaks for the PreToolUse entry script and every file it loads, so it is written only beside the ones this kit installs`]);
+  assert.equal(held.question, `kh-harness keeps ${DISPATCH_PRE_PATH} (not recorded in the manifest as written by kh-harness) as it is, and so does not write ${CONTRACT_PATH}. ` +
+    'Move each file kh-harness did not write out of .claude/scripts/, then run apply again; or leave it, and no contract file is written. Which?');
 });

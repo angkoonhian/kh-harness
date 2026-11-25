@@ -780,12 +780,14 @@ function applyFileProposal({ root, proposal, nextManifest, written, skipped, chm
 }
 
 /**
- * Why a settings patch that activates a script must not be applied, or null
- * when it may: each file in `requiresFiles`, `{ path, sha256 }`, must be on
- * disk holding the bytes this kit writes there (line endings aside). A hook
- * registered beside a missing module dies with `ERR_MODULE_NOT_FOUND` on
- * every event, and one registered beside a module another kit version wrote
- * can die at import for a name that module lacks.
+ * Why a settings patch that activates a script, or a file that speaks for
+ * others, must not be applied, or null when it may: each file in
+ * `requiresFiles`, `{ path, sha256 }`, must be on disk holding the bytes
+ * this kit writes there (line endings aside). A hook registered beside a
+ * missing module dies with `ERR_MODULE_NOT_FOUND` on every event, and one
+ * registered beside a module another kit version wrote can die at import
+ * for a name that module lacks; a contract number written beside such a
+ * file promises what it does not do.
  *
  * Read from the files themselves, after the write phase, never from the
  * batch's plan or the manifest: propose.mjs never proposes again a recorded
@@ -1074,13 +1076,20 @@ export function applyProposals({ root, proposals, manifest, kitVersion, chmod = 
 
   // Pass 2: apply. Every path in this batch already cleared validation; what
   // remains is what validation cannot predict — actual I/O. Files are
-  // written as they come; settings patches are staged in memory and written
-  // once, after the loop, whether it ended or was stopped by a failure.
+  // written as they come, except that a file which requires others comes
+  // after every other file and is written only when they hold what it
+  // requires, read from disk: a run stopped at any write then never leaves
+  // it beside a file it speaks for that is not this kit's. Settings patches
+  // are staged in memory and written once, after the loop, whether it ended
+  // or was stopped by a failure.
+  const speaksForOthers = p => p.kind === 'file' && p.requiresFiles !== undefined;
   let batch = null;
-  for (const proposal of proposals) {
+  for (const proposal of [...proposals.filter(p => !speaksForOthers(p)), ...proposals.filter(speaksForOthers)]) {
     try {
       if (proposal.kind === 'file') {
-        applyFileProposal({ root, proposal, nextManifest, written, skipped, chmod });
+        const unmet = speaksForOthers(proposal) ? unmetDependencies(root, proposal) : null;
+        if (unmet !== null) skipped.push({ path: proposal.path, why: unmet, checkId: proposal.checkId });
+        else applyFileProposal({ root, proposal, nextManifest, written, skipped, chmod });
       } else {
         batch ??= openSettingsBatch(root);
         if (proposal.kind === 'settings-hook') stageSettingsHook({ root, proposal, batch, skipped });

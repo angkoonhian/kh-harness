@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256, emptyManifest } from './manifest.mjs';
+import { contractFileText } from './contract.mjs';
 // Whole-branch review, F2: the two commands can only be held to agree about
 // the capabilities `apply` is actually able to write. A prompt-gated check
 // (P0.recon, P1.instructions, P1.architecture) has no generator at all, so
@@ -17,7 +18,7 @@ import { sha256, emptyManifest } from './manifest.mjs';
 // contradiction. Membership-tested against the real table rather than a
 // hand-maintained id list, so a capability added later is covered with no
 // test edit (same discipline as propose.test.mjs's coherence test).
-import { GENERATORS, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, SESSION_LOG_PATH } from './propose.mjs';
+import { GENERATORS, commandDenyRules, learnCommandDenyRules, toolGateDenyRules, SESSION_LOG_PATH, CONTRACT_FILES } from './propose.mjs';
 import { DETECT, APPLY, UNINSTALL, LOG, git, run, runResult, settings, manifestOf, fixture, fixtureWithLint, workspaceFixture, freshFixtureNoClaudeDir, linesAfter, sandboxDataDir, hooksBesideLog, loggingScript, runEveryRegisteredHook, separateRegistrations } from './lifecycle-fixtures.mjs';
 import { ENTRY_SCRIPTS } from './hook-evidence.mjs';
 import { versionStamp } from './render.mjs';
@@ -1174,4 +1175,137 @@ test('uninstall finishes after the owner removes one kit hook entry by hand', ()
 
 test('an install made before log purge --yes was denied is given its four rules alone, and uninstall still leaves git status clean', () => {
   olderInstallIsRepaired(new Set(commandDenyRules().filter(rule => rule.includes('log.mjs'))));
+});
+
+// --- The contract file -------------------------------------------------------
+
+const CONTRACT_FILE = '.claude/kh-harness/contract.json';
+const contractGap = d => JSON.parse(run(DETECT, d, '--json')).checks.find(c => c.id === 'P5.contract');
+/** `d` as an install made before the contract file: neither on disk nor
+ * recorded. */
+function withoutContract(d) {
+  rmSync(join(d, CONTRACT_FILE));
+  const m = manifestOf(d);
+  m.files = m.files.filter(f => f.path !== CONTRACT_FILE);
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+}
+/** Rewrites the recorded file at `rel` as `contents`, with the manifest's
+ * hash to match, as an older kit would have left it. */
+function recordedAs(d, rel, contents) {
+  writeFileSync(join(d, rel), contents);
+  const m = manifestOf(d);
+  m.files.find(f => f.path === rel).sha256 = sha256(contents);
+  writeFileSync(join(d, '.claude/kh-harness.manifest.json'), JSON.stringify(m, null, 2) + '\n');
+}
+
+test('apply installs the contract file, a second apply proposes nothing, and uninstall removes it and its directory', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  assert.equal(JSON.parse(readFileSync(join(d, CONTRACT_FILE), 'utf8')).contract, 1);
+  assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), contractFileText(KIT_VERSION));
+  assert.deepEqual([contractGap(d).state, contractGap(d).evidence], ['declared', [`${CONTRACT_FILE}: contract 1`]]);
+  assert.match(run(APPLY, d), /no actions for/);
+  run(UNINSTALL, d, '--yes');
+  assert.equal(existsSync(join(d, '.claude/kh-harness')), false);
+});
+
+test('an install without the contract file is proposed exactly that file', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  withoutContract(d);
+  const out = run(APPLY, d);
+  assert.match(out, /1 action to close 1 capability gap/);
+  assert.match(out, /--- \.claude\/kh-harness\/contract\.json {2}\[P5\.contract\]/);
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), contractFileText(KIT_VERSION));
+});
+
+test('a contract file the owner deleted is not written again', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  rmSync(join(d, CONTRACT_FILE));
+  assert.match(run(APPLY, d), /no actions for/);
+});
+
+test('a contract file written by an older kit version is updated by apply', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  recordedAs(d, CONTRACT_FILE, contractFileText('0.1.0'));
+  const dry = run(APPLY, d);
+  assert.match(dry, /--- \.claude\/kh-harness\/contract\.json {2}\[P0\.kitskew\]/);
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), contractFileText(KIT_VERSION));
+});
+
+test('uninstall leaves .claude/kh-harness in place while another plugin\'s extensions file is in it', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  writeFileSync(join(d, '.claude/kh-harness/extensions.json'), '[]');
+  const result = runResult(UNINSTALL, d, '--yes');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(existsSync(join(d, CONTRACT_FILE)), false);
+  assert.equal(readFileSync(join(d, '.claude/kh-harness/extensions.json'), 'utf8'), '[]');
+});
+
+test('with an edited PreToolUse entry script, no contract file is written, and the dry run and detect say why', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  withoutContract(d);
+  const entry = join(d, '.claude/scripts/dispatch-pre-tool.mjs');
+  writeFileSync(entry, readFileSync(entry, 'utf8') + '// my own tweak\n');
+  const dry = run(APPLY, d);
+  assert.match(dry, /no actions for/);
+  assert.match(dry, /kh-harness keeps \.claude\/scripts\/dispatch-pre-tool\.mjs \(edited since kh-harness wrote it\) as it is, and so does not write \.claude\/kh-harness\/contract\.json\./);
+  const gap = contractGap(d);
+  assert.deepEqual([gap.state, gap.decidable, gap.proposal], ['absent', false, null]);
+  assert.match(gap.evidence[1], /^\.claude\/kh-harness\/contract\.json is not written while kh-harness keeps \.claude\/scripts\/dispatch-pre-tool\.mjs \(edited since kh-harness wrote it\) as it is/);
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(existsSync(join(d, CONTRACT_FILE)), false);
+});
+
+test('with a deleted PreToolUse entry script, no contract file is written, and detect says why', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  withoutContract(d);
+  rmSync(join(d, '.claude/scripts/dispatch-pre-tool.mjs'));
+  const gap = contractGap(d);
+  assert.deepEqual([gap.state, gap.decidable, gap.proposal], ['absent', false, null]);
+  assert.equal(gap.evidence[1], `${CONTRACT_FILE} is not written: .claude/scripts/dispatch-pre-tool.mjs was deleted since kh-harness wrote it, apply does not write again a file the owner deleted, and the contract number speaks for the PreToolUse entry script and every file it loads`);
+  assert.match(run(APPLY, d), /\.claude\/scripts\/dispatch-pre-tool\.mjs was deleted since kh-harness wrote it, so kh-harness does not write \.claude\/kh-harness\/contract\.json\./);
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(existsSync(join(d, CONTRACT_FILE)), false);
+});
+
+test('a contract file beside an entry script that is no longer the kit\'s is reported, and apply neither rewrites nor removes it', () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const entry = join(d, '.claude/scripts/dispatch-pre-tool.mjs');
+  writeFileSync(entry, readFileSync(entry, 'utf8') + '// my own tweak\n');
+  const edited = contractGap(d);
+  assert.deepEqual([edited.state, edited.proposal], ['failing', null]);
+  assert.deepEqual(edited.evidence, [`${CONTRACT_FILE}: contract 1`,
+    `the contract file says 1, but 1 of the ${CONTRACT_FILES.length} files it speaks for is not what this kit installs: .claude/scripts/dispatch-pre-tool.mjs (is not the file this kit installs); whether the installed files honour it was not read. ` +
+    'apply never removes the contract file, and rewrites it only beside the files this kit installs; P0.kitskew says whether it can update each of them']);
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), contractFileText(KIT_VERSION));
+
+  rmSync(entry);
+  const deleted = contractGap(d);
+  assert.equal(deleted.state, 'failing');
+  assert.match(deleted.evidence[1], /: \.claude\/scripts\/dispatch-pre-tool\.mjs \(is missing\);/);
+  run(APPLY, d, '--yes', '--allow-dirty');
+  assert.equal(readFileSync(join(d, CONTRACT_FILE), 'utf8'), contractFileText(KIT_VERSION));
+});
+
+test('a contract file reached through a link is reported as unreadable, and is not replaced', { skip: process.platform === 'win32' && 'win32 needs elevation to make a link' }, () => {
+  const d = fixture();
+  run(APPLY, d, '--yes');
+  const outside = mkdtempSync(join(tmpdir(), 'hk-life-outside-'));
+  writeFileSync(join(outside, 'contract.json'), contractFileText(KIT_VERSION));
+  rmSync(join(d, CONTRACT_FILE));
+  symlinkSync(join(outside, 'contract.json'), join(d, CONTRACT_FILE), 'file');
+  const gap = contractGap(d);
+  assert.deepEqual([gap.state, gap.proposal], ['failing', null]);
+  assert.deepEqual(gap.evidence, [`${CONTRACT_FILE} is reached through a link (${CONTRACT_FILE} is one), so it was not read: a contract file must be a file of the repository itself`]);
+  rmSync(outside, { recursive: true, force: true });
 });

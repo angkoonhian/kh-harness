@@ -3,7 +3,9 @@ import { join, relative } from 'node:path';
 import { readIfPresent, existsAny } from './scan.mjs';
 import { readJsonFile } from './read-json.mjs';
 import { git, isNotRepository } from './git-info.mjs';
-import { toolGateDenyRules } from './propose.mjs';
+import { CONTRACT_FILES, installedScriptStatus, toolGateDenyRules } from './propose.mjs';
+import { contractEvidence } from './contract.mjs';
+import { KIT_VERSION } from './manifest.mjs';
 // `findHandoff` is imported from the installed asset, and must not be
 // copied into scripts/lib/. It answers "where is this repository's handoff
 // file", and two things must answer it identically: this module, which
@@ -378,6 +380,14 @@ function remotes(root, env) {
   return { list: [...seen.values()], error: null };
 }
 
+/** `contractEvidence`, with `installed` mapping each of `CONTRACT_FILES`
+ * to its `installedScriptStatus` unless the file was unreadable. */
+function contractWithInstalled(root) {
+  const contract = contractEvidence(root);
+  if (contract.state === 'unreadable') return contract;
+  return { ...contract, installed: Object.fromEntries(CONTRACT_FILES.map(path => [path, installedScriptStatus(root, path, KIT_VERSION)])) };
+}
+
 /** `env` is overridable only so a test can take git away; production
  * callers never pass it. */
 export function detectHarness(root, files, { env } = {}) {
@@ -450,5 +460,6 @@ export function detectHarness(root, files, { env } = {}) {
   harness.ruleShapedLines = ruleShapedLines(root, harness);
   harness.failures = failuresEvidence(root);
   harness.extensions = extensionsEvidence(root);
+  harness.contract = contractWithInstalled(root);
   return harness;
 }

@@ -19,6 +19,7 @@ import { ENTRY_SCRIPTS, directRegistrations, execEntry, kitEntryHashes, register
 import { SETTINGS_PATH } from './settings-merge.mjs';
 import { LOGGED_EVENTS } from '../../assets/scripts/session-log.mjs';
 import { GATES_PATH } from '../../assets/scripts/harness-log.mjs';
+import { CONTRACT_PATH, contractFileText } from './contract.mjs';
 
 const ASSETS = new URL('../../assets/', import.meta.url);
 const read = rel => readFileSync(new URL(rel, ASSETS), 'utf8');
@@ -900,6 +901,23 @@ function hookFiles(scriptPath, kitVersion) {
  * the hook only when every one is on disk holding that. */
 const requiredFiles = files => files.map(f => ({ path: f.path, sha256: sha256(f.contents) }));
 
+/**
+ * The installed files `contract.json` speaks for: what contract `CONTRACT`
+ * promises is done by these files when they run. The contract file's
+ * proposal requires each of them (`requiresFiles`), so `apply` writes it
+ * only after them and only beside this kit's bytes in every one, and drops
+ * it while any is held. A promise kept by another installed file adds that
+ * file here.
+ */
+export const CONTRACT_FILES = Object.freeze([DISPATCH_PRE_PATH, ...everyLoadedSibling(DISPATCH_PRE_PATH)]);
+
+function contractProposal({ kitVersion }) {
+  return [{
+    kind: 'file', path: CONTRACT_PATH, step: TOOL_GATE_STEP, contents: contractFileText(kitVersion), reason: 'no contract file found',
+    requiresFiles: requiredFiles(CONTRACT_FILES.map(path => installedScriptProposal(path, kitVersion))),
+  }];
+}
+
 const KITSKEW_ID = 'P0.kitskew';
 
 /** What this kit generates at each path. The installed scripts are all
@@ -1044,6 +1062,20 @@ export function heldHookEvidence(scriptPath, causes) {
     `To install this hook, ${releaseAdvice(causes)}, then run apply again; left as it is, this hook stays off.`;
 }
 
+/** The evidence line of the contract check while a file it speaks for is
+ * held. */
+export function heldContractEvidence(causes) {
+  return `${CONTRACT_PATH} is not written while kh-harness keeps ${keptList(causes)} as ${causes.length === 1 ? 'it is' : 'they are'}: ` +
+    'the contract number speaks for the PreToolUse entry script and every file it loads, so it is written only beside the ones this kit installs';
+}
+
+/** The question the contract check asks while a file it speaks for is
+ * held. */
+export function heldContractQuestion(causes) {
+  return `kh-harness keeps ${keptList(causes)} as ${causes.length === 1 ? 'it is' : 'they are'}, and so does not write ${CONTRACT_PATH}. ` +
+    `${releaseAdvice(causes).replace(/^./, c => c.toUpperCase())}, then run apply again; or leave ${causes.length === 1 ? 'it' : 'them'}, and no contract file is written. Which?`;
+}
+
 /** The one question every hook check held by `causes` asks, so the reports
  * that list questions state the hold once. */
 export function heldQuestion(causes) {
@@ -1051,12 +1083,19 @@ export function heldQuestion(causes) {
     `${releaseAdvice(causes).replace(/^./, c => c.toUpperCase())}, then run apply again; or leave ${causes.length === 1 ? 'it' : 'them'}, and the hooks not yet installed stay off. Which?`;
 }
 
+/** The causes that hold the proposal `p`: its own path's, or those of the
+ * first file it requires that is held; null when nothing holds it. */
+function heldBy(held, p) {
+  return held.get(p.path) ?? (p.requiresFiles ?? []).map(f => held.get(f.path)).find(Boolean) ?? null;
+}
+
 /**
  * Every file the manifest records, against what this kit generates for it
  * today. `updates` are proposals for the files `recordedFileStatus` calls
  * `update`; `heldBack` the files it calls `update` that `heldScripts`
- * holds, each with the `causes` that hold it; `kept` names the files that
- * are not the kit's to write, with the status that says why; `unproduced`
+ * holds, or that require a file it holds, each with the `causes` that hold
+ * it; `kept` names the files that are not the kit's to write, with the
+ * status that says why; `unproduced`
  * the recorded paths no generator produces for this repository any more,
  * which are left alone. A `heldBack` or `kept` entry carries `version`,
  * the kit version its stamp names on disk, or null. `added` are proposals
@@ -1080,7 +1119,7 @@ export function kitSkew({ kitVersion, harness, root, stack, checks, files, manif
     const status = recordedFileStatus(root, manifest, entry, p.contents);
     if (status === 'current') skew.current.push(entry.path);
     else if (status !== 'update') skew.kept.push({ path: entry.path, why: status, version });
-    else if (held.has(entry.path)) skew.heldBack.push({ path: entry.path, causes: held.get(entry.path), version });
+    else if (heldBy(held, p)) skew.heldBack.push({ path: entry.path, causes: heldBy(held, p), version });
     else skew.updates.push({ ...p, reason: updateReason(version, kitVersion) });
   }
   const recorded = new Set(manifest.files.map(f => f.path));
@@ -1130,6 +1169,7 @@ const GENERATORS = {
   'P5.failures': failuresScaffoldProposal,
   'P5.sessionlog': sessionLogProposal,
   'P5.toolgate': toolGateProposal,
+  'P5.contract': contractProposal,
   'P0.hookmerge': hookMergeProposal,
   // Each update goes through `buildProposals`' recorded-path branch like any
   // other proposal for a recorded file.
@@ -1184,9 +1224,9 @@ function recordedFileStatus(root, manifest, entry, contents) {
  * file the owner edited or deleted is never proposed again: the edit or the
  * deletion is a decision, not a gap to fill.
  *
- * A script `heldScripts` holds is not written, and a hook that loads one is
- * not registered, whatever the hook's check says: `root` is what lets that
- * be read, and without it nothing is held.
+ * A script `heldScripts` holds is not written, and a hook or file whose
+ * `requiresFiles` names one is not proposed, whatever its check says:
+ * `root` is what lets that be read, and without it nothing is held.
  */
 export function buildProposals({ checks, manifest, kitVersion, harness, root, stack, files, generators = {} }) {
   const registry = { ...GENERATORS, ...generators };
@@ -1200,8 +1240,7 @@ export function buildProposals({ checks, manifest, kitVersion, harness, root, st
     const gen = registry[c.id];
     if (!gen) continue;
     for (const p of gen({ kitVersion, harness, root, stack, checks, files, manifest, check: c })) {
-      if (p.kind === 'file' && held.has(p.path)) continue;
-      if ((p.kind === 'settings-hook' || p.kind === 'settings-hook-replace') && (p.requiresFiles ?? []).some(f => held.has(f.path))) continue;
+      if (heldBy(held, p)) continue;
       if (p.kind === 'file' && alreadyWritten.has(p.path)) {
         // Once per run: the first generator to want a stale file gets the
         // update; later ones find it in `recorded` no longer and in
