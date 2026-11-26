@@ -1,12 +1,22 @@
 {
   "name": "kh-harness-local",
-  "description": "Local marketplace for the kh-harness plugin.",
-  "owner": { "name": "Ang Koon Hian" },
+  "description": "Local marketplace for the kh-harness and kh-orchestration plugins.",
+  "owner": {
+    "name": "Ang Koon Hian"
+  },
   "plugins": [
     {
       "name": "kh-harness",
       "source": "./",
       "description": "Inspects a repository and proposes the harness it is missing."
+    },
+    {
+      "name": "kh-orchestration",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/angkoonhian/kh-orchestration.git"
+      },
+      "description": "Refuses any commit whose tree has not passed the repository's checks, and lets those checks change only with the owner's approval. Needs kh-harness 0.3.0 or later."
     }
   ]
 }
